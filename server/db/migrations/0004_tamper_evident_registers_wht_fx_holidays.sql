@@ -169,7 +169,7 @@ CREATE INDEX idx_hcv_broken ON hash_chain_verifications(is_intact, verified_at) 
 -- mid-quarter. Nothing in the application code contains a WHT percentage.
 CREATE TABLE wht_rates (
     id                  TEXT PRIMARY KEY,
-    code                TEXT NOT NULL,        -- 'RENT','SUPPLY','CONSULTANCY',...
+    code                TEXT NOT NULL UNIQUE,        -- 'RENT','SUPPLY','CONSULTANCY',...
     description         TEXT NOT NULL,
     -- The 2024 Regulations differentiate by the deducting entity's size:
     --   Small   turnover <= ₦25m
@@ -197,7 +197,7 @@ CREATE TABLE wht_rates (
     updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
     is_deleted          INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX idx_wht_rates_code ON wht_rates(code) WHERE is_deleted = 0;
+CREATE UNIQUE INDEX idx_wht_rates_code ON wht_rates(code);
 CREATE INDEX idx_wht_rates_active ON wht_rates(is_active, direction) WHERE is_deleted = 0;
 
 CREATE TABLE wht_entries (

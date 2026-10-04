@@ -31,20 +31,13 @@
 name = "stockridge"
 main = "src/index.js"
 compatibility_date = "2025-06-01"
+account_id = "8c838389b678f2906c9a625bd35bdeb4"
 
 # node:crypto, for scrypt PIN hashing and HMAC token signing.
-#
-# This is what makes ONE auth implementation possible across both backends.
-# Without it the Worker would need a different hashing scheme, and then a
-# database created by one backend could not be read by the other — an scrypt hash
-# is meaningless to a PBKDF2 verifier. Two auth implementations means two sets of
-# users, which defeats the point of a shared codebase.
 compatibility_flags = ["nodejs_compat"]
 
 [observability]
 enabled = true
-# Head sampling rather than full: a busy till generates a lot of requests and
-# full sampling on a paid observability plan is a surprise invoice.
 head_sampling_rate = 0.05
 
 # ---------------------------------------------------------------------
@@ -53,12 +46,7 @@ head_sampling_rate = 0.05
 [[d1_databases]]
 binding = "DB"
 database_name = "stockridge"
-# PUT YOUR OWN database_id HERE — `wrangler d1 create stockridge` prints it.
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
-# D1 sessions are region-pinned. Nigerian retail traffic is served best from
-# Europe (Lagos has no Cloudflare colo with D1 primary); a client with most
-# traffic elsewhere should change this, because a mis-pinned primary adds a
-# transatlantic round trip to EVERY write.
+database_id = "dec228ef-a050-4998-8b78-6a4796c2773e"
 migrations_dir = "../server/db/migrations"
 
 # ---------------------------------------------------------------------
@@ -67,9 +55,6 @@ migrations_dir = "../server/db/migrations"
 [assets]
 directory = "../public"
 binding = "ASSETS"
-# Any unknown GET path serves the shell, so a cashier who bookmarked /pos or
-# /stock gets the app back on a hard refresh instead of a 404. Without this the
-# SPA's own routes only work when navigated to from inside the app.
 not_found_handling = "single-page-application"
 
 # ---------------------------------------------------------------------
