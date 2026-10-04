@@ -163,7 +163,6 @@ async function runProbe() {
             business_id: businessId,
             name: 'Samsung 55-inch 4K UHD Smart TV',
             sku: 'ELEC-SAM-55UHD',
-            barcode: '8806091234567',
             default_selling_price: 450000,
             unit_cost: 380000,
             min_price_floor: 420000,
@@ -192,7 +191,7 @@ async function runProbe() {
             batch_no: 'BATCH-2026-001',
           },
         });
-        record('POST /stock/receive (goods receipt & batch valuation)', receive.status === 200 && receive.data.id, `batch: ${receive.data.id}`);
+        record('POST /stock/receive (goods receipt & batch valuation)', receive.status === 200 && (receive.data.batch_id || receive.data.id), `batch: ${receive.data.batch_id || receive.data.id}`);
 
         // Ensure till 1 is open before accepting cash tender
         const tillStatus = await req(`/till/current?branch_id=${branchId}&till_no=1`, { token });
@@ -227,7 +226,7 @@ async function runProbe() {
             }],
           },
         });
-        record('POST /sales (complete POS cash sale checkout)', sale.status === 200 && sale.data.id, `sale: ${sale.data.sale_number || sale.data.id}`);
+        record('POST /sales (complete POS cash sale checkout)', sale.status === 200 && (sale.data.id || sale.data.saleId), `sale: ${sale.data.sale_number || sale.data.saleNumber || sale.data.id || sale.data.saleId}`);
       }
 
 
@@ -254,7 +253,7 @@ async function runProbe() {
             phone: '08033334444',
             email: 'babatunde.adeleke@example.com',
             customer_class: 'CORPORATE',
-            customer_type: 'COMMERCIAL',
+            customer_type: 'COMPANY',
             credit_limit: 1000000,
             payment_terms_days: 30,
           },

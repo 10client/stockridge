@@ -14,6 +14,7 @@ async function main() {
   await migrate(db);
 
   console.log('[local-clean] querying tables...');
+  await db.prepare('PRAGMA foreign_keys = OFF;').run();
   const tables = await db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND name != '_migrations';").all();
 
   for (const t of tables) {
@@ -23,6 +24,7 @@ async function main() {
       console.warn(`[local-clean] could not clear ${t.name}:`, e.message);
     }
   }
+  await db.prepare('PRAGMA foreign_keys = ON;').run();
 
   // 1. Settings
   await db.prepare(`
@@ -65,10 +67,10 @@ async function main() {
       `wht_${r.code.toLowerCase()}`,
       r.code,
       r.description || r.label || r.code,
-      r.rate_percent_small || r.small || 0,
-      r.rate_percent_medium || r.medium || 0,
-      r.rate_percent_large || r.large || 0,
-      r.rate_percent || r.default || 0,
+      r.rate_percent_small != null ? r.rate_percent_small : (r.small || 0),
+      r.rate_percent_medium != null ? r.rate_percent_medium : (r.medium || 0),
+      r.rate_percent_large != null ? r.rate_percent_large : (r.large || 0),
+      r.rate_percent != null ? r.rate_percent : (r.small || 0),
       r.direction || 'BOTH',
       r.statutory_reference || 'WHT Regulations 2024',
       i + 1

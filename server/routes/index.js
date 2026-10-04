@@ -1217,6 +1217,13 @@ function buildRoutes({ config }) {
     return req.db.prepare('SELECT * FROM customers WHERE id = ?').bind(id).first();
   });
 
+  router.get('/customers/debtors/ageing', async (req) => {
+    const s = requireScope(req);
+    const bizId = req.query.business_id || s.businessId || s.business_id;
+    const rows = await req.db.prepare('SELECT * FROM v_debtor_balances WHERE (business_id = ? OR business_id IS NULL)').bind(String(bizId || '')).all();
+    return { rows, count: rows.length };
+  });
+
   router.get('/customers/:id/statement', async (req) => {
     const s = requireScope(req);
     const c = await req.db.prepare('SELECT * FROM customers WHERE id = ? AND is_deleted = 0').bind(req.params.id).first();
@@ -2125,6 +2132,11 @@ function buildRoutes({ config }) {
     const business = await scopeLib.assertBusinessAccess(req.db, s, req.query.business_id || s.businessId, { action: 'view the P&L of' });
     return gl.profitAndLoss(req.db, { businessId: business.id, period: req.query.period || TG.todayWat().slice(0, 7), branchId: req.query.branch_id || null });
   });
+  router.get('/gl/pnl', async (req) => {
+    const s = requireScope(req);
+    const business = await scopeLib.assertBusinessAccess(req.db, s, req.query.business_id || s.businessId, { action: 'view the P&L of' });
+    return gl.profitAndLoss(req.db, { businessId: business.id, period: req.query.period || TG.todayWat().slice(0, 7), branchId: req.query.branch_id || null });
+  });
   router.get('/gl/balance-sheet', async (req) => {
     const s = requireScope(req);
     const business = await scopeLib.assertBusinessAccess(req.db, s, req.query.business_id || s.businessId, { action: 'view the balance sheet of' });
@@ -2142,6 +2154,30 @@ function buildRoutes({ config }) {
   });
 
   router.get('/vat/return', async (req) => {
+    const s = requireScope(req);
+    const business = await scopeLib.assertBusinessAccess(req.db, s, req.query.business_id || s.businessId, { action: 'view the VAT return of' });
+    const period = req.query.period || TG.todayWat().slice(0, 7);
+    const [start, end] = [`${period}-01`, `${period}-31`];
+    const sales = await req.db.prepare(`
+      SELECT COALESCE(SUM(taxable_kobo),0) AS chargeable_kobo, COALESCE(SUM(exempt_kobo),0) AS exempt_kobo,
+             COALESCE(SUM(vat_kobo),0) AS output_kobo, COUNT(*) AS n
+        FROM sales WHERE business_id = ? AND is_deleted = 0 AND status NOT IN ('QUOTE','VOIDED')
+          AND sale_date BETWEEN ? AND ?`).bind(business.id, start, end).first();
+    const purchases = await req.db.prepare(`
+      SELECT COALESCE(SUM(vat_kobo),0) AS input_kobo FROM expenses
+       WHERE business_id = ? AND is_deleted = 0 AND expense_date BETWEEN ? AND ?`).bind(business.id, start, end).first();
+    const ret = VATLIB.vatReturn({ period, outputVat: M.fromKobo(sales.output_kobo), inputVat: M.fromKobo(purchases.input_kobo) });
+    return {
+      business: { id: business.id, name: business.name, vat_registration_no: business.vat_registration_no, tin: business.tin },
+      period, ...ret,
+      chargeable_sales: M.fromKobo(sales.chargeable_kobo),
+      exempt_sales: M.fromKobo(sales.exempt_kobo),
+      sale_count: sales.n,
+      receipt_block: VATLIB.receiptBlock({ enabled: !!Number(business.vat_enabled), ratePercent: Number(business.vat_rate_percent), registrationNumber: business.vat_registration_no, chargeable: M.fromKobo(sales.chargeable_kobo), exempt: M.fromKobo(sales.exempt_kobo), vat: M.fromKobo(sales.output_kobo) }),
+      filing_note: 'VAT returns are filed on or before the 21st of the following month. This figure is derived from your own ledger; confirm it against your records before filing.',
+    };
+  });
+  router.get('/vat/returns', async (req) => {
     const s = requireScope(req);
     const business = await scopeLib.assertBusinessAccess(req.db, s, req.query.business_id || s.businessId, { action: 'view the VAT return of' });
     const period = req.query.period || TG.todayWat().slice(0, 7);
