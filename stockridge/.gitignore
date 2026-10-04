@@ -1,0 +1,10 @@
+node_modules/
+.npm/
+uploads/
+*.db
+*.sqlite
+*.sqlite3
+.wrangler/
+.env
+.env.local
+.DS_Store

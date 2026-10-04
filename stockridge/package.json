@@ -1,0 +1,29 @@
+{
+  "name": "stockridge",
+  "version": "1.0.0",
+  "description": "StockRidge Retail & Multi-Branch Management System",
+  "main": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "test": "node test/audit.domain.js && node test/audit.flows.js",
+    "test:domain": "node test/audit.domain.js",
+    "test:flows": "node test/audit.flows.js",
+    "migrate": "node tools/migrate.js",
+    "seed": "node tools/seed.js",
+    "deploy": "wrangler deploy"
+  },
+  "keywords": [
+    "retail",
+    "inventory",
+    "accounting",
+    "pos",
+    "nigeria",
+    "stockridge"
+  ],
+  "author": "StockRidge Team",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "sql.js": "^1.14.2",
+    "wrangler": "^4.86.0"
+  }
+}

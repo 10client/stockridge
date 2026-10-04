@@ -1,0 +1,57 @@
+# =====================================================================
+# StockRidge — Cloudflare Workers + D1 deployment (Sample / Production)
+# =====================================================================
+
+name = "sample"
+main = "worker/src/index.js"
+compatibility_date = "2025-06-01"
+account_id = "8c838389b678f2906c9a625bd35bdeb4"
+
+# node:crypto, for scrypt PIN hashing and HMAC token signing.
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.05
+
+# ---------------------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "stockridge"
+database_id = "dec228ef-a050-4998-8b78-6a4796c2773e"
+migrations_dir = "server/db/migrations"
+
+# ---------------------------------------------------------------------
+# STATIC ASSETS (the PWA shell, CSS, JS, icons, manifest, service worker)
+# ---------------------------------------------------------------------
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# ---------------------------------------------------------------------
+# SCHEDULED MAINTENANCE
+# ---------------------------------------------------------------------
+[triggers]
+crons = ["0 2 * * *"]
+
+# ---------------------------------------------------------------------
+# Environment variables
+# ---------------------------------------------------------------------
+[vars]
+PRODUCT_NAME = "StockRidge"
+APP_VERSION = "1.0.0"
+LOG_LEVEL = "info"
+SESSION_TTL_HOURS = "12"
+MAX_FAILED_LOGINS = "8"
+LOGIN_WINDOW_MINUTES = "15"
+LOCKOUT_MINUTES = "15"
+RATE_LIMIT_MAX = "600"
+MAX_BODY_BYTES = "4194304"
+RETENTION_SYNC_LOG_DAYS = "90"
+RETENTION_IDEMPOTENCY_HOURS = "72"
+RETENTION_AUDIT_LOG_DAYS = "730"
+RETENTION_LOGIN_ATTEMPTS_DAYS = "30"
+PUBLIC_ORIGIN = "https://sample.stockridge.workers.dev"

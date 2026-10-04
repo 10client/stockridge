@@ -1,0 +1,51 @@
+# =====================================================================
+# StockRidge — Cloudflare response headers
+# =====================================================================
+# These duplicate what worker/src/http.js sets in code, on purpose.
+#
+# A header set only in code is absent from every response the code did not
+# produce: an error page from the platform, a cached asset served before the
+# Worker ran, a redirect from Cloudflare's edge. Setting them at the edge too
+# means the security posture does not depend on the request reaching our code.
+#
+# The two lists must agree. server/lib/http.js securityHeaders() is the
+# authoritative definition and test/audit.api.js asserts the served values, so a
+# divergence is caught by the suite rather than by a customer's browser.
+
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: geolocation=(self), camera=(self), microphone=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+
+# The service worker and the shell must never be cached hard. A client stuck on
+# an old shell with new assets is a client whose app is broken in ways that look
+# like a bug in the code rather than a cache policy.
+/sw.js
+  Cache-Control: no-cache, must-revalidate
+  Service-Worker-Allowed: /
+
+/index.html
+  Cache-Control: no-cache, must-revalidate
+
+/manifest.json
+  Cache-Control: no-cache, must-revalidate
+
+# The API never caches, and must not be cached by a shared proxy either: a
+# debtor balance served from cache is a balance that is wrong in a way nobody
+# can see.
+/api/*
+  Cache-Control: no-store
+  Pragma: no-cache
+
+# Content-addressed assets are safe to cache for a day.
+/css/*
+  Cache-Control: public, max-age=86400
+/js/*
+  Cache-Control: public, max-age=86400
+/icons/*
+  Cache-Control: public, max-age=604800

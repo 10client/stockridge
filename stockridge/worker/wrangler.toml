@@ -1,0 +1,99 @@
+# =====================================================================
+# StockRidge — Cloudflare Workers + D1 deployment
+# =====================================================================
+#
+# THE SAME APPLICATION, SECOND BACKEND. Nothing in shared/lib or
+# shared/services or server/routes is duplicated here. Wrangler bundles with
+# esbuild, which converts the CommonJS modules to ESM at build time, so the
+# Worker imports the very files the Node backend runs. The only Worker-specific
+# code is in worker/src: the fetch router, the D1 adapter, asset serving and the
+# cron entry point.
+#
+# DEPLOY
+#   1. npx wrangler login
+#   2. npx wrangler d1 create stockridge
+#      -> copy the database_id into [[d1_databases]] below
+#   3. apply every migration, IN ORDER:
+#        npx wrangler d1 execute stockridge --remote \
+#          --file=../server/db/migrations/0001_core_schema.sql
+#        ... 0002 ... 0010
+#      (tools/worker-migrate.js does this in one command)
+#   4. npx wrangler secret put JWT_SECRET
+#        generate one with:
+#        node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+#   5. npx wrangler deploy
+#
+# JWT_SECRET IS NOT OPTIONAL HERE. On a VPS a missing secret can be caught during
+# setup; on a Worker the URL is public the instant it deploys, and a forged token
+# can claim the ADMIN seat. worker/src/auth.js refuses to serve at all rather
+# than run with a weak secret.
+
+name = "stockridge"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+account_id = "8c838389b678f2906c9a625bd35bdeb4"
+
+# node:crypto, for scrypt PIN hashing and HMAC token signing.
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+head_sampling_rate = 0.05
+
+# ---------------------------------------------------------------------
+# DATABASE
+# ---------------------------------------------------------------------
+[[d1_databases]]
+binding = "DB"
+database_name = "stockridge"
+database_id = "dec228ef-a050-4998-8b78-6a4796c2773e"
+migrations_dir = "../server/db/migrations"
+
+# ---------------------------------------------------------------------
+# STATIC ASSETS  (the PWA shell, css, js, icons, manifest, service worker)
+# ---------------------------------------------------------------------
+[assets]
+directory = "../public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+# ---------------------------------------------------------------------
+# SCHEDULED MAINTENANCE
+# ---------------------------------------------------------------------
+# Nightly at 02:00 UTC, which is 03:00 in Lagos — after close for essentially
+# every shop, and before the first till opens.
+#
+# The jobs are: release expired holds, mark overdue instalments missed, suspend
+# accounts past the credit threshold, verify the hash-chained registers, check
+# compliance expiries, accrue the warranty provision, and prune retention.
+#
+# THIS CRON IS THE REASON THE PARITY GAP CANNOT RECUR. The pharmacy product ran
+# retention pruning on its Node backend and never on its Worker, so the same
+# codebase had two different data lifecycles and the gap was found only when
+# somebody went looking at sync_change_log's size. Here there is one
+# implementation (worker/src/maintenance.js calling shared/services) and two
+# schedulers that both call it.
+[triggers]
+crons = ["0 2 * * *"]
+
+# ---------------------------------------------------------------------
+# Environment variables that are NOT secrets.
+# Anything a client must not read goes through `wrangler secret put`.
+# ---------------------------------------------------------------------
+[vars]
+PRODUCT_NAME = "StockRidge"
+APP_VERSION = "1.0.0"
+LOG_LEVEL = "info"
+SESSION_TTL_HOURS = "12"
+MAX_FAILED_LOGINS = "8"
+LOGIN_WINDOW_MINUTES = "15"
+LOCKOUT_MINUTES = "15"
+RATE_LIMIT_MAX = "600"
+MAX_BODY_BYTES = "4194304"
+RETENTION_SYNC_LOG_DAYS = "90"
+RETENTION_IDEMPOTENCY_HOURS = "72"
+RETENTION_AUDIT_LOG_DAYS = "730"
+RETENTION_LOGIN_ATTEMPTS_DAYS = "30"
+# Set this to the deployed URL so HSTS is emitted. A Worker is always reachable
+# over https, and a client on plain http through a proxy should be upgraded.
+# PUBLIC_ORIGIN = "https://stockridge.example.workers.dev"
