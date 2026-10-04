@@ -137,9 +137,10 @@ class Statement {
       return { success: true, meta: { changes: info.changes, last_row_id: Number(info.lastInsertRowid) } };
     }
     const res = sqlJsRun(this.db, this.sql, this.params);
-    if (this.dbHandle) this.dbHandle.markDirty();
+    if (this.dbHandle && this.dbHandle._txDepth === 0) this.dbHandle.markDirty();
     return res;
   }
+
 
   /** Convenience: run and return the changes count. */
   async changes() {
@@ -211,15 +212,13 @@ function sqlJsFirst(db, sql, params) {
 
 function sqlJsRun(db, sql, params) {
   db.run(sql, params && params.length ? params : []);
-  // sql.js does not expose changes() for a non-SELECT directly through run();
-  // `SELECT changes()` immediately afterwards is the documented way.
   let changes = 0;
   try {
-    const r = db.exec('SELECT changes() AS c');
-    changes = r && r.length ? Number(r[0].values[0][0]) : 0;
+    changes = typeof db.getRowsModified === 'function' ? db.getRowsModified() : 0;
   } catch (e) { changes = 0; }
   return { success: true, meta: { changes } };
 }
+
 
 // ---------------------------------------------------------------------
 // the handle
