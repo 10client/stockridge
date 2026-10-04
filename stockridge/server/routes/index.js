@@ -465,7 +465,7 @@ function buildRoutes({ config }) {
         latitude, longitude, geofence_radius_meters, attendance_mode, opening_time, closing_time,
         default_till_float, can_deliver, vehicles, drivers, daily_delivery_capacity, stock_pick_policy,
         is_active, sort_order, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'GEOLOCATION', ?,?,?,?,?,?,?,?,?, 'FIFO', 1, ?, datetime('now'), datetime('now'))`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'GEOLOCATION', ?, ?, ?, ?, ?, ?, ?, 'FIFO', 1, ?, datetime('now'), datetime('now'))`)
       .bind(id, business.id, name, code, String(b.branch_type || 'RETAIL').toUpperCase(),
         b.address || null, b.area || null, b.lga || null, b.state_code || null, b.phone || null, b.email || null,
         lat, lng, Number(b.geofence_radius_meters) || 100,
@@ -473,6 +473,7 @@ function buildRoutes({ config }) {
         b.can_deliver == null ? 1 : (b.can_deliver ? 1 : 0),
         Number(b.vehicles) || 0, Number(b.drivers) || 0, Number(b.daily_delivery_capacity) || 10,
         (await req.db.prepare('SELECT COUNT(*) c FROM branches WHERE business_id = ?').bind(business.id).first()).c + 1).run();
+
     await core.audit(req.db, { businessId: business.id, branchId: id, userId: s.userId, userRole: s.role, action: 'BRANCH_CREATE', entityType: 'branch', entityId: id, after: { name, code }, severity: 'NOTICE', ipAddress: req.ip });
     return req.db.prepare('SELECT * FROM branches WHERE id = ?').bind(id).first();
   });
@@ -649,8 +650,9 @@ function buildRoutes({ config }) {
         attributes_json, search_text, default_selling_price, wholesale_price, recommended_retail_price,
         target_margin_percent, vat_exempt, reorder_level, reorder_quantity, is_stocked, is_active,
         created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?, ?,?, NULL,NULL, ?,?,?,?,?,?,?, ?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,?, ?,?,?,?,1,1, ?, datetime('now'), datetime('now'))`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, datetime('now'), datetime('now'))`)
       .bind(id, business.id, category ? category.id : null, b.brand_id || null, name, sku,
+
         b.model_number ? V.str(b.model_number, { field: 'model_number', max: 80 }) : null,
         b.description ? V.text(b.description, { field: 'description', max: 2000 }) : null,
         // NULL means INHERIT from the category, then the vertical. Writing the
@@ -1201,8 +1203,9 @@ function buildRoutes({ config }) {
     await req.db.prepare(`INSERT INTO customers (id, business_id, home_branch_id, customer_class, customer_type,
         name, company_name, contact_person, phone, alt_phone, email, address, area, lga, state_code, tin, cac_number,
         credit_limit, terms_code, account_status, discount_percent, notes, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 'ACTIVE', ?,?,?, datetime('now'), datetime('now'))`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?, ?, datetime('now'), datetime('now'))`)
       .bind(id, business.id, b.home_branch_id || (s.pinned ? s.branchId : null), customerClass,
+
         V.oneOf(b.customer_type || 'INDIVIDUAL', ['INDIVIDUAL', 'COMPANY', 'GOVERNMENT', 'NGO'], { field: 'customer_type' }),
         name, b.company_name || null, b.contact_person || null, phone,
         b.alt_phone ? V.ngPhone(b.alt_phone, { field: 'alt_phone' }) : null,
@@ -1943,8 +1946,9 @@ function buildRoutes({ config }) {
           zone_id, zone_code, distance_km, floors, has_lift, needs_two_man, contact_name, contact_phone,
           driver_id, driver_name, vehicle_type, vehicle_registration, fee_kobo, fee, fee_breakdown_json,
           access_notes, created_by, notes, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?, 'SCHEDULED', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`)
-        .bind(id, business.id, branch.id, doc.number, sale ? sale.id : null, customer.id,
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'SCHEDULED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`)
+      .bind(id, business.id, branch.id, doc.number, sale ? sale.id : null, customer.id,
+
           job.job.job_type, job.job.scheduled_date, job.job.window_start, job.job.window_end,
           job.job.address, b.landmark || null, job.job.area, job.job.lga, job.job.state,
           b.zone_id || null, b.zone_code || null, b.distance_km != null ? Number(b.distance_km) : null,
