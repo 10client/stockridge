@@ -208,3 +208,6 @@ function getConfig() {
   return _config;
 }
 
+module.exports = { loadConfig, getConfig, ROOT };
+
+

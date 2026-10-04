@@ -93,10 +93,11 @@ function selectDriver(preference = 'auto') {
 // statement wrapper — the D1-shaped async API over a sync driver
 // ---------------------------------------------------------------------
 class Statement {
-  constructor(db, sql, driverName) {
+  constructor(db, sql, driverName, dbHandle = null) {
     this.db = db;
     this.sql = sql;
     this.driverName = driverName;
+    this.dbHandle = dbHandle;
     this.params = [];
   }
 
@@ -135,7 +136,9 @@ class Statement {
       const info = this.db.prepare(this.sql).run(...this.params);
       return { success: true, meta: { changes: info.changes, last_row_id: Number(info.lastInsertRowid) } };
     }
-    return sqlJsRun(this.db, this.sql, this.params);
+    const res = sqlJsRun(this.db, this.sql, this.params);
+    if (this.dbHandle) this.dbHandle.markDirty();
+    return res;
   }
 
   /** Convenience: run and return the changes count. */
@@ -144,6 +147,7 @@ class Statement {
     return (r.meta && r.meta.changes) || 0;
   }
 }
+
 
 /**
  * Bind-value normalisation.
@@ -231,8 +235,9 @@ class DatabaseHandle {
   }
 
   prepare(sql) {
-    return new Statement(this.impl, sql, this.driverName);
+    return new Statement(this.impl, sql, this.driverName, this);
   }
+
 
   /** Execute several statements inside ONE transaction. */
   async batch(statements) {

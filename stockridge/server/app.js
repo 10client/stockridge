@@ -167,7 +167,41 @@ async function createApp(overrides = {}) {
   const migrationResult = await migrate(db, { verbose: false });
   log.log(`[stockridge] schema: ${migrationResult.total} migrations (${migrationResult.ran} applied now, ${migrationResult.skipped} already present)`);
 
+  // Ensure default client settings and admin user exist on an empty database
+  const settingsCount = await db.prepare('SELECT COUNT(*) AS c FROM client_settings WHERE id = 1').first();
+  if (!settingsCount || !settingsCount.c) {
+    await db.prepare(`
+      INSERT INTO client_settings (
+        id, product_name, max_businesses, max_branches, max_staff,
+        subscription_status, subscription_plan, multi_business_enabled,
+        multi_branch_enabled, instalments_module_enabled,
+        warranty_module_enabled, delivery_module_enabled,
+        updated_at
+      ) VALUES (
+        1, 'StockRidge', 50, 100, 500,
+        'ACTIVE', 'Enterprise', 1, 1, 1, 1, 1,
+        datetime('now')
+      );
+    `).run();
+  }
+
+  const userCount = await db.prepare('SELECT COUNT(*) AS c FROM users WHERE is_deleted = 0').first();
+  if (!userCount || !userCount.c) {
+    const adminPinHash = auth.hashPin('9999');
+    await db.prepare(`
+      INSERT INTO users (
+        id, branch_id, business_id, full_name, username, pin_hash,
+        role, job_title, phone, email, is_driver, is_active, is_deleted, created_at, updated_at
+      ) VALUES (
+        'usr_admin_platform', NULL, NULL, 'Platform Administrator', 'admin', ?,
+        'ADMIN', 'Vendor seat', '08000000000', 'admin@stockridge.ng', 0, 1, 0, datetime('now'), datetime('now')
+      );
+    `).bind(adminPinHash).run();
+    log.log('[stockridge] initialized platform administrator (admin / 9999)');
+  }
+
   const businesses = await db.prepare('SELECT COUNT(*) AS c FROM businesses WHERE is_deleted = 0').first();
+
   if (!businesses.c && (config.app.autoseed || overrides.seed)) {
     log.log('[stockridge] empty database — seeding demo data');
     // eslint-disable-next-line global-require
