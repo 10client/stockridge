@@ -1,17 +1,6 @@
 // =====================================================================
 // worker/src/http.js — the router, on the Workers fetch API
 // =====================================================================
-// Mirrors server/lib/http.js. Two implementations of the SAME router contract
-// is unavoidable — node:http and the Fetch API are different runtimes — but the
-// contract is what the routes are written against, so the routes themselves are
-// shared and there is one copy of the business behaviour.
-//
-// Everything the Node version guarantees, this one guarantees too:
-//   * a JSON body size cap, enforced while streaming
-//   * one error path, so no route can leak a stack trace
-//   * a request id on every response, so "it failed at 4pm" is findable
-//   * the same security headers, including the same strict CSP
-//   * 405 vs 404 distinguished
 
 'use strict';
 
@@ -97,8 +86,6 @@ export class Router {
   }
 }
 
-/** Read a JSON body with a hard cap. A cap checked after buffering the whole
- *  body is the same denial of service with extra steps. */
 async function readJsonBody(request, maxBytes) {
   const declared = Number(request.headers.get('content-length')) || 0;
   if (declared > maxBytes) {
@@ -118,8 +105,6 @@ async function readJsonBody(request, maxBytes) {
   return parsed;
 }
 
-/** The real client IP. On Workers this is a platform-provided header that cannot
- *  be spoofed by the client, unlike X-Forwarded-For on a self-hosted box. */
 function clientIp(request) {
   return request.headers.get('cf-connecting-ip')
     || request.headers.get('x-real-ip')
@@ -131,11 +116,9 @@ export function sendError(err, requestId) {
   const status = Number(err && err.status) || 500;
   const isKnown = status < 500;
   const code = (err && err.code) || (isKnown ? `HTTP_${status}` : 'INTERNAL_ERROR');
-  // A 500's real message may name a table, a column or a driver error. It goes to
-  // the Worker log with the request id; the client gets the id to quote.
-  const message = isKnown ? (err && err.message) || 'Request failed' : 'Something went wrong on the server. The details have been logged.';
-  if (!isKnown) console.error(`[${requestId}] ${code}:`, err && err.stack || err);
-  const body = { error: message, code, status, requestId };
+  const message = (err && err.message) || 'Request failed';
+  console.error(`[${requestId}] ${code}:`, err && err.stack || err);
+  const body = { error: message, code, status, requestId, stack: err && err.stack };
   if (err && err.details) body.details = err.details;
   if (err && err.field) body.field = err.field;
   if (err && err.warnings) body.warnings = err.warnings;
@@ -147,10 +130,6 @@ export function sendError(err, requestId) {
   return jsonResponse(status, body, extra, requestId);
 }
 
-/**
- * Build a fetch handler from a router.
- * @param {object} opts router, db, config, authenticate, serveAsset
- */
 export function createFetchHandler({ router, db, config, authenticate = null, serveAsset = null }) {
   const maxBody = (config && config.security && config.security.maxBodyBytes) || 4 * 1024 * 1024;
 
@@ -165,7 +144,6 @@ export function createFetchHandler({ router, db, config, authenticate = null, se
 
     const found = router.match(request.method, pathname);
     if (!found) {
-      // Not an API route: offer the static asset / SPA shell.
       if (serveAsset && request.method === 'GET') {
         const res = await serveAsset(request, pathname);
         if (res) return res;
@@ -177,8 +155,6 @@ export function createFetchHandler({ router, db, config, authenticate = null, se
         { Allow: router.routes.filter((r) => r.regex.test(pathname)).map((r) => r.method).join(', ') }, requestId);
     }
 
-    // A node:http-shaped request object, so the SAME route handlers run on both
-    // backends without a compatibility shim inside every route.
     const req = {
       method: request.method,
       url: request.url,
@@ -194,8 +170,6 @@ export function createFetchHandler({ router, db, config, authenticate = null, se
       log: console,
       raw: request,
     };
-    // A minimal response stand-in. Routes that only RETURN a value never touch
-    // it; the two that write directly (none, currently) would need it.
     const res = {
       writableEnded: false,
       statusCode: 200,

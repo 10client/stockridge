@@ -41,9 +41,11 @@
 
 import { wrapD1 } from './d1Adapter.js';
 import { createFetchHandler, sendError, SECURITY_HEADERS } from './http.js';
-import { buildRoutes, API_PREFIX } from '../../server/routes/index.js';
+import { buildRoutes } from '../../server/routes/index.js';
 import { makeWorkerAuthenticator, workerConfig } from './auth.js';
 import { serveAssetFromBinding, SPA_SHELL } from './assets.js';
+
+const API_ROUTE_PATTERN = /^\/(api|auth|branding|reference|businesses|branches|products|catalog|sales|stock|customers|till|safe|change-owed|holds|instalments|warranty|delivery|gl|vat|wht|registers|dashboard|settings|admin|sync)\b/;
 
 export default {
   async fetch(request, env, ctx) {
@@ -82,11 +84,8 @@ export default {
         serveAsset: (req, p) => serveAssetFromBinding(env, req, p, requestId),
       });
 
-      // Only /api/* is the API. Everything else is a page or an asset — the same
-      // single rule the Node backend uses, for the same reason: /stock and
-      // /settings are BOTH API resources and SPA routes, and a cashier who
-      // bookmarked /stock must get the app back on a hard refresh.
-      if (pathname === API_PREFIX || pathname.startsWith(`${API_PREFIX}/`)) {
+      // API first. Anything under API routes is processed by the router.
+      if (API_ROUTE_PATTERN.test(pathname)) {
         const res = await handler(request);
         ctx.waitUntil(logRequest(env, requestId, request.method, pathname, res.status, Date.now() - started));
         return res;
@@ -111,13 +110,6 @@ export default {
 
   /**
    * Scheduled maintenance.
-   *
-   * This is the piece the pharmacy product was missing on one backend only:
-   * retention pruning ran on the Node deployment and never on the Worker, so the
-   * same codebase had two different data-lifecycle behaviours and nobody noticed
-   * until sync_change_log had grown without bound. With one copy of the logic
-   * (shared/services) and one cron trigger declared here, there is nothing to
-   * keep in step.
    */
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runMaintenance(env));
@@ -142,11 +134,6 @@ async function healthResponse(db, config, requestId, started) {
   }), { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...SECURITY_HEADERS, 'X-Request-Id': requestId } });
 }
 
-/**
- * Retention and housekeeping. Runs from the cron trigger, never from a request:
- * a maintenance job that piggybacks on a user's request makes that request slow
- * and unpredictable, and on a free-tier Worker it can hit the CPU limit mid-sale.
- */
 async function runMaintenance(env) {
   const { runScheduledJobs } = await import('./maintenance.js');
   const db = wrapD1(env.DB);
@@ -157,8 +144,6 @@ async function runMaintenance(env) {
 }
 
 async function logRequest(env, requestId, method, pathname, status, ms) {
-  // Only slow or failed requests are worth a log line on a platform that charges
-  // for observability. A 200 in 40ms is not news.
   if (status < 400 && ms < 1000) return;
   console.log(`[${requestId}] ${method} ${pathname} -> ${status} in ${ms}ms`);
 }
