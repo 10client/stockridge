@@ -558,7 +558,7 @@ function buildRoutes({ config }) {
       throw httpError(409, `The username "${username}" is already in use.`, 'USERNAME_TAKEN');
     }
 
-    const id = newId();
+    const id = IDS.newId();
     const pinHash = await auth.hashPin(pin);
     await req.db.prepare(`
       INSERT INTO users (

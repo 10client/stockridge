@@ -311,7 +311,7 @@ async function renderUsers(body, ctx) {
 function userForm(values, onSave, title, isCreate = false) {
   const nameF = field({ label: 'Full name', name: 'full_name', required: true, value: values.full_name || '' });
   const usernameF = isCreate ? field({ label: 'Username (unique login handle)', name: 'username', required: true, value: values.username || '', hint: 'Alphanumeric, lowercase, e.g. "amina" or "john_cashier"' }) : null;
-  const pinF = isCreate ? field({ label: 'Default PIN (4–8 numeric digits)', name: 'pin', type: 'password', required: true, value: '1234', hint: 'The user will be prompted to change their temporary PIN on first sign-in.' }) : null;
+  const pinF = isCreate ? field({ label: 'Default PIN (4–8 numeric digits, non-sequential)', name: 'pin', type: 'password', required: true, value: '7492', hint: 'The user will be prompted to change their temporary PIN on first sign-in.' }) : null;
 
   const roleChoices = isVendor()
     ? [{ value: 'STAFF', label: 'STAFF — Sales / Store Cashier (pinned to branch)' }, { value: 'MANAGER', label: 'MANAGER — Day-to-day operations' }, { value: 'OWNER', label: 'OWNER — Proprietor / Commercial governor' }, { value: 'ADMIN', label: 'ADMIN — Platform Vendor Administrator' }]
@@ -360,7 +360,7 @@ function editUser(row, ctx) {
 }
 
 function resetPinDialog(row, ctx) {
-  const pinF = field({ label: 'New PIN (4–8 numeric digits)', name: 'new_pin', type: 'password', required: true, value: '1234', hint: 'The user will be required to change this PIN immediately upon signing in.' });
+  const pinF = field({ label: 'New PIN (4–8 numeric digits, non-sequential)', name: 'new_pin', type: 'password', required: true, value: '7492', hint: 'The user will be required to change this PIN immediately upon signing in.' });
   const form = el('form', { onsubmit: async (ev) => {
     ev.preventDefault();
     const v = readForm(form);

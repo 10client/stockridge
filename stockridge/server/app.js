@@ -299,7 +299,7 @@ async function createApp(overrides = {}) {
     const pathname = url.pathname;
 
     // API first. Anything under /api, /auth, /branding or /reference is JSON.
-    if (/^\/(api|auth|branding|reference|businesses|branches|products|catalog|sales|stock|customers|till|safe|change-owed|holds|instalments|warranty|delivery|gl|vat|wht|registers|dashboard|settings|admin|sync)\b/.test(pathname)) {
+    if (/^\/(api|auth|branding|reference|businesses|branches|users|products|catalog|sales|stock|customers|till|safe|change-owed|holds|instalments|warranty|delivery|gl|vat|wht|registers|dashboard|settings|admin|sync)\b/.test(pathname)) {
       return apiHandler(req, res);
     }
     // The service worker and manifest are served from public/ but must not be

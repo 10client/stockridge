@@ -3,7 +3,7 @@
 // =====================================================================
 'use strict';
 
-const ORIGIN = process.env.TEST_ORIGIN || 'https://sample.stockridge.workers.dev';
+const ORIGIN = process.env.TEST_ORIGIN || process.env.TARGET_URL || 'https://sample.stockridge.workers.dev';
 
 async function req(path, { method = 'GET', body = null, token = null } = {}) {
   const headers = { 'Content-Type': 'application/json' };
@@ -144,8 +144,50 @@ async function runProbe() {
       record('GET /branches (list)', brList.status === 200 && Array.isArray(brList.data), `count: ${brList.data.length}`);
       if (brList.data.length > 0) branchId = brList.data[0].id;
     }
+
+    // 5b. Users & Staff Management
+    const usersList = await req('/users', { token });
+    record('GET /users (staff list with lock & role status)', usersList.status === 200 && Array.isArray(usersList.data), `count: ${usersList.data ? usersList.data.length : 0}`);
+
+    const newCashier = await req('/users', {
+      method: 'POST',
+      token,
+      body: {
+        full_name: 'Chioma Okeke',
+        username: `chioma_${Date.now().toString(36)}`,
+        pin: '7284',
+        role: 'STAFF',
+        branch_id: branchId,
+        job_title: 'Senior Cashier',
+        phone: '08099887766',
+        email: 'chioma@example.com',
+      },
+    });
+    record('POST /users (provision staff cashier with PIN)', newCashier.status === 200 && newCashier.data.id, `user: ${newCashier.data ? newCashier.data.username : 'err'}`);
+
+    if (newCashier.data && newCashier.data.id) {
+      const updateU = await req(`/users/${newCashier.data.id}`, {
+        method: 'PATCH',
+        token,
+        body: { job_title: 'Lead Front-of-House Cashier', is_driver: 1 },
+      });
+      record('PATCH /users/:id (update role metadata & privileges)', updateU.status === 200 && updateU.data.is_driver === 1, `title: ${updateU.data ? updateU.data.job_title : 'err'}`);
+
+      const resetPin = await req(`/users/${newCashier.data.id}/reset-pin`, {
+        method: 'POST',
+        token,
+        body: { new_pin: '8392' },
+      });
+      record('POST /users/:id/reset-pin (temporary PIN generation)', resetPin.status === 200, `ok: ${resetPin.data ? resetPin.data.ok : false}`);
+
+      const unlock = await req(`/users/${newCashier.data.id}/unlock`, {
+        method: 'POST',
+        token,
+      });
+      record('POST /users/:id/unlock (instant failed-attempt lock clearance)', unlock.status === 200, `ok: ${unlock.data ? unlock.data.ok : false}`);
+    }
   } catch (e) {
-    record('Admin Business/Branch Setup', false, e.message);
+    record('Admin Business/Branch/User Setup', false, e.message);
   }
 
   // 6. POS & Catalog Contracts
