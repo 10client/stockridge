@@ -1819,7 +1819,30 @@ function buildRoutes({ config }) {
     return { found: true, serial: row, cover, claims };
   });
 
+  router.get('/warranty/claims', async (req) => {
+    const s = requireScope(req);
+    const bf = scopeLib.businessFilter(s, 'wc.business_id');
+    const params = [...bf.params];
+    let branchClause = '';
+    if (req.query.branch_id) {
+      branchClause = ' AND wc.branch_id = ?';
+      params.push(req.query.branch_id);
+    }
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const rows = await req.db.prepare(`
+      SELECT wc.*, p.name AS product_name, b.name AS branch_name
+        FROM warranty_claims wc
+        LEFT JOIN products p ON p.id = wc.product_id
+        LEFT JOIN branches b ON b.id = wc.branch_id
+       WHERE wc.is_deleted = 0 ${bf.sql} ${branchClause}
+       ORDER BY wc.opened_on DESC
+       LIMIT ?
+    `).bind(...params, limit).all();
+    return rows;
+  });
+
   router.post('/warranty/claims', async (req) => {
+
     const s = requireScope(req);
     await writeGuard(req);
     const db = req.db;
@@ -2318,18 +2341,19 @@ function buildRoutes({ config }) {
       req.db.prepare(`SELECT
           (SELECT COUNT(*) FROM v_low_stock_alerts WHERE urgency IN ('OUT_OF_STOCK','CRITICAL') ${branchClause}) AS low_stock,
           (SELECT COUNT(*) FROM v_shelf_life_alerts WHERE band IN ('EXPIRED','WITHIN_7') ${branchClause}) AS shelf_life,
-          (SELECT COUNT(*) FROM v_compliance_expiry_alerts) AS compliance,
-          (SELECT COUNT(*) FROM v_warranty_claims_open ${branchClause}) AS warranty_claims,
-          (SELECT COUNT(*) FROM v_change_owed_outstanding ${branchClause}) AS change_owed`).bind(...params, ...params, ...params, ...params).first(),
+          (SELECT COUNT(*) FROM v_compliance_expiry_alerts WHERE 1=1 ${branchClause}) AS compliance,
+          (SELECT COUNT(*) FROM v_warranty_claims_open WHERE 1=1 ${branchClause}) AS warranty_claims,
+          (SELECT COUNT(*) FROM v_change_owed_outstanding WHERE 1=1 ${branchClause}) AS change_owed`).bind(...params, ...params, ...params, ...params, ...params).first(),
       req.db.prepare(`SELECT ts.*, b.name AS branch_name FROM till_sessions ts JOIN branches b ON b.id = ts.branch_id
         WHERE ts.status = 'OPEN' AND ts.is_deleted = 0 ${branchClause.replace(/branch_id/g, 'ts.branch_id')}`).bind(...params).all(),
-      req.db.prepare(`SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS amount FROM v_instalments_due_this_week ${bf.sql.replace(/business_id/g, 'business_id')}`).bind(...bizParams).first(),
+      req.db.prepare(`SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS amount FROM v_instalments_due_this_week WHERE 1=1 ${bf.sql}`).bind(...bizParams).first(),
       req.db.prepare(`SELECT COUNT(*) AS c FROM v_delivery_jobs_open WHERE scheduled_date <= date(?, '+2 days') ${branchClause}`).bind(today, ...params).first(),
     ]);
 
-    const debtors = await req.db.prepare(`SELECT COALESCE(SUM(balance),0) AS total FROM v_debtor_balances WHERE balance > 0 ${bf.sql.replace(/business_id/g, 'business_id')}`).bind(...bizParams).first();
-    const creditors = await req.db.prepare(`SELECT COALESCE(SUM(balance),0) AS total FROM v_creditor_balances WHERE balance > 0 ${bf.sql.replace(/business_id/g, 'business_id')}`).bind(...bizParams).first();
+    const debtors = await req.db.prepare(`SELECT COALESCE(SUM(balance),0) AS total FROM v_debtor_balances WHERE balance > 0 ${bf.sql}`).bind(...bizParams).first();
+    const creditors = await req.db.prepare(`SELECT COALESCE(SUM(balance),0) AS total FROM v_creditor_balances WHERE balance > 0 ${bf.sql}`).bind(...bizParams).first();
     const stockValue = await req.db.prepare(`SELECT COALESCE(SUM(cost_value),0) AS cost_value, COALESCE(SUM(retail_value),0) AS retail_value, COALESCE(SUM(units),0) AS units FROM v_stock_value_by_branch WHERE 1=1 ${branchClause}`).bind(...params).first();
+
 
     return {
       as_at: TG.watTimestamp(), timezone: TG.TIMEZONE_LABEL, scope: { branch_ids: rb.branchIds, all_branches: rb.unrestricted },

@@ -164,8 +164,8 @@ async function runProbe() {
             name: 'Samsung 55-inch 4K UHD Smart TV',
             sku: 'ELEC-SAM-55UHD',
             barcode: '8806091234567',
-            retail_price: 450000,
-            cost_price: 380000,
+            default_selling_price: 450000,
+            unit_cost: 380000,
             min_price_floor: 420000,
             is_stocked: 1,
             reorder_level: 5,
@@ -177,10 +177,25 @@ async function runProbe() {
       } else {
         productId = prods.data[0].id;
       }
+
+      // Test POS Quote pricing calculation
+      if (productId && branchId) {
+        const quote = await req('/sales/quote', {
+          method: 'POST',
+          token,
+          body: {
+            business_id: businessId,
+            branch_id: branchId,
+            items: [{ product_id: productId, quantity: 1 }],
+          },
+        });
+        record('POST /sales/quote (live server-side pricing engine)', quote.status === 200 && quote.data.grand_total_kobo > 0, `total: ₦${quote.data.grand_total_kobo / 100}`);
+      }
     }
   } catch (e) {
     record('POS Product Catalog', false, e.message);
   }
+
 
   // 7. Customers & Credit Contracts
   let customerId = null;
@@ -266,16 +281,15 @@ async function runProbe() {
 
   // 10. Tamper-Evident Registers & Audit Contracts
   try {
-    if (branchId) {
-      const reg = await req(`/registers?branch_id=${branchId}`, { token });
-      record('GET /registers (immutable chained high-value log)', reg.status === 200 && Array.isArray(reg.data), `count: ${reg.data.length}`);
+    const reg = await req(`/registers/HIGH_VALUE_REGISTER`, { token });
+    record('GET /registers/HIGH_VALUE_REGISTER (immutable chained log)', reg.status === 200 && Array.isArray(reg.data.rows), `rows: ${reg.data.rows ? reg.data.rows.length : 0}`);
 
-      const verify = await req(`/registers/verify?branch_id=${branchId}`, { token });
-      record('GET /registers/verify (cryptographic SHA-256 chain integrity)', verify.status === 200 && verify.data.valid !== false, `valid: ${verify.data.valid}`);
-    }
+    const verify = await req(`/registers/HIGH_VALUE_REGISTER/verify`, { method: 'POST', token });
+    record('POST /registers/HIGH_VALUE_REGISTER/verify (cryptographic SHA-256 integrity)', verify.status === 200 && verify.data.intact !== false, `intact: ${verify.data.intact}`);
   } catch (e) {
     record('Tamper-Evident Registers', false, e.message);
   }
+
 
   // Summary
   console.log(`\n====================================================================`);
