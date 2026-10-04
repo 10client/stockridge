@@ -190,7 +190,7 @@ async function seed({ db, options = {}, log = console.log } = {}) {
   }, created);
 
   // ---- OWNER ------------------------------------------------------------
-  await upsertUser(db, {
+  const owner = await upsertUser(db, {
     id: ID.owner, username: 'owner', pin: '1234', role: 'OWNER',
     full_name: 'Adaeze Okafor', job_title: 'Proprietor', phone: '08031234567',
     email: 'adaeze@ridgegroup.ng', branch_id: null, business_id: null,
