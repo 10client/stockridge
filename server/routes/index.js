@@ -2142,7 +2142,7 @@ function buildRoutes({ config }) {
   // withholding-tax percentage, so a change to the Regulations is a database
   // update rather than a deployment — which matters when the change lands mid-
   // quarter and the client is already filing against the old rates.
-  router.get('/wht/rates', async () => {
+  router.get('/wht/rates', async (req) => {
     const rows = await req.db.prepare(
       'SELECT * FROM wht_rates WHERE is_deleted = 0 AND is_active = 1 ORDER BY sort_order, code'
     ).all();
@@ -2319,7 +2319,7 @@ function buildRoutes({ config }) {
           (SELECT COUNT(*) FROM v_change_owed_outstanding ${branchClause}) AS change_owed`).bind(...params, ...params, ...params, ...params).first(),
       req.db.prepare(`SELECT ts.*, b.name AS branch_name FROM till_sessions ts JOIN branches b ON b.id = ts.branch_id
         WHERE ts.status = 'OPEN' AND ts.is_deleted = 0 ${branchClause.replace(/branch_id/g, 'ts.branch_id')}`).bind(...params).all(),
-      req.db.prepare(`SELECT COUNT(*) AS c, COALESCE(SUM(next_amount),0) AS amount FROM v_instalments_due_this_week ${bf.sql.replace(/business_id/g, 'business_id')}`).bind(...bizParams).first(),
+      req.db.prepare(`SELECT COUNT(*) AS c, COALESCE(SUM(amount),0) AS amount FROM v_instalments_due_this_week ${bf.sql.replace(/business_id/g, 'business_id')}`).bind(...bizParams).first(),
       req.db.prepare(`SELECT COUNT(*) AS c FROM v_delivery_jobs_open WHERE scheduled_date <= date(?, '+2 days') ${branchClause}`).bind(today, ...params).first(),
     ]);
 

@@ -74,9 +74,9 @@ function renderPlan(body, settings, usage, ctx) {
     el('div', { class: 'stat-grid' },
       statCard({ label: 'Plan', value: settings.subscription_plan, sub: `status ${String(settings.subscription_status).toLowerCase()}`, tone: settings.subscription_status === 'ACTIVE' ? 'good' : settings.subscription_status === 'TRIAL' ? 'warn' : 'bad' }),
       statCard({ label: 'Renewal', value: settings.subscription_renewal_date || 'not set' }),
-      statCard({ label: 'Businesses', value: usage ? `${usage.businesses_used} / ${usage.businesses_allowed}` : '—', tone: atLimit.businesses ? 'bad' : null, sub: atLimit.businesses ? 'at the limit' : '' }),
-      statCard({ label: 'Branches', value: usage ? `${usage.branches_used} / ${usage.branches_allowed}` : '—', tone: atLimit.branches ? 'bad' : null, sub: atLimit.branches ? 'at the limit — deactivate a closed branch to free its slot' : '' }),
-      statCard({ label: 'Staff', value: usage ? `${usage.staff_used} / ${usage.staff_allowed}` : '—', tone: atLimit.staff ? 'bad' : null, sub: atLimit.staff ? 'at the limit — deactivate a leaver to free their seat' : '' })),
+      statCard({ label: 'Businesses', value: usage ? `${usage.businesses_used ?? usage.businesses ?? 0} / ${usage.businesses_allowed}` : '—', tone: atLimit.businesses ? 'bad' : null, sub: atLimit.businesses ? 'at the limit' : '' }),
+      statCard({ label: 'Branches', value: usage ? `${usage.branches_used ?? usage.branches ?? 0} / ${usage.branches_allowed}` : '—', tone: atLimit.branches ? 'bad' : null, sub: atLimit.branches ? 'at the limit — deactivate a closed branch to free its slot' : '' }),
+      statCard({ label: 'Staff', value: usage ? `${usage.staff_used ?? usage.staff ?? 0} / ${usage.staff_allowed}` : '—', tone: atLimit.staff ? 'bad' : null, sub: atLimit.staff ? 'at the limit — deactivate a leaver to free their seat' : '' })),
     el('p', { class: 'hint', text: 'Only ACTIVE rows are counted. Deactivating a staff member frees their seat immediately and closing a branch frees its slot, so a shop that shuts one location can open a replacement without buying an upgrade. A half-implemented version of this counted one and not the other, which is exactly the contradiction a client hits at the worst moment.' }),
     isVendor()
       ? el('div', { class: 'row-end' }, el('button', { class: 'btn btn-primary', onclick: () => editPlan(settings, ctx) }, 'Change plan or limits'))

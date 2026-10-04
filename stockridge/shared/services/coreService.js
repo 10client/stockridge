@@ -315,6 +315,9 @@ async function getPlanUsage(db) {
   const [settings, usage] = await Promise.all([getSettings(db), countUsage(db)]);
   return {
     ...usage,
+    businesses_used: usage.businesses,
+    branches_used: usage.branches,
+    staff_used: usage.staff,
     businesses_allowed: settings.max_businesses,
     branches_allowed: settings.max_branches,
     staff_allowed: settings.max_staff,

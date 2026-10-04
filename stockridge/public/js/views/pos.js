@@ -51,9 +51,9 @@ export default async function posView(ctx) {
   const business = activeBusiness();
 
   if (!branch) {
-    host.appendChild(emptyState('Choose a branch first',
+    host.appendChild(emptyState('Choose or create a branch first',
       'A sale has to belong to a branch, because that is which drawer the cash goes into and which shelf the stock comes off.',
-      null, null));
+      'Go to Branches', () => ctx.navigate('/admin?tab=branches')));
     return {};
   }
 

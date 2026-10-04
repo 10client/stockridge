@@ -429,8 +429,11 @@ table.data tbody tr.clickable { cursor: pointer; }
 .modal-foot { padding: .8rem 1rem; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; }
 .modal-message { color: var(--ink-2); font-size: .9rem; }
 .modal-details { background: #f7f9f8; border: 1px solid var(--line); padding: .5rem; border-radius: var(--radius-sm); font-size: .78rem; overflow-x: auto; }
-.row-end { display: flex; justify-content: flex-end; gap: .45rem; margin-top: .9rem; }
-.row-between { display: flex; justify-content: space-between; gap: 1rem; padding: .2rem 0; }
+.row-end { display: flex; justify-content: flex-end; align-items: center; gap: .45rem; margin-top: .9rem; }
+.row-start { display: flex; justify-content: flex-start; align-items: center; gap: .5rem; }
+.row-center { display: flex; justify-content: center; align-items: center; gap: .5rem; }
+.row-between { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .2rem 0; }
+.badge-neutral { background: var(--line-2); color: var(--ink-2); border-color: var(--line); }
 
 /* ----------------------------------------------------------------- FORMS */
 .field { margin-bottom: .75rem; }

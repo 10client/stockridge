@@ -44,8 +44,8 @@ export default async function accountingView(ctx) {
     else await renderWht(body, ctx);
   } catch (e) {
     clear(body);
-    // A 400 with BUSINESS_SELECTION_REQUIRED is not an error, it is a question.
-    if (e.code === 'BUSINESS_SELECTION_REQUIRED') {
+    // A 400/403 with BUSINESS_SELECTION_REQUIRED or BUSINESS_REQUIRED is not an error, it is a question.
+    if (e.code === 'BUSINESS_SELECTION_REQUIRED' || e.code === 'BUSINESS_REQUIRED') {
       body.appendChild(chooseBusiness(ctx, e.message));
     } else {
       body.appendChild(emptyState('This report could not be produced', e.message || String(e), 'Try again', () => ctx.rerender()));
@@ -55,12 +55,19 @@ export default async function accountingView(ctx) {
 }
 
 function chooseBusiness(ctx, message) {
+  if (!state.businesses || !state.businesses.length) {
+    return el('section', { class: 'card' },
+      el('h2', { class: 'card-title', text: 'No business found' }),
+      el('p', { class: 'modal-message', text: 'Create a business profile first under Administration → Businesses to view accounting reports.' }),
+      el('div', { class: 'button-list', style: { marginTop: '1rem' } },
+        el('button', { class: 'btn btn-primary', onclick: () => ctx.navigate('/admin?tab=businesses') }, 'Add a business')));
+  }
   return el('section', { class: 'card' },
     el('h2', { class: 'card-title', text: 'Which business?' }),
     el('p', { class: 'modal-message', text: message }),
-    el('div', { class: 'button-list' }, state.businesses.map((b) => el('button', {
+    el('div', { class: 'button-list', style: { marginTop: '1rem' } }, state.businesses.map((b) => el('button', {
       class: 'btn btn-primary',
-      onclick: () => ctx.navigate(`/accounting?tab=vat&business_id=${encodeURIComponent(b.id)}`),
+      onclick: () => ctx.navigate(`/accounting?tab=${ctx.query.tab || 'pl'}&business_id=${encodeURIComponent(b.id)}`),
     }, b.trading_name || b.name))));
 }
 
