@@ -194,6 +194,20 @@ async function runProbe() {
         });
         record('POST /stock/receive (goods receipt & batch valuation)', receive.status === 200 && receive.data.id, `batch: ${receive.data.id}`);
 
+        // Ensure till 1 is open before accepting cash tender
+        const tillStatus = await req(`/till/current?branch_id=${branchId}&till_no=1`, { token });
+        if (tillStatus.status !== 200 || !tillStatus.data || !tillStatus.data.id) {
+          await req('/till/open', {
+            method: 'POST',
+            token,
+            body: {
+              branch_id: branchId,
+              till_no: 1,
+              opening_float: 20000,
+            },
+          });
+        }
+
         // Execute POS Cash Sale Checkout
         const sale = await req('/sales', {
           method: 'POST',
@@ -201,6 +215,7 @@ async function runProbe() {
           body: {
             business_id: businessId,
             branch_id: branchId,
+            till_no: 1,
             sale_type: 'RETAIL',
             lines: [{
               product_id: productId,

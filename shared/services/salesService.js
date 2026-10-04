@@ -664,13 +664,38 @@ async function createSale(ctx) {
   const saleDate = request.sale_date || request.date || todayWat();
   const marginKobo = netOfVatKobo - costKobo;
 
+  // Pre-read document number and external references before opening the transaction
+  // so Cloudflare D1 can execute the entire transaction body in one atomic batch.
+  const doc = await core.nextDocNumber(db, { businessId: business.id, branchId: branch.id, docType: 'SALE' });
+  const saleId = newId();
+  const saleNumber = doc.number;
+
+  let layawayHold = null;
+  let layawayHoldItems = [];
+  if (request.layaway_hold_id) {
+    layawayHold = await db.prepare('SELECT * FROM layaway_holds WHERE id = ? AND is_deleted = 0').bind(String(request.layaway_hold_id)).first();
+    if (!layawayHold) V.fail('That hold no longer exists.', 'HOLD_NOT_FOUND', 'layaway_hold_id');
+    if (String(layawayHold.branch_id) !== String(branch.id)) V.fail('That hold belongs to another branch.', 'HOLD_OUT_OF_SCOPE');
+    if (layawayHold.status !== 'ACTIVE') V.fail(`That hold is already ${layawayHold.status.toLowerCase()}.`, 'HOLD_NOT_ACTIVE');
+    layawayHoldItems = await db.prepare('SELECT * FROM layaway_hold_items WHERE hold_id = ? AND is_deleted = 0 AND reserved = 1').bind(String(layawayHold.id)).all();
+  }
+
+  let highValueHead = null;
+  if (registerEntries.length > 0) {
+    highValueHead = await db.prepare('SELECT last_row_hash, row_count FROM hash_chain_heads WHERE chain_key = ?')
+      .bind(HASHCHAIN.chainKey({ register: 'HIGH_VALUE_REGISTER', branchId: branch.id, dayIso: saleDate })).first();
+  }
+
+  let ageVerificationHead = null;
+  if (lines.some((l) => l.ageVerification)) {
+    ageVerificationHead = await db.prepare('SELECT last_row_hash, row_count FROM hash_chain_heads WHERE chain_key = ?')
+      .bind(HASHCHAIN.chainKey({ register: 'AGE_VERIFICATION_LOG', branchId: branch.id, dayIso: saleDate })).first();
+  }
+
   // =====================================================================
   // THE WRITE — one transaction, all of it
   // =====================================================================
   const result = await db.transaction(async (tx) => {
-    const doc = await core.nextDocNumber(tx, { businessId: business.id, branchId: branch.id, docType: 'SALE' });
-    const saleId = newId();
-    const saleNumber = doc.number;
 
     // ---- sale row ------------------------------------------------------
     await tx.prepare(`
@@ -903,18 +928,13 @@ async function createSale(ctx) {
     }
 
     // ---- release any layaway hold this sale settles ------------------------
-    if (request.layaway_hold_id) {
-      const hold = await tx.prepare('SELECT * FROM layaway_holds WHERE id = ? AND is_deleted = 0').bind(String(request.layaway_hold_id)).first();
-      if (!hold) V.fail('That hold no longer exists.', 'HOLD_NOT_FOUND', 'layaway_hold_id');
-      if (String(hold.branch_id) !== String(branch.id)) V.fail('That hold belongs to another branch.', 'HOLD_OUT_OF_SCOPE');
-      if (hold.status !== 'ACTIVE') V.fail(`That hold is already ${hold.status.toLowerCase()}.`, 'HOLD_NOT_ACTIVE');
+    if (layawayHold) {
       await tx.prepare(`UPDATE layaway_holds SET status='CONVERTED', converted_sale_id=?, released_at=datetime('now'),
                   released_by=?, release_reason='Converted to sale', updated_at=datetime('now') WHERE id=?`)
-        .bind(saleId, String(scope.userId), String(hold.id)).run();
+        .bind(saleId, String(scope.userId), String(layawayHold.id)).run();
       // The reserved quantity becomes a real decrement, so release the
       // reservation on the batches it was holding.
-      const holdItems = await tx.prepare('SELECT * FROM layaway_hold_items WHERE hold_id = ? AND is_deleted = 0 AND reserved = 1').bind(String(hold.id)).all();
-      for (const hi of holdItems) {
+      for (const hi of layawayHoldItems) {
         await tx.prepare(`UPDATE stock_batches SET quantity_reserved = MAX(0, quantity_reserved - ?), updated_at = datetime('now') WHERE id = ?`)
           .bind(Number(hi.quantity), String(hi.stock_batch_id)).run();
         await tx.prepare(`UPDATE layaway_hold_items SET reserved = 0, released_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`)
@@ -923,20 +943,19 @@ async function createSale(ctx) {
     }
 
     // ---- hash-chained register entries -------------------------------------
+    let currentHighValueHead = highValueHead;
     for (const re of registerEntries) {
       re.entry.sale_id = saleId;
       re.entry.sale_number = saleNumber;
-      const head = await tx.prepare('SELECT last_row_hash, row_count FROM hash_chain_heads WHERE chain_key = ?')
-        .bind(HASHCHAIN.chainKey({ register: 'HIGH_VALUE_REGISTER', branchId: branch.id, dayIso: saleDate })).first();
       const row = HASHCHAIN.appendRow({
         register: 'HIGH_VALUE_REGISTER',
         branchId: branch.id,
         dayIso: saleDate,
         fields: re.entry,
-        prevHash: head ? head.last_row_hash : HASHCHAIN.GENESIS_HASH,
+        prevHash: currentHighValueHead ? currentHighValueHead.last_row_hash : HASHCHAIN.GENESIS_HASH,
       });
       const rowId = newId();
-      const seq = head ? Number(head.row_count) + 1 : 1;
+      const seq = currentHighValueHead ? Number(currentHighValueHead.row_count) + 1 : 1;
       await tx.prepare(`
         INSERT INTO hash_chained_registers
           (id, register_type, business_id, branch_id, chain_key, chain_day, prev_hash, row_hash, version, seq,
@@ -959,14 +978,18 @@ async function createSale(ctx) {
           last_row_id = excluded.last_row_id, last_row_hash = excluded.last_row_hash,
           row_count = excluded.row_count, updated_at = datetime('now')
       `).bind(row.chain_key, 'HIGH_VALUE_REGISTER', String(business.id), String(branch.id), row.chain_day, rowId, row.row_hash, seq).run();
+      currentHighValueHead = { last_row_hash: row.row_hash, row_count: seq };
     }
 
     // ---- age verification log (also chained) --------------------------------
+    let currentAgeHead = ageVerificationHead;
     for (const line of lines) {
       if (!line.ageVerification) continue;
-      await appendRegisterEntry(tx, {
+      const res = await appendRegisterEntry(tx, {
         register: 'AGE_VERIFICATION_LOG', businessId: business.id, branchId: branch.id, dayIso: saleDate,
         userId: scope.userId, deviceId,
+        head: currentAgeHead,
+        readDb: db,
         fields: {
           sale_id: saleId, sale_number: saleNumber, product_id: String(line.product.id),
           product_name: line.product.name, quantity: line.baseQuantity,
@@ -979,6 +1002,9 @@ async function createSale(ctx) {
           recorded_by: scope.userId,
         },
       });
+      if (res && res.row_hash) {
+        currentAgeHead = { last_row_hash: res.row_hash, row_count: res.seq };
+      }
     }
 
     // ---- till session counters ----------------------------------------------
@@ -1012,6 +1038,7 @@ async function createSale(ctx) {
       tenders: tenderResult.tenders,
       customer,
       lines,
+      readDb: db,
     });
 
     return { saleId, saleNumber, tillSessionId: tillSession ? tillSession.id : null };
@@ -1057,15 +1084,15 @@ async function createSale(ctx) {
 }
 
 /** Append to a hash-chained register inside an open transaction. */
-async function appendRegisterEntry(tx, { register, businessId, branchId, dayIso, userId, deviceId, fields }) {
+async function appendRegisterEntry(tx, { register, businessId, branchId, dayIso, userId, deviceId, fields, head = null, readDb = null }) {
   const key = HASHCHAIN.chainKey({ register, branchId, dayIso });
-  const head = await tx.prepare('SELECT last_row_hash, row_count FROM hash_chain_heads WHERE chain_key = ?').bind(key).first();
+  const activeHead = head !== null ? head : await (readDb || tx).prepare('SELECT last_row_hash, row_count FROM hash_chain_heads WHERE chain_key = ?').bind(key).first();
   const row = HASHCHAIN.appendRow({
     register, branchId, dayIso, fields,
-    prevHash: head ? head.last_row_hash : HASHCHAIN.GENESIS_HASH,
+    prevHash: activeHead ? activeHead.last_row_hash : HASHCHAIN.GENESIS_HASH,
   });
   const rowId = newId();
-  const seq = head ? Number(head.row_count) + 1 : 1;
+  const seq = activeHead ? Number(activeHead.row_count) + 1 : 1;
   await tx.prepare(`
     INSERT INTO hash_chained_registers
       (id, register_type, business_id, branch_id, chain_key, chain_day, prev_hash, row_hash, version, seq,
@@ -1091,7 +1118,7 @@ async function appendRegisterEntry(tx, { register, businessId, branchId, dayIso,
       last_row_id = excluded.last_row_id, last_row_hash = excluded.last_row_hash,
       row_count = excluded.row_count, updated_at = datetime('now')
   `).bind(key, register, String(businessId), String(branchId), dayIso, rowId, row.row_hash, seq).run();
-  return row;
+  return { ...row, seq };
 }
 
 // =====================================================================

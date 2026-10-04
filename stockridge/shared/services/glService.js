@@ -219,7 +219,7 @@ function periodOf(dateIso) { return String(dateIso).slice(0, 7); }
  * an unbalanced entry cannot reach the database even if the CHECK constraint
 // were somehow absent.
  */
-async function postEntry(db, { business, branchId = null, entryDate, sourceType, sourceId, reference, description, lines, currency = 'NGN', fxRate = 1, userId = null, status = 'POSTED' }) {
+async function postEntry(db, { business, branchId = null, entryDate, sourceType, sourceId, reference, description, lines, currency = 'NGN', fxRate = 1, userId = null, status = 'POSTED', readDb = null }) {
   const clean = (lines || [])
     .map((l) => ({
       ...l,
@@ -249,13 +249,14 @@ async function postEntry(db, { business, branchId = null, entryDate, sourceType,
     throw err;
   }
 
-  const accounts = await accountMap(db, business.id);
+  const rdb = readDb || db;
+  const accounts = await accountMap(rdb, business.id);
   const entryId = newId();
   const date = String(entryDate || todayWat()).slice(0, 10);
 
   // Sequence the entry number per business per period, so a ledger prints in
   // order and a missing number is visible.
-  const seqRow = await db.prepare(`
+  const seqRow = await rdb.prepare(`
     SELECT COUNT(*) AS c FROM gl_journal_entries
      WHERE business_id = ? AND period = ? AND is_deleted = 0
   `).bind(String(business.id), periodOf(date)).first();
@@ -329,7 +330,7 @@ async function postEntry(db, { business, branchId = null, entryDate, sourceType,
  * make the discount look like a cost of doing business rather than a reduction
  * in what was charged.
  */
-async function postSaleJournal(db, { business, branch, saleId, saleNumber, saleDate, scope, totals, tenders, customer, lines }) {
+async function postSaleJournal(db, { business, branch, saleId, saleNumber, saleDate, scope, totals, tenders, customer, lines, readDb = null }) {
   const glLines = [];
 
   // ---- what came in, by tender ----------------------------------------
@@ -414,6 +415,7 @@ async function postSaleJournal(db, { business, branch, saleId, saleNumber, saleD
     business, branchId: branch.id, entryDate: saleDate,
     sourceType: 'SALE', sourceId: saleId, reference: saleNumber,
     description: `Sale ${saleNumber}`, lines: glLines, userId: scope.userId,
+    readDb,
   });
 }
 
