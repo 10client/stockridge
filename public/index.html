@@ -8,6 +8,7 @@
   <title>StockRidge — stock, sales & accounts</title>
   <link rel="icon" type="image/svg+xml" href="/icons/icon.svg">
   <link rel="manifest" href="/manifest.json">
+  <script src="/js/theme.js"></script>
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
@@ -21,6 +22,8 @@
   <!-- ================================================================= LOGIN SCREEN -->
   <div id="login" class="login-screen">
     <div class="login-card">
+      <button id="login-theme-toggle" class="theme-toggle" aria-label="Switch theme" title="Switch theme"></button>
+
       <div class="login-brand">
         <img id="login-logo" alt="Logo" hidden>
         <h1 id="login-product">StockRidge</h1>
@@ -34,7 +37,7 @@
         <label for="login-pin">PIN</label>
         <input id="login-pin" name="pin" type="password" inputmode="numeric" maxlength="8" autocomplete="current-password" required placeholder="••••">
 
-        <button id="login-submit" type="submit" class="btn btn-primary btn-block">Sign in</button>
+        <button id="login-submit" type="submit" class="btn btn-primary btn-block" style="margin-top: 1.2rem;">Sign in</button>
       </form>
 
       <p id="login-error" class="form-error" hidden></p>
@@ -63,15 +66,21 @@
   <!-- ================================================================= APP SHELL -->
   <div id="app" class="app" hidden>
     <header class="topbar">
-      <button id="nav-toggle" class="icon-btn" aria-label="Toggle navigation" aria-expanded="false">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
-      </button>
+      <div class="topbar-left" style="display: flex; align-items: center; gap: .6rem;">
+        <button id="nav-toggle" class="icon-btn" aria-label="Toggle navigation" aria-expanded="false">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
+        </button>
 
-      <div class="topbar-identity">
-        <img id="app-logo" alt="Business Logo" hidden>
-        <div>
-          <strong id="app-business">—</strong>
-          <span id="app-branch" class="muted">—</span>
+        <div class="topbar-identity">
+          <div class="brand-badge">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+            <span style="font-size: 1.05rem;">StockRidge</span>
+          </div>
+          <img id="app-logo" alt="Business Logo" hidden>
+          <div style="margin-left: .35rem;">
+            <strong id="app-business">—</strong>
+            <span id="app-branch" class="muted">—</span>
+          </div>
         </div>
       </div>
 
@@ -83,14 +92,16 @@
         <span id="net-badge" class="net-badge net-online">Online</span>
         <span id="clock" class="clock"></span>
 
+        <button id="theme-toggle" class="icon-btn" aria-label="Switch theme" title="Switch theme"></button>
+
         <div class="user-menu">
-          <button id="user-btn" class="icon-btn" aria-label="User menu" aria-expanded="false">
+          <button id="user-btn" class="user-avatar-btn" aria-label="User menu" aria-expanded="false">
             <span id="user-initials">AD</span>
           </button>
           <div id="user-pop" class="popover" hidden>
             <p id="pop-name" class="popover-name">Platform Administrator</p>
             <p id="pop-role" class="popover-role">ADMIN</p>
-            <div style="display: flex; justify-content: space-between; gap: .5rem; margin-top: .6rem;">
+            <div style="display: flex; justify-content: space-between; gap: .5rem; margin-top: .6rem; border-top: 1px solid var(--line); padding-top: .6rem;">
               <button id="pop-pin" type="button" class="btn btn-sm btn-ghost">Change PIN</button>
               <button id="pop-signout" type="button" class="btn btn-sm btn-danger-ghost">Sign out</button>
             </div>
@@ -100,6 +111,7 @@
     </header>
 
     <div class="body">
+      <div id="nav-scrim" class="nav-scrim"></div>
       <nav id="sidebar" class="sidebar" aria-label="Main Navigation"></nav>
       <main id="view" class="view" tabindex="-1"></main>
     </div>

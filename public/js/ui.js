@@ -104,8 +104,6 @@ export function reportError(err, { context = 'That did not work' } = {}) {
     return toast(mins ? `${e.message} (about ${mins} minute${mins === 1 ? '' : 's'})` : e.message, { kind: 'warn', duration: 9000 });
   }
   if (e.status >= 500 || !e.message) {
-    // Quote the request id: it is in the server log, so support can find the
-    // actual cause. Without it "it errored" is unactionable.
     return toast(`${context}. If this keeps happening, quote reference ${e.requestId || 'n/a'} to support.`, { kind: 'error', duration: 9000 });
   }
   return toast(e.message, { kind: 'error', duration: 7000 });
@@ -227,7 +225,7 @@ export function toneForStatus(status) {
   const s = String(status || '').toUpperCase();
   if (['COMPLETED', 'PAID', 'ACTIVE', 'VALID', 'BALANCED', 'ON_SITE', 'DELIVERED', 'IN_STOCK', 'SOLD', 'OK', 'SUCCESS', 'HEALTHY', 'IN_WARRANTY'].includes(s)) return 'good';
   if (['VOIDED', 'EXPIRED', 'DEFAULTED', 'STOLEN', 'LOST', 'FAILED', 'REJECTED', 'OFF_SITE', 'SHORT', 'OUT_OF_STOCK', 'CRITICAL', 'BLOCKED', 'SUSPENDED', 'OUT_OF_WARRANTY', 'BROKEN'].includes(s)) return 'bad';
-  if (['PENDING', 'OPEN', 'SCHEDULED', 'PART_PAID', 'IN_TRANSIT', 'DISPATCHED', 'WITHIN_7', 'WITHIN_30', 'LOW', 'WATCH', 'EXPIRING_SOON', 'MISSED', 'FLAGGED', 'NO_LOCATION', 'STALE'].includes(s)) return 'warn';
+  if (['PENDING', 'OPEN', 'SCHEDULEAL', 'SCHEDULED', 'PART_PAID', 'IN_TRANSIT', 'DISPATCHED', 'WITHIN_7', 'WITHIN_30', 'LOW', 'WATCH', 'EXPIRING_SOON', 'MISSED', 'FLAGGED', 'NO_LOCATION', 'STALE'].includes(s)) return 'warn';
   return 'neutral';
 }
 
@@ -290,41 +288,4 @@ export function emptyState(title, message, actionLabel, onAction) {
     el('h3', { text: title }),
     el('p', { text: message }),
     actionLabel && onAction ? el('button', { class: 'btn btn-primary', onclick: onAction }, actionLabel) : null);
-}
-{
-  "name": "StockRidge — Stock, Sales & Accounts",
-  "short_name": "StockRidge",
-  "description": "Multi-branch, multi-business stock, point-of-sale and accounting for Nigerian retail and wholesale. Works offline.",
-  "id": "/",
-  "start_url": "/",
-  "scope": "/",
-  "display": "standalone",
-  "display_override": ["standalone", "minimal-ui"],
-  "orientation": "any",
-  "background_color": "#0f1720",
-  "theme_color": "#0b6b4f",
-  "lang": "en-NG",
-  "dir": "ltr",
-  "categories": ["business", "finance", "productivity"],
-  "icons": [
-    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ],
-  "shortcuts": [
-    {
-      "name": "New sale",
-      "short_name": "POS",
-      "description": "Open the till and start a sale",
-      "url": "/pos",
-      "icons": [{ "src": "/icons/icon.svg", "sizes": "any" }]
-    },
-    {
-      "name": "Stock",
-      "short_name": "Stock",
-      "description": "Check what is on the shelf",
-      "url": "/stock"
-    }
-  ]
 }
