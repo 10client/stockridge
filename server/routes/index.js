@@ -1093,8 +1093,9 @@ function buildRoutes({ config }) {
           movement_type, direction, quantity, value_kobo, unit_cost, source_type, source_id, reference, moved_by, notes, moved_at)
         VALUES (?,?,?,?,?, 'RECEIPT', 1, ?,?,?, 'RECEIPT', ?, ?, ?, ?, datetime('now'))`)
         .bind(IDS.newId(), business.id, branch.id, product.id, batchId,
-          resolved.totalPieces, cost.totalCostKobo, cost.costPerPiece,
+          resolved.totalPieces, M.toKobo(cost.totalCost || totalCost), cost.costPerPiece,
           batchId, b.grn_number || null, String(s.userId), b.notes || null).run();
+
 
       // Serials captured at receipt: one row per unit, so the serial exists
       // BEFORE the unit can be sold. Requiring a serial at the till for a unit

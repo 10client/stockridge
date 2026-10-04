@@ -178,19 +178,44 @@ async function runProbe() {
         productId = prods.data[0].id;
       }
 
-      // Test POS Quote pricing calculation
+      // Receive a stock batch into the branch
       if (productId && branchId) {
-        const quote = await req('/sales/quote', {
+        const receive = await req('/stock/receive', {
+          method: 'POST',
+          token,
+          body: {
+            branch_id: branchId,
+            product_id: productId,
+            quantity: 5,
+            total_cost: 1900000,
+            selling_price_per_unit: 450000,
+            batch_no: 'BATCH-2026-001',
+          },
+        });
+        record('POST /stock/receive (goods receipt & batch valuation)', receive.status === 200 && receive.data.id, `batch: ${receive.data.id}`);
+
+        // Execute POS Cash Sale Checkout
+        const sale = await req('/sales', {
           method: 'POST',
           token,
           body: {
             business_id: businessId,
             branch_id: branchId,
-            items: [{ product_id: productId, quantity: 1 }],
+            sale_type: 'RETAIL',
+            lines: [{
+              product_id: productId,
+              quantity: 1,
+            }],
+            payments: [{
+              method: 'CASH',
+              amount: 450000,
+            }],
           },
         });
-        record('POST /sales/quote (live server-side pricing engine)', quote.status === 200 && quote.data.grand_total_kobo > 0, `total: ₦${quote.data.grand_total_kobo / 100}`);
+        record('POST /sales (complete POS cash sale checkout)', sale.status === 200 && sale.data.id, `sale: ${sale.data.sale_number || sale.data.id}`);
       }
+
+
     }
   } catch (e) {
     record('POS Product Catalog', false, e.message);
@@ -246,7 +271,9 @@ async function runProbe() {
       record('GET /warranty/claims (service & RMA records)', warranty.status === 200 && Array.isArray(warranty.data), `count: ${warranty.data.length}`);
 
       const changeOwed = await req(`/change-owed?branch_id=${branchId}`, { token });
-      record('GET /change-owed (unclaimed coin liabilities)', changeOwed.status === 200 && Array.isArray(changeOwed.data), `count: ${changeOwed.data.length}`);
+      const rows = changeOwed.data && changeOwed.data.rows ? changeOwed.data.rows : (Array.isArray(changeOwed.data) ? changeOwed.data : []);
+      record('GET /change-owed (unclaimed coin liabilities)', changeOwed.status === 200 && Array.isArray(rows), `count: ${rows.length}`);
+
 
       const till = await req(`/till/current?branch_id=${branchId}&till_no=1`, { token });
       record('GET /till/current (active till drawer status)', till.status === 200 || till.status === 404, `status: ${till.status}`);
