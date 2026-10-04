@@ -504,6 +504,176 @@ function buildRoutes({ config }) {
   });
 
   // -------------------------------------------------------------------
+  // USERS / STAFF
+  // -------------------------------------------------------------------
+  router.get('/users', async (req) => {
+    const s = requireScope(req);
+    scopeLib.assertRole(s, 'MANAGER', { action: 'list users' });
+    const bf = scopeLib.businessFilter(s, 'u.business_id');
+    const rows = await req.db.prepare(`
+      SELECT u.id, u.branch_id, u.business_id, u.full_name, u.username, u.role, u.job_title,
+             u.phone, u.email, u.is_driver, u.is_active, u.must_change_pin,
+             u.last_login_at, u.created_at, u.updated_at,
+             b.name AS branch_name, biz.name AS business_name
+        FROM users u
+        LEFT JOIN branches b ON b.id = u.branch_id
+        LEFT JOIN businesses biz ON biz.id = u.business_id
+       WHERE u.is_deleted = 0 ${bf.sql}
+       ORDER BY CASE u.role WHEN 'ADMIN' THEN 1 WHEN 'OWNER' THEN 2 WHEN 'MANAGER' THEN 3 ELSE 4 END, u.full_name ASC
+    `).bind(...bf.params).all();
+
+    const usersWithLock = await Promise.all((rows || []).map(async (u) => {
+      const lock = await auth.getLockState(req.db, u.username).catch(() => ({ failed_attempts: 0, is_locked: false }));
+      return { ...u, failed_attempts: lock.failed_attempts || 0, is_locked: !!lock.is_locked };
+    }));
+    return usersWithLock;
+  });
+
+  router.post('/users', async (req) => {
+    const s = requireScope(req);
+    await writeGuard(req);
+    scopeLib.assertRole(s, 'MANAGER', { action: 'create a user account' });
+    const body = req.body || {};
+    const fullName = V.str(body.full_name, { field: 'full_name', min: 2, max: 120 });
+    const username = V.username(body.username);
+    const pin = V.pin(body.pin || '1234');
+    const role = V.oneOf(body.role || 'STAFF', ['ADMIN', 'OWNER', 'MANAGER', 'STAFF'], { field: 'role' });
+
+    if (['ADMIN', 'OWNER'].includes(role) && !['ADMIN', 'OWNER'].includes(s.role)) {
+      throw httpError(403, 'Only an Owner or Platform Administrator can create this role.', 'FORBIDDEN');
+    }
+
+    const bizId = s.role === 'ADMIN' ? (body.business_id || s.businessId) : s.businessId;
+    let branchId = body.branch_id || null;
+    if (role === 'STAFF' && !branchId) {
+      if (s.branchId) branchId = s.branchId;
+      else if (bizId) {
+        const firstBranch = await req.db.prepare('SELECT id FROM branches WHERE business_id = ? AND is_active = 1 LIMIT 1').bind(bizId).first();
+        if (firstBranch) branchId = firstBranch.id;
+      }
+    }
+
+    const existing = await req.db.prepare('SELECT id FROM users WHERE username = ? AND is_deleted = 0').bind(username).first();
+    if (existing) {
+      throw httpError(409, `The username "${username}" is already in use.`, 'USERNAME_TAKEN');
+    }
+
+    const id = newId();
+    const pinHash = await auth.hashPin(pin);
+    await req.db.prepare(`
+      INSERT INTO users (
+        id, branch_id, business_id, full_name, username, pin_hash,
+        role, job_title, phone, email, is_driver, is_active, must_change_pin, is_deleted, created_at, updated_at
+      ) VALUES (
+        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, 1, 1, 0, datetime('now'), datetime('now')
+      )
+    `).bind(
+      id, branchId, bizId, fullName, username, pinHash,
+      role, body.job_title || null, body.phone || null, body.email || null,
+      body.is_driver ? 1 : 0
+    ).run();
+
+    await core.audit(req.db, {
+      businessId: bizId, branchId, userId: s.userId, userRole: s.role,
+      action: 'USER_CREATE', entityType: 'user', entityId: id,
+      after: { username, role, full_name: fullName, branch_id: branchId },
+      severity: 'NOTICE', ipAddress: req.ip,
+    });
+
+    return req.db.prepare('SELECT id, branch_id, business_id, full_name, username, role, job_title, phone, email, is_driver, is_active, must_change_pin, created_at FROM users WHERE id = ?').bind(id).first();
+  });
+
+  router.patch('/users/:id', async (req) => {
+    const s = requireScope(req);
+    await writeGuard(req);
+    scopeLib.assertRole(s, 'MANAGER', { action: 'update user details' });
+    const target = await req.db.prepare('SELECT * FROM users WHERE id = ? AND is_deleted = 0').bind(req.params.id).first();
+    if (!target) throw httpError(404, 'User not found.', 'USER_NOT_FOUND');
+
+    if (['ADMIN', 'OWNER'].includes(target.role) && !['ADMIN', 'OWNER'].includes(s.role)) {
+      throw httpError(403, 'You do not have permission to modify this account.', 'FORBIDDEN');
+    }
+
+    const b = req.body || {};
+    const fullName = b.full_name !== undefined ? V.str(b.full_name, { field: 'full_name', min: 2, max: 120 }) : target.full_name;
+    const phone = b.phone !== undefined ? (b.phone ? String(b.phone).slice(0, 30) : null) : target.phone;
+    const email = b.email !== undefined ? (b.email ? String(b.email).slice(0, 120) : null) : target.email;
+    const jobTitle = b.job_title !== undefined ? (b.job_title ? String(b.job_title).slice(0, 80) : null) : target.job_title;
+    const isDriver = b.is_driver !== undefined ? (b.is_driver ? 1 : 0) : target.is_driver;
+    const isActive = b.is_active !== undefined ? (b.is_active ? 1 : 0) : target.is_active;
+    const branchId = b.branch_id !== undefined ? (b.branch_id || null) : target.branch_id;
+    const role = b.role !== undefined ? V.oneOf(b.role, ['ADMIN', 'OWNER', 'MANAGER', 'STAFF'], { field: 'role' }) : target.role;
+
+    let pinHash = target.pin_hash;
+    let mustChangePin = target.must_change_pin;
+    if (b.pin) {
+      const pin = V.pin(b.pin);
+      pinHash = await auth.hashPin(pin);
+      mustChangePin = 1;
+    }
+
+    await req.db.prepare(`
+      UPDATE users
+         SET full_name = ?, phone = ?, email = ?, job_title = ?, is_driver = ?,
+             is_active = ?, branch_id = ?, role = ?, pin_hash = ?, must_change_pin = ?, updated_at = datetime('now')
+       WHERE id = ?
+    `).bind(
+      fullName, phone, email, jobTitle, isDriver, isActive, branchId, role, pinHash, mustChangePin, target.id
+    ).run();
+
+    await core.audit(req.db, {
+      businessId: target.business_id, branchId, userId: s.userId, userRole: s.role,
+      action: 'USER_UPDATE', entityType: 'user', entityId: target.id,
+      after: { full_name: fullName, role, branch_id: branchId, is_active: isActive },
+      severity: 'NOTICE', ipAddress: req.ip,
+    });
+
+    return req.db.prepare('SELECT id, branch_id, business_id, full_name, username, role, job_title, phone, email, is_driver, is_active, must_change_pin, updated_at FROM users WHERE id = ?').bind(target.id).first();
+  });
+
+  router.post('/users/:id/unlock', async (req) => {
+    const s = requireScope(req);
+    scopeLib.assertRole(s, 'MANAGER', { action: 'unlock a user account' });
+    const target = await req.db.prepare('SELECT * FROM users WHERE id = ? AND is_deleted = 0').bind(req.params.id).first();
+    if (!target) throw httpError(404, 'User not found.', 'USER_NOT_FOUND');
+
+    await auth.clearLoginLock(req.db, target.username);
+
+    await core.audit(req.db, {
+      businessId: target.business_id, userId: s.userId, userRole: s.role,
+      action: 'USER_UNLOCK', entityType: 'user', entityId: target.id,
+      after: { username: target.username },
+      severity: 'NOTICE', ipAddress: req.ip,
+    });
+
+    return { ok: true, message: `Account for ${target.full_name} (${target.username}) has been unlocked.` };
+  });
+
+  router.post('/users/:id/reset-pin', async (req) => {
+    const s = requireScope(req);
+    await writeGuard(req);
+    scopeLib.assertRole(s, 'MANAGER', { action: 'reset a user PIN' });
+    const target = await req.db.prepare('SELECT * FROM users WHERE id = ? AND is_deleted = 0').bind(req.params.id).first();
+    if (!target) throw httpError(404, 'User not found.', 'USER_NOT_FOUND');
+
+    const pin = V.pin(req.body.new_pin || '1234');
+    const pinHash = await auth.hashPin(pin);
+    await req.db.prepare(`
+      UPDATE users SET pin_hash = ?, must_change_pin = 1, updated_at = datetime('now') WHERE id = ?
+    `).bind(pinHash, target.id).run();
+
+    await core.audit(req.db, {
+      businessId: target.business_id, userId: s.userId, userRole: s.role,
+      action: 'USER_PIN_RESET', entityType: 'user', entityId: target.id,
+      after: { username: target.username, must_change_pin: 1 },
+      severity: 'NOTICE', ipAddress: req.ip,
+    });
+
+    return { ok: true, message: `PIN for ${target.full_name} has been reset.` };
+  });
+
+  // -------------------------------------------------------------------
   // CATALOGUE: products, categories, brands
   // -------------------------------------------------------------------
   router.get('/products', async (req) => {

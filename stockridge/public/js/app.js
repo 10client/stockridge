@@ -21,7 +21,7 @@ import salesView from './views/sales.js';
 import customersView from './views/customers.js';
 import accountingView from './views/accounting.js';
 import operationsView from './views/operations.js';
-import adminView from './views/admin.js';
+import adminView, { registersView, settingsView } from './views/admin.js';
 
 // ---------------------------------------------------------------------
 // NAVIGATION
@@ -47,8 +47,8 @@ const NAV_SECTIONS = [
     title: 'Finance & Governance',
     items: [
       { path: '/accounting', label: 'Accounting & Tax', icon: 'ledger', view: accountingView, show: () => can.seeAccounting() },
-      { path: '/registers', label: 'Registers & Audit', icon: 'shield', view: adminView.registers, show: () => can.seeRegisters() },
-      { path: '/admin', label: 'Administration', icon: 'cog', view: adminView.settings, show: () => can.seeSettings() || isVendor() },
+      { path: '/registers', label: 'Registers & Audit', icon: 'shield', view: registersView, show: () => can.seeRegisters() || isVendor() },
+      { path: '/admin', label: 'Administration', icon: 'cog', view: settingsView, show: () => can.seeSettings() || isVendor() },
     ],
   },
 ];
@@ -230,7 +230,17 @@ function showApp() {
   buildNav();
   paintIdentity();
   paintQueue();
-  navigate(location.pathname + location.search || '/dashboard', { replace: true });
+
+  let defaultPath = '/dashboard';
+  if (state.user && state.user.role === 'STAFF') {
+    defaultPath = '/pos';
+  } else if (state.user && state.user.role === 'ADMIN' && (!state.businesses || !state.businesses.length)) {
+    defaultPath = '/admin?tab=businesses';
+  }
+
+  const p = location.pathname.replace(/\/$/, '') || '/';
+  const target = (p === '/' || p === '/login' || p === '') ? defaultPath : (location.pathname + location.search);
+  navigate(target, { replace: true });
 }
 
 async function doLogin(username, pin) {
@@ -275,7 +285,7 @@ async function doLogout() {
   try { await api.logout(); } catch (e) {}
   clearSession();
   window.__srToken = null;
-  location.hash = '';
+  history.replaceState({}, '', '/');
   showLogin();
   toast('Signed out successfully.', { kind: 'info', duration: 2000 });
 }

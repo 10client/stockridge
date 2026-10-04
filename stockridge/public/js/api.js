@@ -169,6 +169,12 @@ export const endpoints = {
   createBranch: (b) => api('/branches', { method: 'POST', body: b }),
   updateBranch: (id, b) => api(`/branches/${encodeURIComponent(id)}`, { method: 'PATCH', body: b }),
 
+  users: (q) => api('/users', { query: q }),
+  createUser: (u) => api('/users', { method: 'POST', body: u }),
+  updateUser: (id, u) => api(`/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: u }),
+  unlockUser: (id) => api(`/users/${encodeURIComponent(id)}/unlock`, { method: 'POST', body: {} }),
+  resetUserPin: (id, newPin) => api(`/users/${encodeURIComponent(id)}/reset-pin`, { method: 'POST', body: { new_pin: newPin } }),
+
   products: (q) => api('/products', { query: q }),
   product: (id) => api(`/products/${encodeURIComponent(id)}`),
   createProduct: (p) => api('/products', { method: 'POST', body: p }),

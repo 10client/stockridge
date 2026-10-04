@@ -20,7 +20,11 @@ function parse(url) {
 }
 
 async function resolve(path) {
-  const loader = routes.get(path);
+  let normalized = path.replace(/\/$/, '') || '/';
+  if (normalized === '/' || normalized === '/login') {
+    normalized = '/dashboard';
+  }
+  const loader = routes.get(normalized);
   if (!loader) return null;
   // A view may be a function or a promise for a module (dynamic import).
   const v = typeof loader === 'function' ? await loader() : await loader;

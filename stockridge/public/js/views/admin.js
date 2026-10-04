@@ -46,8 +46,8 @@ async function settingsView(ctx) {
     el('div', {}, el('h1', { text: 'Administration' }),
       el('p', { class: 'muted', text: isVendor() ? 'Platform administrator — you are the vendor seat, not client staff.' : 'Owner settings for this deployment.' }))));
   host.appendChild(el('nav', { class: 'tabs' },
-    (isVendor() ? [['plan', 'Plan & limits'], ['businesses', 'Businesses'], ['branches', 'Branches'], ['permissions', 'Permissions'], ['commerce', 'Commerce rules'], ['compliance', 'Compliance'], ['sync', 'Sync']]
-      : [['plan', 'My plan'], ['businesses', 'Businesses'], ['branches', 'Branches'], ['permissions', 'Permissions'], ['commerce', 'Commerce rules'], ['compliance', 'Compliance'], ['sync', 'Sync']])
+    (isVendor() ? [['plan', 'Plan & limits'], ['businesses', 'Businesses'], ['branches', 'Branches'], ['users', 'Staff & Users'], ['permissions', 'Permissions'], ['commerce', 'Commerce rules'], ['compliance', 'Compliance'], ['sync', 'Sync']]
+      : [['plan', 'My plan'], ['businesses', 'Businesses'], ['branches', 'Branches'], ['users', 'Staff & Users'], ['permissions', 'Permissions'], ['commerce', 'Commerce rules'], ['compliance', 'Compliance'], ['sync', 'Sync']])
       .map(([k, label]) => el('a', {
         href: `/admin?tab=${k}`, class: `tab${tab === k ? ' active' : ''}`,
         onclick: (ev) => { ev.preventDefault(); ctx.navigate(`/admin?tab=${k}`); },
@@ -59,6 +59,7 @@ async function settingsView(ctx) {
   if (tab === 'plan') renderPlan(body, settings, usage, ctx);
   else if (tab === 'businesses') await renderBusinesses(body, ctx);
   else if (tab === 'branches') await renderBranches(body, ctx);
+  else if (tab === 'users') await renderUsers(body, ctx);
   else if (tab === 'permissions') renderPermissions(body, settings, ctx);
   else if (tab === 'commerce') renderCommerce(body, settings, ctx);
   else if (tab === 'compliance') await renderCompliance(body, ctx);
@@ -266,6 +267,122 @@ function newBranch(ctx) {
 }
 function editBranch(row, ctx) {
   branchForm(row, async (v) => { await api.updateBranch(row.id, v); toast('Branch updated.', { kind: 'good' }); ctx.rerender(); }, `Edit ${row.name}`);
+}
+
+async function renderUsers(body, ctx) {
+  clear(body);
+  body.appendChild(spinner());
+  let rows = [];
+  try {
+    rows = await api.users();
+  } catch (e) {
+    clear(body);
+    body.appendChild(emptyState('Staff list could not be loaded', e.message || String(e), 'Try again', () => ctx.rerender()));
+    return;
+  }
+  clear(body);
+
+  body.appendChild(el('section', { class: 'card' },
+    el('h2', { class: 'card-title' }, 'Staff & User Accounts',
+      atLeast('MANAGER') ? el('button', { class: 'btn btn-sm btn-primary', onclick: () => newUser(ctx) }, 'Add user / staff') : null),
+    el('p', { class: 'hint', text: 'Users are assigned roles (Admin, Owner, Manager, Staff) and pinned to branches. Staff accounts must be assigned to a specific branch for till and inventory reconciliation. Deactivating a departed staff member immediately frees their seat under your plan limit.' }),
+    table([
+      { key: 'full_name', label: 'User', render: (r) => el('div', {},
+          el('strong', { text: r.full_name }),
+          el('div', { class: 'muted small', text: `@${r.username}${r.job_title ? ` · ${r.job_title}` : ''}` })) },
+      { key: 'role', label: 'Role', render: (r) => badge(r.role, r.role === 'ADMIN' ? 'bad' : r.role === 'OWNER' ? 'warn' : r.role === 'MANAGER' ? 'info' : 'neutral') },
+      { key: 'branch_name', label: 'Branch', render: (r) => r.branch_name || el('span', { class: 'muted', text: r.role === 'ADMIN' ? 'All (Vendor)' : 'All branches' }) },
+      { key: 'contact', label: 'Contact', render: (r) => [r.phone, r.email].filter(Boolean).join(' · ') || '—' },
+      { key: 'is_driver', label: 'Driver', render: (r) => Number(r.is_driver) ? badge('yes', 'good') : '—' },
+      { key: 'lock', label: 'Security', render: (r) => r.is_locked
+          ? badge('locked', 'bad')
+          : Number(r.failed_attempts) > 0
+            ? badge(`${r.failed_attempts} failed`, 'warn')
+            : badge('normal', 'good') },
+      { key: 'is_active', label: 'Status', render: (r) => Number(r.is_active) ? badge('active', 'good') : badge('inactive', 'bad') },
+      { key: 'actions', label: '', render: (r) => el('div', { class: 'row-actions', style: 'display: flex; gap: .35rem;' },
+          el('button', { class: 'btn btn-sm btn-ghost', onclick: (ev) => { ev.stopPropagation(); editUser(r, ctx); } }, 'Edit'),
+          r.is_locked ? el('button', { class: 'btn btn-sm btn-warn', onclick: (ev) => { ev.stopPropagation(); unlockUserAction(r, ctx); } }, 'Unlock') : null,
+          el('button', { class: 'btn btn-sm btn-ghost', onclick: (ev) => { ev.stopPropagation(); resetPinDialog(r, ctx); } }, 'Reset PIN'),
+        ) },
+    ], rows, { dense: true, rowKey: 'id', empty: 'No users found.' })));
+}
+
+function userForm(values, onSave, title, isCreate = false) {
+  const nameF = field({ label: 'Full name', name: 'full_name', required: true, value: values.full_name || '' });
+  const usernameF = isCreate ? field({ label: 'Username (unique login handle)', name: 'username', required: true, value: values.username || '', hint: 'Alphanumeric, lowercase, e.g. "amina" or "john_cashier"' }) : null;
+  const pinF = isCreate ? field({ label: 'Default PIN (4–8 numeric digits)', name: 'pin', type: 'password', required: true, value: '1234', hint: 'The user will be prompted to change their temporary PIN on first sign-in.' }) : null;
+
+  const roleChoices = isVendor()
+    ? [{ value: 'STAFF', label: 'STAFF — Sales / Store Cashier (pinned to branch)' }, { value: 'MANAGER', label: 'MANAGER — Day-to-day operations' }, { value: 'OWNER', label: 'OWNER — Proprietor / Commercial governor' }, { value: 'ADMIN', label: 'ADMIN — Platform Vendor Administrator' }]
+    : atLeast('OWNER')
+      ? [{ value: 'STAFF', label: 'STAFF — Sales / Store Cashier (pinned to branch)' }, { value: 'MANAGER', label: 'MANAGER — Day-to-day operations' }, { value: 'OWNER', label: 'OWNER — Proprietor / Commercial governor' }]
+      : [{ value: 'STAFF', label: 'STAFF — Sales / Store Cashier (pinned to branch)' }];
+
+  const roleF = field({ label: 'Role', name: 'role', type: 'select', choices: roleChoices, value: values.role || 'STAFF' });
+  const bizF = (isVendor() && state.businesses.length > 0)
+    ? field({ label: 'Business', name: 'business_id', type: 'select', choices: state.businesses.map((b) => ({ value: b.id, label: b.name })), value: values.business_id || state.activeBusinessId })
+    : null;
+
+  const branchChoices = [{ value: '', label: '— Organisation-wide (Managers/Owners) —' }, ...state.branches.map((b) => ({ value: b.id, label: `${b.name} (${b.code || 'branch'})` }))];
+  const branchF = field({ label: 'Assigned Branch', name: 'branch_id', type: 'select', choices: branchChoices, value: values.branch_id || '' });
+  const jobTitleF = field({ label: 'Job title (optional)', name: 'job_title', value: values.job_title || '', hint: 'e.g. Senior Cashier, Head of Dispatch, Stock Controller' });
+  const phoneF = field({ label: 'Phone number', name: 'phone', type: 'tel', value: values.phone || '' });
+  const emailF = field({ label: 'Email address', name: 'email', type: 'email', value: values.email || '' });
+  const driverF = field({ label: 'Driver eligible (can be assigned delivery jobs)', name: 'is_driver', type: 'checkbox', value: !!Number(values.is_driver) });
+  const activeF = !isCreate ? field({ label: 'Account active (seat enabled)', name: 'is_active', type: 'checkbox', value: values.is_active == null ? true : !!Number(values.is_active) }) : null;
+
+  const form = el('form', { onsubmit: async (ev) => {
+    ev.preventDefault();
+    const v = readForm(form);
+    if (form.elements['is_driver']) v.is_driver = form.elements['is_driver'].checked ? 1 : 0;
+    if (form.elements['is_active']) v.is_active = form.elements['is_active'].checked ? 1 : 0;
+    try { await onSave(v); m.close(); } catch (e) { reportError(e, { context: 'User account could not be saved' }); }
+  } }, nameF, usernameF, pinF, roleF, bizF, branchF, jobTitleF, phoneF, emailF, driverF, activeF,
+  el('div', { class: 'row-end' }, el('button', { type: 'submit', class: 'btn btn-primary' }, 'Save account')));
+  const m = modal({ title, size: 'md', body: form });
+}
+
+function newUser(ctx) {
+  userForm({}, async (v) => {
+    const res = await api.createUser(v);
+    toast(`Account for ${res.full_name} (@${res.username}) created successfully.`, { kind: 'good', duration: 6000 });
+    ctx.rerender();
+  }, 'Add a user / staff member', true);
+}
+
+function editUser(row, ctx) {
+  userForm(row, async (v) => {
+    await api.updateUser(row.id, v);
+    toast(`Account for ${row.full_name} updated.`, { kind: 'good' });
+    ctx.rerender();
+  }, `Edit ${row.full_name}`, false);
+}
+
+function resetPinDialog(row, ctx) {
+  const pinF = field({ label: 'New PIN (4–8 numeric digits)', name: 'new_pin', type: 'password', required: true, value: '1234', hint: 'The user will be required to change this PIN immediately upon signing in.' });
+  const form = el('form', { onsubmit: async (ev) => {
+    ev.preventDefault();
+    const v = readForm(form);
+    try {
+      const res = await api.resetUserPin(row.id, v.new_pin);
+      m.close();
+      toast(res.message || `PIN for ${row.full_name} was reset.`, { kind: 'good', duration: 6000 });
+      ctx.rerender();
+    } catch (e) { reportError(e, { context: 'PIN reset failed' }); }
+  } }, pinF,
+  el('div', { class: 'row-end' },
+    el('button', { type: 'button', class: 'btn btn-ghost', onclick: () => m.close() }, 'Cancel'),
+    el('button', { type: 'submit', class: 'btn btn-primary' }, 'Set temporary PIN')));
+  const m = modal({ title: `Reset PIN — ${row.full_name}`, size: 'sm', body: form });
+}
+
+async function unlockUserAction(row, ctx) {
+  try {
+    const res = await api.unlockUser(row.id);
+    toast(res.message || `Account unlocked for ${row.full_name}.`, { kind: 'good' });
+    ctx.rerender();
+  } catch (e) { reportError(e, { context: 'Could not unlock account' }); }
 }
 
 function renderPermissions(body, settings, ctx) {
@@ -513,6 +630,9 @@ async function verify(type, ctx) {
     });
   } catch (e) { reportError(e, { context: 'The verification could not run' }); }
 }
+
+settingsView.settings = settingsView;
+settingsView.registers = registersView;
 
 export default settingsView;
 export { registersView, settingsView };

@@ -45,7 +45,7 @@ import { buildRoutes } from '../../server/routes/index.js';
 import { makeWorkerAuthenticator, workerConfig } from './auth.js';
 import { serveAssetFromBinding, SPA_SHELL } from './assets.js';
 
-const API_ROUTE_PATTERN = /^\/(api|auth|branding|reference|businesses|branches|products|catalog|sales|stock|customers|till|safe|change-owed|holds|instalments|warranty|delivery|gl|vat|wht|registers|dashboard|settings|admin|sync)\b/;
+const API_ROUTE_PATTERN = /^\/(api|auth|branding|reference|businesses|branches|users|products|catalog|sales|stock|customers|till|safe|change-owed|holds|instalments|warranty|delivery|gl|vat|wht|registers|dashboard|settings|admin|sync)\b/;
 
 export default {
   async fetch(request, env, ctx) {
