@@ -141,6 +141,18 @@ To deliberately replace it:
 node tools/deploy-cloudflare.js --reset-pin
 ```
 
+## Documentation
+
+| | |
+|---|---|
+| [docs/deployment.md](docs/deployment.md) | Fresh account → running deployment, and shipping a change afterwards |
+| [docs/d1-operations.md](docs/d1-operations.md) | Reading production, migrations, backups and restores |
+| [docs/storage-and-r2.md](docs/storage-and-r2.md) | Images, signatures, and what file storage would take |
+| [docs/ci-cd.md](docs/ci-cd.md) | The two workflows, and why the deploy one is manual |
+| [docs/client-handover.md](docs/client-handover.md) | The first hour with a real business |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | Something is wrong and the shop is open |
+| [STATUS.md](STATUS.md) | What is built, what is proven, and what is not |
+
 ## Repository layout
 
 ```
@@ -160,6 +172,8 @@ schema/migrations/  applied verbatim by BOTH backends
 public/           the PWA — 23 views, service worker, offline queue
 test/             unit, integration and end-to-end suites
 tools/            migrate, seed, deploy, and the three static audits
+docs/             operational documentation (see above)
+scripts/          push-github.sh — authenticated push without storing a token
 ```
 
 ## Security

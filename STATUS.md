@@ -287,9 +287,9 @@ carry the same `BUILD = 'ridge-1'`; `public/js/views/instalments.js` defines
 `takePayment(plan)` at module scope and calls it from the plan row — the defect
 recorded earlier does **not** exist. Memory was stale on all four.
 
-1. **`docs/` does not exist** (`scripts/` now holds `push-github.sh`). Needed:
-   deployment in full, D1 operations, storage/R2, the GitHub Action, and a client
-   handover note.
+1. ~~`docs/` does not exist~~ — **written** (`docs/`: deployment, D1 operations,
+   storage/R2, CI/CD, client handover, troubleshooting, index). 7,400 words, every
+   path and command in them checked against the tree.
 2. **No live browser smoke test of any screen.** Every screen is proven by
    contract tests and by the routes behind it; none has been rendered in a
    browser against the live deployment.
