@@ -1041,3 +1041,57 @@ finds the bug it was written for, twice, in the same hour, is doing its job.
 - `npm run verify` → **292 tests, 292 pass** (was 290).
 - Administrator walk on an empty deployment: 7 destinations, no problems.
 - The reverted-code run fails, naming the screen and the route.
+
+# CHECKPOINT — Stage 6b: THE PIN IS 1234 EVERYWHERE, AND THE SCREEN IS FIXED LIVE
+
+## One administrator PIN across the whole estate
+
+The platform administrator's PIN is now **1234** on all three environments, set
+through the deployment tool so only the hash is stored and the PIN is never written
+into the repository:
+
+| environment | URL | administrator | PIN |
+|---|---|---|---|
+| `sample` | https://sample.stockridge.workers.dev | `admin` | **1234** |
+| production (default) | https://stockridge.stockridge.workers.dev | `admin` | **1234** |
+| `staging` | https://stockridge-staging.stockridge.workers.dev | `admin` | **1234** |
+
+Staging keeps its own credentials for the business it already runs: owner
+`liveseat`, whose PIN was set with the admin one in this round.
+
+## Proved in both directions, on each environment, live
+
+A PIN change is only done when the new one works **and the old one does not** — an
+unchanged old PIN would mean the reset silently did nothing:
+
+```
+sample.stockridge.workers.dev        1234  NEW  http 200 -> token
+sample.stockridge.workers.dev        48213 OLD  http 401 -> BAD_CREDENTIALS
+stockridge.stockridge.workers.dev    1234  NEW  http 200 -> token
+stockridge.stockridge.workers.dev    48213 OLD  http 401 -> BAD_CREDENTIALS
+stockridge-staging…workers.dev       1234  NEW  http 200 -> token
+stockridge-staging…workers.dev       70614 OLD  http 401 -> BAD_CREDENTIALS
+```
+
+## The Subscription screen, live, as the administrator
+
+Signed in to **sample** as `admin` / `1234` and walked every destination in the
+navigation the administrator actually gets:
+
+```
+nav 7: Dashboard · Staff · Branches · Businesses · Subscription · Settings · Sync & offline
+  · Dashboard       334 char
+  · Staff           824 char
+  · Branches        295 char
+  · Businesses      398 char
+  · Subscription   1972 char  SubscriptionNo business yet · the plan this deployment runs on…
+  · Settings       1146 char
+  · Sync & offline 1299 char
+1 seat(s) checked, no problems.
+```
+
+**"That failed. Cannot read properties of null (reading 'name')" is gone.** The screen
+now says it has no business yet — which is true, and is the administrator's cue to go
+and create one.
+
+All three environments were redeployed with 15 checks each and reported ready.
