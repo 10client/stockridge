@@ -172,6 +172,9 @@ test('the API surface over real HTTP', async (t) => {
   // exist — which is exactly what happened to eleven of these on first run.
   // -------------------------------------------------------------------
   const BID = encodeURIComponent(realBranchId);
+  // Raw (unencoded) ids for request BODIES; `BID` is for query strings only.
+  const RAW_BRANCH = realBranchId;
+  const BIZ = product.business_id;
   const GETS = [
     '/api/dashboard', '/api/dashboard/summary',
     `/api/stock?branch_id=${BID}`, `/api/stock/valuation?branch_id=${BID}`, `/api/stock/expiring?branch_id=${BID}`,
@@ -369,6 +372,86 @@ test('the API surface over real HTTP', async (t) => {
   });
 
   // -------------------------------------------------------------------
+  // THE HAPPY PATH, WHICH NOTHING TESTED.
+  //
+  // Every sync test above and below pushes something that is REFUSED, so
+  // `rejected > 0` on every one of them — and the bookkeeping row wrote 'PARTIAL'.
+  // The row for a clean push wrote 'OK', which the column's CHECK does not allow,
+  // so the one request that mattered — a device coming back online with sales it
+  // made offline — answered 400 *after* applying the sale. The device never learned
+  // it had succeeded: the outbox stayed full and re-sent for ever, and the shop was
+  // told its work was still waiting when it was already in the books.
+  //
+  // A test that never applies anything cannot see that.
+  await t.test('sync APPLIES an operation that is valid, and answers 200', async () => {
+    const products = await req('GET', `/api/products?limit=20&branch_id=${BID}`, { token: mgrToken });
+    const product = (products.json.data || []).find((p) => !Number(p.requires_serial) && !Number(p.tracks_variants));
+    assert.ok(product, 'the fixture needs a plain product to sell');
+
+    const qty = 2;
+    const total = Number(product.selling_price) * qty;
+    const push = await req('POST', '/api/sync/push', {
+      token: mgrToken,
+      body: {
+        device_id: 'e2e-offline-device',
+        branch_id: RAW_BRANCH,
+        operations: [{
+          type: 'SALE',
+          client_id: 'op_happy_path_1',
+          idempotency_key: 'op_happy_path_1',
+          occurred_at: new Date().toISOString(),
+          payload: {
+            branch_id: RAW_BRANCH,
+            business_id: BIZ,
+            sale_type: 'RETAIL',
+            sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            device_id: 'e2e-offline-device',
+            client_id: 'op_happy_path_1',
+            lines: [{ product_id: product.id, quantity: qty, unit_code: product.default_unit_code || 'PIECE' }],
+            payments: [{ method: 'CASH', amount: total }],
+          },
+        }],
+      },
+    });
+    assert.equal(push.status, 200, `a clean push must not fail: ${push.text.slice(0, 300)}`);
+    assert.equal(push.json.applied, 1, `the server reported ${push.json.applied} applied`);
+    assert.equal(push.json.rejected, 0);
+    const op = push.json.results.operations[0];
+    assert.equal(op.status, 'APPLIED', `the operation was ${op.status}: ${JSON.stringify(op).slice(0, 240)}`);
+    assert.ok(op.result && op.result.saleId, 'the result must name the sale it created');
+
+    // The sale is really in the books.
+    const sale = await req('GET', `/api/sales/${op.result.saleId}`, { token: mgrToken });
+    assert.equal(sale.status, 200, JSON.stringify(sale.json).slice(0, 200));
+    assert.equal(Number(sale.json.sale.total), total);
+
+    // ...and pushing it AGAIN — which is exactly what a device does when its outbox
+    // was never cleared — applies it once, not twice. This is the property the shop
+    // depends on: one sale, one receipt, one stock movement.
+    const again = await req('POST', '/api/sync/push', {
+      token: mgrToken,
+      body: {
+        device_id: 'e2e-offline-device',
+        branch_id: RAW_BRANCH,
+        operations: [{
+          type: 'SALE', client_id: 'op_happy_path_1', idempotency_key: 'op_happy_path_1',
+          occurred_at: new Date().toISOString(),
+          payload: {
+            branch_id: RAW_BRANCH, business_id: BIZ, sale_type: 'RETAIL',
+            sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            device_id: 'e2e-offline-device', client_id: 'op_happy_path_1',
+            lines: [{ product_id: product.id, quantity: qty, unit_code: product.default_unit_code || 'PIECE' }],
+            payments: [{ method: 'CASH', amount: total }],
+          },
+        }],
+      },
+    });
+    assert.equal(again.status, 200, again.text.slice(0, 200));
+    assert.equal(again.json.results.operations[0].status, 'ALREADY_APPLIED',
+      'a re-sent operation must be recognised, not replayed');
+    assert.equal(again.json.results.operations[0].result.saleId, op.result.saleId, 'the SAME sale, not a new one');
+  });
+
   await t.test('sync refuses an operation type it does not know', async () => {
     const r = await req('POST', '/api/sync/push', {
       token: mgrToken,

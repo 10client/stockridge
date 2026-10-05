@@ -887,3 +887,77 @@ recovered its button and its error message from that one change.
 - **Live verification:** receiving through the real Stock screen on Cloudflare D1 —
   `stock 5 → 8` for 3 pieces, batch cost ₦25,000 exactly as typed. All three
   environments redeployed (15 checks each) and pushed.
+
+---
+
+# CHECKPOINT — Stage 5, part 1: THE OUTBOX THAT NEVER CLEARED
+
+## The symptom
+
+Selling with the line cut worked, the sale reached the server, the receipt was
+issued — and the device's outbox stayed **PENDING** for ever. The Sync screen would
+have shown one sale waiting indefinitely; the device would have re-sent it on every
+later sync, for ever. On a busy counter that is an unbounded stream of duplicate
+posts, each one of which the server would have had to recognise and refuse.
+
+## The cause: the happy path was the only path that broke
+
+`server/routes/sync.js` wrote its bookkeeping row after every push:
+
+```js
+INSERT INTO sync_change_log (…, status, …) VALUES (…, ?, ?, …)
+  → rejected > 0 ? 'PARTIAL' : 'OK'
+```
+
+The column is constrained:
+
+```sql
+status TEXT NOT NULL CHECK (status IN ('SUCCESS','PARTIAL','FAILED'))
+```
+
+So a push in which **nothing was refused** violated the CHECK, the whole request
+answered **400** — *after* the operations had already been applied — and the device
+never received the per-item results it uses to mark its queue. Every push in which
+something was refused answered 207 and behaved correctly, which is why the fault
+survived every test: **every sync test in the suite pushed something invalid.**
+
+This is why the earlier run reported `applied: 0` while the sale was plainly in the
+books, and why the server received one receipt per offline sale: the client re-sent
+until the server's idempotency keys recognised the work, and journaled each attempt
+as a failure.
+
+## The fixes
+
+- `server/routes/sync.js` — the status is `'SUCCESS'`, not `'OK'`. The Worker imports
+  this same route file, so **one change fixed both backends**.
+- `public/js/sync.js` — a push that fails outright now writes the reason onto each
+  queued row (`last_code`, `last_error`) instead of leaving the Sync screen with a
+  count that never moves and no explanation. Nothing is discarded.
+- `test/e2e/api.test.js` — **a sync push that APPLIES**, which the suite never had:
+  it pushes a real sale, asserts **200** and `APPLIED`, checks the sale is in the
+  books, pushes the identical operation again and asserts `ALREADY_APPLIED` with the
+  **same** sale id. Pushing twice is precisely what a device with a stale outbox does,
+  so the exactly-once promise is now locked down by a test rather than by hope.
+
+**Proven to fail on the old code**: with `'OK'` restored, the new test fails with the
+production error verbatim — `The figures do not add up: status IN
+('SUCCESS','PARTIAL','FAILED') … CHECK_FAILED`. A regression test that passes on the
+broken code would have been worthless.
+
+## Verified end to end (local, `tools/frontend-offline.js`)
+
+```
+✓ the app knows the line is down          api.isOnline() is false
+✓ found the product with no line          Binatone Kettle 1.8L · ₦19,500 (device results)
+✓ the sale was recorded on the device     Offline sale recorded · ₦19,500.00
+✓ it is in the outbox, waiting            status PENDING
+✓ the device synced                       1 sent, 0 refused, 1 rows received
+✓ the sale reached the server, exactly once   receipt 000659 · ₦19,500.00
+✓ the outbox is clear
+```
+
+The tool now reports the sent count from the outbox's own server references, because
+the app syncs by itself the moment the line returns — reporting the explicit
+`runOnce()`'s bare zero said "nothing was sent" about a sale already in the books.
+
+- `npm run verify` → **290 tests, 290 pass** (was 289; +1 the happy-path sync test).

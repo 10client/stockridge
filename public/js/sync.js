@@ -115,6 +115,19 @@
         emit('change', status());
         return { ok: false, error: err, applied: 0, rejected: 0 };
       }
+      // A refusal that will not improve on its own (a rejected payload, a schema
+      // fault, a 400 from the server's own bookkeeping). The queue keeps its items —
+      // nothing is thrown away — but each one now carries the reason, so the Sync
+      // screen can say why they are sitting there instead of showing a count that
+      // never moves and no explanation.
+      await SR.store.log({ kind: 'PUSH', status: 'FAILED', count: queued.length, message: err.message });
+      for (const item of queued) {
+        await SR.store.updateOutbox(item.client_id, {
+          last_code: err.code || 'PUSH_REFUSED',
+          last_error: err.message || 'The server refused this batch.',
+        }).catch(() => {});
+      }
+      emit('change', status());
       throw err;
     }
 

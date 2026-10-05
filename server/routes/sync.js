@@ -413,7 +413,13 @@ function mount(app, base = '/api') {
         tx.queue(`INSERT INTO sync_change_log (id, branch_id, device_id, direction, table_name, row_count, status, error_message, synced_at)
             VALUES (?,?,?,?, 'OPERATIONS', ?, ?, ?, datetime('now'))`, [
           newId(), branchKey, deviceId, 'PUSH', operations.length,
-          rejected > 0 ? 'PARTIAL' : 'OK',
+          // 'SUCCESS' — not 'OK'. The column is CHECKed against
+          // ('SUCCESS','PARTIAL','FAILED'), so every push in which nothing was
+          // refused violated the constraint, the whole request answered 400, and
+          // the device never learned that its queued work had been applied: the
+          // outbox stayed full and re-sent itself for ever. The happy path was the
+          // only path that broke, which is why nobody saw it.
+          rejected > 0 ? 'PARTIAL' : 'SUCCESS',
           rejected > 0 ? `${rejected} of ${operations.length} operation(s) refused` : null,
         ]);
       }
