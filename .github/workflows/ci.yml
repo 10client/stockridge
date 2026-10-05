@@ -85,3 +85,63 @@ jobs:
           test -f .wrangler/tmp/*/index.js 2>/dev/null \
             || npx --yes wrangler@4 deploy --dry-run --outdir=.wrangler/dry-run --config worker/wrangler.toml
           ls -la .wrangler/dry-run 2>/dev/null || true
+
+  # ---------------------------------------------------------------------
+  # frontend-render
+  # ---------------------------------------------------------------------
+  # This job exists because of the empty sidebar.
+  #
+  # `SR.state.branches` was the accessor function; `load()` then assigned the
+  # session's array to the same key; from the first boot every call threw "is not
+  # a function" inside paintIdentity(), which ran BEFORE buildNav() — so the
+  # navigation was never built, for every role, on every deployment. Every route
+  # answered 200 the whole time. 247 tests passed. The deploy smoke test passed,
+  # because it tests routes and it tests reachability, and the defect was in
+  # neither.
+  #
+  # So: render the real `public/index.html` in jsdom against a real server and
+  # assert the navigation actually reaches the DOM, for all four roles. jsdom and
+  # fake-indexeddb are installed here rather than added to package.json on
+  # purpose — they are a test-only client that neither backend ships.
+  # ---------------------------------------------------------------------
+  frontend-render:
+    name: Frontend render (jsdom, all roles)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # Both in ONE command: `--no-save` re-resolves the tree from the lockfile,
+      # so a second install of the other package removes the first.
+      - name: Install the test client
+        run: npm install --no-save jsdom fake-indexeddb
+
+      # The demo fixture database the smoke test signs into: admin, owner,
+      # manager and staff seats, one business, two branches.
+      - name: Seed the demo database
+        run: npm run db:reset
+
+      - name: Start the server
+        run: |
+          node server/app.js > /tmp/server.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -fsS http://localhost:8787/api/health > /dev/null 2>&1; then
+              echo "server is up after ${i} attempt(s)"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the server did not come up"; cat /tmp/server.log; exit 1
+
+      - name: Render the shell for every role
+        run: node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles
+
+      - name: Server log, if it failed
+        if: failure()
+        run: cat /tmp/server.log

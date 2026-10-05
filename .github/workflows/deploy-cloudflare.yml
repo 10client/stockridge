@@ -34,6 +34,10 @@ on:
         description: 'Everything except the deploy itself'
         type: boolean
         default: false
+      verify_frontend:
+        description: 'Render the deployed PWA in jsdom and check the navigation'
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy-production
@@ -74,6 +78,35 @@ jobs:
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node tools/deploy-cloudflare.js $ARGS \
             || { echo "::error::Deployment failed — the summary above says which step."; exit 1; }
+
+      # The deploy script proves the ROUTES. This proves the SCREEN.
+      #
+      # The empty-sidebar defect passed every route test, the deploy script's own
+      # smoke test, and the readiness checks — because the API was healthy and the
+      # sidebar was still never built. It is only visible when the frontend is
+      # actually rendered. Off by default because it needs the live PIN, which is
+      # a repository secret and is not available on every deployment.
+      - name: Render the deployed PWA
+        if: ${{ inputs.verify_frontend && !inputs.dry_run }}
+        env:
+          SEAT_PIN: ${{ secrets.ADMIN_PIN }}
+        run: |
+          if [ -z "$SEAT_PIN" ]; then
+            echo "::warning::verify_frontend was requested but the ADMIN_PIN secret is not set; skipping."
+            exit 0
+          fi
+          npm install --no-save jsdom fake-indexeddb
+          ENV="${{ inputs.environment }}"
+          case "$ENV" in
+            sample)    URL=https://sample.stockridge.workers.dev ;;
+            staging)   URL=https://stockridge-staging.stockridge.workers.dev ;;
+            *)         URL=https://stockridge.stockridge.workers.dev ;;
+          esac
+          # The deploy has just rotated the runtime; give the edge a moment to
+          # converge before judging what it serves.
+          sleep 20
+          node tools/frontend-smoke.js --url="$URL" --user=admin --pin="$SEAT_PIN" \
+            || { echo "::error::the deployed frontend did not render its navigation."; exit 1; }
 
       - name: Report
         if: always()
