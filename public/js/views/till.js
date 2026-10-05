@@ -261,14 +261,11 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/tills/open', {
-              body: {
-                opening_cash: Number(v.opening_cash) || 0,
-                from_safe: Number(v.from_safe) ? true : undefined,
-                notes: v.notes || undefined,
-                branch_id: SR.state.activeBranchId,
-              },
-              idempotencyKey: SR.util.localId('till-open'),
-            });
+              opening_cash: Number(v.opening_cash) || 0,
+              from_safe: Number(v.from_safe) ? true : undefined,
+              notes: v.notes || undefined,
+              branch_id: SR.state.activeBranchId,
+            }, { idempotencyKey: SR.util.localId('till-open') });
             m.close();
             ui.ok(res.message || 'Till opened.');
             load();
@@ -323,13 +320,11 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post(`/api/tills/${encodeURIComponent(t.id)}/close`, {
-              body: {
-                counted_cash: Number(v.counted_cash),
-                variance_reason: v.variance_reason || undefined,
-                bank_amount: v.bank_amount === null ? undefined : Number(v.bank_amount),
-                bank_reference: v.bank_reference || undefined,
-                to_safe: v.to_safe === null ? undefined : Number(v.to_safe),
-              },
+              counted_cash: Number(v.counted_cash),
+              variance_reason: v.variance_reason || undefined,
+              bank_amount: v.bank_amount === null ? undefined : Number(v.bank_amount),
+              bank_reference: v.bank_reference || undefined,
+              to_safe: v.to_safe === null ? undefined : Number(v.to_safe),
             });
             m.close();
             const payload = res && (res.message || res);
@@ -368,17 +363,14 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/safe/entries', {
-              body: {
-                entry_type: v.entry_type,
-                amount: Number(v.amount),
-                outgoing,
-                reason: v.reason || undefined,
-                reference: v.reference || undefined,
-                note: v.note || undefined,
-                branch_id: SR.state.activeBranchId,
-              },
-              idempotencyKey: SR.util.localId('safe'),
-            });
+              entry_type: v.entry_type,
+              amount: Number(v.amount),
+              outgoing,
+              reason: v.reason || undefined,
+              reference: v.reference || undefined,
+              note: v.note || undefined,
+              branch_id: SR.state.activeBranchId,
+            }, { idempotencyKey: SR.util.localId('safe') });
             m.close();
             ui.ok(res.message || `Safe balance is now ${U.money(res.balanceAfter)}.`);
             load();
@@ -564,7 +556,7 @@
         if (!accepted && !(v.note || '').trim()) { ui.warn('Say why the count is being rejected.'); return; }
         await ui.withBusy(form, async () => {
           try {
-            const res = await SR.api.post(`/api/tills/${encodeURIComponent(t.id)}/review`, { body: { accepted, note: v.note || undefined } });
+            const res = await SR.api.post(`/api/tills/${encodeURIComponent(t.id)}/review`, { accepted, note: v.note || undefined });
             m.close();
             ui.ok(res.message || 'Recorded.');
             load();

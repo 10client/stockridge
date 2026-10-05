@@ -1400,3 +1400,105 @@ Worker was still running the pre-Stage-9 bundle. The route existed in git and no
 deployment — the code was pushed but not yet shipped. That is the difference this
 project's two-backend shape creates, and it is why the deploy step is part of every
 stage rather than an afterthought.
+
+# CHECKPOINT — Stage 10: THE ACCESS NOBODY COULD GRANT, AND A DEFECT CLASS
+# THAT HAD BEEN QUIETLY KILLING SCREENS
+
+Date: 2026-10-06 · Local: `npm run verify` → **305 tests, 305 pass, 0 fail** ·
+Screen probe: **5/5** · Smoke: four seats, 12–25 destinations each, no problems.
+
+## What Stage 10 adds
+
+`user_business_access` was the last table the audit called *"read but never created"*.
+It is the record that lets one person reach a business other than the one on their own
+row — a group with two shops, a manager covering a second branch owner — and until now
+nothing in the application could write one. The audit now reports **0** tables read but
+never created.
+
+- **`GET /api/users/:id/business-access`** — every business, with whether the person
+  reaches it *by their own record*, *by a grant*, or not at all.
+- **`POST`** — grant. Revives a previously revoked row rather than inserting a second
+  one, because the table carries `UNIQUE (user_id, business_id)` and a revocation is a
+  decision somebody can still read.
+- **`DELETE …/:businessId`** — withdraw, soft-deleted with `revoked_at` stamped.
+
+**ADMIN only, deliberately.** A grant is a cross-tenant act: an owner is already scoped
+to every business in their deployment by role, so letting an owner grant reach into a
+business would let one legal entity hand out access to another. The two e2e refusals —
+owner and manager both get 403 on grant *and* on review — are there to keep that rule
+from being relaxed for convenience later.
+
+**A grant widens what a person can SEE, never what they may DO.** The e2e suite holds
+that line: after being granted a second business, the manager sees it **on the existing
+token without re-logging in** (scope is re-resolved per request, not held in the token)
+and still receives 403 on `PUT /api/settings`. A grant never widens the ROLE, and it
+never unpins a cashier.
+
+## The defect class
+
+Building the screen for the above surfaced the mistake, and then found its siblings.
+
+`SR.api.post(path, payload)` takes the payload as the **second** argument — the option
+object is for the lower-level `SR.api.request`. Seven screens were calling it as
+`SR.api.post(path, { body: { … } })`. That sends the JSON `{"body":{"id":7}}`; the server
+reads `body.id`, finds nothing, and answers *"id is required"* — a message about the
+field, never about the mistake. `Object.assign` is unguarded here, so nothing complains
+on the way in. **Every one of those screens had never worked.**
+
+Proved over HTTP as `blessing`, whose PIN is known:
+
+| what the screen sent | server said |
+|---|---|
+| `{ body: { current_pin: … } }` | 400 *"Current PIN is required."* |
+| `{ current_pin: … }` | 400 *PIN_WEAK* — the real validation, reached |
+
+**Seventeen call sites**, in the end: change your own PIN, add/edit a branch, edit a
+business, mark a WHT entry remitted, add a ledger account, post a manual journal, set a
+sales target, resolve a sync conflict (both decisions), **open a till, close a till, post
+a safe entry**, till review, reset a PIN, sign a user out everywhere, anchor the audit
+chain, and create a user. Ten were found by grep; the other nine were multi-line calls
+that the grep could not see, and were found only when the rule itself was made a test.
+
+`test/e2e/frontend-routes.test.js` now carries the rule as a **small parser**, not a
+regex: it walks each `SR.api.post|put|patch` call to its matching close paren, splits the
+arguments at the top-level comma, and fails the build if the second argument opens with
+`{ body:`. The first attempt used a file-spanning regex and cheerfully reported eight
+perfectly good multi-line calls as offenders — which is how the real nine were noticed.
+
+## From the screen
+
+`tools/frontend-access.js` drives the real DOM in jsdom: open a person on the Staff
+screen, read the businesses they can reach, tick one, and then hold the SERVER to the
+result — then untick it and hold the server to that too.
+
+The probe's own first attempt was wrong in a way worth keeping in the record: after the
+tick the screen re-renders from the server, so a snapshot taken a moment early sees the
+**pre-reload** boxes, whose first enabled one is a *different, unchecked* business. The
+probe unticked that one, the server correctly answered "no grant to remove", and the
+probe reported the withdrawal as broken while the tick's own grant sat there untouched.
+Fixed by naming the business and holding the probe to that one — and the leftover grant
+the earlier run left behind was withdrawn, so the demo deployment is back to one
+business reached by own record.
+
+```
+✓ a person to grant to                          Aisha Bello · MANAGER · Ridge Furniture Palace
+✓ opening a person shows the businesses         Reaching 1 of 4…
+✓ the section lists businesses with switches    4 business(es), 1 locked, 3 switchable
+✓ ticking a business grants it, and the server holds it    Ridge Electronics Ltd · 0 → 1
+✓ unticking it withdraws the grant on the server           Ridge Electronics Ltd · back to 0
+```
+
+A deployment with only one business **skips** the last two with a reason rather than
+passing quietly — a skip is not a pass.
+
+## Where this leaves the audit
+
+- Tables read but never created: **0**.
+- Tables created but never read: 1.
+- Wire-ups still owed: `branch_compliance_records` (**next** — the view
+  `v_compliance_expiry_alerts` is built and has no way to be reached), then
+  `user_assignment_history`, `pending_user_transfers`, `delivery_zones`,
+  `stock_transfer_serials`, `data_cleanup_log`; later `delivery_vehicles`,
+  `product_recalls`.
+- Still outstanding from earlier stages: the live staging offline proof
+  (`tools/frontend-offline.js`) and `public/offline.html`.

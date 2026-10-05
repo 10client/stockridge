@@ -162,7 +162,7 @@
       if (String(v.newPin) === String(v.currentPin)) { ui.warn('The new PIN must be different from the current one.'); return; }
       await ui.withBusy(form, async () => {
         try {
-          const res = await SR.api.post('/api/auth/change-pin', { body: { currentPin: String(v.currentPin), newPin: String(v.newPin) } });
+          const res = await SR.api.post('/api/auth/change-pin', { currentPin: String(v.currentPin), newPin: String(v.newPin) });
           form.querySelectorAll('input').forEach((i) => { i.value = ''; });
           ui.ok(res.message || 'PIN changed.');
         } catch (err) { ui.apiError(err); }

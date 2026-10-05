@@ -392,7 +392,7 @@
       });
       if (!reference) return;
       try {
-        const res = await SR.api.post(`/api/accounting/wht/${encodeURIComponent(entry.id)}/remitted`, { body: { reference } });
+        const res = await SR.api.post(`/api/accounting/wht/${encodeURIComponent(entry.id)}/remitted`, { reference });
         ui.ok(res.message || 'Marked as remitted.');
         load();
       } catch (err) { ui.apiError(err); }
@@ -439,7 +439,7 @@
         const v = ui.readFormStrings(form);
         await ui.withBusy(form, async () => {
           try {
-            const res = await SR.api.post('/api/accounting/accounts', { body: v });
+            const res = await SR.api.post('/api/accounting/accounts', v);
             m.close();
             ui.ok(res.message || 'Account created.');
             load();
@@ -518,12 +518,10 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/accounting/journal', {
-              body: {
-                entry_date: v.entry_date,
-                branch_id: v.branch_id || undefined,
-                description: v.description,
-                lines: payload,
-              },
+              entry_date: v.entry_date,
+              branch_id: v.branch_id || undefined,
+              description: v.description,
+              lines: payload,
             });
             m.close();
             ui.ok(res.message || `Entry ${res.entryNo || ''} posted.`);

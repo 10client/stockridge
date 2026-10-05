@@ -199,7 +199,7 @@
       });
       if (!confirmed) return;
       try {
-        const res = await SR.api.post(`/api/sessions/${encodeURIComponent(session.user_id)}/revoke`, { body: {} });
+        const res = await SR.api.post(`/api/sessions/${encodeURIComponent(session.user_id)}/revoke`, {});
         ui.ok(res.message || 'Signed out.');
         load();
       } catch (err) { ui.apiError(err); }
@@ -233,20 +233,18 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/users', {
-              body: {
-                full_name: v.full_name,
-                username: v.username,
-                role: v.role,
-                branch_id: v.branch_id || null,
-                job_title: v.job_title || undefined,
-                phone: v.phone || undefined,
-                pin: String(v.pin),
-                confirm_pin: String(v.confirm_pin),
-                commission_rate_pct: v.commission_rate_pct === null ? undefined : Number(v.commission_rate_pct),
-                bank_name: v.bank_name || undefined,
-                bank_account_no: v.bank_account_no || undefined,
-                employment_started: v.employment_started || undefined,
-              },
+              full_name: v.full_name,
+              username: v.username,
+              role: v.role,
+              branch_id: v.branch_id || null,
+              job_title: v.job_title || undefined,
+              phone: v.phone || undefined,
+              pin: String(v.pin),
+              confirm_pin: String(v.confirm_pin),
+              commission_rate_pct: v.commission_rate_pct === null ? undefined : Number(v.commission_rate_pct),
+              bank_name: v.bank_name || undefined,
+              bank_account_no: v.bank_account_no || undefined,
+              employment_started: v.employment_started || undefined,
             });
             m.close();
             ui.ok(res.message || `${v.full_name} can now sign in as ${v.username}.`);
@@ -257,6 +255,92 @@
     }
 
     // ---------------------------------------------------------------- edit
+
+    /**
+     * WHICH BUSINESSES THIS PERSON CAN REACH.
+     *
+     * A group running two businesses — a furniture showroom and an appliance shop,
+     * or a retail counter and its wholesale arm — needs one manager to run both.
+     * Until now the only way was a second account with a second PIN, after which
+     * the audit trail shows two people where there is one.
+     *
+     * Shown to the deployment administrator only, because a grant reaches ACROSS
+     * businesses and a business is a separate legal entity with its own books.
+     * Each toggle saves on its own, immediately: a checkbox that needs a separate
+     * "save" is how somebody ticks a box, closes the modal, and believes they gave
+     * somebody access they did not.
+     */
+    function accessSection(u) {
+      const wrap = ui.h('fieldset', {});
+      wrap.appendChild(ui.h('legend', {}, 'Businesses this person can reach'));
+      const body = ui.h('div', { class: 'stack' });
+      wrap.appendChild(body);
+      body.appendChild(ui.loading('Checking…'));
+
+      async function loadAccess() {
+        let data;
+        try {
+          data = await SR.api.get(`/api/users/${encodeURIComponent(u.id)}/business-access`);
+        } catch (err) {
+          body.replaceChildren(ui.h('div', { class: 'alert alert-warn' },
+            'Could not read the businesses this person can reach. ' + ((err && err.message) || '')));
+          return;
+        }
+        const rows = data.data || [];
+        const reached = rows.filter((b) => b.own || b.viaGrant || data.reachesEverything).length;
+        const list = ui.h('div', { class: 'stack' });
+
+        list.appendChild(ui.h('p', { class: 'hint' },
+          data.reachesEverything
+            ? `${u.full_name || u.username} is the deployment administrator and reaches every business here by virtue of that role. There is nothing to grant or withdraw.`
+            : `Reaching ${reached} of ${rows.length}. Their own business is theirs by being on their record; the others are grants. A grant widens what they can SEE, never what they may DO — the role above still decides that.`));
+
+        for (const b of rows) {
+          const locked = data.reachesEverything || b.own;
+          const box = ui.h('input', { type: 'checkbox', checked: b.own || b.viaGrant || data.reachesEverything, disabled: locked });
+          const line = ui.h('div', { class: 'hint' },
+            b.own ? 'Their own business — not a grant, and not something to switch off here.'
+              : data.reachesEverything ? 'Reached by role.'
+                : b.viaGrant && b.grantedAt ? `Granted ${U.date(b.grantedAt)}.` : 'No access yet.');
+          const rowEl = ui.h('label', { class: 'check', style: { marginBottom: '6px', alignItems: 'flex-start' } },
+            box,
+            ui.h('div', {},
+              ui.h('strong', {}, b.name),
+              ui.h('div', { class: 'hint' }, [U.titleCase(String(b.profile_code || '').replace(/_/g, ' ')), Number(b.is_active) ? null : 'inactive'].filter(Boolean).join(' · ')),
+              line));
+
+          if (!locked) {
+            box.addEventListener('change', async () => {
+              const wanted = box.checked;
+              box.disabled = true;
+              try {
+                // `SR.api.post(path, payload)` — the payload is the SECOND argument.
+                // Passing `{ body: { … } }` sent an object with no `business_id` in
+                // it, and the server answered "business id is required" — a message
+                // about the field rather than about the mistake.
+                const res = wanted
+                  ? await SR.api.post(`/api/users/${encodeURIComponent(u.id)}/business-access`, { business_id: b.id })
+                  : await SR.api.del(`/api/users/${encodeURIComponent(u.id)}/business-access/${encodeURIComponent(b.id)}`);
+                ui.ok(res.message || 'Saved.');
+                await loadAccess();
+              } catch (err) {
+                box.checked = !wanted;
+                box.disabled = false;
+                ui.error(err && err.isOffline
+                  ? 'Changing who can reach a business needs a line.'
+                  : (err && err.message) || 'Could not save that.');
+              }
+            });
+          }
+          list.appendChild(rowEl);
+        }
+        body.replaceChildren(list);
+      }
+
+      loadAccess();
+      return wrap;
+    }
+
     function openEdit(u) {
       const self = String(u.id) === String(SR.state.user.id);
       const form = ui.h('div', {});
@@ -297,6 +381,13 @@
           hint: 'Deactivating keeps every sale, till and clock-in they recorded. It only stops them signing in.',
         }) : null));
 
+      // A grant reaches across businesses, so only the deployment administrator
+      // sees this. A client's own owner is scoped to every business in THEIR
+      // deployment by role already, which is a different thing from handing
+      // somebody else a second company to work in.
+      const isAdmin = String((SR.state.user && SR.state.user.role) || '').toUpperCase() === 'ADMIN';
+      if (isAdmin && !self) form.appendChild(accessSection(u));
+
       const pinBtn = ui.h('button', { class: 'btn' }, 'Issue a new PIN');
       const close = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close');
       const save = ui.h('button', { class: 'btn btn-primary' }, 'Save changes');
@@ -313,7 +404,7 @@
         });
         if (!confirmed) return;
         try {
-          const res = await SR.api.post(`/api/users/${encodeURIComponent(u.id)}/reset-pin`, { body: {} });
+          const res = await SR.api.post(`/api/users/${encodeURIComponent(u.id)}/reset-pin`, {});
           m.close();
           showPin(u, res.pin, res.message);
           load();

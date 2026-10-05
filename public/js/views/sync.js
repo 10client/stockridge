@@ -346,10 +346,8 @@
         await ui.withBusy(body, async () => {
           try {
             await SR.api.post(`/api/sync/conflicts/${encodeURIComponent(c.id)}/resolve`, {
-              body: {
-                decision: 'SERVER_KEPT',
-                resolution: note.value || 'Reviewed: the value the server kept is the correct one.',
-              },
+              decision: 'SERVER_KEPT',
+              resolution: note.value || 'Reviewed: the value the server kept is the correct one.',
             });
             m.close();
             ui.ok('Conflict closed with the server\'s value.');
@@ -367,9 +365,7 @@
         const summary = `Merged by hand. Re-take from the device\'s version: ${restored.map((k) => U.humanise(k)).join(', ')}.${note.value ? ` ${note.value}` : ''}`;
         await ui.withBusy(body, async () => {
           try {
-            await SR.api.post(`/api/sync/conflicts/${encodeURIComponent(c.id)}/resolve`, {
-              body: { decision: 'MERGED', resolution: summary.slice(0, 500) },
-            });
+            await SR.api.post(`/api/sync/conflicts/${encodeURIComponent(c.id)}/resolve`, { decision: 'MERGED', resolution: summary.slice(0, 500) });
             m.close();
             ui.ok('Recorded as merged. Re-enter the fields you chose on the record itself, then sync — the device will refetch the row either way.');
             load();

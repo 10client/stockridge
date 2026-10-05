@@ -138,6 +138,10 @@ test('the API surface over real HTTP', async (t) => {
   const mgrLogin = await req('POST', '/api/auth/login', { body: { username: 'e2emanager', pin: '12345' } });
   const mgrToken = mgrLogin.json.token;
   assert.ok(mgrToken, 'manager login must succeed');
+  // The manager's own id, taken from the API rather than the fixture, so a change
+  // to how a user is created cannot silently make the access tests meaningless.
+  const mgrId = (await req('GET', '/api/auth/me', { token: mgrToken })).json.user.id;
+  assert.ok(mgrId, 'the fixture must be able to name the manager it is granting to');
   const staffLogin = await req('POST', '/api/auth/login', { body: { username: 'e2estaff', pin: '12345' } });
   const staffToken = staffLogin.json.token;
   assert.ok(staffToken, 'staff login must succeed');
@@ -466,6 +470,99 @@ test('the API surface over real HTTP', async (t) => {
     assert.equal(r.status, 400, `expected a refusal, got ${r.status}: ${r.text.slice(0, 200)}`);
     assert.equal(r.json.code, 'NOT_ALLOWED');
     assert.match(r.json.error, /WHOLESALE_RETAIL/, 'the message must name the verticals that DO exist, so the caller can pick one');
+  });
+
+  // -------------------------------------------------------------------
+  // CROSS-BUSINESS ACCESS, over real HTTP.
+  //
+  // `middleware/auth.js` has always read `user_business_access`; nothing could
+  // write a row. The interesting assertion is not that a row appears — it is that
+  // the SECOND business becomes visible to a signed-in user WITHOUT them signing in
+  // again, because that is the claim the screen makes when it says so.
+  // -------------------------------------------------------------------
+  await t.test('the administrator can give a manager a second business, and take it back', async () => {
+    // A second business to reach. Created through the same route a person uses.
+    const made = await req('POST', '/api/businesses', {
+      token,
+      body: {
+        name: 'E2E Second Co', profile_code: 'FURNITURE', seed_catalogue: true,
+        branch: { name: 'Second Shop', code: 'E2-S', city: 'Aba', state: 'Abia', opening_cash: 20000 },
+      },
+    });
+    assert.equal(made.status, 201, `could not create the second business: ${made.text.slice(0, 240)}`);
+    const secondBusinessId = made.json.id;
+
+    const before = await req('GET', '/api/businesses', { token: mgrToken });
+    const namesBefore = (before.json.data || []).map((b) => b.name);
+    assert.ok(!namesBefore.includes('E2E Second Co'),
+      `the manager must not reach the second business before the grant: ${namesBefore.join(', ')}`);
+
+    // ---- GRANT
+    const grant = await req('POST', `/api/users/${mgrId}/business-access`, {
+      token, body: { business_id: secondBusinessId },
+    });
+    assert.ok(grant.status === 201 || grant.status === 200, `the grant failed: ${grant.text.slice(0, 240)}`);
+    assert.ok(grant.json.id, 'the response must name the row it wrote');
+    assert.match(grant.json.message, /next action/i, 'the message must say when it takes effect, because that is the question people ask');
+
+    // ---- THE MANAGER'S OWN TOKEN, UNCHANGED: the second business is now visible.
+    const after = await req('GET', '/api/businesses', { token: mgrToken });
+    const namesAfter = (after.json.data || []).map((b) => b.name);
+    assert.ok(namesAfter.includes('E2E Second Co'),
+      `the grant must take effect without a new sign-in; the manager sees: ${namesAfter.join(', ')}`);
+
+    // ---- WHAT THEY MAY DO IS UNCHANGED: a grant is reach, not authority.
+    const settingsTry = await req('PUT', '/api/settings', { token: mgrToken, body: { vat_enabled: 1 } });
+    assert.equal(settingsTry.status, 403, 'a manager given a second business must still not be able to change the deployment settings');
+
+    // ---- REVIEW: the access list names how each business is reached.
+    const review = await req('GET', `/api/users/${mgrId}/business-access`, { token });
+    assert.equal(review.status, 200, review.text.slice(0, 200));
+    const own = (review.json.data || []).find((b) => b.own);
+    const granted = (review.json.data || []).find((b) => b.viaGrant);
+    assert.ok(own && own.name === 'E2E Appliances', `the manager's own business must be labelled as theirs, got ${JSON.stringify(review.json.data)}`);
+    assert.ok(granted && granted.name === 'E2E Second Co', 'the granted business must be labelled as a grant');
+    assert.equal(review.json.reachesEverything, false);
+
+    // ---- REVOKE
+    const revoke = await req('DELETE', `/api/users/${mgrId}/business-access/${secondBusinessId}`, { token });
+    assert.equal(revoke.status, 200, revoke.text.slice(0, 200));
+    const afterRevoke = await req('GET', '/api/businesses', { token: mgrToken });
+    assert.ok(!(afterRevoke.json.data || []).map((b) => b.name).includes('E2E Second Co'),
+      'withdrawing it must take the business away again, on the next request');
+    // Removing nothing must not report a change that did not happen.
+    const again = await req('DELETE', `/api/users/${mgrId}/business-access/${secondBusinessId}`, { token });
+    assert.equal(again.status, 404, `a second removal must say there is nothing to remove, got ${again.status}`);
+    assert.equal(again.json.code, 'NO_GRANT');
+  });
+
+  await t.test('cross-business access is the administrator\'s to give, and only theirs', async () => {
+    const ownerLogin = await req('POST', '/api/auth/login', { body: { username: 'e2eowner', pin: '12345' } });
+    const ownerToken = ownerLogin.json.token;
+    const businesses = await req('GET', '/api/businesses', { token });
+    const target = (businesses.json.data || [])[0];
+
+    for (const [label, seat] of [['an owner', ownerToken], ['a manager', mgrToken], ['a cashier', staffToken]]) {
+      const r = await req('POST', `/api/users/${mgrId}/business-access`, { token: seat, body: { business_id: target.id } });
+      assert.equal(r.status, 403, `${label} must not be able to grant access to a business, got ${r.status}`);
+      const read = await req('GET', `/api/users/${mgrId}/business-access`, { token: seat });
+      assert.equal(read.status, 403, `${label} must not be able to review another person's business access`);
+    }
+
+    // An administrator already reaches everything, so a grant on one is refused
+    // rather than recorded as a row that would change nothing.
+    const adminRow = await req('GET', '/api/auth/me', { token });
+    const adminId = adminRow.json.user.id;
+    const onAdmin = await req('POST', `/api/users/${adminId}/business-access`, { token, body: { business_id: target.id } });
+    assert.equal(onAdmin.status, 409, `granting to an administrator must be refused, got ${onAdmin.status} ${onAdmin.text.slice(0, 160)}`);
+    assert.equal(onAdmin.json.code, 'ALREADY_REACHES_EVERY_BUSINESS');
+
+    // A grant of a business the user already belongs to is not a grant.
+    const meetings = await req('GET', `/api/users/${mgrId}/business-access`, { token });
+    const theirs = (meetings.json.data || []).find((b) => b.own);
+    const onOwn = await req('POST', `/api/users/${mgrId}/business-access`, { token, body: { business_id: theirs.id } });
+    assert.equal(onOwn.status, 409, 'a user already belongs to their own business');
+    assert.equal(onOwn.json.code, 'ALREADY_THEIR_BUSINESS');
   });
 
   await t.test('sync APPLIES an operation that is valid, and answers 200', async () => {

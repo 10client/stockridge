@@ -737,6 +737,160 @@ function mount(app, base = '/api') {
     ctx.json({ ok: true, sessionsEnded: res.changes, message: targetId === String(user.id) ? 'You have been signed out of every device.' : `${target.full_name} signed out of ${res.changes} session(s).` });
   });
 
+
+  // -------------------------------------------------------------------
+  // WHICH BUSINESSES A USER MAY REACH
+  // -------------------------------------------------------------------
+  /**
+   * THE LAST HALF-BUILT CAPABILITY IN THE SCHEMA.
+   *
+   * `server/middleware/auth.js` has always read `user_business_access` to decide
+   * which businesses a user can reach — "their own, plus explicit grants" — and
+   * `domain/access.js` turns that set into the SQL that scopes every read. Nothing
+   * anywhere could create a grant, so the answer was always "their own".
+   *
+   * What that cost a real shop: a group running two businesses (a furniture
+   * showroom and an appliance shop, or a retail shop and its wholesale arm) could
+   * not have one operations manager run both. The only way through was a second
+   * account with a second PIN, and the audit trail then shows two people where
+   * there is one — which is exactly the thing an audit trail exists to prevent.
+   *
+   * WHO MAY GRANT: the deployment administrator only.
+   *
+   * This is a CROSS-TENANT act. An owner's scope is deliberately "every business
+   * in this deployment" (that is what makes them an owner), so letting an owner
+   * grant would mean the owner of business A could hand out access to business B —
+   * two separate legal entities with separate books, which is the one boundary this
+   * whole design treats as inviolable. Creating a business is already ADMIN-only
+   * for the same reason; reaching into another one stays with it.
+   */
+  app.get(`${base}/users/:id/business-access`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'ADMIN')) {
+      throw new HttpError('Only the deployment administrator can review cross-business access.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const targetId = String(ctx.req.param('id'));
+    const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [targetId]);
+    if (!target) throw new HttpError('That user does not exist.', { status: 404, code: 'USER_NOT_FOUND' });
+
+    // EVERY business, with whether this user reaches it and how. Being precise
+    // about the "how" matters to the screen: a user reaches their own business by
+    // virtue of being on the row, and an administrator reaches all of them by
+    // role, so neither needs a grant — offering a checkbox for those would imply
+    // that unticking it would take something away.
+    const rows = await db.all(`SELECT b.id, b.name, b.profile_code, b.is_active,
+          (SELECT uba.id FROM user_business_access uba
+             WHERE uba.user_id = ? AND uba.business_id = b.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL) AS grant_id,
+          (SELECT uba.granted_at FROM user_business_access uba
+             WHERE uba.user_id = ? AND uba.business_id = b.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL) AS granted_at
+        FROM businesses b WHERE b.is_deleted = 0 ORDER BY b.name`, [targetId, targetId]);
+
+    const isAdminTarget = String(target.role).toUpperCase() === 'ADMIN';
+    ctx.json({
+      ok: true,
+      user: { id: target.id, fullName: target.full_name, username: target.username, role: target.role, business_id: target.business_id },
+      // An administrator already reaches everything; their own business is already
+      // theirs. Both facts are reported rather than left for the screen to guess.
+      reachesEverything: isAdminTarget,
+      data: rows.map((b) => ({
+        id: b.id, name: b.name, profile_code: b.profile_code, is_active: b.is_active,
+        own: String(b.id) === String(target.business_id),
+        viaGrant: Boolean(b.grant_id),
+        grantedAt: b.granted_at,
+      })),
+    });
+  });
+
+  app.post(`${base}/users/:id/business-access`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'ADMIN')) {
+      throw new HttpError('Only the deployment administrator can grant access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const targetId = String(ctx.req.param('id'));
+    const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [targetId]);
+    if (!target) throw new HttpError('That user does not exist.', { status: 404, code: 'USER_NOT_FOUND' });
+
+    const body = await ctx.req.json();
+    const businessId = String(requireVal(body, 'business_id'));
+    const business = await db.first('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0', [businessId]);
+    if (!business) throw new HttpError('That business does not exist.', { status: 404, code: 'BUSINESS_NOT_FOUND' });
+
+    if (String(target.role).toUpperCase() === 'ADMIN') {
+      // Refused rather than quietly recorded. A grant on an administrator would
+      // look meaningful on the screen and change nothing, because their scope is
+      // every business by role — a row that misleads the next person to read it.
+      throw new HttpError(`${target.full_name} is the deployment administrator and already reaches every business. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
+    }
+    if (String(businessId) === String(target.business_id)) {
+      throw new HttpError(`${target.full_name} already belongs to ${business.name} — it is their own business, not a grant.`, { status: 409, code: 'ALREADY_THEIR_BUSINESS' });
+    }
+
+    // ONE ROW PER (user, business) — the table's UNIQUE forbids a second, so a
+    // re-grant after a revocation REVIVES the row rather than inserting beside it.
+    // `revoked_at` is set on revoke and cleared on grant: a row with a timestamp
+    // and is_deleted = 1 is a decision somebody can still read, which is the point
+    // of revoking rather than deleting.
+    const existing = await db.first('SELECT * FROM user_business_access WHERE user_id = ? AND business_id = ?', [targetId, businessId]);
+    const id = existing ? existing.id : newId();
+    if (existing) {
+      await db.run(`UPDATE user_business_access
+          SET is_deleted = 0, revoked_at = NULL, granted_by = ?, granted_at = datetime('now'), updated_at = datetime('now')
+        WHERE id = ?`, [String(user.id), id]);
+    } else {
+      // No `created_at`: this table carries `granted_at` instead — the date the
+      // access began is the meaningful one, and a second timestamp saying the same
+      // thing is how two columns come to disagree.
+      await db.run(`INSERT INTO user_business_access (id, user_id, business_id, granted_by, granted_at, updated_at)
+        VALUES (?,?,?,?, datetime('now'), datetime('now'))`, [id, targetId, businessId, String(user.id)]);
+    }
+
+    await recordFromCtx(ctx, {
+      action: existing ? 'BUSINESS_ACCESS_REGRANTED' : 'BUSINESS_ACCESS_GRANTED',
+      entityType: 'USER_BUSINESS_ACCESS', entityId: id, businessId, branchId: target.branch_id,
+      after: { user: target.username, userRole: target.role, business: business.name, businessId },
+    });
+    ctx.json({
+      ok: true, id,
+      // The scope is resolved from the database on EVERY request (the user row and
+      // its grants are re-read per request), so this takes effect on the user's next
+      // action rather than at their next sign-in. Saying so removes the "do they
+      // need to sign out?" question.
+      message: `${target.full_name} can now reach ${business.name} as well. It applies from their next action — they do not need to sign out.`,
+    }, existing ? 200 : 201);
+  });
+
+  app.delete(`${base}/users/:id/business-access/:businessId`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'ADMIN')) {
+      throw new HttpError('Only the deployment administrator can withdraw access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const targetId = String(ctx.req.param('id'));
+    const businessId = String(ctx.req.param('businessId'));
+    const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [targetId]);
+    if (!target) throw new HttpError('That user does not exist.', { status: 404, code: 'USER_NOT_FOUND' });
+
+    const grant = await db.first(`SELECT * FROM user_business_access
+      WHERE user_id = ? AND business_id = ? AND is_deleted = 0 AND revoked_at IS NULL`, [targetId, businessId]);
+    if (!grant) {
+      throw new HttpError(`${target.full_name} has no grant for that business — removing nothing would report a change that did not happen.`, { status: 404, code: 'NO_GRANT' });
+    }
+
+    // Soft, and stamped. The row survives with the date it was withdrawn, so
+    // "who could see the Minna books in March?" stays answerable — the same reason
+    // `user_assignment_history` exists for branch moves.
+    await db.run("UPDATE user_business_access SET is_deleted = 1, revoked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [grant.id]);
+    const business = await db.first('SELECT name FROM businesses WHERE id = ?', [businessId]);
+    await recordFromCtx(ctx, {
+      action: 'BUSINESS_ACCESS_REVOKED', entityType: 'USER_BUSINESS_ACCESS', entityId: grant.id,
+      businessId, branchId: target.branch_id,
+      before: { user: target.username, business: business ? business.name : businessId, grantedAt: grant.granted_at },
+    });
+    ctx.json({ ok: true, message: `${target.full_name} can no longer reach ${business ? business.name : 'that business'}.` });
+  });
+
   // -------------------------------------------------------------------
   // SETTINGS
   // -------------------------------------------------------------------

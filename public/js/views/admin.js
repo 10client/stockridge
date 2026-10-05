@@ -231,8 +231,8 @@
         await ui.withBusy(form, async () => {
           try {
             const res = isNew
-              ? await SR.api.post('/api/branches', { body: payload })
-              : await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, { body: payload });
+              ? await SR.api.post('/api/branches', payload)
+              : await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, payload);
             m.close();
             ui.ok(res.message || 'Saved.');
             load();
@@ -353,31 +353,29 @@
           try {
             if (isNew) {
               const res = await SR.api.post('/api/businesses', {
-                body: {
-                  name: v.name,
-                  legal_name: v.legal_name || undefined,
-                  profile_code: v.profile_code,
-                  cac_reg_no: v.cac_reg_no || undefined,
-                  tin: v.tin || undefined,
-                  vat_registered: Number(v.vat_registered) ? true : false,
-                  contact_name: v.contact_name || undefined,
-                  contact_phone: v.contact_phone || undefined,
-                  contact_email: v.contact_email || undefined,
-                  address: v.address || undefined,
-                  seed_catalogue: Number(v.seed_catalogue) ? true : false,
-                  branch: {
-                    name: v.branch_name || undefined,
-                    city: v.branch_city || undefined,
-                    state: v.branch_state || undefined,
-                    opening_cash: v.opening_cash === null ? 0 : Number(v.opening_cash),
-                  },
+                name: v.name,
+                legal_name: v.legal_name || undefined,
+                profile_code: v.profile_code,
+                cac_reg_no: v.cac_reg_no || undefined,
+                tin: v.tin || undefined,
+                vat_registered: Number(v.vat_registered) ? true : false,
+                contact_name: v.contact_name || undefined,
+                contact_phone: v.contact_phone || undefined,
+                contact_email: v.contact_email || undefined,
+                address: v.address || undefined,
+                seed_catalogue: Number(v.seed_catalogue) ? true : false,
+                branch: {
+                  name: v.branch_name || undefined,
+                  city: v.branch_city || undefined,
+                  state: v.branch_state || undefined,
+                  opening_cash: v.opening_cash === null ? 0 : Number(v.opening_cash),
                 },
               });
               m.close();
               ui.ok(res.message || 'Business created and provisioned.');
               load();
             } else {
-              const res = await SR.api.put(`/api/businesses/${encodeURIComponent(b.id)}`, { body: payload });
+              const res = await SR.api.put(`/api/businesses/${encodeURIComponent(b.id)}`, payload);
               m.close();
               ui.ok(res.message || 'Saved.');
               load();
@@ -656,7 +654,7 @@
       });
       if (!confirmed) return;
       try {
-        const res = await SR.api.post('/api/audit/anchor', { body: {} });
+        const res = await SR.api.post('/api/audit/anchor', {});
         ui.ok(res.message || `Anchored at ${String(res.hash || '').slice(0, 12)}…`);
       } catch (err) { ui.apiError(err); }
     }

@@ -398,15 +398,13 @@
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/reports/targets', {
-              body: {
-                period_type: v.period_type,
-                period_start: v.period_start,
-                period_end: v.period_end,
-                branch_id: v.branch_id || undefined,
-                target_revenue: Number(v.target_revenue) || 0,
-                target_units: v.target_units === null ? undefined : Number(v.target_units),
-                note: v.note || undefined,
-              },
+              period_type: v.period_type,
+              period_start: v.period_start,
+              period_end: v.period_end,
+              branch_id: v.branch_id || undefined,
+              target_revenue: Number(v.target_revenue) || 0,
+              target_units: v.target_units === null ? undefined : Number(v.target_units),
+              note: v.note || undefined,
             });
             m.close();
             ui.ok(res.message || 'Target set.');

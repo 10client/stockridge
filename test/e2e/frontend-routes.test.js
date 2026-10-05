@@ -201,3 +201,72 @@ test('every view file is syntactically valid JavaScript', () => {
   }
   assert.deepEqual(broken, [], 'a view file does not parse — the browser would fail to load it');
 });
+
+test('no screen wraps its payload in { body: … }', () => {
+  // THE DEFECT CLASS, found by building one instance of it and then looking for
+  // its siblings.
+  //
+  // `SR.api.post(path, payload)` takes the payload as the SECOND argument:
+  //
+  //     const post = (path, body, opts) => request('POST', path, Object.assign({ body }, opts));
+  //
+  // so `SR.api.post('/api/thing', { body: { id: 7 } })` sends the JSON
+  // `{"body":{"id":7}}` — and the server, reading `body.id`, sees nothing and
+  // answers "id is required". The screen looks finished, the code reads plausibly,
+  // and the flow has never worked.
+  //
+  // SEVEN screens were doing this: changing your own PIN, marking a WHT entry as
+  // remitted, adding a ledger account, creating and editing a branch, editing a
+  // business, and a manager's till review. Proved live before fixing: the wrapped
+  // PIN change answered "Current PIN is required", while the plain one reached the
+  // real validation ("PIN cannot be one repeated digit").
+  //
+  // Written as a small parser rather than a regex, because a regex spanning the
+  // file happily matched a `body:` belonging to a LATER call and reported eight
+  // perfectly good multi-line calls as offenders.
+  const offenders = [];
+  for (const file of jsFiles(PUBLIC_JS)) {
+    const source = fs.readFileSync(file, 'utf8');
+    const lines = source.split('\n');
+    const call = /SR\.api\.(post|put|patch)\s*\(/g;
+    let m;
+    while ((m = call.exec(source)) !== null) {
+      // Walk to the matching close paren, so only THIS call's arguments are read.
+      let i = m.index + m[0].length;
+      let depth = 1;
+      let inString = null;
+      while (i < source.length && depth > 0) {
+        const ch = source[i];
+        if (inString) {
+          if (ch === '\\') i += 1;
+          else if (ch === inString) inString = null;
+        } else if (ch === '`' || ch === '\'' || ch === '"') inString = ch;
+        else if (ch === '(') depth += 1;
+        else if (ch === ')') depth -= 1;
+        i += 1;
+      }
+      const args = source.slice(m.index + m[0].length, i - 1);
+      // The SECOND argument is what carries the payload: everything between the
+      // first top-level comma and the end.
+      let depth2 = 0; let splitAt = -1; let q = null;
+      for (let j = 0; j < args.length; j += 1) {
+        const ch = args[j];
+        if (q) { if (ch === '\\') j += 1; else if (ch === q) q = null; continue; }
+        if (ch === '`' || ch === '\'' || ch === '"') { q = ch; continue; }
+        if (ch === '(' || ch === '{' || ch === '[') depth2 += 1;
+        else if (ch === ')' || ch === '}' || ch === ']') depth2 -= 1;
+        else if (ch === ',' && depth2 === 0) { splitAt = j; break; }
+      }
+      if (splitAt === -1) continue;
+      const second = args.slice(splitAt + 1).trim();
+      if (!/^\{\s*body\s*:/.test(second)) continue;
+      const line = source.slice(0, m.index).split('\n').length;
+      offenders.push(`${path.relative(ROOT, file)}:${line}  ${(lines[line - 1] || '').trim().slice(0, 100)}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these send {"body":{…}} to the server, so the fields inside never arrive:\n  ' + offenders.join('\n  ')
+    + '\n    pass the payload directly: SR.api.post(path, payload) — the option object is for SR.api.request',
+  );
+});
