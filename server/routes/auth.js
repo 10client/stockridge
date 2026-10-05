@@ -36,7 +36,7 @@ const { hashPin, verifyPin } = require('../../domain/crypto');
 const { pin, username: usernameRule } = require('../../domain/validation');
 const { navigationFor, roleLabel, atLeast } = require('../../domain/roles');
 const { FEATURE_LABELS, planUsage } = require('../../domain/planLimits');
-const { getProfile, describeProfile } = require('../../domain/verticals');
+const { getProfileOrDefault, describeProfile } = require('../../domain/verticals');
 const { requireField } = require('../lib/respond');
 
 function clientIp(ctx) {
@@ -147,7 +147,7 @@ function mount(app, base = '/api/auth', makeEnv = null) {
           WHERE is_deleted = 0 AND id IN (${[...(scope.branchIds || [])].map(() => '?').join(',') || "''"}) ORDER BY name`,
       [...(scope.branchIds || [])]);
 
-    const profile = user.business_profile_code ? describeProfile(getProfile(user.business_profile_code)) : null;
+    const profile = user.business_profile_code ? describeProfile(getProfileOrDefault(user.business_profile_code)) : null;
 
     ctx.json({
       ok: true,

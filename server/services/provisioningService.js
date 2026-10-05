@@ -17,7 +17,7 @@
 
 const { newId } = require('../../domain/crypto');
 const { round2 } = require('../../domain/money');
-const { getProfile, resolveProfile, MEASURE_AXES, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
+const { getProfile, resolveProfile, PROFILE_CODES, MEASURE_AXES, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
 const glService = require('./glService');
 const { HttpError } = require('../lib/http');
 
@@ -424,7 +424,15 @@ async function provisionDeployment(db, {
   adminUsername = 'admin', adminPin = null, branches = [], seededBy = 'provisioningService',
 }) {
   const { hashPin } = require('../../domain/crypto');
-  if (!getProfile(profileCode)) throw new HttpError(`Unknown business profile "${profileCode}".`, { status: 400, code: 'UNKNOWN_PROFILE' });
+  if (!getProfile(profileCode)) {
+    // This guard could never fire before, because the lookup fell back to
+    // GENERAL_RETAIL for anything. It fires now — and it lists the verticals,
+    // because "unknown profile" on its own sends the reader to the source code.
+    throw new HttpError(
+      `“${profileCode}” is not a business vertical this system has. Choose one of: ${PROFILE_CODES.map((c) => `${getProfile(c).label} (${c})`).join(', ')}.`,
+      { status: 400, code: 'UNKNOWN_PROFILE' },
+    );
+  }
 
   const settingsRow = await db.first('SELECT id FROM client_settings WHERE id = 1');
   if (!settingsRow) {

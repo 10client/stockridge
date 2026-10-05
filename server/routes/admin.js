@@ -36,7 +36,7 @@ const {
   assertCanCreateBusiness, assertCanCreateBranch, assertCanCreateStaff, assertFeatureEnabled,
   assertSubscriptionActive, activeBusinessCount, activeBranchCount, activeStaffCount,
 } = require('../../domain/planLimits');
-const { getProfile, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
+const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
 const provisioning = require('../services/provisioningService');
 
 function mount(app, base = '/api') {
@@ -164,7 +164,7 @@ function mount(app, base = '/api') {
       business: { id, name, profile_code: profileCode },
       // A brand-new business is useless without a branch, a category and a
       // ledger, so the message says what was actually built rather than "ok".
-      message: `${name} created as ${getProfile(profileCode).label}${branchId ? ' with its first branch' : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}`,
+      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchId ? ' with its first branch' : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}`,
       summary,
       branch_id: branchId,
     }, 201);
@@ -1026,7 +1026,7 @@ function mount(app, base = '/api') {
 function profileSummary(row) {
   const code = row.profile_code || 'GENERAL_RETAIL';
   let profile = null;
-  try { profile = resolveProfile(code, row.profile_overrides_json ? JSON.parse(row.profile_overrides_json) : null); } catch (e) { profile = getProfile(code); }
+  try { profile = resolveProfile(code, row.profile_overrides_json ? JSON.parse(row.profile_overrides_json) : null); } catch (e) { profile = getProfileOrDefault(code); }
   return {
     id: row.id, name: row.name, profile_code: code,
     profile: profile ? { label: profile.label, description: profile.description, features: profile.features } : null,

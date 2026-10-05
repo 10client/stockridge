@@ -383,6 +383,91 @@ test('the API surface over real HTTP', async (t) => {
   // told its work was still waiting when it was already in the books.
   //
   // A test that never applies anything cannot see that.
+  // -------------------------------------------------------------------
+  // BRANCH PRICE OVERRIDES, over real HTTP.
+  //
+  // The capability audit found `product_price_overrides` as "read but never
+  // created": the sale engine honoured a branch price that no screen and no
+  // endpoint could set. These tests cover the write half, including the authority
+  // rule — a shop's prices are the owner's to change, not a cashier's.
+  // -------------------------------------------------------------------
+  await t.test('a branch price can be set by the owner, read back, and cleared', async () => {
+    const ownerLogin = await req('POST', '/api/auth/login', { body: { username: 'e2eowner', pin: '12345' } });
+    assert.ok(ownerLogin.json.token, 'the owner must be able to sign in for this test to mean anything');
+    const ownerToken = ownerLogin.json.token;
+
+    const products = await req('GET', `/api/products?limit=20&branch_id=${BID}`, { token: ownerToken });
+    const product = (products.json.data || [])[0];
+    assert.ok(product, 'the fixture needs a product to price');
+
+    const branchPrice = Math.round(Number(product.selling_price) * 1.25 * 100) / 100;
+    const set = await req('PUT', `/api/products/${product.id}/price-override`, {
+      token: ownerToken,
+      body: { branch_id: RAW_BRANCH, default_selling_price: branchPrice, carton_price: branchPrice * 12 },
+    });
+    assert.ok(set.status === 200 || set.status === 201, `setting a branch price failed: ${set.text.slice(0, 240)}`);
+    assert.ok(set.json.id, 'the response must name the override it wrote');
+
+    // READ BACK: the product detail carries it, which is what the screen shows.
+    const detail = await req('GET', `/api/products/${product.id}`, { token: ownerToken });
+    const override = (detail.json.priceOverrides || []).find((o) => String(o.branch_id) === String(RAW_BRANCH));
+    assert.ok(override, 'the product detail must show the branch price that was just set');
+    assert.equal(Number(override.default_selling_price), branchPrice);
+    assert.equal(Number(override.carton_price), branchPrice * 12);
+
+    // Writing AGAIN replaces rather than stacking — the table's UNIQUE cannot
+    // police this on its own, because SQLite treats NULL variant ids as distinct.
+    const again = await req('PUT', `/api/products/${product.id}/price-override`, {
+      token: ownerToken,
+      body: { branch_id: RAW_BRANCH, default_selling_price: branchPrice + 100 },
+    });
+    assert.ok(again.status === 200 || again.status === 201, again.text.slice(0, 200));
+    const afterAgain = await req('GET', `/api/products/${product.id}`, { token: ownerToken });
+    const rows = (afterAgain.json.priceOverrides || []).filter((o) => String(o.branch_id) === String(RAW_BRANCH));
+    assert.equal(rows.length, 1, 'a second write must not add a row the price resolver has to choose between');
+    assert.equal(Number(rows[0].default_selling_price), branchPrice + 100, 'the newest price is the one that stands');
+
+    // CLEAR IT: the catalogue price applies again.
+    const cleared = await req('DELETE', `/api/products/${product.id}/price-override?branch_id=${BID}`, { token: ownerToken });
+    assert.equal(cleared.status, 200, cleared.text.slice(0, 200));
+    const afterClear = await req('GET', `/api/products/${product.id}`, { token: ownerToken });
+    assert.equal((afterClear.json.priceOverrides || []).filter((o) => String(o.branch_id) === String(RAW_BRANCH)).length, 0,
+      'a cleared override must be gone from the screen');
+  });
+
+  await t.test('a cashier cannot change a branch price', async () => {
+    const products = await req('GET', `/api/products?limit=5&branch_id=${BID}`, { token: staffToken });
+    const product = (products.json.data || [])[0];
+    assert.ok(product, 'the fixture needs a product for the refusal to be about authority rather than about a missing product');
+    const r = await req('PUT', `/api/products/${product.id}/price-override`, {
+      token: staffToken,
+      body: { branch_id: RAW_BRANCH, default_selling_price: 1 },
+    });
+    assert.equal(r.status, 403, `a cashier must not be able to reprice the shop: got ${r.status} ${r.text.slice(0, 160)}`);
+    assert.equal(r.json.code, 'PRICE_EDIT_NOT_ALLOWED');
+  });
+
+  await t.test('an unknown business vertical is refused by the route, listing the real ones', async () => {
+    // TWO LAYERS GUARD THIS, and both were partly asleep.
+    //
+    // The route validates the code with `oneOf`, which is why this request is
+    // refused here. The SERVICE behind it (provisionBusiness/provisionDeployment)
+    // had a guard `if (!getProfile(profileCode)) throw UNKNOWN_PROFILE` that could
+    // never fire, because `getProfile()` fell back to GENERAL_RETAIL for ANY
+    // string. Everything that provisions through the service rather than through
+    // this route — the seed tools, the scripts in tools/ — would have created a
+    // general-retail business with no starter catalogue and no error. The service
+    // guard is real now; this test locks the route's half, and the integration
+    // test "provisioning refuses a vertical it does not have" locks the other.
+    const r = await req('POST', '/api/businesses', {
+      token,
+      body: { name: 'Wrong Vertical Ltd', profile_code: 'WHOLESALE', branch: { name: 'W', code: 'WV-1', city: 'Lagos', state: 'Lagos', opening_cash: 1000 } },
+    });
+    assert.equal(r.status, 400, `expected a refusal, got ${r.status}: ${r.text.slice(0, 200)}`);
+    assert.equal(r.json.code, 'NOT_ALLOWED');
+    assert.match(r.json.error, /WHOLESALE_RETAIL/, 'the message must name the verticals that DO exist, so the caller can pick one');
+  });
+
   await t.test('sync APPLIES an operation that is valid, and answers 200', async () => {
     const products = await req('GET', `/api/products?limit=20&branch_id=${BID}`, { token: mgrToken });
     const product = (products.json.data || []).find((p) => !Number(p.requires_serial) && !Number(p.tracks_variants));

@@ -620,9 +620,39 @@ function isProfileCode(code) {
   return Object.prototype.hasOwnProperty.call(PROFILES, String(code || '').toUpperCase());
 }
 
+/**
+ * The profile for a code, or **null** when the code is not one we have.
+ *
+ * THIS FUNCTION USED TO FALL BACK TO GENERAL_RETAIL SILENTLY, and two guards that
+ * checked its result were therefore dead code:
+ *
+ *   provisioningService: `if (!getProfile(profileCode)) throw UNKNOWN_PROFILE`
+ *   catalog.js:           `if (!profile) throw UNKNOWN_PROFILE`
+ *
+ * Neither could ever fire, because the lookup always returned something. The live
+ * consequence: an administrator (or an API client) provisioning a business with a
+ * vertical StockRidge does not have — "WHOLESALE" instead of "WHOLESALE_RETAIL" —
+ * got a GENERAL_RETAIL business instead. Wrong category tree, wrong feature set,
+ * and NO STARTER CATALOGUE, with no error anywhere. It was found exactly that way:
+ * a test asked for 'WHOLESALE', received an empty catalogue, and the first
+ * explanation that came to mind was "the wholesale vertical has no products".
+ *
+ * An unknown code is now null. Callers reading STORED data — a business row
+ * written by an older version, a code that has since been renamed — should use
+ * `getProfileOrDefault`, which is explicit about tolerating that.
+ */
 function getProfile(code) {
-  const key = String(code || DEFAULT_PROFILE_CODE).toUpperCase();
-  return PROFILES[key] || PROFILES[DEFAULT_PROFILE_CODE];
+  const key = String(code || '').toUpperCase();
+  return Object.prototype.hasOwnProperty.call(PROFILES, key) ? PROFILES[key] : null;
+}
+
+/**
+ * The profile for a code, falling back to GENERAL_RETAIL when it is not one we
+ * know. For READING stored data, where a legacy or renamed code must not break a
+ * screen. Never use this to validate input: it accepts everything.
+ */
+function getProfileOrDefault(code) {
+  return getProfile(code) || PROFILES[DEFAULT_PROFILE_CODE];
 }
 
 /**
@@ -634,7 +664,10 @@ function getProfile(code) {
  * the rest of the profile's configuration.
  */
 function resolveProfile(code, overrides) {
-  const base = getProfile(code);
+  // Tolerant on purpose: this is the path that reads a business's STORED profile,
+  // including one written by an older version of the app whose code has since been
+  // renamed. A screen must not stop drawing because of that.
+  const base = getProfileOrDefault(code);
   if (!overrides || typeof overrides !== 'object') return base;
   const out = { ...base };
   if (overrides.features && typeof overrides.features === 'object') {
@@ -659,7 +692,11 @@ function featureEnabled(profile, flag) {
 
 /** Human-readable feature summary, for the business setup screen. */
 function describeProfile(code) {
-  const p = getProfile(code);
+  // Accepts a profile object (the common case — callers already have one) or a
+  // code. A code we do not know describes nothing rather than describing
+  // GENERAL_RETAIL as though it were what was asked for.
+  const p = typeof code === 'object' && code ? code : getProfileOrDefault(code);
+  if (!p) return null;
   return {
     code: p.code,
     label: p.label,
@@ -677,6 +714,6 @@ module.exports = {
   FEATURE_FLAGS, ALL_FEATURES_ON, ALL_FEATURES_OFF,
   LADDERS, MEASURE_AXES, MEASURE_LADDERS, COMPLIANCE_FIELDS, REGISTRATION_AUTHORITIES,
   CUSTOMER_CLASS_SETS, RETURN_REASONS, EXPENSE_CATEGORY_SETS,
-  isProfileCode, getProfile, resolveProfile, featureEnabled, describeProfile,
+  isProfileCode, getProfile, getProfileOrDefault, resolveProfile, featureEnabled, describeProfile,
   ladderForSeedProduct, baseUnitNameFor,
 };

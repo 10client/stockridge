@@ -1265,3 +1265,118 @@ Two more findings are the sharpest, because the *reading* half already exists:
   (1: `variant_axes`, written by provisioning) and "18 routes no screen calls"
   (integrations, the sync engine and the admin-only endpoints) are reported without
   failing, because a finding is not always a defect.
+
+---
+
+# CHECKPOINT — Stage 9: THE BRANCH PRICE NOBODY COULD SET
+
+## The capability
+
+The Stage-8 audit found `product_price_overrides` as **"read but never created"** —
+read in three places, created by nothing:
+
+* `domain/pricing.js` documents its order of precedence as *manual → branch OVERRIDE →
+  price list → product*, and `salesService.loadPriceOverrides()` has always loaded them;
+* the product detail screen has always shown them;
+* **nothing anywhere could make one.**
+
+So an Ikeja shop could not price a kettle differently from its Aba shop, a shop could not
+absorb its own delivery cost, and a wholesale counter could not carry a carton price that
+differs from the piece price times twenty-four. It is squarely inside the accepted scope
+(wholesale price tiers, multi-branch retail) and it was the sharpest finding in the audit
+because half the feature already worked.
+
+## What was built
+
+**Two endpoints** (`server/routes/catalog.js`), following the house patterns exactly —
+`canEditPrices` for authority, `resolveBranch` for the branch (body, query, pinned user,
+scope and active-branch checks all in one place), `recordFromCtx` for the audit:
+
+| | |
+|---|---|
+| `PUT /api/products/:id/price-override` | sets the whole pricing decision for one product in one branch — per piece, pack and carton |
+| `DELETE /api/products/:id/price-override` | clears it, soft-deleted like every other mutable row, so "what did it used to be?" stays answerable |
+
+Write-it-or-clear-it, with no third verb: a partial update would leave a `pack_price`
+from a previous decision standing beside a new per-piece price, which is how a branch
+quietly ends up selling packs below cost.
+
+**A screen** (`public/js/views/products.js`): a **Branch prices** card on the product's
+own page, listing every branch price with what it is worth against the catalogue, a form
+that offers only the levels the product actually sells in (taken from its own unit
+ladder), and a live warning when a price would lose money.
+
+## The trap that shaped the SQL
+
+```sql
+UNIQUE (branch_id, product_id, variant_id)
+```
+
+SQLite treats NULLs as **distinct**, so this constraint does NOT stop two rows for the
+same branch and product, both with a NULL variant. Two such rows make "which price
+applies" depend on row order — exactly the ambiguity the override feature exists to
+remove. The lookup therefore names the NULL case explicitly **and** reads the newest:
+
+```sql
+WHERE branch_id = ? AND product_id = ? AND is_deleted = 0
+  AND ((? IS NULL AND variant_id IS NULL) OR variant_id = ?)
+ORDER BY updated_at DESC, rowid DESC LIMIT 1
+```
+
+The repository's own SQL audit is what forced the `ORDER BY`: it flagged both lookups as
+*"db.first() on an unordered, unpinned query returns an arbitrary row"*. It was right —
+and the ordering has a meaning, not just a silencing effect.
+
+## A silent downgrade, found while picking a test fixture
+
+The first version of the new integration test asked for `profileCode: 'WHOLESALE'`, got a
+business with **no products at all**, and the first explanation that came to mind was
+"the wholesale vertical has no starter catalogue". The truth was worse:
+
+```js
+function getProfile(code) {
+  return PROFILES[key] || PROFILES[DEFAULT_PROFILE_CODE];   // ← for ANY string
+}
+```
+
+Every unknown code became **GENERAL_RETAIL**, which made two guards dead code:
+
+* `provisioningService`: `if (!getProfile(profileCode)) throw UNKNOWN_PROFILE`
+* `catalog.js`: `if (!profile) throw UNKNOWN_PROFILE`
+
+Neither could ever fire. The HTTP route was saved by an unrelated `oneOf` check, but
+**everything that provisions through the service** — the seed tools, the scripts in
+`tools/`, any integration — would have created a general-retail business with the wrong
+categories, the wrong features and no catalogue, and reported success.
+
+Fixed: `getProfile()` answers **null** for a code it does not have; the tolerant path is a
+new, explicitly-named `getProfileOrDefault()` used only where a business's *stored* code
+is being read. The service guard now fires and lists the verticals that exist:
+
+> “WHOLESALE” is not a business vertical this system has. Choose one of: Electronics &
+> Appliances (ELECTRONICS), Furniture & Home (FURNITURE), Wholesale & Retail General
+> Merchandise (WHOLESALE_RETAIL), Building Materials & Hardware (BUILDING_MATERIALS),
+> General Retail (GENERAL_RETAIL).
+
+## A tooling fault that had been reporting false failures
+
+`tools/lib/page-harness.js` `waitUntil()` called `probe()` **without awaiting it**. An
+async predicate — the natural thing to write for "wait until the SERVER says the row is
+gone" — returned a pending Promise, which is always truthy, so the wait "succeeded" on
+its first tick. The new price probe reported that a cleared branch price was still on the
+server **when the server had already said it was gone**. Fixed: the predicate is awaited.
+Every tool that polls inherits the fix.
+
+## Verified
+
+- `npm run verify` → **300 tests, 300 pass** (was 292): +4 integration (the money path),
+  +3 e2e (set/read-back/replace/clear over HTTP, a cashier refused with
+  `PRICE_EDIT_NOT_ALLOWED`, and the unknown-vertical refusal), +1 integration for
+  provisioning refusing a bad vertical and a good one arriving with its catalogue.
+- **The money path, proved by the engine's own maths**: with an override of 1.1 × the
+  catalogue, the Ikeja receipt totals the override and the **Aba receipt is untouched**;
+  a carton override charges the carton price, not the piece price × 24; a second write
+  replaces rather than stacks; a manual price still wins.
+- `tools/frontend-price.js` (new): the whole feature through the real DOM — 6/6, from the
+  card, through the form, to the server, and back off again.
+- Four seats, 65 destinations walked by the smoke tool afterwards: no problems.

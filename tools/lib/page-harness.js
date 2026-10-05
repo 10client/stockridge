@@ -56,7 +56,18 @@ async function waitUntil(probe, { timeout = 30000, interval = 250, label = 'cond
   const deadline = Date.now() + timeout;
   let last = null;
   for (;;) {
-    try { last = probe(); } catch (err) { last = null; }
+    try {
+      // AWAITED, because an async predicate is the natural thing for a caller to
+      // write — "wait until the server says the row is gone" is a request, not a
+      // DOM read. Without this, `probe()` returned a pending PROMISE, which is
+      // always truthy, so the wait "succeeded" on its first tick with the promise
+      // itself and the caller's `if (result)` tested its resolved value instead.
+      // A probe that polls a server would report failure before the request had
+      // even finished. (It did: tools/frontend-price.js reported that a cleared
+      // branch price was still on the server, when the server had already said it
+      // was gone.)
+      last = await probe();
+    } catch (err) { last = null; }
     if (last) return last;
     if (Date.now() >= deadline) return null;
     await sleep(interval);

@@ -82,6 +82,7 @@ node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles --walk
 | `--walk` | **open every destination in the navigation** and report what each screen renders |
 | `--dump` | print the visible screen, the DOM state and the page's own console |
 | `--expect-nav=N` | fail unless the nav has at least N items (default 1) |
+| `--expect-nav=N` | see above |
 | `--wait=N` | ms to wait for the app to settle (default 30000) — it polls, it does not sleep and hope |
 
 ### Auditing the schema against what uses it
@@ -163,6 +164,21 @@ a guarded POST with a real payload would create the thing it protects. Below-gua
 writes are safe because an empty body can only be refused or rejected — it cannot
 create anything valid out of nothing. The report says how many paths were skipped
 for needing an id rather than implying coverage it does not have.
+
+### Setting a branch price from the screen
+
+```
+node tools/frontend-price.js --url=http://localhost:8787 --user=musa --pin=73914 --product=kettle
+```
+
+Per-branch pricing was the capability the audit found as "read but never created": the
+sale engine honoured an override, the product screen displayed them, and nothing could
+make one. This probe walks the whole feature through the real DOM — opens the product's
+page, checks the **Branch prices** card, fills the form the way a person would, saves,
+confirms the server holds it, removes it, and confirms the catalogue price is back.
+
+It is deliberate that removal is tested as thoroughly as setting: a price that cannot be
+taken off is a shop that cannot undo a mistake.
 
 ### Ringing a sale through the screen
 

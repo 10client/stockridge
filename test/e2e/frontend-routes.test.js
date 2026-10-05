@@ -91,13 +91,22 @@ function apiCalls() {
       let m;
       while ((m = re.exec(source)) !== null) {
         const isRequest = re.source.includes('request');
-        const method = (isRequest ? m[1] : m[1]).toUpperCase();
+        // `SR.api.del` is DELETE on the wire. Uppercasing the helper's own name
+        // produced "DEL", which matches no route the server registers — so the
+        // first view to use the helper looked like a call to a route that does not
+        // exist. The helper names and the HTTP verbs are not the same vocabulary.
+        const HELPER_VERB = { get: 'GET', post: 'POST', put: 'PUT', patch: 'PATCH', del: 'DELETE' };
+        const method = isRequest ? String(m[1]).toUpperCase() : (HELPER_VERB[m[1]] || String(m[1]).toUpperCase());
         const raw = isRequest ? m[2] : m[2];
         const line = source.slice(0, m.index).split('\n').length;
         const literal = raw.slice(1, -1);
         if (!literal.startsWith('/api')) continue;
         // `${…}` in a template literal is one segment of unknown content.
-        const pattern = literal.replace(/\$\{[^}]*\}/g, '*');
+        // A QUERY STRING IS NOT PART OF A ROUTE PATH: `/thing?branch_id=7` is the
+        // route `/thing` with a parameter, and comparing the two as strings
+        // reports a route that plainly exists as missing. (It did — for
+        // `/api/products/:id/price-override?branch_id=…`.)
+        const pattern = literal.replace(/\?[^`]*$/, '').replace(/\$\{[^}]*\}/g, '*');
         calls.push({
           method,
           pattern,

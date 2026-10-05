@@ -551,10 +551,24 @@ test('geofence: (0,0) is recognised as an uninitialised GPS fix, not a place', (
 });
 
 // ---------------------------------------------------------------------
-test('verticals: five profiles ship, and the generic one is the fallback', () => {
+test('verticals: five profiles ship, and an unknown code is NOT one of them', () => {
   assert.deepEqual([...verticals.PROFILE_CODES].sort(), ['BUILDING_MATERIALS', 'ELECTRONICS', 'FURNITURE', 'GENERAL_RETAIL', 'WHOLESALE_RETAIL']);
-  assert.equal(verticals.getProfile('NONSENSE').code, 'GENERAL_RETAIL');
   assert.equal(verticals.DEFAULT_PROFILE_CODE, 'GENERAL_RETAIL');
+
+  // `getProfile` used to answer GENERAL_RETAIL for ANY string, which made the
+  // guard in provisioning dead code: asking for a vertical that does not exist
+  // ("WHOLESALE" — the code is WHOLESALE_RETAIL) silently produced a general-retail
+  // business with no starter catalogue. An unknown code is null now, so a caller
+  // that cares can tell the difference.
+  assert.equal(verticals.getProfile('NONSENSE'), null, 'an unknown code must not silently become the generic profile');
+  assert.equal(verticals.isProfileCode('NONSENSE'), false);
+  assert.equal(verticals.isProfileCode('WHOLESALE'), false, 'the code is WHOLESALE_RETAIL');
+  assert.equal(verticals.isProfileCode('wholesale_retail'), true, 'case is normalised, as the API does');
+
+  // ...and the tolerant lookup still exists, for reading data written by an older
+  // version or renamed since. It is the ONLY path that is allowed to fall back.
+  assert.equal(verticals.getProfileOrDefault('NONSENSE').code, 'GENERAL_RETAIL');
+  assert.equal(verticals.getProfileOrDefault('WHOLESALE_RETAIL').code, 'WHOLESALE_RETAIL');
 });
 
 test('verticals: each profile switches on only what its trade needs', () => {

@@ -184,6 +184,43 @@ test('integration: provisioning is idempotent', async (t) => {
   assert.ok(summary.skipped.length > 0, 'the run should report what it skipped');
 });
 
+test('integration: provisioning refuses a vertical it does not have', async (t) => {
+  // The service is an entry point in its own right — the seed tools and the
+  // scripts in tools/ call it directly, without going through the route that
+  // validates `profile_code`. Its guard read `if (!getProfile(profileCode)) throw`,
+  // and `getProfile()` fell back to GENERAL_RETAIL for ANY string, so the guard
+  // could not fire: a typo like "WHOLESALE" (the code is WHOLESALE_RETAIL) would
+  // have produced a general-retail business — wrong categories, wrong features, no
+  // starter catalogue — and reported success.
+  const db = openDatabase({ file: path.join(os.tmpdir(), `stockridge-badprofile-${process.pid}-${Date.now()}.db`) });
+  await migrate(db);
+  t.after(() => { try { db.close(); } catch (e) { /* already closed */ } });
+
+  await assert.rejects(
+    () => provisionDeployment(db, {
+      businessName: 'Typo Ltd', profileCode: 'WHOLESALE',
+      ownerName: 'Owner', ownerUsername: 'typo-owner', ownerPin: '12345',
+      branches: [{ name: 'Main', code: 'TY-1', city: 'Lagos', state: 'Lagos', branch_type: 'RETAIL', opening_cash: 1000 }],
+    }),
+    (err) => {
+      assert.equal(err.code, 'UNKNOWN_PROFILE', `expected UNKNOWN_PROFILE, got ${err.code}: ${err.message}`);
+      assert.match(err.message, /WHOLESALE_RETAIL/, 'the refusal has to name the verticals that exist');
+      assert.match(err.message, /ELECTRONICS/, 'all of them, so the reader can choose');
+      return true;
+    },
+  );
+  assert.equal(await db.scalar('SELECT COUNT(*) FROM businesses'), 0, 'a refused provisioning must leave nothing half-built behind');
+
+  // ...and a vertical that DOES exist still provisions its catalogue.
+  const good = await provisionDeployment(db, {
+    businessName: 'Wholesale Ltd', profileCode: 'WHOLESALE_RETAIL',
+    ownerName: 'Owner', ownerUsername: 'wh-owner', ownerPin: '12345',
+    branches: [{ name: 'Main', code: 'WH-1', city: 'Lagos', state: 'Lagos', branch_type: 'RETAIL', opening_cash: 1000 }],
+  });
+  const products = await db.scalar('SELECT COUNT(*) FROM products WHERE business_id = ? AND is_deleted = 0', [good.businessId]);
+  assert.ok(products >= 15, `the wholesale/retail vertical must arrive with a starter catalogue, got ${products}`);
+});
+
 test('integration: a cash sale decrements stock, books VAT and balances the ledger', async (t) => {
   const world = await makeWorld();
   t.after(world.cleanup);

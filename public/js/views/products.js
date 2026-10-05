@@ -356,6 +356,118 @@
   // -------------------------------------------------------------------
   // ONE PRODUCT
   // -------------------------------------------------------------------
+  /**
+   * SET A BRANCH PRICE.
+   *
+   * The counterpart to the two endpoints in server/routes/catalog.js. Until this
+   * existed, `domain/pricing.js` honoured a per-branch override that no screen
+   * could create: an Ikeja shop priced a kettle exactly like the Aba shop, and a
+   * wholesale counter could not carry a carton price different from the piece
+   * price times twenty-four.
+   *
+   * The form offers only the levels the product ACTUALLY sells in, taken from its
+   * own unit ladder. Offering a carton price for a product with no carton is how
+   * a shop ends up with a price that nothing can ever charge.
+   */
+  async function branchPriceForm(product, units, existing, onDone) {
+    const branches = SR.state.branches() || [];
+    if (!branches.length) { ui.warn('There are no branches to price against yet.'); return; }
+    const ladder = Array.isArray(units) ? units : [];
+    const cartonUnit = ladder.find((u) => String(u.code).toUpperCase() === 'CARTON');
+    const packUnit = ladder.find((u) => String(u.code).toUpperCase() === 'PACK');
+    const base = existing || {};
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' },
+      `This price applies in ONE branch. Everywhere else keeps the catalogue price of ${U.money(product.selling_price)} per ${String(product.base_unit_name || 'unit').toLowerCase()}.`));
+
+    const grid = ui.h('div', { class: 'form-grid' },
+      ui.field({
+        label: 'Branch', name: 'branch_id', required: true,
+        value: base.branch_id || SR.state.activeBranchId || '',
+        options: branches.map((b) => ({ value: String(b.id), label: b.name })),
+      }),
+      ui.field({
+        label: `Price per ${String(product.base_unit_name || 'unit').toLowerCase()} (₦)`,
+        name: 'default_selling_price', type: 'number', step: '0.01', min: '0', required: true,
+        value: base.default_selling_price != null ? U.numInput(base.default_selling_price) : U.numInput(product.selling_price),
+        hint: `The catalogue price is ${U.money(product.selling_price)}; the cost is ${U.money(product.cost_price)}.`,
+      }));
+    if (packUnit) {
+      grid.appendChild(ui.field({
+        label: `Pack price (₦) — a pack of ${U.qty(packUnit.quantity_in_base)}`,
+        name: 'pack_price', type: 'number', step: '0.01', min: '0',
+        value: base.pack_price != null ? U.numInput(base.pack_price) : '',
+        hint: 'Leave blank to charge the per-piece price × the pack size.',
+      }));
+    }
+    if (cartonUnit) {
+      grid.appendChild(ui.field({
+        label: `Carton price (₦) — a carton of ${U.qty(cartonUnit.quantity_in_base)}`,
+        name: 'carton_price', type: 'number', step: '0.01', min: '0',
+        value: base.carton_price != null ? U.numInput(base.carton_price) : '',
+        hint: 'Leave blank to charge the per-piece price × the carton size.',
+      }));
+    }
+    wrapEl.appendChild(grid);
+    if (product.cost_price > 0) {
+      const warnLine = ui.h('div', { class: 'hint' });
+      wrapEl.appendChild(warnLine);
+      const check = () => {
+        const v = ui.readFormStrings(wrapEl);
+        const price = v.default_selling_price === null ? NaN : Number(v.default_selling_price);
+        const loser = Number.isFinite(price) && price < Number(product.cost_price);
+        warnLine.textContent = loser
+          ? `Below cost: every ${String(product.base_unit_name || 'unit').toLowerCase()} sold at this branch would lose ${U.money(Number(product.cost_price) - price)}.`
+          : '';
+        warnLine.style.color = loser ? 'var(--danger, #b42318)' : '';
+      };
+      wrapEl.addEventListener('input', check);
+      check();
+    }
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (v) => { if (settled) return; settled = true; resolve(v); m.close(); };
+      const m = ui.openModal({
+        title: existing ? `Change the price in ${existing.branch_name || 'this branch'}` : `Set a branch price for ${product.name}`,
+        body: wrapEl,
+        onClose: () => finish(false),
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => finish(false) }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              if (!v.branch_id) { ui.warn('Choose the branch this price applies to.'); return; }
+              if (!(Number(v.default_selling_price) >= 0)) { ui.warn('Enter the price per piece.'); return; }
+              const payload = {
+                branch_id: String(v.branch_id),
+                default_selling_price: Number(v.default_selling_price),
+                pack_price: v.pack_price === null || v.pack_price === '' ? null : Number(v.pack_price),
+                carton_price: v.carton_price === null || v.carton_price === '' ? null : Number(v.carton_price),
+              };
+              ev.currentTarget.disabled = true;
+              ev.currentTarget.textContent = 'Saving…';
+              try {
+                const result = await SR.api.put(`/api/products/${encodeURIComponent(product.id)}/price-override`, payload);
+                ui.ok(result.message || 'Branch price saved.');
+                for (const w of result.warnings || []) ui.warn(w);
+                finish(true);
+                if (onDone) onDone();
+              } catch (err) {
+                ev.currentTarget.disabled = false;
+                ev.currentTarget.textContent = 'Save the price';
+                ui.error(err && err.isOffline
+                  ? 'Changing a price needs a line. It will be here when you are back on.'
+                  : (err && err.message) || 'Could not save the price.');
+              }
+            },
+          }, 'Save the price'),
+        ],
+      });
+    });
+  }
+
   async function renderDetail(ctx) {
     ctx.setTitle('Product');
     const wrap = ui.h('div', { class: 'stack' });
@@ -490,6 +602,63 @@
           }),
         }));
       }
+      // ---- BRANCH PRICES. The engine has always honoured these; this is the
+      // first screen that can create one.
+      const overrides = data.priceOverrides || [];
+      const priceCard = ui.h('div', { class: 'card' });
+      priceCard.appendChild(ui.h('div', { class: 'card-head' },
+        ui.h('h2', {}, 'Branch prices'),
+        ui.h('div', { class: 'actions' },
+          ui.h('button', {
+            class: 'btn btn-sm btn-primary',
+            onClick: () => branchPriceForm(p, units, null, load),
+          }, 'Set a branch price'))));
+      const priceBody = ui.h('div', { class: 'card-body' });
+      priceBody.appendChild(ui.h('p', { class: 'hint' },
+        `The catalogue price is ${U.money(p.selling_price)} per ${String(p.base_unit_name || 'unit').toLowerCase()}, the same in every branch. A branch price here overrules it in that one shop — for a market that will not pay it, a shop carrying the delivery cost, or a wholesale counter that sells by the carton.`));
+      if (!overrides.length) {
+        priceBody.appendChild(ui.h('div', { class: 'hint' }, 'Every branch sells this at the catalogue price.'));
+      } else {
+        priceBody.appendChild(ui.renderTable({
+          columns: [
+            { key: 'branch_name', label: 'Branch' },
+            { key: 'default_selling_price', label: 'Per unit', align: 'right', render: (o) => U.money(o.default_selling_price) },
+            { key: 'pack_price', label: 'Pack', align: 'right', render: (o) => (o.pack_price == null ? '—' : U.money(o.pack_price)) },
+            { key: 'carton_price', label: 'Carton', align: 'right', render: (o) => (o.carton_price == null ? '—' : U.money(o.carton_price)) },
+            { key: 'vs_catalogue', label: 'Vs catalogue', align: 'right', render: (o) => {
+              const diff = U.round2(Number(o.default_selling_price) - Number(p.selling_price));
+              if (!diff) return ui.h('span', { class: 'hint' }, 'the same');
+              return ui.h('span', { class: diff > 0 ? 'badge' : 'badge badge-warn' }, `${diff > 0 ? '+' : '−'}${U.money(Math.abs(diff))}`);
+            } },
+            { key: 'x', label: '', render: (o) => ui.h('button', {
+              class: 'btn btn-sm',
+              onClick: async (ev) => {
+                const yes = await ui.confirmDialog({
+                  title: 'Remove this branch price?',
+                  message: `${p.name} would sell at the catalogue price of ${U.money(p.selling_price)} in ${o.branch_name} again.`,
+                  confirmLabel: 'Remove it',
+                  danger: true,
+                });
+                if (!yes) return;
+                ev.currentTarget.disabled = true;
+                ev.currentTarget.textContent = 'Removing…';
+                try {
+                  const result = await SR.api.del(`/api/products/${encodeURIComponent(p.id)}/price-override`, { query: { branch_id: o.branch_id } });
+                  ui.ok(result.message || 'Removed.');
+                  load();
+                } catch (err) {
+                  ev.currentTarget.disabled = false;
+                  ev.currentTarget.textContent = 'Remove';
+                  ui.error((err && err.message) || 'Could not remove it.');
+                }
+              },
+            }, 'Remove') },
+          ],
+          rows: overrides,
+        }));
+      }
+      priceCard.appendChild(priceBody);
+      host.appendChild(priceCard);
     }
 
     return wrap;

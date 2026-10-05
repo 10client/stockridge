@@ -186,6 +186,156 @@ function mount(app, base = '/api') {
     });
   });
 
+  /**
+   * -------------------------------------------------------------------
+   * A BRANCH PRICE OVERRIDE
+   * -------------------------------------------------------------------
+   * THE MISSING HALF OF A FEATURE THAT WAS ALREADY BUILT.
+   *
+   * `domain/pricing.js` resolves a line price in a documented order — manual,
+   * then the branch OVERRIDE, then the customer's price list, then the product —
+   * and `salesService.loadPriceOverrides()` has always loaded them. The product
+   * detail screen has always shown them. Nothing anywhere could CREATE one. So:
+   *
+   *   * an Ikeja shop could not price a kettle differently from its Aba shop;
+   *   * a wholesale counter could not carry a carton price that differs from the
+   *     per-piece price times 24.
+   *
+   * By the capability audit (tools/capability-audit.js) this was "read but never
+   * created" — a capability that reaches a customer as a screen they cannot fill
+   * in. These two endpoints are how it is created and cleared.
+   *
+   * WRITE IT, OR CLEAR IT — there is no third verb. An override is a whole
+   * pricing decision for one product in one branch, so a partial update would
+   * leave `pack_price` from a previous decision standing next to a new per-piece
+   * price, which is how a branch ends up quietly selling cartons below cost.
+   */
+  app.put(`${base}/products/:id/price-override`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const allowed = canEditPrices(ctx.get('settings'), user);
+    if (!allowed.allowed) throw new HttpError(allowed.reason, { status: 403, code: 'PRICE_EDIT_NOT_ALLOWED' });
+
+    const id = String(ctx.req.param('id'));
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [id]);
+    if (!product) throw new HttpError('That product does not exist, or has been deleted.', { status: 404, code: 'PRODUCT_NOT_FOUND' });
+
+    // `resolveBranch` does the whole job: it reads the branch from the body or the
+    // query, honours a user pinned to one shop, refuses an owner of several who
+    // has not said which, refuses a deactivated branch, and refuses a branch
+    // outside the caller's scope. Re-implementing any of that here would be a
+    // second, weaker copy of the same rule.
+    const branch = await resolveBranch(db, ctx, { required: true });
+
+    const body = await ctx.req.json();
+    const variantId = body.variant_id ? String(body.variant_id) : null;
+    if (variantId) {
+      const variant = await db.first('SELECT * FROM product_variants WHERE id = ? AND product_id = ? AND is_deleted = 0', [variantId, id]);
+      if (!variant) throw new HttpError('That variant does not belong to this product.', { status: 400, code: 'VARIANT_NOT_OF_PRODUCT' });
+    }
+
+    const defaultPrice = numField(requireField(body, 'default_selling_price', 'The price per piece'), { field: 'The price per piece', min: 0 });
+    // `null` is how a level is cleared: a shop may price per piece and not carry a
+    // carton price at all, and pricing falls back to per-base × the carton factor.
+    const packPrice = body.pack_price == null || body.pack_price === '' ? null : numField(body.pack_price, { field: 'The pack price', min: 0 });
+    const cartonPrice = body.carton_price == null || body.carton_price === '' ? null : numField(body.carton_price, { field: 'The carton price', min: 0 });
+
+    // ONE ROW PER (branch, product, variant). The table's UNIQUE constraint cannot
+    // enforce this on its own, because SQLite treats NULLs as distinct — so two
+    // rows for the same branch and product, both with a NULL variant, are
+    // perfectly legal to the engine and ambiguous to the price resolver. The
+    // lookup has to name the NULL case explicitly, exactly as the price-list item
+    // route does.
+    // ORDERED, and read as one row. The UNIQUE constraint cannot police the NULL
+    // variant (SQLite counts NULLs as distinct), so a database that predates this
+    // code could hold two rows for the same branch and product. Ordering by the
+    // newest decision makes that case resolve to the price somebody set last —
+    // which is the answer a shopkeeper would give — instead of whichever row the
+    // planner happened to return first.
+    const existing = await db.first(`SELECT * FROM product_price_overrides
+      WHERE branch_id = ? AND product_id = ? AND is_deleted = 0
+        AND ((? IS NULL AND variant_id IS NULL) OR variant_id = ?)
+      ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+    [String(branch.id), id, variantId, variantId]);
+
+    const overrideId = existing ? existing.id : newId();
+    if (existing) {
+      await db.run(`UPDATE product_price_overrides
+          SET default_selling_price = ?, pack_price = ?, carton_price = ?, updated_by = ?, updated_at = datetime('now')
+        WHERE id = ?`, [round2(defaultPrice), packPrice, cartonPrice, String(user.id), overrideId]);
+    } else {
+      await db.run(`INSERT INTO product_price_overrides
+          (id, branch_id, product_id, variant_id, default_selling_price, pack_price, carton_price, updated_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
+      [overrideId, String(branch.id), id, variantId, round2(defaultPrice), packPrice, cartonPrice, String(user.id)]);
+    }
+
+    // A price below what the goods cost is legal — clearance, a loss leader, a
+    // mistake somebody will want pointed out. It is reported, not refused: a shop
+    // that cannot sell at a loss cannot clear a line, and a system that refuses
+    // gets worked around instead of trusted.
+    const cost = Number(product.cost_price) || 0;
+    const warnings = [];
+    if (cost > 0 && round2(defaultPrice) < round2(cost)) {
+      warnings.push(`This is below the cost of ₦${round2(cost).toLocaleString('en-NG')} — every ${product.base_unit_name || 'unit'} sold at this branch loses money.`);
+    }
+    if (cartonPrice != null) {
+      const cartonUnit = await db.first("SELECT quantity_in_base FROM product_units WHERE product_id = ? AND code IN ('CARTON','PACK') AND is_deleted = 0 ORDER BY quantity_in_base DESC LIMIT 1", [id]);
+      const factor = cartonUnit ? Number(cartonUnit.quantity_in_base) : 0;
+      if (factor > 1 && round2(cartonPrice) < round2(defaultPrice * factor)) {
+        warnings.push(`The carton price is below ${factor} × the piece price (${(round2(defaultPrice * factor)).toLocaleString('en-NG')}) — buying by the carton would be cheaper than by the piece, which is usually backwards.`);
+      }
+    }
+
+    await recordFromCtx(ctx, {
+      action: existing ? 'PRICE_OVERRIDE_CHANGED' : 'PRICE_OVERRIDE_SET',
+      entityType: 'PRICE_OVERRIDE', entityId: overrideId, branchId: branch.id, businessId: branch.business_id,
+      before: existing ? { perPiece: existing.default_selling_price, pack: existing.pack_price, carton: existing.carton_price } : null,
+      after: { product: product.name, branch: branch.name, variantId, perPiece: round2(defaultPrice), pack: packPrice, carton: cartonPrice },
+    });
+
+    ctx.json({
+      ok: true,
+      id: overrideId,
+      replaced: Boolean(existing),
+      warnings,
+      message: `${product.name} now prices at ₦${round2(defaultPrice).toLocaleString('en-NG')} per ${(product.base_unit_name || 'unit').toLowerCase()} in ${branch.name}${packPrice != null ? ` · pack ₦${round2(packPrice).toLocaleString('en-NG')}` : ''}${cartonPrice != null ? ` · carton ₦${round2(cartonPrice).toLocaleString('en-NG')}` : ''}.`,
+    }, existing ? 200 : 201);
+  });
+
+  /** Clear an override: the product's own price applies in this branch again. */
+  app.delete(`${base}/products/:id/price-override`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const allowed = canEditPrices(ctx.get('settings'), ctx.get('user'));
+    if (!allowed.allowed) throw new HttpError(allowed.reason, { status: 403, code: 'PRICE_EDIT_NOT_ALLOWED' });
+
+    const id = String(ctx.req.param('id'));
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [id]);
+    if (!product) throw new HttpError('That product does not exist, or has been deleted.', { status: 404, code: 'PRODUCT_NOT_FOUND' });
+    const branch = await resolveBranch(db, ctx, { required: true });
+    const variantId = ctx.req.queryParam('variant_id') ? String(ctx.req.queryParam('variant_id')) : null;
+
+    const existing = await db.first(`SELECT * FROM product_price_overrides
+      WHERE branch_id = ? AND product_id = ? AND is_deleted = 0
+        AND ((? IS NULL AND variant_id IS NULL) OR variant_id = ?)
+      ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+    [String(branch.id), id, variantId, variantId]);
+    if (!existing) {
+      throw new HttpError(`${product.name} has no branch price in ${branch.name} — it sells at the catalogue price there already.`, { status: 404, code: 'NO_OVERRIDE' });
+    }
+
+    // Soft delete, like every other mutable row: the audit below says who removed
+    // it, and the row itself still exists if anybody asks what the price used to be.
+    await db.run("UPDATE product_price_overrides SET is_deleted = 1, updated_by = ?, updated_at = datetime('now') WHERE id = ?",
+      [String(ctx.get('user').id), existing.id]);
+    await recordFromCtx(ctx, {
+      action: 'PRICE_OVERRIDE_REMOVED', entityType: 'PRICE_OVERRIDE', entityId: existing.id,
+      branchId: branch.id, businessId: branch.business_id,
+      before: { perPiece: existing.default_selling_price, pack: existing.pack_price, carton: existing.carton_price, branch: branch.name },
+    });
+    ctx.json({ ok: true, message: `${product.name} now sells at the catalogue price in ${branch.name} again (₦${round2(product.selling_price).toLocaleString('en-NG')} per ${(product.base_unit_name || 'unit').toLowerCase()}).` });
+  });
+
   app.post(`${base}/products`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
@@ -534,8 +684,14 @@ function mount(app, base = '/api') {
       const b = await db.first('SELECT profile_overrides_json FROM businesses WHERE id = ?', [String(businessId)]);
       if (b && b.profile_overrides_json) { try { overrides = JSON.parse(b.profile_overrides_json); } catch (e) { overrides = null; } }
     }
+    // `getProfile` answers null for a code we do not have (it used to fall back to
+    // GENERAL_RETAIL, which made the line below dead code), so this route now
+    // actually 404s as it always intended to.
+    const known = getProfile(code);
+    if (!known) {
+      throw new HttpError(`“${code}” is not a business vertical this system has. It has: ${PROFILE_CODES.join(', ')}.`, { status: 404, code: 'UNKNOWN_PROFILE' });
+    }
     const profile = resolveProfile(code, overrides);
-    if (!profile) throw new HttpError(`“${code}” is not a business profile this system knows.`, { status: 404, code: 'UNKNOWN_PROFILE' });
     ctx.json({ ok: true, ...describeProfile(profile) });
   });
 
