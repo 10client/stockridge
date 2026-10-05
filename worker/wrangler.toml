@@ -112,7 +112,11 @@ DB_NAME = "stockridge-staging"
 [[env.staging.d1_databases]]
 binding = "DB"
 database_name = "stockridge-staging"
-database_id = "32aa519c-a7fb-41d5-bc5b-083d0a0489bc"   # the same database until a staging one is created
+# Its OWN database, not the production one. A staging environment that shares
+# production's data is not a staging environment: it is production with a second
+# URL, and the first thing anybody tries in it is something they would not try
+# in production.
+database_id = "01cfb608-05c0-4477-b867-5275c310132f"
 migrations_dir = "../schema/migrations"
 
 [env.production]

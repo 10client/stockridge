@@ -171,48 +171,57 @@ function configPath() { return path.join(ROOT, WRANGLER_CONFIG); }
 /**
  * Put the database id into wrangler.toml, where it is required.
  *
- * This rewrites whatever id is already there rather than only filling in a blank
- * one: a database that was deleted and recreated comes back with a NEW uuid, and
- * a stale id in the config produces a deploy that binds to a database nobody can
- * see. Rewriting is idempotent — the same id written twice changes nothing.
+ * Rewrites rather than only fills in a blank: a database that was deleted and
+ * recreated comes back with a NEW uuid, and a stale id binds the deployment to a
+ * database nobody can see. Rewriting is idempotent.
+ *
+ * IT TOUCHES TWO SECTIONS, NOT ALL OF THEM.
+ *
+ * The first version replaced every `database_id` in the file, which was correct
+ * while staging and production shared one database and became a silent bug the
+ * moment staging got its own: a routine production deploy would have repointed
+ * staging at the production database, and the next person to try something in
+ * staging would have tried it on real sales.
  */
 function writeDatabaseId(databaseId) {
   const file = configPath();
   const text = fs.readFileSync(file, 'utf8');
 
+  // Split into TOML sections. Each piece begins at a line starting with `[`.
+  const sections = text.split(/(?=^\[)/m);
+  const targets = new Set(['[[d1_databases]]', '[[env.production.d1_databases]]']);
   let changed = 0;
-  const updated = text.replace(
-    /(database_id\s*=\s*)"[^"]*"/g,
-    (match, prefix) => { changed += 1; return `${prefix}"${databaseId}"`; },
-  );
-  // The same id in three places is the expected shape: top level, staging,
-  // production. Fewer than three means one of them was renamed or removed.
+  const seen = [];
+
+  const updated = sections.map((section) => {
+    // The whole first line, trimmed. A regex like `/^\[[^\]]*\]/` stops at the
+    // first `]`, so it reads the header of `[[d1_databases]]` as `[[d1_databases]`
+    // and then matches nothing at all — a silent no-op that would have left the
+    // config untouched while reporting success.
+    const header = String(section.split('\n')[0] || '').trim();
+    if (!targets.has(header)) {
+      // Report what staging points at, so a shared database is visible in the
+      // deploy output rather than discovered later.
+      if (header === '[[env.staging.d1_databases]]') {
+        const name = (section.match(/database_name\s*=\s*"([^"]*)"/) || [])[1];
+        const id = (section.match(/database_id\s*=\s*"([^"]*)"/) || [])[1];
+        seen.push(`${name || 'staging'} (${id || 'unset'})`);
+        if (id === databaseId) {
+          warn(`staging points at the PRODUCTION database (${id}). A staging environment that shares production is not a staging environment.`);
+        }
+      }
+      return section;
+    }
+    return section.replace(/(database_id\s*=\s*)"[^"]*"/g, (match, prefix) => {
+      changed += 1;
+      return `${prefix}"${databaseId}"`;
+    });
+  }).join('');
+
   if (changed === 0) throw new Error(`No database_id line found in ${WRANGLER_CONFIG}`);
   if (updated !== text) fs.writeFileSync(file, updated);
   ok(`database_id set in ${WRANGLER_CONFIG} (${changed} binding${changed === 1 ? '' : 's'})`);
-}
-
-/**
- * Ask the deployment itself whether an administrator already exists.
- *
- * This is not bookkeeping: it decides whether the PIN this run generates is the
- * PIN that will actually work. The seed is INSERT OR IGNORE, so on a redeploy
- * the existing row — and the client's changed PIN — is deliberately left alone.
- * A summary that prints a fresh PIN in that case is worse than printing none,
- * because the operator writes it down, hands it to the client, and it fails.
- */
-function administratorExists() {
-  const res = wrangler(['d1', 'execute', D1_NAME, '--remote', '--config', WRANGLER_CONFIG,
-    "--command=SELECT COUNT(*) AS n FROM users WHERE role = 'ADMIN' AND is_deleted = 0 AND is_active = 1",
-    '--json'], { allowFailure: true });
-  if (res.status !== 0) return null;
-  try {
-    const parsed = JSON.parse(res.output.slice(res.output.indexOf('[')));
-    const n = parsed[0] && parsed[0].results && parsed[0].results[0] ? parsed[0].results[0].n : null;
-    return n == null ? null : Number(n);
-  } catch (e) {
-    return null;
-  }
+  if (seen.length) ok(`left alone: staging → ${seen.join(', ')}`);
 }
 
 function applyMigrations() {

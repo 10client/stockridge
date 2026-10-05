@@ -61,7 +61,19 @@ function mount(app, base = '/api') {
     const settings = ctx.get('settings');
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const groupBy = valid(oneOf(ctx.req.queryParam('group_by') || 'DAY', ['DAY', 'WEEK', 'MONTH', 'BRANCH', 'CASHIER', 'CATEGORY', 'PRODUCT', 'PAYMENT_METHOD', 'SALE_TYPE'], { field: 'Group by' }), 'group_by');
-    const useBranch = branch && ctx.req.queryParam('branch_scope') !== 'all' ? String(branch.id) : null;
+    // A BRANCH FILTER IS ONLY MEANINGFUL INSIDE THE BUSINESS BEING REPORTED.
+    //
+    // The branch is resolved from the caller (their pin, or what they asked for);
+    // the business is resolved separately and may come from an explicit
+    // `business_id`. When those two disagree — an owner who runs two businesses
+    // asking for the one they are not pinned to — applying the pinned branch
+    // produces `branch_id = <company A branch> AND business_id = <company B>`,
+    // which matches nothing and reports zero takings for a company that has some.
+    //
+    // Found exactly that way: an owner with two businesses could not read the
+    // second one's sales report, and the response was a clean 200 with no rows.
+    const branchBelongsToBusiness = branch && String(branch.business_id) === String(business.id);
+    const useBranch = branchBelongsToBusiness && ctx.req.queryParam('branch_scope') !== 'all' ? String(branch.id) : null;
 
     const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?', 's.business_id = ?'];
     const params = [from, to, String(business.id)];

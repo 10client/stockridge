@@ -205,6 +205,126 @@ seed and code returned `200` on Node. All 251 local tests passed throughout.
 `sql-audit --strict` and `name-audit --strict` both exit 0.
 
 # ---------------------------------------------------------------------
+# CHECKPOINT — verified against live Cloudflare D1
+# Last updated: 2026-10-05
+# ---------------------------------------------------------------------
+
+`tools/verify-deployment.js` walks the client's first-run journey over real HTTP
+against a real D1 database and asserts the RESULT of each step. Against staging:
+
+    20 passed, 0 failed in 7s
+
+    health → diagnose (6 checks) → readiness → administrator sign-in →
+    create business → catalogue 20 products → chart of accounts 51 →
+    create owner → owner sign-in → open till → receive 10 units →
+    sell 1 → read the sale back → stock 9 of 10 → dashboard → sales report
+    1 row → close till BALANCED ₦134,000 → sign out → token refused
+
+Production runs the same code on its own database and its own Worker. Its
+`/api/diagnose` reports all six checks passing and `readiness` reports
+`awaiting_first_business`, which is the correct state for handover.
+
+## WHY THIS WAS WORTH DOING: THREE DEFECTS, NONE VISIBLE TO THE TEST SUITE
+
+The suite ran 260/260 throughout. Every one of these was found by running the
+journey against a deployed Worker on D1.
+
+### 1. Sign-out did nothing (security)
+
+`server/middleware/auth.js` checked the session with
+`if (session && session.session_id !== payload.sid)` — which reads as "reject a
+token whose session was replaced" and actually means "accept a token whose
+session was DELETED". Sign-out deletes the row. So the token kept working for its
+full twelve hours, and on a shared till the next cashier inherited the previous
+one's session. Found because the verifier signs out and then asks whether the
+token still works — something nothing in the repository had ever done.
+
+Fixed: a missing session row is now `401 SESSION_REVOKED`, a different one stays
+`401 SESSION_SUPERSEDED`. Covered by `test/integration/sessions.test.js` (5 tests),
+including a deactivated user and a session deleted behind the token's back.
+
+### 2. The cron named two columns that do not exist (silent, unbounded)
+
+The Worker's scheduled handler ran:
+
+    UPDATE user_sessions SET is_deleted = 1 … WHERE expires_at IS NOT NULL …
+    UPDATE branch_devices SET is_active = 0 … WHERE last_seen_at < …
+
+`user_sessions` is (user_id, session_id, issued_at, updated_at) — no `is_deleted`,
+no `expires_at`. `branch_devices` has no `is_active` and no `last_seen_at`. The
+first statement threw, the try/catch logged one line, the second never ran: the
+cron had done nothing since it was scheduled. Every static audit passed, because
+the SQL is well-formed and only wrong about a schema that answers only when you
+execute against it.
+
+Fixed: the statements moved to `worker/src/housekeeping.js`, they use columns that
+exist, and `test/integration/housekeeping.test.js` EXECUTES them against a
+database built from `schema/migrations/`, including the boundary cases. The
+`idempotency.prune` retention rule — documented in `idempotency.js` "for the cron
+handler" and called from nowhere — is now actually called.
+
+### 3. A user created for one business was recorded in another (data integrity)
+
+`POST /api/users` resolved the business BEFORE the branch and passed an options
+object into a parameter that expects a branch row. For the platform administrator
+— who belongs to no business — the business then fell through to
+`client_settings.primary_business_id` and finally to "the oldest live business".
+An owner created for a branch of the SECOND business was stored against the FIRST,
+with the second's branch attached, so their reports and dashboard were scoped to a
+company they did not work for. Confirmed live: that user's sales report returned
+zero rows for a business with a sale.
+
+Fixed, in two places:
+- `server/routes/admin.js` resolves the branch first and derives the business from
+  it — a branch cannot be in two businesses, so this is a fact, not a preference.
+- `server/lib/respond.js` now honours an explicitly requested `business_id` when
+  the caller may reach it (so one owner can run several businesses), and REFUSES
+  one they may not reach with `403 BUSINESS_SCOPE_VIOLATION` rather than silently
+  substituting their own — the "successfully wrong" pattern again.
+- `server/routes/reports.js` no longer applies a branch filter that belongs to a
+  different business than the one being reported, which is what produced a clean
+  200 with no rows for a company that had takings.
+
+Covered by `test/e2e/multi-business.test.js` (3 tests) — the first tests in this
+repository to provision TWO businesses in one deployment, which is the whole point
+of the multi-business half of the product.
+
+## ALSO FIXED
+
+- **`--env` was missing from the deploy tool's wrangler calls**, so a staging
+  deploy could not find a binding declared under `[env.staging]`.
+- **`writeDatabaseId()` rewrote every `database_id` in `wrangler.toml`.** Correct
+  while staging shared production's database; a silent disaster once staging had
+  its own — a routine production deploy would have repointed staging at real
+  sales. It now rewrites only the top-level and production bindings and says out
+  loud if staging points at production. (The first version of the fix matched
+  headers with `/^\[[^\]]*\]/`, which reads `[[d1_databases]]` as
+  `[[d1_databases]` and matched nothing — a no-op reporting success. The probe
+  caught it.)
+- **The diagnose check looked for an administrator named `admin`**, so a
+  deployment seeded with any other username reported a failure. It now finds THE
+  administrator and reports which one, plus the hash format.
+
+## INFRASTRUCTURE
+
+| | |
+|---|---|
+| Production Worker | `stockridge.stockridge.workers.dev` — version `c957e2da-6684-48a6-97ff-369c47b364df` |
+| Production D1 | `stockridge` = `32aa519c-a7fb-41d5-bc5b-083d0a0489bc` |
+| Staging Worker | `stockridge-staging.stockridge.workers.dev` — version `847adf31-502b-4874-81e4-7e31e0392a8b` |
+| Staging D1 | `stockridge-staging` = `01cfb608-05c0-4477-b867-5275c310132f` — **its own database**, so nothing tried in staging touches real takings |
+| Staging sign-in | `stagingadmin` / `70614` |
+| Production sign-in | `admin` / the PIN printed at deploy time |
+
+Staging holds four verification businesses and four sales. That is deliberate:
+staging is for exactly this. **Production holds one administrator and no
+business at all**, which is the handover state.
+
+## TEST STATE
+
+    npm run verify  →  272 tests pass, three static audits clean under --strict
+
+# ---------------------------------------------------------------------
 # CHECKPOINT — the repository is on GitHub, and CI is green
 # Last updated: 2026-10-05
 # ---------------------------------------------------------------------

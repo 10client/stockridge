@@ -450,8 +450,30 @@ function mount(app, base = '/api') {
       throw new HttpError('Only the deployment administrator can create another administrator.', { status: 403, code: 'ADMIN_ONLY' });
     }
 
-    const business = await resolveBusiness(db, ctx, { allowAdminChoice: true, businessId: body.business_id });
-    const branch = await resolveBranch(db, ctx, { allowAdminChoice: true, branchId: body.branch_id, business });
+    // THE BRANCH IS RESOLVED FIRST, BECAUSE THE BUSINESS FOLLOWS FROM IT.
+    //
+    // The previous version passed an options object into `resolveBusiness`'s third
+    // parameter, which is a BRANCH ROW — so the business came from
+    // `options.business_id` (usually undefined), then the caller's pinned
+    // business, then `client_settings.primary_business_id`, and finally "the
+    // oldest live business". For an administrator provisioning a second company,
+    // that last fallback is silently wrong: a user created for a branch of the
+    // NEW business was recorded against the OLD one, with the new branch attached.
+    //
+    // Live consequence, found by tools/verify-deployment.js on staging: that user
+    // then read the other company's reports, because scope is derived from the
+    // business on the user row. It is the same shape of failure as the six
+    // missing-import bugs — a value passed where a different shape was expected,
+    // which no compiler and no static audit in this repository can see.
+    //
+    // `required: false` because an administrator may be creating another
+    // administrator, who belongs to no branch at all.
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const business = await resolveBusiness(db, ctx, branch);
+
+    // An explicit business_id naming a business the caller may reach is honoured
+    // (see resolveBusiness). Naming one they may not reach is refused there, with
+    // BUSINESS_SCOPE_VIOLATION, rather than ignored.
     // A MANAGER or below is PINNED to the caller's own branch: the branch_id in
     // the request is ignored rather than trusted, because that field is the sole
     // scoping truth and letting it be set from a request would let a manager

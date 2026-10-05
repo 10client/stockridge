@@ -41,12 +41,14 @@ import routes from '../../server/routes/index.js';
 import schema from '../../server/lib/schemaInfo';
 import crypto from '../../domain/crypto.js';
 import d1 from './d1.js';
+import housekeeping from './housekeeping.js';
 
 const { createApp } = http;
 const { buildRoutes } = routes;
 const { schemaInfo, appliedMigrationCount } = schema;
 const { hashPin, verifyPin } = crypto;
 const { createD1Database } = d1;
+const { runHousekeeping } = housekeeping;
 
 /** One app per isolate, built lazily: route registration is pure and cheap. */
 let cachedApp = null;
@@ -175,15 +177,16 @@ const worker = {
     const { db } = appFor(env);
     const started = Date.now();
     try {
-      const stale = await db.run(
-        `UPDATE user_sessions SET is_deleted = 1, updated_at = datetime('now')
-          WHERE is_deleted = 0 AND expires_at IS NOT NULL AND expires_at < datetime('now')`,
+      // The statements live in housekeeping.js so that a test executes them
+      // against the real schema. The version written here inline named two
+      // columns that do not exist and threw on every run, invisibly, because
+      // this try/catch turned the error into one log line.
+      const done = await runHousekeeping(db);
+      console.log(
+        `[cron] pruned ${done.sessionsPruned} expired session(s), ${done.idempotencyKeysPruned} idempotency key(s) `
+        + `in ${Date.now() - started}ms`,
       );
-      const staleDevices = await db.run(
-        `UPDATE branch_devices SET is_active = 0, updated_at = datetime('now')
-          WHERE is_active = 1 AND last_seen_at IS NOT NULL AND last_seen_at < datetime('now', '-60 day')`,
-      );
-      console.log(`[cron] sessions expired: ${stale.changes}, devices retired: ${staleDevices.changes} in ${Date.now() - started}ms`);
+      for (const problem of done.errors) console.error(`[cron] ${problem}`);
     } catch (err) {
       console.error('[cron] housekeeping failed:', err && err.message);
     }
@@ -254,32 +257,32 @@ const worker = {
       out.checks.push({ name: 'PIN hashing round-trip', ok: false, error: String(err && err.message) });
     }
 
-    // The sign-in query itself, exactly as server/middleware/auth.js runs it,
-    // plus a structural check of the stored hash. No credential is verified
-    // here — an endpoint that says "that PIN is correct" is a login oracle.
+    // The sign-in query itself, against THE administrator rather than one whose
+    // name this file guessed.
+    //
+    // The first version looked up `env.STOCKRIDGE_ADMIN_USERNAME || 'admin'` and
+    // reported a failure on a deployment seeded with any other username — which
+    // is a legitimate deployment, not a broken one. A readiness check that fails
+    // for a correct configuration teaches an operator to ignore readiness checks.
+    //
+    // No credential is verified here. An endpoint that answers "that PIN is
+    // correct" is a login oracle; this one only reports that the row exists, that
+    // its stored hash is well-formed, and that the lookup finds it.
     try {
-      const username = String(env.STOCKRIDGE_ADMIN_USERNAME || 'admin').trim().toLowerCase();
-      // ORDER BY, not just LIMIT 1: `username` is UNIQUE as stored, but the
-      // lookup is by lower(username), which is NOT unique at the schema level —
-      // 'Admin' and 'admin' can both exist, and an unordered single-row read
-      // would then report whichever one the planner happened to find first.
-      // Ordering makes the answer deterministic and reproducible.
-      const rows = await db.all(
-        'SELECT id, pin_hash, role FROM users WHERE lower(username) = ? AND is_deleted = 0 ORDER BY username LIMIT 1',
-        [username],
+      const row = await db.first(
+        "SELECT id, username, pin_hash, role FROM users WHERE role = 'ADMIN' AND is_deleted = 0 AND is_active = 1 ORDER BY username LIMIT 1",
       );
-      const row = rows[0] || null;
       const parts = row && typeof row.pin_hash === 'string' ? row.pin_hash.split('$') : [];
       out.checks.push({
         name: 'administrator sign-in lookup',
         ok: Boolean(row) && parts.length === 5 && parts[0] === 'pbkdf2' && parts[1] === 'sha256',
-        userFound: Boolean(row),
-        role: row ? row.role : null,
+        username: row ? row.username : null,
         hashFormat: parts.length ? `${parts[0]}/${parts[1]}/${parts[2]}` : 'missing',
       });
     } catch (err) {
       out.checks.push({ name: 'administrator sign-in lookup', ok: false, error: String(err && err.message) });
     }
+
     try {
       const businesses = await db.scalar('SELECT COUNT(*) FROM businesses WHERE is_deleted = 0');
       out.businesses = Number(businesses) || 0;

@@ -162,7 +162,29 @@ async function authenticate(db, token, secret) {
   }
   if (payload.sid) {
     const session = await db.first('SELECT session_id FROM user_sessions WHERE user_id = ?', [String(user.id)]);
-    if (session && session.session_id !== payload.sid) {
+
+    // A MISSING ROW IS A REVOKED TOKEN, AND THIS IS THE ONLY PLACE THAT SAYS SO.
+    //
+    // The check below used to be `if (session && session.session_id !== payload.sid)`,
+    // which reads as "reject a token whose session has been replaced" and
+    // actually means "accept a token whose session has been deleted". Sign-out
+    // deletes the row — so signing out did nothing at all, and on a shared till
+    // the next person inherited the previous cashier's session until the token
+    // expired twelve hours later. A live deployment is where this surfaced: the
+    // token still returned 200 from /api/auth/me after a successful sign-out.
+    //
+    // The comment on the logout route already claimed a missing row is a
+    // rejected token. It was aspirational. Now it is true.
+    //
+    // Safe to be strict because nothing else issues a token: `login` both signs
+    // the token and writes this row, in that order, in one place.
+    if (!session) {
+      throw new HttpError(
+        'You have been signed out. Sign in again to continue.',
+        { status: 401, code: 'SESSION_REVOKED' },
+      );
+    }
+    if (session.session_id !== payload.sid) {
       throw new HttpError(
         'You have been signed out because this account signed in somewhere else. If that was not you, tell a manager — your PIN may be known to somebody else.',
         { status: 401, code: 'SESSION_SUPERSEDED' },

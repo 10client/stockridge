@@ -130,14 +130,40 @@ async function resolveBusiness(db, ctx, branch = null) {
   const scope = ctx.get('scope');
   const requested = ctx.req.queryParam('business_id');
 
-  let businessId = (branch && branch.business_id) || scope.pinnedBusinessId || null;
+  // PRECEDENCE, strongest first:
+  //   1. the business the named branch belongs to — a branch cannot be in two
+  //      businesses, so this is a fact rather than a preference;
+  //   2. an explicitly requested business_id, BUT ONLY IF THE CALLER MAY REACH IT.
+  //      This is what lets one owner run several businesses: without it, the
+  //      request was ignored and the owner was silently shown whichever business
+  //      their row happened to name. The scope check below refuses the rest.
+  //   3. the business on the caller's own row;
+  //   4. the only business in scope, when there is exactly one;
+  //   5. the deployment's recorded primary business;
+  //   6. the oldest live business — the last resort for an unpinned administrator,
+  //      and the fallback that made a wrong assignment look successful.
+  let businessId = (branch && branch.business_id) || null;
+
+  if (requested) {
+    const reachable = scope.allBusinesses || (scope.businessIds && scope.businessIds.has(String(requested)));
+    if (!reachable) {
+      // REFUSED, NOT IGNORED.
+      //
+      // Silently falling back to the caller's own business is the "successfully
+      // wrong" pattern this codebase keeps finding: a 200 with somebody else's
+      // numbers under the label the client asked for. A request that names a
+      // business outside the caller's scope is an error, and says so.
+      throw new HttpError('That business is outside your access.', { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
+    }
+    if (!businessId) businessId = String(requested);
+  }
+  if (!businessId) businessId = scope.pinnedBusinessId || null;
 
   if (!businessId && scope.businessIds && scope.businessIds.size === 1) {
     // Exactly one business in reach: that is unambiguous, so use it rather than
     // making a single-shop merchant answer a question with one possible answer.
     businessId = [...scope.businessIds][0];
   }
-  if (!businessId) businessId = requested;
   if (!businessId && scope.allBusinesses) {
     const settings = await db.first('SELECT primary_business_id FROM client_settings WHERE id = 1');
     businessId = (settings && settings.primary_business_id) || null;
