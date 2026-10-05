@@ -784,3 +784,18 @@ can be *operated*. Both now exist, and both run against a live deployment.
   multi-unit), a warrantied kettle (₦19,500, warranty expiry 2027-10-05).
 - All three environments deployed with these fixes: staging (1 business trading),
   sample and production (admin-only handover state, readiness 6/6).
+
+## Live verification of the till fixes (2026-10-06)
+
+- **A warrantied appliance sold through the real Sell screen on Cloudflare D1:**
+  staging, a scoped owner, the Anker power bank at ₦34,000 → **receipt 000008,
+  status COMPLETED**, read back from `GET /api/sales`. This is the case that twice
+  before ended with "Unknown unit" and then "Invalid time value".
+- **All 25 owner screens walked on the live deployment** after the fixes: every one
+  renders, none blank.
+- **All three environments** render the shell for the administrator (nav 7) and
+  report `no problems`: `sample` and `stockridge` at the admin-only handover state,
+  `stockridge-staging` trading a verification business.
+- Sales rung end to end through the screen, each confirmed by the server: tile
+  (variant, `SQUARE_METRE`, ₦7,600), carton of water (multi-unit, ₦14,400),
+  warrantied kettle (₦19,500, warranty expiry 2027-10-05), power bank on D1 (₦34,000).

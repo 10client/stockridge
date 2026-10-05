@@ -84,6 +84,31 @@ node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles --walk
 | `--expect-nav=N` | fail unless the nav has at least N items (default 1) |
 | `--wait=N` | ms to wait for the app to settle (default 30000) — it polls, it does not sleep and hope |
 
+### Ringing a sale through the screen
+
+```
+node tools/frontend-sale.js --url=https://stockridge-staging.stockridge.workers.dev \
+  --user=<seat> --pin=<pin> --product=Anker
+```
+
+This is the check that asks whether the application can be **operated**, not merely
+rendered: it opens the Sell screen from the navigation, types a product into the
+search box, chooses the result, answers the variant question if one is asked, adds
+the payment, completes the sale, reads the receipt, and then asks the API whether
+that receipt exists. It exits non-zero if a receipt does not come back or the server
+does not have the sale.
+
+It found five defects that 284 passing tests could not see, including a whole
+vertical where nothing could be sold at all (see the checkpoint in `STATUS.md`).
+Run it against a **scoped seat with stock on the shelf**; a seat that can reach more
+than one branch and has not chosen one will be refused by design, and the tool says
+so rather than reporting it as a fault.
+
+Both tools share `tools/lib/page-harness.js` — the awkward part of driving this
+application headlessly is booting it (plain `<script>` tags in page order, a real
+IndexedDB, `matchMedia`, a live server with a token), and that now lives in one
+place.
+
 `--walk` is the useful one after a change: it opens all 25 owner screens (or 21
 manager, 12 staff, 7 admin) and reports the ones that render nothing. A screen
 that deliberately refuses — *"Choose which branch this applies to"* — is reported
