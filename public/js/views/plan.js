@@ -25,7 +25,7 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Subscription'),
-        ui.h('p', { class: 'sub' }, `${SR.state.activeBusiness().name} · the plan this deployment runs on, and what it allows`))));
+        ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · the plan this deployment runs on, and what it allows`))));
 
     const host = ui.h('div', {});
     wrap.appendChild(host);

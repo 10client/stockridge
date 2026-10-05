@@ -51,7 +51,7 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Reports'),
-        ui.h('p', { class: 'sub' }, `${SR.state.activeBusiness().name} · figures derived from the ledger and the stock ledger, never typed in`)),
+        ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · figures derived from the ledger and the stock ledger, never typed in`)),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportCurrent() }, 'Download CSV'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => printCurrent() }, 'Print'))));
@@ -467,7 +467,7 @@
     function printCurrent() {
       if (!lastPayload) { ui.warn('Nothing loaded yet.'); return; }
       const label = (REPORTS.find((r) => r[0] === state.report) || [])[1] || 'Report';
-      const subtitle = `${SR.state.activeBusiness().name}${state.branchScope ? ` · ${SR.state.activeBranchName()}` : ''} · ${state.from} to ${state.to}`;
+      const subtitle = `${SR.state.activeBusinessName()}${state.branchScope ? ` · ${SR.state.activeBranchName()}` : ''} · ${state.from} to ${state.to}`;
       try {
         if (state.report === 'sales') {
           const t = lastPayload.totals || {};

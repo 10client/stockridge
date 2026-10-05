@@ -961,3 +961,83 @@ the app syncs by itself the moment the line returns — reporting the explicit
 `runOnce()`'s bare zero said "nothing was sent" about a sale already in the books.
 
 - `npm run verify` → **290 tests, 290 pass** (was 289; +1 the happy-path sync test).
+
+---
+
+# CHECKPOINT — Stage 6a: THE SUBSCRIPTION SCREEN THAT COULD NOT DRAW ITSELF
+
+## What the user saw
+
+As the platform administrator, opening **Subscription** gave a red block reading
+*"That failed. Cannot read properties of null (reading 'name')"*.
+
+## The cause
+
+```js
+ui.h('p', { class: 'sub' }, `${SR.state.activeBusiness().name} · the plan …`)
+```
+
+`activeBusiness()` returns **null** on any deployment that has no business yet — which
+is the state every fresh installation starts in, and the state an administrator is in
+until they run the first provisioning. Reading `.name` off it threw before the screen
+had drawn anything.
+
+**The same line was in five screens**, and only one of them was in a role's navigation
+at the time:
+
+| screen | route | who reaches it |
+|---|---|---|
+| `plan.js` | `/plan` | OWNER, **ADMIN** ← how it was noticed |
+| `accounting.js` | `/accounting` | OWNER |
+| `reports.js` (×2) | `/reports` | MANAGER, OWNER |
+| `account.js` | `/account` | every role |
+
+An owner or manager on a brand-new deployment would have hit it on their first day.
+All five now use a new `SR.state.activeBusinessName(fallback)`, which returns the
+business's name, or the deployment's own name, or a short true phrase — and can never
+throw.
+
+## Why the smoke walk did not catch it, and now does
+
+A screen that REFUSES ("Open a till first") renders the same red block as a screen
+that BROKE. The walk treated any alert as a deliberate refusal and moved on — so a
+page that could not draw itself passed the walk cleanly. That is how this shipped.
+
+`tools/frontend-smoke.js` now reads the message: `Cannot read propert…`, `is not a
+function`, `is not defined`, `of null`, `of undefined`, `not iterable` and their
+kind are **faults**, and a fault is a **problem** that fails the walk, reported with
+the screen's label and its route.
+
+## Both halves of the probe, run for real
+
+Against a freshly reseeded, business-less database (`.data/adminonly.db`, one admin):
+
+- **With the fix** — all seven administrator destinations render:
+  `Dashboard · Staff · Branches · Businesses · Subscription · Settings · Sync & offline`,
+  the Subscription screen reading *"No business yet · the plan this deployment runs on…"*.
+  **1 seat checked, no problems.**
+- **With the fix reverted** — the same walk reports
+  `! Subscription 69 char That failed. Cannot read properties of null (reading 'name')`
+  and then **`1 problem(s): the Subscription screen (/plan) failed to render itself`**.
+
+## Locked down in CI
+
+`test/unit/frontend-state.test.js` gains two tests:
+
+1. **A deployment with no business yet still names itself** — loads the real
+   `state.js` with `businesses: []`, asserts `activeBusiness()` really is null
+   (so the test is meaningful) and that `activeBusinessName()` returns the
+   deployment's name without throwing.
+2. **No screen dereferences a business that may not exist** — a source scan for
+   `activeBusiness().` / `activeBranch().` anywhere in `public/js`. This is the rule
+   the defect broke, enforced from now on rather than remembered.
+
+Writing that second test immediately found the defect again: an edit earlier in this
+session had left `plan.js` on the old line while I believed it was fixed. A test that
+finds the bug it was written for, twice, in the same hour, is doing its job.
+
+## Verified
+
+- `npm run verify` → **292 tests, 292 pass** (was 290).
+- Administrator walk on an empty deployment: 7 destinations, no problems.
+- The reverted-code run fails, naming the screen and the route.

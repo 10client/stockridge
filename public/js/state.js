@@ -125,6 +125,26 @@
     const b = activeBranch();
     return b ? b.name : (canSeeAllBranches() ? 'All branches' : '—');
   }
+  /**
+   * The active business's NAME, or a phrase that is still true when there is none.
+   *
+   * `activeBusiness()` returns null on a deployment that has no business yet — the
+   * state every fresh installation starts in, and the state an administrator is in
+   * for as long as it takes them to run the first provisioning. Five screens wrote
+   * `${SR.state.activeBusiness().name}` straight into their page subtitle, so on
+   * exactly those deployments they threw `Cannot read properties of null` and the
+   * screen showed "That failed." instead of rendering. The Subscription screen is
+   * in the administrator's own navigation, which is how it was noticed.
+   *
+   * A subtitle is not a place to make a decision about whether a page may exist:
+   * it must never be able to fail the page it introduces.
+   */
+  function activeBusinessName(fallback = 'No business yet') {
+    const b = activeBusiness();
+    if (b && b.name) return b.name;
+    const settings = state.settings || {};
+    return settings.business_name || fallback;
+  }
 
   /**
    * Choose the branch every subsequent request will name.
@@ -304,7 +324,7 @@
     rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager,
     canSeeAllBranches, can,
     feature, featureLabel,
-    businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName,
+    businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,
     setBranch, setBusiness, query,
     saveCart, loadCart, clearCart,
   });

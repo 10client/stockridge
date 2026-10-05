@@ -141,7 +141,7 @@
       about.firstElementChild.appendChild(ui.h('h2', {}, 'About'));
       about.firstElementChild.appendChild(ui.kv([
         ['Build', SR.BUILD],
-        ['Business', (SR.state.activeBusiness && SR.state.activeBusiness().name) || '—'],
+        ['Business', SR.state.activeBusinessName('—')],
         ['Working offline', SR.api.isOnline() ? 'no — you are connected' : 'yes — your work is queued on this device'],
       ]));
       about.firstElementChild.appendChild(ui.h('div', { class: 'row' },

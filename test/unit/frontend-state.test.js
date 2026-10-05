@@ -222,3 +222,60 @@ test('frontend: the navigation is built from routes every role can reach', () =>
     assert.ok(count > 0, `${role} appears in no route's roles list, so that role would see an empty sidebar`);
   }
 });
+
+test('state: a deployment with no business yet still names itself', async () => {
+  // THE SUBTITLE DEFECT. An administrator's first job on a fresh installation is to
+  // create the business, so until they have, there is none — and `activeBusiness()`
+  // returns null. Five screens wrote `${SR.state.activeBusiness().name}` into their
+  // header, so on exactly those deployments they threw before drawing anything and
+  // the screen showed "That failed. Cannot read properties of null (reading 'name')".
+  // The Subscription screen sits in the administrator's own navigation, which is how
+  // it was noticed.
+  const state = loadState({
+    me: {
+      user: { id: 'a1', username: 'admin', role: 'ADMIN', fullName: 'Platform Admin' },
+      scope: { role: 'ADMIN', allBusinesses: true, allBranches: true, businessIds: null, branchIds: null },
+      businesses: [], branches: [],
+      settings: { business_name: 'StockRidge' },
+      featureLabels: {}, vertical: null,
+    },
+  });
+  await state.load({ force: true });
+
+  assert.equal(state.activeBusiness(), null, 'a fresh deployment really has no business — the test is meaningless otherwise');
+  assert.equal(typeof state.activeBusinessName, 'function', 'a subtitle needs a helper that cannot throw');
+  // THE ASSERTION THAT MATTERS: calling it must not throw, and must say something true.
+  assert.equal(state.activeBusinessName(), 'StockRidge', 'with the deployment named, use that');
+  assert.equal(
+    state.activeBusinessName('—'), 'StockRidge',
+    'the fallback is only for a deployment that is not named either',
+  );
+});
+
+test('frontend: no screen dereferences a business that may not exist', () => {
+  // The rule the defect broke, enforced from now on: `activeBusiness()` and
+  // `activeBranch()` are ALLOWED TO RETURN NULL, so their result may be tested but
+  // never dereferenced directly. One `.name` after the call is a page that cannot
+  // render itself on a deployment that has not been provisioned yet.
+  const files = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.js') && entry.name !== 'state.js') files.push(full);
+    }
+  }(path.join(PUBLIC_DIR, 'js')));
+
+  const offenders = [];
+  for (const file of files) {
+    const src = fs.readFileSync(file, 'utf8');
+    for (const m of src.matchAll(/\bactive(Business|Branch)\(\)\s*\.\s*([A-Za-z_$][\w$]*)/g)) {
+      offenders.push(`${path.relative(PUBLIC_DIR, file)}: active${m[1]}().${m[2]}`);
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    `these read a value that can be null, so the screen throws instead of rendering:\n  ${offenders.join('\n  ')}\n`
+    + '    use SR.state.activeBusinessName(), or test the value before reading from it',
+  );
+});

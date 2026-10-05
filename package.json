@@ -2,7 +2,7 @@
   "name": "stockridge",
   "version": "1.0.0",
   "private": true,
-  "description": "StockRidge \u2014 multi-branch, multi-business inventory, POS & back-office platform for the Nigerian retail/wholesale market",
+  "description": "StockRidge — multi-branch, multi-business inventory, POS & back-office platform for the Nigerian retail/wholesale market",
   "type": "commonjs",
   "main": "server/app.js",
   "scripts": {
@@ -32,6 +32,8 @@
     "node": ">=20.11"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0"
+    "better-sqlite3": "^11.10.0",
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^29.1.1"
   }
 }

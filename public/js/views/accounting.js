@@ -50,7 +50,7 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Accounting'),
-        ui.h('p', { class: 'sub' }, `${SR.state.activeBusiness().name} · derived from the ledger, never typed in`)),
+        ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · derived from the ledger, never typed in`)),
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openJournal() }, 'Post a manual journal') : null)));
 

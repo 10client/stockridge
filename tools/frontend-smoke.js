@@ -78,6 +78,26 @@ const DEMO_SEATS = [
 ];
 
 /**
+ * Does this screen's own error message describe a FAULT rather than a refusal?
+ *
+ * A refusal is the app working: "Open a till first", "Only an owner can see this".
+ * A fault is the app broken: a null dereference, an undefined function, a value
+ * that was never there. Both render as a red block with the same heading, so the
+ * difference has to be read out of the text.
+ *
+ * This test exists because a fault hid behind that heading. The Subscription
+ * screen read `activeBusiness().name` for its subtitle, which is null on any
+ * deployment that has no business yet — so it threw, rendered "That failed.
+ * Cannot read properties of null (reading 'name')", and the walk called it a
+ * deliberate refusal and moved on. A screen that cannot draw itself is never
+ * deliberate, and it must not be able to pass a walk.
+ */
+const FAULT_TEXT = /cannot read propert|is not a function|is not defined|of undefined|of null|undefined is not|not iterable|before initialization|out of range|Invalid time value|Cannot convert/i;
+function isFault(alertText) {
+  return Boolean(alertText) && FAULT_TEXT.test(alertText);
+}
+
+/**
  * Boot the real frontend against `origin` and report what the user would see.
  *
  * The booting is the harness's job (tools/lib/page-harness.js). What is left here
@@ -241,6 +261,11 @@ function report(seat, result) {
       if (w.alert) console.log(`            says : ${w.alert}`);
       for (const l of w.newLogs || []) console.log(`            ${l}`);
       if (dead) problems.push(`${seat.label}: the ${w.label} screen rendered nothing${w.thrown ? ` (${w.thrown})` : ''}`);
+      // A screen that drew an error block because IT broke, rather than because it
+      // refused to do what was asked, is a defect — and it used to pass unnoticed.
+      if (!dead && isFault(w.alert)) {
+        problems.push(`${seat.label}: the ${w.label} screen (${w.path || '?'}) failed to render itself — ${w.alert}`);
+      }
     }
   }
 
