@@ -1380,3 +1380,23 @@ Every tool that polls inherits the fix.
 - `tools/frontend-price.js` (new): the whole feature through the real DOM — 6/6, from the
   card, through the form, to the server, and back off again.
 - Four seats, 65 destinations walked by the smoke tool afterwards: no problems.
+
+## Live on Cloudflare D1
+
+The three environments were redeployed with Stage 9 in them, and the same probe run
+against **staging** as the owner — the real Worker, the real D1 database:
+
+```
+✓ the product and its catalogue price      Anker 20000mAh Power Bank · ₦34,000 per unit
+✓ the product page shows a Branch prices card
+✓ the form asks which branch and what price   branch_id, default_selling_price, carton_price
+✓ the card now shows the branch at the new price
+✓ the server holds the branch price        Verify Branch · ₦37,400
+✓ removing it puts the catalogue price back   ₦34,000 per unit again
+```
+
+The first live run **failed four assertions**, and the reason was worth recording: the
+Worker was still running the pre-Stage-9 bundle. The route existed in git and not in the
+deployment — the code was pushed but not yet shipped. That is the difference this
+project's two-backend shape creates, and it is why the deploy step is part of every
+stage rather than an afterthought.
