@@ -1,0 +1,32 @@
+# ---- credentials: never commit these
+.env.deploy
+.env
+*.pem
+.netrc
+.git-credentials
+
+# ---- local databases and their journals
+.data/
+*.db
+*.db-wal
+*.db-shm
+*.db.jwt
+
+# ---- build and tooling noise
+node_modules/
+.wrangler/
+dist/
+coverage/
+*.log
+npm-debug.log*
+
+# ---- editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- generated deployment artefacts
+.data/d1-seed.sql
+.cloudflare-output.txt

@@ -1,0 +1,35 @@
+{
+  "name": "stockridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "StockRidge \u2014 multi-branch, multi-business inventory, POS & back-office platform for the Nigerian retail/wholesale market",
+  "type": "commonjs",
+  "main": "server/app.js",
+  "scripts": {
+    "start": "node server/app.js",
+    "dev": "node server/app.js",
+    "db:migrate": "node tools/migrate.js",
+    "db:seed": "node tools/seed.js",
+    "db:reset": "node tools/migrate.js --reset && node tools/seed.js",
+    "db:reseed": "node tools/reseed.js",
+    "test": "node --test test/unit/ test/integration/ test/e2e/",
+    "db:audit": "node tools/sql-audit.js --strict",
+    "names:audit": "node tools/name-audit.js --strict",
+    "args:audit": "node tools/service-args-audit.js",
+    "verify": "npm run db:audit && npm run names:audit && npm run args:audit && npm test",
+    "worker:dev": "wrangler dev --config worker/wrangler.toml",
+    "worker:migrate": "wrangler d1 migrations apply stockridge --config worker/wrangler.toml",
+    "worker:migrate:remote": "wrangler d1 migrations apply stockridge --remote --config worker/wrangler.toml",
+    "worker:seed": "node tools/d1-seed.js --out=.data/d1-seed.sql",
+    "worker:deploy": "wrangler deploy --config worker/wrangler.toml",
+    "deploy": "node tools/deploy-cloudflare.js",
+    "deploy:dry": "node tools/deploy-cloudflare.js --dry-run",
+    "deploy:reset-pin": "node tools/deploy-cloudflare.js --reset-pin"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0"
+  }
+}

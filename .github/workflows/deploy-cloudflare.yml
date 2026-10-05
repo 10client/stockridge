@@ -1,0 +1,76 @@
+# =====================================================================
+# .github/workflows/deploy-cloudflare.yml
+# =====================================================================
+# MANUAL ONLY, ON PURPOSE.
+#
+# This deploys to production and it can seed an administrator. A workflow that
+# does that on every push to main takes the decision away from the person who
+# should be making it — and the shop floor is the group that pays for a bad
+# deploy at 8am.
+#
+# To enable it, set these repository secrets:
+#
+#   CLOUDFLARE_API_TOKEN    a token with Workers Scripts:Edit and D1:Edit
+#   CLOUDFLARE_ACCOUNT_ID   optional, resolved from the token when absent
+#
+# Then: Actions → "Deploy to Cloudflare" → Run workflow.
+# =====================================================================
+
+name: Deploy to Cloudflare
+
+on:
+  workflow_dispatch:
+    inputs:
+      reset_pin:
+        description: 'Overwrite the administrator PIN (only if it is genuinely lost)'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Everything except the deploy itself'
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The same gates as CI. A deploy that skips them is a deploy nobody
+      # checked, and this is the one step that can brick a shop's morning.
+      - name: Audits and tests
+        run: npm run verify
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.reset_pin }}" = "true" ]; then ARGS="$ARGS --reset-pin"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          node tools/deploy-cloudflare.js $ARGS \
+            || { echo "::error::Deployment failed — the summary above says which step."; exit 1; }
+
+      - name: Report
+        if: always()
+        run: |
+          echo "### Deployment" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Worker: https://stockridge.stockridge.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- Diagnose: https://stockridge.stockridge.workers.dev/api/diagnose" >> $GITHUB_STEP_SUMMARY
+          echo "- Reset PIN: \`${{ inputs.reset_pin }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Dry run: \`${{ inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY

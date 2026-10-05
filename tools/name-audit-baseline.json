@@ -1,0 +1,13 @@
+{
+  "note": "Known false positives for tools/name-audit.js. Every entry is text inside a template-literal interpolation hole — a space in a customer-facing message that happens to look like a call, or a declaration the scanner's literal handling cannot see past. A NEW undefined name that is not listed here fails the audit.",
+  "entries": [
+    { "file": "server/app.js", "name": "StockRidge", "reason": "the string 'StockRidge (not yet provisioned)' inside a template hole" },
+    { "file": "server/routes/admin.js", "name": "item", "reason": "message text 'per item(' inside a template hole" },
+    { "file": "server/routes/finance.js", "name": "WHT", "reason": "message text 'WHT (2%)' inside a template hole" },
+    { "file": "server/routes/reports.js", "name": "requireVal", "reason": "declared at reports.js:672; the declaration sits past a template the scanner mis-lexes" },
+    { "file": "server/routes/reports.js", "name": "recordTarget", "reason": "declared at reports.js:680; same tail" },
+    { "file": "server/routes/till.js", "name": "withheld", "reason": "message text 'WHT withheld (' inside a template hole" },
+    { "file": "server/services/salesService.js", "name": "minute", "reason": "message text ' minute(s)' inside a template hole" },
+    { "file": "domain/hashChain.js", "name": "NULL", "reason": "message text 'NULL (genesis)' inside a template hole" }
+  ]
+}

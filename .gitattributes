@@ -1,0 +1,24 @@
+# Every text file is stored with LF, checked out with LF. A Windows editor
+# changing line endings rewrites every file in the diff and hides the real change.
+* text=auto eol=lf
+
+# SQL is read by two runtimes; a stray CR is a syntax error in one of them.
+*.sql text eol=lf
+
+# Shell scripts and CI definitions must keep LF, or they fail on Linux runners.
+*.sh  text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Images are binary: never diff, never normalise.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+
+# Generated or vendored files are not reviewed by hand.
+package-lock.json -diff linguist-generated

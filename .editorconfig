@@ -1,0 +1,23 @@
+# Keeps editors from re-formatting files they do not own. The two-space indent
+# is not a style preference here — it is what every file in this repository
+# already uses, and a 4-space reindent of a 500-line route module produces a
+# diff in which the real change is invisible.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown line breaks are meaningful: two trailing spaces are a hard break.
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

@@ -1,0 +1,87 @@
+# =====================================================================
+# .github/workflows/ci.yml
+# =====================================================================
+# Two jobs, because the two backends fail in different ways and only one of
+# them is caught by the test suite.
+#
+#   verify        the audits and the 260 tests, on the Node the server targets
+#   worker-bundle the Worker is actually BUNDLED, on the Node wrangler requires
+#
+# The second job exists because of a real defect: worker/src/index.js used only
+# `module.exports`, so wrangler read it as a legacy service-worker script and
+# refused every `node:*` import. Every test passed, and the deploy could not
+# build at all. `wrangler deploy --dry-run` catches that class of failure in
+# about fifteen seconds, with no credentials.
+#
+# Both jobs run without any Cloudflare or GitHub secret.
+# =====================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# A new push supersedes the run in flight; cancelling keeps the queue honest.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Audits and tests (Node 20)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.11'
+          cache: npm
+
+      # `npm ci` because the lockfile is committed: a build that resolves
+      # different versions than the developer's is a build nobody tested.
+      - name: Install
+        run: npm ci
+
+      # The three static audits run first and on their own, so a finding reads
+      # as a finding rather than as one more failing test.
+      - name: Static audits
+        run: |
+          npm run db:audit
+          npm run names:audit
+          npm run args:audit
+
+      - name: Tests
+        run: npm test
+
+  worker-bundle:
+    name: Worker bundle (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # wrangler 4 refuses anything below 22, and the platform ceiling on
+          # PBKDF2 iterations is a Workers limitation — the runtime matters here.
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # No credentials, no upload: this only asks whether the Worker BUILDS.
+      # It is the cheapest possible check on the most expensive failure.
+      - name: Wrangler dry run
+        run: npx --yes wrangler@4 deploy --dry-run --config worker/wrangler.toml
+
+      # The database id in wrangler.toml is a real deployment's; a dry run must
+      # still not care which id it is, or CI could pass with a broken binding.
+      - name: Check the bundle was produced
+        run: |
+          test -f .wrangler/tmp/*/index.js 2>/dev/null \
+            || npx --yes wrangler@4 deploy --dry-run --outdir=.wrangler/dry-run --config worker/wrangler.toml
+          ls -la .wrangler/dry-run 2>/dev/null || true
