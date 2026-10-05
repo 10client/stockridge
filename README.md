@@ -9,7 +9,9 @@ StockRidge is an **offline-first PWA**: an SQLite database on the server or in
 the browser's device storage, and Cloudflare D1 online. A branch keeps selling
 when the network drops, and reconciles when it returns.
 
-Live deployment: **https://stockridge.stockridge.workers.dev**
+Live sample: **https://sample.stockridge.workers.dev** — a clean deployment with
+one administrator and nothing else, so you can create a business and watch
+provisioning build it. Production: `stockridge.stockridge.workers.dev`.
 
 ---
 
@@ -93,7 +95,8 @@ Requires **Node 22 or newer** (wrangler 4 refuses older) and a Cloudflare API
 token in `.env.deploy` — see `.env.deploy.example` and copy it.
 
 ```bash
-node tools/deploy-cloudflare.js
+node tools/deploy-cloudflare.js              # production (the default config)
+node tools/deploy-cloudflare.js --env=sample # → sample.stockridge.workers.dev
 ```
 
 One command, seven steps, idempotent: verify the token and resolve the account →
@@ -110,6 +113,7 @@ Useful flags:
 | `--skip-seed` | Never touch the administrator row |
 | `--reset-pin` | **Overwrite** the administrator's PIN hash (see below) |
 | `--pin=48213` | Choose the PIN instead of generating one |
+| `--env=sample` | Deploy an environment from `worker/wrangler.toml` to **its own Worker and its own database** |
 
 ### The first run
 

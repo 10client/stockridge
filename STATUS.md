@@ -205,6 +205,71 @@ seed and code returned `200` on Node. All 251 local tests passed throughout.
 `sql-audit --strict` and `name-audit --strict` both exit 0.
 
 # ---------------------------------------------------------------------
+# CHECKPOINT — three deployments, each with one administrator
+# Last updated: 2026-10-05
+# ---------------------------------------------------------------------
+
+| Environment | URL | Database | State |
+|---|---|---|---|
+| **sample** | **https://sample.stockridge.workers.dev** | `stockridge-sample` = `fd72e95b-c0c8-4073-8aba-d3ca5919b107` | 6/6 diagnose, `awaiting_first_business` |
+| production | https://stockridge.stockridge.workers.dev | `stockridge` = `32aa519c-a7fb-41d5-bc5b-083d0a0489bc` | 6/6 diagnose, `awaiting_first_business` |
+| staging | https://stockridge-staging.stockridge.workers.dev | `stockridge-staging` = `abf164d9-f3bb-4e56-9a9f-addd795013f7` | 6/6 diagnose, `awaiting_first_business` |
+
+Every one of them holds exactly: **1 user** (an `ADMIN`, no business, no branch),
+10 withholding rates, 1 settings row. No businesses, no branches, no products, no
+sales, no other accounts.
+
+Verified at the database level on `sample`:
+
+    users 1 | businesses 0 | branches 0 | products 0 | sales 0
+    admins 1 | wht_rates 10 | client_settings 1
+    the only user: admin / ADMIN / business NULL / branch NULL
+
+`sample` is the deployment to show a prospective client: a real deployment on its
+own database, not a demo mode, so they can set their business up in it and keep it.
+
+## Sign-ins
+
+| Deployment | Username | PIN |
+|---|---|---|
+| sample | `admin` | `48213` |
+| production | `admin` | the PIN printed at deploy time (held by the operator) |
+| staging | `admin` | `70614` |
+
+## WHAT CHANGED
+
+**`tools/deploy-cloudflare.js` gained `--env`.** It previously could only deploy
+the default (production) configuration — a real gap, because every wrangler
+command below the top level needs `--env` to see a binding declared inside an
+environment, and the failure reads "Couldn't find a D1 DB with the name or binding
+'x' in your wrangler.toml file", which sounds like a missing binding rather than a
+missing flag.
+
+- `D1_NAME` is derived from the environment (`stockridge`, `stockridge-sample`,
+  `stockridge-staging`) so a sample can never write to production.
+- `writeDatabaseId()` targets the section for **the environment being deployed**,
+  and reports which other environments it left alone. Its history is worth
+  recording: the first version rewrote every `database_id` in the file (correct
+  while they all shared one database, and a silent disaster once they did not);
+  the second hard-coded "top level and production" (right for production, wrong
+  for everything else); the third derives it.
+- The smoke test now **identifies the deployment before judging it**. Waiting for
+  a URL to answer is not enough: `sample.stockridge.workers.dev` was answered by a
+  legacy Worker of that name still warm at this edge, which has no
+  `/api/auth/login` at all, and the first run reported that as a sign-in failure.
+  It now requires the runtime marker and the PIN round-trip check that only this
+  application has, and names what answered when it gives up.
+
+## A NOTE ON `sample.stockridge.workers.dev`
+
+The account already had a Worker called `sample` — an earlier generation of this
+project. The deploy **replaced that script**, so the name now serves this
+application. For roughly the first minute after deploying, requests for that
+hostname can still be answered by the old version from a warm isolate. That is
+propagation, not failure, and it is why the deploy tool retries and now checks
+identity rather than mere reachability.
+
+# ---------------------------------------------------------------------
 # CHECKPOINT — verified against live Cloudflare D1
 # Last updated: 2026-10-05
 # ---------------------------------------------------------------------

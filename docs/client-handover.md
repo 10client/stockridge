@@ -11,8 +11,18 @@ node tools/deploy-cloudflare.js
 Confirm the summary says `readiness : awaiting_first_business` and write down the
 PIN. Then open two things in a browser and leave them there:
 
-- `https://stockridge.stockridge.workers.dev/api/diagnose` — every check must pass
-- `https://stockridge.stockridge.workers.dev` — the app itself
+- `https://<deployment>/api/diagnose` — every check must pass
+- `https://<deployment>` — the app itself
+
+A deployment you can point a client at without preparing anything:
+**https://sample.stockridge.workers.dev** (administrator `admin`, PIN `48213`).
+It is a real deployment on its own database, not a demo mode, so a client can set
+their business up in it and keep it.
+
+Before handing over a deployment that somebody has already tried, check whether it
+is still clean — `/api/health/ready` should say `awaiting_first_business`, and
+`GET /api/businesses` should return an empty list. If it is not, recreate the
+database and deploy again; see [deployment.md](deployment.md).
 
 ## The handover state, and why it looks empty
 

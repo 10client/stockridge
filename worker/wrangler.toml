@@ -116,7 +116,30 @@ database_name = "stockridge-staging"
 # production's data is not a staging environment: it is production with a second
 # URL, and the first thing anybody tries in it is something they would not try
 # in production.
-database_id = "01cfb608-05c0-4477-b867-5275c310132f"
+database_id = "abf164d9-f3bb-4e56-9a9f-addd795013f7"
+migrations_dir = "../schema/migrations"
+
+# ---------------------------------------------------------------------
+# SAMPLE — a clean deployment to show a prospective client.
+#
+# This is the one to point somebody at: `sample.stockridge.workers.dev` answers
+# with ONE administrator and nothing else, so the first thing a visitor does is
+# create their own business and watch provisioning build a chart of accounts,
+# categories, price lists and a starter catalogue for their vertical.
+#
+# IT HAS ITS OWN DATABASE. A sample that shares production's data is not a
+# sample; it is production with a second URL, and the first thing anybody tries
+# in it is something they would not try in production.
+# ---------------------------------------------------------------------
+[env.sample]
+name = "sample"
+[env.sample.vars]
+ENVIRONMENT = "sample"
+DB_NAME = "stockridge-sample"
+[[env.sample.d1_databases]]
+binding = "DB"
+database_name = "stockridge-sample"
+database_id = "fd72e95b-c0c8-4073-8aba-d3ca5919b107"
 migrations_dir = "../schema/migrations"
 
 [env.production]

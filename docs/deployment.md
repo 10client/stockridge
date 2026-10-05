@@ -137,19 +137,48 @@ reading a column one release before dropping it — or rollback will not save yo
 
 ## Environments
 
-`worker/wrangler.toml` defines `staging` and `production`, and by default both
-point at the same database. Point staging at its own database before using it to
-try anything you would not do in production:
+Each environment in `worker/wrangler.toml` is a separate Worker with its own D1
+database, and `--env` is what selects one. **Every environment has its own
+database on purpose** — an environment that shares production's data is not a
+separate environment, it is production with a second URL, and the first thing
+anybody tries in it is something they would not try in production.
+
+| `--env` | Worker | URL | Database |
+|---|---|---|---|
+| *(none)* | `stockridge` | https://stockridge.stockridge.workers.dev | `stockridge` |
+| `sample` | `sample` | https://sample.stockridge.workers.dev | `stockridge-sample` |
+| `staging` | `stockridge-staging` | https://stockridge-staging.stockridge.workers.dev | `stockridge-staging` |
 
 ```bash
-npx wrangler d1 create stockridge-staging
-# put the printed uuid in the env.staging d1_databases block
-node tools/deploy-cloudflare.js                # deploy the staging env
+node tools/deploy-cloudflare.js --env=sample --pin=48213
 ```
 
-The production deployment's URL is
-**https://stockridge.stockridge.workers.dev**; a staging deploy lands on the
-`name` in the staging block (`stockridge-staging`), which is a separate Worker.
+The tool creates the database if it does not exist, writes its id into the
+matching `[[env.<name>.d1_databases]]` block, and reports which other
+environments it left alone. It only ever rewrites the section for the
+environment it is deploying to.
+
+**`sample` is the one to show a prospective client.** It holds one administrator
+and nothing else, so their first act is to create their own business and watch
+provisioning build a chart of accounts, categories, price lists and a starter
+catalogue for the vertical they choose.
+
+### When every environment is admin-only
+
+All three currently hold exactly one administrator, one withholding schedule and
+one settings row. `readiness` reports `awaiting_first_business` on each, which is
+the correct handover state, not a fault.
+
+To put a deployment back into that state after somebody has tried it, delete the
+database and deploy again — the tool recreates it, migrates it and seeds the
+administrator:
+
+```bash
+# get the uuid: npx wrangler d1 list
+curl -X DELETE -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/<uuid>"
+node tools/deploy-cloudflare.js --env=sample --pin=48213
+```
 
 ## Environments and secrets, in one table
 

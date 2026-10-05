@@ -21,6 +21,11 @@ name: Deploy to Cloudflare
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: 'Which environment in wrangler.toml (blank = production)'
+        type: choice
+        options: ['', sample, staging, production]
+        default: ''
       reset_pin:
         description: 'Overwrite the administrator PIN (only if it is genuinely lost)'
         type: boolean
@@ -60,6 +65,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           ARGS=""
+          # `production` is an explicit block in wrangler.toml AND the default
+          # configuration; --env=production works, but blank is the truthful
+          # "the default target" and is what an ordinary deploy uses.
+          ENV="${{ inputs.environment }}"
+          if [ -n "$ENV" ] && [ "$ENV" != "production" ]; then ARGS="$ARGS --env=$ENV"; fi
           if [ "${{ inputs.reset_pin }}" = "true" ]; then ARGS="$ARGS --reset-pin"; fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
           node tools/deploy-cloudflare.js $ARGS \
@@ -70,7 +80,9 @@ jobs:
         run: |
           echo "### Deployment" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Worker: https://stockridge.stockridge.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- Environment: \`${{ inputs.environment || 'production' }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Production: https://stockridge.stockridge.workers.dev" >> $GITHUB_STEP_SUMMARY
+          echo "- Sample: https://sample.stockridge.workers.dev" >> $GITHUB_STEP_SUMMARY
           echo "- Diagnose: https://stockridge.stockridge.workers.dev/api/diagnose" >> $GITHUB_STEP_SUMMARY
           echo "- Reset PIN: \`${{ inputs.reset_pin }}\`" >> $GITHUB_STEP_SUMMARY
           echo "- Dry run: \`${{ inputs.dry_run }}\`" >> $GITHUB_STEP_SUMMARY

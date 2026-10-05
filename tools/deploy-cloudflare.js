@@ -40,16 +40,37 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { randomBytes } = require('node:crypto');
 
-const ROOT = path.resolve(__dirname, '..');
-const WRANGLER_CONFIG = path.join('worker', 'wrangler.toml');
-const D1_NAME = 'stockridge';
-
+// Argument parsing comes first: the environment decides the database name and the
+// config section below, so it has to exist before they are computed.
 const args = process.argv.slice(2);
 const has = (flag) => args.includes(flag);
 const valueOf = (flag) => {
   const hit = args.find((a) => a.startsWith(`${flag}=`));
   return hit ? hit.split('=').slice(1).join('=') : null;
 };
+
+const ROOT = path.resolve(__dirname, '..');
+const WRANGLER_CONFIG = path.join('worker', 'wrangler.toml');
+
+// ---------------------------------------------------------------------
+// WHICH ENVIRONMENT
+//
+// `--env=sample` targets the `[env.sample]` block in wrangler.toml: its own
+// Worker name (and therefore its own *.workers.dev URL) and its own D1 database.
+// Without it, the top-level configuration is deployed — which is production.
+//
+// This matters more than it looks. Every wrangler command below the top level
+// needs `--env` or it cannot see a binding declared inside an environment, and
+// the failure reads "Couldn't find a D1 DB with the name or binding 'x' in your
+// wrangler.toml file" — which sounds like a missing binding rather than a missing
+// flag.
+// ---------------------------------------------------------------------
+const ENV_NAME = valueOf('--env');
+const IS_DEFAULT_ENV = !ENV_NAME;
+const ENV_FLAG = ENV_NAME ? ['--env', ENV_NAME] : [];
+
+/** Two different D1 names on purpose: a sample must not write to production. */
+const D1_NAME = IS_DEFAULT_ENV ? 'stockridge' : `stockridge-${ENV_NAME}`;
 
 // ---------------------------------------------------------------------
 // configuration
@@ -175,58 +196,90 @@ function configPath() { return path.join(ROOT, WRANGLER_CONFIG); }
  * recreated comes back with a NEW uuid, and a stale id binds the deployment to a
  * database nobody can see. Rewriting is idempotent.
  *
- * IT TOUCHES TWO SECTIONS, NOT ALL OF THEM.
+ * IT TOUCHES EXACTLY ONE SECTION, and which one depends on where it is deploying.
  *
- * The first version replaced every `database_id` in the file, which was correct
- * while staging and production shared one database and became a silent bug the
- * moment staging got its own: a routine production deploy would have repointed
- * staging at the production database, and the next person to try something in
- * staging would have tried it on real sales.
+ * The first version replaced every `database_id` in the file — correct while
+ * every environment shared one database, and a silent disaster once they did not:
+ * a routine production deploy would have repointed staging at real sales. The
+ * second version hard-coded "top level and production", which is right for a
+ * production deploy and wrong for every other environment. This one derives the
+ * section from the environment being deployed, which is the only thing that is
+ * true in general.
  */
+function dbSectionHeader() {
+  return ENV_NAME ? `[[env.${ENV_NAME}.d1_databases]]` : '[[d1_databases]]';
+}
+
 function writeDatabaseId(databaseId) {
   const file = configPath();
   const text = fs.readFileSync(file, 'utf8');
+  const target = dbSectionHeader();
 
-  // Split into TOML sections. Each piece begins at a line starting with `[`.
+  // The whole first line of each section, trimmed. A regex like `/^\[[^\]]*\]/`
+  // stops at the first `]`, so it reads `[[d1_databases]]` as `[[d1_databases]`
+  // and then matches nothing at all — a silent no-op that reports success.
   const sections = text.split(/(?=^\[)/m);
-  const targets = new Set(['[[d1_databases]]', '[[env.production.d1_databases]]']);
   let changed = 0;
-  const seen = [];
+  const others = [];
 
   const updated = sections.map((section) => {
-    // The whole first line, trimmed. A regex like `/^\[[^\]]*\]/` stops at the
-    // first `]`, so it reads the header of `[[d1_databases]]` as `[[d1_databases]`
-    // and then matches nothing at all — a silent no-op that would have left the
-    // config untouched while reporting success.
     const header = String(section.split('\n')[0] || '').trim();
-    if (!targets.has(header)) {
-      // Report what staging points at, so a shared database is visible in the
-      // deploy output rather than discovered later.
-      if (header === '[[env.staging.d1_databases]]') {
-        const name = (section.match(/database_name\s*=\s*"([^"]*)"/) || [])[1];
-        const id = (section.match(/database_id\s*=\s*"([^"]*)"/) || [])[1];
-        seen.push(`${name || 'staging'} (${id || 'unset'})`);
-        if (id === databaseId) {
-          warn(`staging points at the PRODUCTION database (${id}). A staging environment that shares production is not a staging environment.`);
-        }
+
+    if (header === target) {
+      const next = section.replace(/(database_id\s*=\s*)"[^"]*"/g, (match, prefix) => {
+        changed += 1;
+        return `${prefix}"${databaseId}"`;
+      });
+      if (changed === 0) {
+        // The section exists but has no database_id line to rewrite: created by
+        // hand and left incomplete. Say so rather than deploying against nothing.
+        throw new Error(`The ${target} block in ${WRANGLER_CONFIG} has no database_id line to set.`);
       }
-      return section;
+      return next;
     }
-    return section.replace(/(database_id\s*=\s*)"[^"]*"/g, (match, prefix) => {
-      changed += 1;
-      return `${prefix}"${databaseId}"`;
-    });
+
+    if (/^\[\[env\.[a-z0-9_-]+\.d1_databases\]\]$/i.test(header)) {
+      const name = (section.match(/database_name\s*=\s*"([^"]*)"/) || [])[1];
+      const id = (section.match(/database_id\s*=\s*"([^"]*)"/) || [])[1];
+      others.push(`${header.replace(/^\[\[env\.|\.d1_databases\]\]$/g, '')} → ${name || 'unnamed'} (${id || 'unset'})`);
+    }
+    return section;
   }).join('');
 
-  if (changed === 0) throw new Error(`No database_id line found in ${WRANGLER_CONFIG}`);
   if (updated !== text) fs.writeFileSync(file, updated);
-  ok(`database_id set in ${WRANGLER_CONFIG} (${changed} binding${changed === 1 ? '' : 's'})`);
-  if (seen.length) ok(`left alone: staging → ${seen.join(', ')}`);
+  ok(`database_id set for ${ENV_NAME ? `env "${ENV_NAME}"` : 'the default (production)'} in ${WRANGLER_CONFIG}`);
+  if (others.length) ok(`other environments untouched: ${others.join('; ')}`);
+  if (others.some((o) => o.includes(databaseId))) {
+    warn('one of those environments points at THIS database — a sample or staging environment sharing production data is not a separate environment.');
+  }
+}
+
+/**
+ * Ask the deployment itself whether an administrator already exists.
+ *
+ * This decides whether the PIN this run generates is the PIN that will work. The
+ * seed is INSERT OR IGNORE, so on a redeploy the existing row — and the client's
+ * changed PIN — is deliberately left alone. A summary that prints a fresh PIN in
+ * that case is worse than printing none: the operator writes it down, hands it to
+ * the client, and it fails.
+ */
+function administratorExists() {
+  const res = wrangler(['d1', 'execute', D1_NAME, '--remote', '--config', WRANGLER_CONFIG, ...ENV_FLAG,
+    "--command=SELECT COUNT(*) AS n FROM users WHERE role = 'ADMIN' AND is_deleted = 0 AND is_active = 1",
+    '--json'], { allowFailure: true });
+  if (res.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(res.output.slice(res.output.indexOf('[')));
+    const row = parsed[0] && parsed[0].results && parsed[0].results[0];
+    return row && row.n != null ? Number(row.n) : null;
+  } catch (e) {
+    return null;
+  }
 }
 
 function applyMigrations() {
   log('3/7', 'Applying migrations to D1 (the same .sql files Node applies)');
-  const res = wrangler(['d1', 'migrations', 'apply', D1_NAME, '--remote', '--config', WRANGLER_CONFIG]);
+  const res = wrangler(['d1', 'migrations', 'apply', D1_NAME, '--remote', '--config', WRANGLER_CONFIG, ...ENV_FLAG]);
   const summary = (res.output.match(/Migrations? to be applied:[\s\S]*?(?=\n\n|$)/) || [res.output.match(/No migrations to apply\.|✅[^\n]*/) || []])[0];
   ok(String(summary || 'applied').trim().split('\n').slice(0, 12).join('\n      '));
 }
@@ -256,7 +309,7 @@ function seedAdministrator() {
   if (gen.status !== 0) throw new Error(`d1-seed failed:\n${gen.stderr || gen.stdout}`);
   ok('seed SQL generated (settings row, withholding rates, one ADMIN)');
 
-  const res = wrangler(['d1', 'execute', D1_NAME, '--remote', '--config', WRANGLER_CONFIG, `--file=${path.relative(ROOT, seedFile)}`]);
+  const res = wrangler(['d1', 'execute', D1_NAME, '--remote', '--config', WRANGLER_CONFIG, ...ENV_FLAG, `--file=${path.relative(ROOT, seedFile)}`]);
   const tail = res.output.replace(/\s+/g, ' ');
   const wrote = (tail.match(/rows_written\W+(\d+)/) || [])[1];
   ok(`executed against D1${wrote != null ? ` (${wrote} row(s) written)` : ''}`);
@@ -275,7 +328,7 @@ function setJwtSecret() {
   // ever changes. A stable secret is what keeps a 12-hour shop-day token valid
   // across a deploy.
   const existing = process.env.STOCKRIDGE_JWT_SECRET || randomBytes(48).toString('base64url');
-  const res = wrangler(['secret', 'put', 'JWT_SECRET', '--config', WRANGLER_CONFIG], { input: `${existing}\n` });
+  const res = wrangler(['secret', 'put', 'JWT_SECRET', '--config', WRANGLER_CONFIG, ...ENV_FLAG], { input: `${existing}\n` });
   if (/error/i.test(res.output) && !/Success/i.test(res.output)) warn(res.output.slice(-300));
   else ok('JWT_SECRET set (generated for this deployment)');
   return existing;
@@ -284,7 +337,7 @@ function setJwtSecret() {
 function deployWorker() {
   log('6/7', 'Deploying the Worker (API + PWA from one deployment)');
   if (has('--dry-run')) { warn('dry run: not deploying'); return null; }
-  const res = wrangler(['deploy', '--config', WRANGLER_CONFIG]);
+  const res = wrangler(['deploy', '--config', WRANGLER_CONFIG, ...ENV_FLAG]);
   const url = (res.output.match(/https:\/\/[a-z0-9.-]+\.workers\.dev/) || [])[0] || null;
   const size = (res.output.match(/Total Upload: [^\n]+/) || [])[0];
   ok(size || 'uploaded');
@@ -306,31 +359,48 @@ async function smokeTest(baseUrl, { pinEffective = null } = {}) {
     return { status: res.status, json };
   };
 
-  const health = await get('/api/health');
-  if (health.status !== 200) problems.push(`/api/health → ${health.status}`);
-  else ok(`health: up (${health.json && health.json.service})`);
-
-  // A NEW DEPLOYMENT TAKES TENS OF SECONDS TO REACH EVERY EDGE LOCATION.
+  // ---- IDENTITY FIRST: is the thing answering this URL OUR deployment?
   //
-  // A smoke test that runs immediately after `wrangler deploy` can be answered
-  // by the PREVIOUS version still warm in the isolate that serves this machine,
-  // which is how a fixed deployment was once reported as still broken. Retrying
-  // is not papering over a failure — the deployment genuinely is not finished
-  // propagating — so the retry is bounded and says so when it gives up.
+  // A *.workers.dev URL is a stable name, so a deploy can be answered by the
+  // PREVIOUS version — or, on an account that already had a Worker with this
+  // name, by a completely different application. Both happened: a fixed
+  // deployment was reported as still broken, and then `sample` was reported as
+  // failing sign-in when the legacy Worker of that name was still warm at this
+  // edge and had no /api/auth/login at all.
+  //
+  // Waiting on "did it answer" is not enough. This waits on "did OUR code
+  // answer", identified by the runtime marker and the PIN round-trip check that
+  // only this application has, and says plainly what answered when it gives up.
+  const isOurs = (res) => res.status === 200 && res.json
+    && res.json.runtime === 'cloudflare-workers'
+    && Array.isArray(res.json.checks)
+    && res.json.checks.some((c) => c.name === 'PIN hashing round-trip');
+
   let diagnose = await get('/api/diagnose');
-  for (let attempt = 2; attempt <= 8 && diagnose.status !== 200; attempt += 1) {
-    console.log(`      … version not live at this edge yet (attempt ${attempt}/8), waiting 15s`);
+  for (let attempt = 2; attempt <= 8 && !isOurs(diagnose); attempt += 1) {
+    const who = diagnose.json && diagnose.json.service ? `"${diagnose.json.service}"` : `HTTP ${diagnose.status}`;
+    console.log(`      … this URL is answering as ${who}, not StockRidge yet (attempt ${attempt}/8), waiting 15s`);
     await new Promise((r) => { setTimeout(r, 15000); });
     diagnose = await get('/api/diagnose');
   }
   results.diagnose = diagnose.json;
-  if (diagnose.status !== 200) {
-    const failed = ((diagnose.json && diagnose.json.checks) || []).filter((c) => !c.ok)
-      .map((c) => `${c.name}${c.error ? `: ${c.error}` : ''}`);
-    problems.push(`/api/diagnose → ${diagnose.status}: ${failed.length ? failed.join(' | ') : JSON.stringify(diagnose.json).slice(0, 300)}`);
+
+  if (!isOurs(diagnose)) {
+    const who = diagnose.json && diagnose.json.service
+      ? `Another application named "${diagnose.json.service}"`
+      : `HTTP ${diagnose.status} with no StockRidge markers`;
+    problems.push(`the URL ${baseUrl} is not answering as this deployment: ${who}. `
+      + 'Either the new version has not reached this edge yet, or another Worker owns this name.');
   } else {
-    const checks = ((diagnose.json && diagnose.json.checks) || []).length;
-    ok(`readiness: ${checks} checks pass (schema, migrations, administrator, PIN hashing, sign-in lookup)`);
+    const checks = diagnose.json.checks;
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length) {
+      problems.push(`/api/diagnose: ${failed.map((c) => `${c.name}${c.error ? `: ${c.error}` : ''}`).join(' | ')}`);
+    } else {
+      const health = await get('/api/health');
+      ok(health.status === 200 ? `health: up (${health.json.service})` : `health: HTTP ${health.status}`);
+      ok(`readiness: ${checks.length} checks pass (schema, migrations, administrator, PIN hashing, sign-in lookup)`);
+    }
   }
 
   // Readiness is a lifecycle report, not a pass/fail: a handover deployment is
@@ -405,6 +475,7 @@ async function smokeTest(baseUrl, { pinEffective = null } = {}) {
 
 async function main() {
   console.log('StockRidge — Cloudflare deployment');
+  console.log(`  target: ${ENV_NAME ? `environment "${ENV_NAME}"` : 'production (the default configuration)'}`);
   console.log('──────────────────────────────────────────────────────────');
 
   await verifyToken();
@@ -421,6 +492,7 @@ async function main() {
   console.log('\n──────────────────────────────────────────────────────────');
   console.log('Deployment summary');
   console.log(`  account       : ${ACCOUNT_ID}`);
+  console.log(`  environment   : ${ENV_NAME || 'production (default)'}`);
   console.log(`  D1 database   : ${D1_NAME} (${databaseId})`);
   console.log(`  Worker        : ${url || '(dry run)'}`);
   const lifecycle = smoke.readiness && smoke.readiness.status;
