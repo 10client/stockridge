@@ -46,13 +46,17 @@ jobs:
       - name: Install
         run: npm ci
 
-      # The three static audits run first and on their own, so a finding reads
-      # as a finding rather than as one more failing test.
+      # The static audits run first and on their own, so a finding reads as a
+      # finding rather than as one more failing test. The capability audit is the
+      # newest: it compares the schema against what actually writes to it, and
+      # fails when a migration declares a table that no code and no seed can put a
+      # row in — a capability that would reach a customer as an empty screen.
       - name: Static audits
         run: |
           npm run db:audit
           npm run names:audit
           npm run args:audit
+          npm run caps:audit
 
       - name: Tests
         run: npm test

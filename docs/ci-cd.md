@@ -84,6 +84,39 @@ node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles --walk
 | `--expect-nav=N` | fail unless the nav has at least N items (default 1) |
 | `--wait=N` | ms to wait for the app to settle (default 30000) — it polls, it does not sleep and hope |
 
+### Auditing the schema against what uses it
+
+```
+npm run caps:audit            # node tools/capability-audit.js --strict
+node tools/capability-audit.js --all --json
+```
+
+The schema is large on purpose — instalments, layaway holds, warranty and serial
+tracking, wholesale price tiers, delivery and installation jobs, the debtor ledger,
+branch safes, geofenced attendance, the chained audit registers, the ledger and the
+WHT schedule. This audit asks, for every table: does any code **create** it, does any
+code **read** it, is it **seeded** reference data, is it **exposed** by a route, and
+does the **frontend** ever call that route?
+
+It reads the statements, the route registrations and the frontend's own API paths, so
+it cannot drift from any of them. Two things it knows that a naive scan does not:
+
+* the hash-chained registers are appended through a helper that takes the table name
+  as an **argument** (`appendChained(db, { table: 'audit_log', … })`), so a scan for
+  INSERT statements reports them as "read but never created" — which it did, about
+  the one table whose completeness is a security claim, until this was fixed;
+* `${…}` and `:param` are normalised out of both sides before comparing, so
+  `/api/stock/:id/batches` and `` `/api/stock/${id}/batches` `` are recognised as the
+  same path.
+
+`--strict` fails only on the indefensible verdict: a table that nothing creates.
+Eight such tables exist, and each one is written down in
+`tools/capability-baseline.json` with **what it is for** and what is to be done about
+it — a to-do list rather than a pile of noise. A ninth, added by a future migration
+and wired to nothing, fails the build. The report's other sections (written but never
+read, internal only, routes no screen calls) are findings for a person, not verdicts,
+because "written and never read" is occasionally exactly right.
+
 ### Probing every role, in both directions
 
 ```

@@ -1,0 +1,45 @@
+{
+  "note": "Capabilities the schema declares that nothing in the application creates YET, each with what it is for and the decision on it. tools/capability-audit.js --strict passes while every entry here is accurate and FAILS on any new table that nothing can create — so this list is a to-do that cannot quietly grow.",
+  "entries": [
+    {
+      "table": "branch_compliance_records",
+      "purpose": "Regulatory permits per branch (SON/SONCAP, fire, weights and measures) with expiry dates; v_compliance_expiry_alerts already warns about them.",
+      "decision": "WIRE UP — the verticals carry compliance rules (SONCAP/SON) and the alert view is already built and unused. Next stage: record permits per branch and show the expiries the view already computes."
+    },
+    {
+      "table": "user_assignment_history",
+      "purpose": "Who could see which branch and till, and when — so \"who could see the Minna till on 14 March?\" stays answerable after a transfer.",
+      "decision": "WIRE UP — audit-adjacent, cheap: write a row whenever a user's branch or business changes."
+    },
+    {
+      "table": "pending_user_transfers",
+      "purpose": "A staff transfer that the RECEIVING manager must accept, so a cashier cannot be silently moved to a branch nobody is staffing.",
+      "decision": "WIRE UP — the accept/decline flow is the missing half; the table and its intent are already designed."
+    },
+    {
+      "table": "delivery_zones",
+      "purpose": "Delivery zones (area, fee, minimum order) for the delivery and installation jobs that delivery_jobs already records.",
+      "decision": "WIRE UP — delivery fees are charged by hand today; the zone table is how they become a rule."
+    },
+    {
+      "table": "delivery_vehicles",
+      "purpose": "Vehicles and riders, so a delivery can be assigned to one and its cost traced.",
+      "decision": "LATER — useful once zones exist and there is more than one van to track."
+    },
+    {
+      "table": "stock_transfer_serials",
+      "purpose": "The serial numbers that moved with a branch transfer, so a warranty claim can be traced back to the transfer that moved the unit.",
+      "decision": "WIRE UP — serial tracking is in scope and transfers already move serial-tracked goods; this is the record that makes the movement provable."
+    },
+    {
+      "table": "product_recalls",
+      "purpose": "Recalls: which products, which batches, what was done with the stock that came back.",
+      "decision": "LATER — genuinely valuable for appliances and building materials, but a whole flow (identify, quarantine, notify, report) that deserves its own stage."
+    },
+    {
+      "table": "data_cleanup_log",
+      "purpose": "A record of housekeeping runs (purged sessions, expired holds, pruned sync logs).",
+      "decision": "WIRE UP — worker/src/housekeeping.js already runs the work; it simply does not record what it did."
+    }
+  ]
+}

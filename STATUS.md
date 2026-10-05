@@ -1190,3 +1190,78 @@ false accusations on the first run, zero on the last.
   per seat; 65 destinations walked.
 - Staging, `admin` + owner: no problems.
 - Both negative tests reproduce, and the clean run passes again afterwards.
+
+---
+
+# CHECKPOINT — Stage 8: THE SCHEMA AGAINST WHAT ACTUALLY USES IT
+
+## Why this stage exists
+
+The brief asks that *"all the capabilities possible from the schema are fully
+utilised by all the forms of users"*. That cannot be answered by a test suite: a test
+can only fail on code that exists. A table nothing writes is a capability a customer
+cannot use, and nothing in this repository was looking for that.
+
+## What was built
+
+`tools/capability-audit.js` — for every table in the schema it asks: does any code
+**create** it, **update** it, **read** it; is it **seeded** reference data; is it
+**exposed** by an API route; and does the **frontend** ever call that route? The
+scheme is derived from the statements, the route registrations and the frontend's own
+API paths, so it cannot drift from any of them.
+
+```
+75 table(s) · 22 view(s) · 164 registered route(s) · 115 API path(s) written by the frontend
+```
+
+It runs in `npm run verify` and in CI (`npm run caps:audit`).
+
+## The false finding it produced first, and what it taught
+
+It reported **`audit_log` — "read but never created"**, about the one table whose
+completeness is a security claim. The cause: the chained registers are appended
+through a helper that takes the table name as an **argument** —
+`appendChained(db, { table: 'audit_log', … })` — so a scan for INSERT statements
+cannot see them. A named table in a helper call is a write site just as much as an
+INSERT is, and the audit now counts it as one. A tool that accuses the audit trail of
+not existing is worse than no tool.
+
+## What it found: capabilities with no way in
+
+Eight tables are declared, read by views and screens in some cases, and created by
+nothing at all. Each is now written down in `tools/capability-baseline.json` with
+**what it is for** and the decision on it, so the list is a to-do rather than a pile
+of noise — and so that a **ninth**, arriving by accident in a future migration, fails
+the build instead of quietly joining the pile.
+
+| table | what it is for | decision |
+|---|---|---|
+| `branch_compliance_records` | SON/SONCAP, fire and weights-and-measures permits per branch; `v_compliance_expiry_alerts` already warns about them | **wire up** — the alerts are built and unreachable |
+| `user_assignment_history` | who could see which branch and till, and when — "who could see the Minna till on 14 March?" | **wire up** — cheap, audit-adjacent |
+| `pending_user_transfers` | a transfer the RECEIVING manager must accept, so a cashier cannot be moved to a branch nobody staffs | **wire up** — the accept/decline half is missing |
+| `delivery_zones` | delivery area, fee and minimum order for the jobs `delivery_jobs` already records | **wire up** — fees are charged by hand today |
+| `delivery_vehicles` | riders and vans, so a delivery can be assigned and its cost traced | later — worth it once zones exist |
+| `stock_transfer_serials` | the serials that moved with a transfer, so a warranty claim traces back to the movement | **wire up** — serial tracking is in scope and transfers already move serial-tracked goods |
+| `product_recalls` | which products and batches were recalled, and what happened to the stock | later — a whole flow, and it deserves its own stage |
+| `data_cleanup_log` | what housekeeping purged, and when | **wire up** — `worker/src/housekeeping.js` already does the work and records nothing |
+
+Two more findings are the sharpest, because the *reading* half already exists:
+
+- **`product_price_overrides`** — read in **three** places (the sale engine's
+  `loadPriceOverrides`, the product detail screen, and a route), and created by
+  nothing. A shop can honour a branch-specific price and has no way to set one. This
+  is squarely inside the accepted scope (wholesale price tiers, multi-branch pricing)
+  and it is the first thing to build in the next stage.
+- **`user_business_access`** — read by `server/middleware/auth.js` to work out which
+  businesses a user may see, and written by nothing. Multi-business access exists as a
+  concept and cannot be granted.
+
+## Verified
+
+- `npm run verify` → **292 tests, 292 pass**, with the capability audit inside the
+  chain; `caps:audit` exits 0 against the baseline and would exit 1 on a new
+  unreachable table.
+- The audit's other sections are informational on purpose — "written and never read"
+  (1: `variant_axes`, written by provisioning) and "18 routes no screen calls"
+  (integrations, the sync engine and the admin-only endpoints) are reported without
+  failing, because a finding is not always a defect.
