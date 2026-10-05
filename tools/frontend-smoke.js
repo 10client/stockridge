@@ -29,7 +29,7 @@
 // development instrument, and the application itself ships with no build step.
 // Install it when you need this tool:
 //
-//   npm install --no-save jsdom fake-indexeddb
+//   npm install --no-save jsdom@29.1.1 fake-indexeddb@6.2.5
 //
 // USAGE
 //   node tools/frontend-smoke.js --url=https://sample.stockridge.workers.dev \
@@ -44,6 +44,10 @@
 //                    demo deployment's credentials (they exist only in a seeded
 //                    development database)
 //   --expect-nav=N   fail unless the nav has at least N items (default 1)
+//   --dump           print the DOM state, the visible screen and the page's own
+//                    console, for working out WHY a seat did not render
+//   --wait=N         ms to wait for the app to settle (default 30000). The tool
+//                    polls; it does not sleep a fixed time and hope.
 //
 // Exit code is 0 only when every check passed.
 // =====================================================================
@@ -77,8 +81,16 @@ function loadJsdom() {
     // eslint-disable-next-line global-require
     return { JSDOM: require('jsdom').JSDOM, VirtualConsole: require('jsdom').VirtualConsole };
   } catch (err) {
+    // Say WHAT failed. This catch used to print only "jsdom is missing", which was
+    // wrong once already: jsdom WAS installed on CI, but CI's Node 20 pulled
+    // jsdom@30, whose engine is ^22.22.2, and the require threw. The message sent
+    // the reader to install a package that was already there.
     console.error('\n  This tool needs jsdom, which is not a dependency of the project:\n');
-    console.error('      npm install --no-save jsdom fake-indexeddb\n');
+    console.error('      npm install --no-save jsdom@29.1.1 fake-indexeddb@6.2.5\n');
+    console.error(`  jsdom could not be loaded: ${err && err.message ? err.message : err}`);
+    if (process.version && Number(process.version.slice(1).split('.')[0]) < 22) {
+      console.error(`  You are on Node ${process.version}. jsdom 30 needs >= 22.22; pin jsdom 29 or use Node 22.`);
+    }
     process.exit(2);
   }
 }
@@ -147,7 +159,42 @@ async function inspect({ origin, username, pin }) {
     window.document.body.appendChild(el);
   }
 
-  await new Promise((r) => { setTimeout(r, 6000); });
+  // WAIT FOR THE APP, DO NOT RACE IT.
+  //
+  // This used to sleep a flat 6 seconds. That was wrong, and it produced a false
+  // failure on a live deployment: a first boot signs in, then syncs the whole
+  // catalogue into IndexedDB before the shell settles, which on a real D1 database
+  // takes longer than six seconds. The tool inspected a working app mid-sync and
+  // reported "nav 0: (EMPTY)" — the exact symptom of the defect it was built to
+  // catch, for a completely different reason. A test that cries wolf about the
+  // thing it exists to watch for is worse than no test.
+  //
+  // So: poll until the app has actually settled — navigation built, a view
+  // rendered, or a visible failure — and only then judge it.
+  const WAIT_MS = Number(flag('wait', 30000));
+  const settle = async () => {
+    const deadline = Date.now() + WAIT_MS;
+    let last = null;
+    while (Date.now() < deadline) {
+      const boot = window.document.getElementById('boot');
+      const bootText = boot ? boot.textContent.replace(/\s+/g, ' ').trim() : '';
+      const navNow = window.document.getElementById('nav-list');
+      const items = navNow ? navNow.querySelectorAll('.nav-item').length : 0;
+      const viewNow = window.document.getElementById('view');
+      const viewText = viewNow ? viewNow.textContent.trim() : '';
+      last = { items, viewChars: viewText.length, bootText };
+      if (/failed to start/i.test(bootText)) return last;      // it is not going to settle
+      if (items > 0 && viewText.length > 0) return last;       // settled
+      await new Promise((r) => { setTimeout(r, 500); });
+    }
+    return last;
+  };
+  const startedAt = Date.now();
+  const settled = await settle();
+  const settleMs = Date.now() - startedAt;
+  if (settled && settled.items === 0) {
+    logs.push(`[wait] gave up after ${WAIT_MS}ms: ${settled.items} nav item(s), view ${settled.viewChars} char(s)`);
+  }
 
   const nav = window.document.getElementById('nav-list');
   const items = nav ? [...nav.querySelectorAll('.nav-item')].map((b) => b.textContent.trim()) : [];
@@ -155,6 +202,27 @@ async function inspect({ origin, username, pin }) {
   const bootLine = boot ? boot.textContent.replace(/\s+/g, ' ').trim() : '';
   const view = window.document.getElementById('view');
   const state = window.SR && window.SR.state;
+
+  // A snapshot of what the user is actually looking at. `--dump` prints it; it is
+  // the difference between "the navigation is empty" and knowing WHY it is empty.
+  const dump = {
+    title: window.document.title,
+    bodyText: window.document.body.textContent.replace(/\s+/g, ' ').trim().slice(0, 600),
+    // Which top-level screen is visible, and whether the app considers itself
+    // past the login screen at all.
+    screens: ['login', 'shell', 'boot'].map((id) => {
+      const el = window.document.getElementById(id);
+      if (!el) return `${id}: absent`;
+      const style = el.getAttribute('style') || '';
+      return `${id}: ${el.classList.contains('hidden') ? 'hidden' : 'shown'}${style ? ` (${style.slice(0, 60)})` : ''}`;
+    }),
+    settleMs,
+    navListPresent: !!nav,
+    viewPresent: !!view,
+    location: window.location.pathname,
+    srKeys: window.SR ? Object.keys(window.SR).join(',') : '(no SR)',
+    sessionUser: state && state.user ? { role: state.user.role, branch: state.user.branch || null } : null,
+  };
 
   return {
     ok: true,
@@ -172,6 +240,7 @@ async function inspect({ origin, username, pin }) {
     } : null,
     missing,
     logs,
+    dump,
   };
 }
 
@@ -186,6 +255,16 @@ function report(seat, result) {
   }
   for (const [name, kind] of Object.entries(result.accessors || {})) {
     if (kind !== 'function') problems.push(`${seat.label}: SR.state.${name} is ${kind}, not a function — this is what empties the sidebar`);
+  }
+
+  if (has('dump')) {
+    console.log('  ── dump ──');
+    for (const [k, v] of Object.entries(result.dump || {})) {
+      console.log(`      ${k}: ${typeof v === 'object' && v !== null ? JSON.stringify(v) : v}`);
+    }
+    console.log('      logs:');
+    for (const l of (result.logs || []).slice(-12)) console.log(`        ${l}`);
+    console.log('  ──────────');
   }
 
   const mark = problems.length ? '  ✗' : '  ✓';

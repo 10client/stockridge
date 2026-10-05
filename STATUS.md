@@ -601,3 +601,56 @@ node tools/frontend-smoke.js --all-roles                              # every ro
 node tools/deploy-cloudflare.js --env=sample [--reset-pin] [--pin=N]
 node tools/verify-deployment.js --url=… --username=… --pin=…          # the full journey
 ```
+
+## Addendum: the journey proved on live D1, and two defects in my own tools
+
+### The full first-run journey now runs against live Cloudflare D1 — 20/20
+
+`node tools/verify-deployment.js --url=https://stockridge-staging… --username=admin --pin=70614`
+→ **20 passed, 0 failed in 21s**, against real D1, not SQLite:
+
+sign in as administrator → create the business (`ELECTRONICS`, new branch) →
+**D1-side provisioning built 20 starter products and 51 chart-of-accounts rows** →
+create the owner → sign in as the owner, correctly scoped → open a till with a
+₦100,000 float → receive 10 units → sell one for ₦34,000 → read the sale back →
+stock down to 9 → dashboard and sales report both count it (₦34,000 gross,
+₦2,372.09 VAT — the 7.5% VAT-inclusive extraction, on D1) → close the till
+(counted ₦134,000, expected ₦134,000, variance ₦0) → sign out → **the retired
+token is refused**.
+
+That closes the item recorded as "proven on Node, not against live D1". Then the
+same business was rendered through the frontend as a real scoped owner: nav **25**
+items, dashboard showing the live sale, and the admin seat on the same database
+showing **7**. The API, the D1 adapter, the provisioning and the screens all agree.
+
+### Two defects found in the tools themselves — both would have hidden real ones
+
+**1. The smoke test raced the app and cried wolf.** `frontend-smoke.js` slept a
+flat 6 seconds and then inspected the DOM. On a live deployment a *first* boot
+signs in, then syncs the whole catalogue into IndexedDB, and on real D1 data that
+takes longer than six seconds — so the tool reported `nav 0: (EMPTY)` on a
+perfectly working app. That is the exact symptom of the defect the tool was built
+to catch, reported for the wrong reason, which is the worst way for a test to be
+wrong. It now **polls until the app settles** (navigation built and a view
+rendered, or a visible failure), with `--wait=N` and a 30 s ceiling.
+
+**2. "jsdom is missing" when jsdom was installed.** The CI job's `require('jsdom')`
+threw, and the tool's catch-all printed "this tool needs jsdom" and told the reader
+to install a package that was already there. The truth: CI ran Node 20.11, the
+unpinned install pulled **jsdom 30** (engine `^22.22.2`), and it could not load.
+Told the wrong story by my own error message, I would have gone looking for a
+missing package. Now: the catch prints the underlying error and the Node version,
+and CI pins `jsdom@29.1.1` + `fake-indexeddb@6.2.5` on **Node 22**.
+
+### CI now renders the app
+
+`.github/workflows/ci.yml` gained a third job, `frontend-render`: seed the demo
+database, start the server, render `public/index.html` in jsdom and assert the
+navigation actually reaches the DOM for **all four roles**. The deploy workflow
+gained an optional post-deploy render (`verify_frontend`, off by default because it
+needs the live PIN as a repository secret) — the sidebar defect appeared only on a
+live deployment, so a deploy-time check belongs there.
+
+`node tools/frontend-smoke.js … --dump` is new: it prints the visible screen, the
+DOM state and the page's own console, so the next person does not have to guess why
+a seat did not render.

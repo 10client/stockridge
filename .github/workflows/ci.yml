@@ -112,7 +112,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20.11'
+          # Node 22, not 20: jsdom 30 requires >= 22.22 and jsdom 29 requires
+          # >= 22.13, and this job's whole value is running a real DOM.
+          node-version: '22'
           cache: npm
 
       - name: Install
@@ -120,8 +122,13 @@ jobs:
 
       # Both in ONE command: `--no-save` re-resolves the tree from the lockfile,
       # so a second install of the other package removes the first.
+      #
+      # Pinned on purpose. An unpinned `jsdom` resolved to a version this Node
+      # could not load, and because the tool reported it as "jsdom is missing",
+      # the failure read as a missing package rather than a version mismatch.
+      # A test instrument that changes under you is a test that lies eventually.
       - name: Install the test client
-        run: npm install --no-save jsdom fake-indexeddb
+        run: npm install --no-save jsdom@29.1.1 fake-indexeddb@6.2.5
 
       # The demo fixture database the smoke test signs into: admin, owner,
       # manager and staff seats, one business, two branches.
