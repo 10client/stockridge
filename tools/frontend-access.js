@@ -73,11 +73,13 @@ const skip = (what, detail) => { results.push({ pass: true, skip: true, what });
   // ---- is there a second business to grant?
   let businesses = (await api('GET', '/api/businesses')).body.data || [];
   if (businesses.length < 2 && CREATE_SECOND) {
+    // `api(method, path, payload)` — the payload is the THIRD argument. Wrapping it
+    // as `{ body: {...} }` sent `{"body":{...}}`, and the server answered "name is
+    // required" — the same mistake, in the tool built to catch it. The probe's own
+    // first live run reported it as "could not create one (http 400)".
     const made = await api('POST', '/api/businesses', {
-      body: {
-        name: 'Verification Furniture Co', profile_code: 'FURNITURE', seed_catalogue: false,
-        branch: { name: 'Verification Showroom', code: 'VF-1', city: 'Aba', state: 'Abia', opening_cash: 10000 },
-      },
+      name: 'Verification Furniture Co', profile_code: 'FURNITURE', seed_catalogue: false,
+      branch: { name: 'Verification Showroom', code: 'VF-1', city: 'Aba', state: 'Abia', opening_cash: 10000 },
     });
     if (made.status === 201) {
       ok('a second business to grant (created for this probe)', `${made.body.business.name}`);

@@ -786,13 +786,31 @@ function mount(app, base = '/api') {
              WHERE uba.user_id = ? AND uba.business_id = b.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL) AS granted_at
         FROM businesses b WHERE b.is_deleted = 0 ORDER BY b.name`, [targetId, targetId]);
 
-    const isAdminTarget = String(target.role).toUpperCase() === 'ADMIN';
+    // WHO ALREADY REACHES EVERYTHING, and it is three kinds of user, not one.
+    //
+    // `buildScope` (domain/access.js) gives every business to an ADMIN, to an
+    // OWNER, and to anyone with no business on their row — `pinnedBusinessId ===
+    // null` means nothing is pinned, so nothing is excluded. A grant to any of
+    // them is a row that looks meaningful on the screen and changes what they can
+    // see by exactly nothing.
+    //
+    // Only the ADMIN case was refused when this route was written, so the screen
+    // offered an owner three live switches that could not take effect. The rule
+    // is now stated once, here, and used by both the refusal and the screen.
+    const targetRole = String(target.role).toUpperCase();
+    const unpinned = target.business_id === null || target.business_id === undefined || target.business_id === '';
+    const reachesEverythingBy = targetRole === 'ADMIN' ? 'ROLE:ADMIN'
+      : targetRole === 'OWNER' ? 'ROLE:OWNER'
+        : unpinned ? 'NO_BUSINESS_PINNED' : null;
+    const isAdminTarget = reachesEverythingBy !== null;
+
     ctx.json({
       ok: true,
       user: { id: target.id, fullName: target.full_name, username: target.username, role: target.role, business_id: target.business_id },
       // An administrator already reaches everything; their own business is already
       // theirs. Both facts are reported rather than left for the screen to guess.
       reachesEverything: isAdminTarget,
+      reachesEverythingBy,
       data: rows.map((b) => ({
         id: b.id, name: b.name, profile_code: b.profile_code, is_active: b.is_active,
         own: String(b.id) === String(target.business_id),
@@ -817,11 +835,22 @@ function mount(app, base = '/api') {
     const business = await db.first('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0', [businessId]);
     if (!business) throw new HttpError('That business does not exist.', { status: 404, code: 'BUSINESS_NOT_FOUND' });
 
-    if (String(target.role).toUpperCase() === 'ADMIN') {
-      // Refused rather than quietly recorded. A grant on an administrator would
-      // look meaningful on the screen and change nothing, because their scope is
-      // every business by role — a row that misleads the next person to read it.
+    // Refused rather than quietly recorded: a grant here would look meaningful on
+    // the screen and change nothing, because the scope already covers every
+    // business — a row that misleads the next person to read it. Three ways that
+    // happens, and the message names the one that applies, because "already
+    // reaches every business" is confusing to read about an owner who may believe
+    // they are confined to the business on their row.
+    const targetRoleNow = String(target.role).toUpperCase();
+    const targetUnpinned = target.business_id === null || target.business_id === undefined || target.business_id === '';
+    if (targetRoleNow === 'ADMIN') {
       throw new HttpError(`${target.full_name} is the deployment administrator and already reaches every business. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
+    }
+    if (targetRoleNow === 'OWNER') {
+      throw new HttpError(`${target.full_name} is an owner, and an owner reaches every business in this deployment. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
+    }
+    if (targetUnpinned) {
+      throw new HttpError(`${target.full_name} is not tied to any one business, so they already reach every business. Put them on one first, if that is the intent.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
     }
     if (String(businessId) === String(target.business_id)) {
       throw new HttpError(`${target.full_name} already belongs to ${business.name} — it is their own business, not a grant.`, { status: 409, code: 'ALREADY_THEIR_BUSINESS' });

@@ -557,6 +557,27 @@ test('the API surface over real HTTP', async (t) => {
     assert.equal(onAdmin.status, 409, `granting to an administrator must be refused, got ${onAdmin.status} ${onAdmin.text.slice(0, 160)}`);
     assert.equal(onAdmin.json.code, 'ALREADY_REACHES_EVERY_BUSINESS');
 
+    // An OWNER also reaches every business — `buildScope` gives every business to
+    // an ADMIN, to an OWNER, and to anyone with no business on their row. Only the
+    // administrator case was refused at first, so the screen offered an owner live
+    // switches that could not change anything they could see. The review now says
+    // WHY the switches are locked, so the screen never has to guess.
+    const ownerSeat = (await req('GET', '/api/auth/me', { token: ownerToken })).json.user;
+    const ownerReviewReq = await req('GET', `/api/users/${ownerSeat.id}/business-access`, { token });
+    const ownerReview = ownerReviewReq.json;
+    assert.equal(ownerReviewReq.status, 200);
+    assert.equal(ownerReview.reachesEverything, true, 'an owner reaches every business by role');
+    assert.equal(ownerReview.reachesEverythingBy, 'ROLE:OWNER', 'and the screen is told which reason applies');
+    const onOwner = await req('POST', `/api/users/${ownerSeat.id}/business-access`, { token, body: { business_id: target.id } });
+    assert.equal(onOwner.status, 409, `granting to an owner must be refused, got ${onOwner.status} ${onOwner.text.slice(0, 160)}`);
+    assert.equal(onOwner.json.code, 'ALREADY_REACHES_EVERY_BUSINESS');
+
+    // The manager is the case that DOES need a grant, and is not reported as
+    // reaching everything — the rule must not swallow the feature it protects.
+    const mgrReview = (await req('GET', `/api/users/${mgrId}/business-access`, { token })).json;
+    assert.equal(mgrReview.reachesEverything, false, 'a manager is confined to the businesses they reach');
+    assert.equal(mgrReview.reachesEverythingBy, null);
+
     // A grant of a business the user already belongs to is not a grant.
     const meetings = await req('GET', `/api/users/${mgrId}/business-access`, { token });
     const theirs = (meetings.json.data || []).find((b) => b.own);

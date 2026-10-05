@@ -32,6 +32,7 @@ const { createHttpApp } = require('../../server/app');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const PUBLIC_JS = path.join(ROOT, 'public', 'js');
+const TOOLS = path.join(ROOT, 'tools');
 
 /** Every .js file under public/js, recursively. */
 function jsFiles(dir, out = []) {
@@ -268,5 +269,72 @@ test('no screen wraps its payload in { body: … }', () => {
     offenders, [],
     'these send {"body":{…}} to the server, so the fields inside never arrive:\n  ' + offenders.join('\n  ')
     + '\n    pass the payload directly: SR.api.post(path, payload) — the option object is for SR.api.request',
+  );
+});
+
+
+test('no tool wraps its payload in { body: … } either', () => {
+  // The same defect as the test above, in the tools rather than the screens — and
+  // it was found the only way it could be: `tools/frontend-access.js`, the probe
+  // written TO CATCH this class, created its second business as
+  // `api('POST', '/api/businesses', { body: { name: … } })`, and the live run
+  // answered `400 {"error":"name is required.","code":"MISSING_FIELD"}`.
+  //
+  // The screens have `SR.api.post|put|patch`, a fixed set of names, so the check
+  // above is a list. Tools each bring their own helper, so this one reads the
+  // helpers out of the file first: a function whose body JSON-stringifies a
+  // parameter called `body` takes the payload as that parameter, and a call that
+  // wraps the payload in a `body` KEY hands it a lie.
+  //
+  // Proved to fire before being trusted: reintroducing the wrapper in a copy of
+  // the probe is reported at the exact line.
+  const offenders = [];
+  const files = [...jsFiles(PUBLIC_JS), ...jsFiles(TOOLS)];
+  for (const file of files) {
+    const source = fs.readFileSync(file, 'utf8');
+    // Which names in this file take the payload directly?
+    const helpers = new Set();
+    for (const m of source.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>/g)) {
+      const tail = source.slice(m.index + m[0].length, m.index + m[0].length + 700);
+      if (/JSON\.stringify\(\s*body\s*\)/.test(tail)) helpers.add(m[1]);
+    }
+    for (const name of helpers) {
+      const call = new RegExp(`\\b${name}\\s*\\(`, 'g');
+      let m;
+      while ((m = call.exec(source)) !== null) {
+        const open = m.index + m[0].length - 1;
+        let i = open + 1; let depth = 1; let q = null;
+        while (i < source.length && depth > 0) {
+          const ch = source[i];
+          if (q) { if (ch === '\\') i += 1; else if (ch === q) q = null; }
+          else if (ch === '`' || ch === "'" || ch === '"') q = ch;
+          else if (ch === '(') depth += 1;
+          else if (ch === ')') depth -= 1;
+          i += 1;
+        }
+        const args = source.slice(open + 1, i - 1);
+        // Only the LAST argument is the payload for these helpers; an earlier one
+        // is a method or a path.
+        let depth2 = 0; let q2 = null; let last = 0;
+        for (let j = 0; j < args.length; j += 1) {
+          const ch = args[j];
+          if (q2) { if (ch === '\\') j += 1; else if (ch === q2) q2 = null; continue; }
+          if (ch === '`' || ch === "'" || ch === '"') { q2 = ch; continue; }
+          if ('{(['.includes(ch)) depth2 += 1;
+          else if (')}]'.includes(ch)) depth2 -= 1;
+          else if (ch === ',' && depth2 === 0) last = j + 1;
+        }
+        const payload = args.slice(last).trim();
+        if (!/^\{\s*body\s*:/.test(payload)) continue;
+        const line = source.slice(0, m.index).split('\n').length;
+        const text = (source.split('\n')[line - 1] || '').trim().slice(0, 100);
+        offenders.push(`${path.relative(ROOT, file)}:${line}  ${name}(…)  ${text}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    offenders, [],
+    'these tools send {"body":{…}}, so the fields inside never arrive:\n  ' + offenders.join('\n  ')
+    + '\n    pass the payload directly, the way the helper takes it',
   );
 });

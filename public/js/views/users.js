@@ -290,17 +290,29 @@
         const reached = rows.filter((b) => b.own || b.viaGrant || data.reachesEverything).length;
         const list = ui.h('div', { class: 'stack' });
 
+        // WHY the switches are locked, in the words of the case that applies. The
+        // server answers with the reason (`reachesEverythingBy`) rather than the
+        // screen inferring it from the role, because "reaches everything" has
+        // three causes and an owner is the one that surprises people.
+        const byRole = data.reachesEverythingBy;
+        const whyLocked = byRole === 'ROLE:ADMIN'
+          ? `${u.full_name || u.username} is the deployment administrator and reaches every business here by virtue of that role. There is nothing to grant or withdraw.`
+          : byRole === 'ROLE:OWNER'
+            ? `${u.full_name || u.username} is an owner, and an owner reaches every business in this deployment. There is nothing to grant or withdraw.`
+            : byRole === 'NO_BUSINESS_PINNED'
+              ? `${u.full_name || u.username} is not tied to any one business, so every business already reaches them. Put them on a business to confine their view to it.`
+              : null;
+
         list.appendChild(ui.h('p', { class: 'hint' },
-          data.reachesEverything
-            ? `${u.full_name || u.username} is the deployment administrator and reaches every business here by virtue of that role. There is nothing to grant or withdraw.`
-            : `Reaching ${reached} of ${rows.length}. Their own business is theirs by being on their record; the others are grants. A grant widens what they can SEE, never what they may DO — the role above still decides that.`));
+          whyLocked
+            || `Reaching ${reached} of ${rows.length}. Their own business is theirs by being on their record; the others are grants. A grant widens what they can SEE, never what they may DO — the role above still decides that.`));
 
         for (const b of rows) {
           const locked = data.reachesEverything || b.own;
           const box = ui.h('input', { type: 'checkbox', checked: b.own || b.viaGrant || data.reachesEverything, disabled: locked });
           const line = ui.h('div', { class: 'hint' },
             b.own ? 'Their own business — not a grant, and not something to switch off here.'
-              : data.reachesEverything ? 'Reached by role.'
+              : byRole ? (byRole === 'NO_BUSINESS_PINNED' ? 'Reached — nothing pins them to one business.' : 'Reached by role.')
                 : b.viaGrant && b.grantedAt ? `Granted ${U.date(b.grantedAt)}.` : 'No access yet.');
           const rowEl = ui.h('label', { class: 'check', style: { marginBottom: '6px', alignItems: 'flex-start' } },
             box,

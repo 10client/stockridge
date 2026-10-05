@@ -1502,3 +1502,99 @@ passing quietly — a skip is not a pass.
   `product_recalls`.
 - Still outstanding from earlier stages: the live staging offline proof
   (`tools/frontend-offline.js`) and `public/offline.html`.
+
+## The rule had one case, and the scope had three
+
+`buildScope` (`domain/access.js`) gives every business in the deployment to three
+different kinds of user:
+
+```js
+const allBusinesses = isAdminVendor || role === ROLES.OWNER || pinnedBusinessId === null;
+```
+
+The endpoint refused a grant only for an **ADMIN**. So the screen offered an **owner** —
+who already reaches every business by role — three live switches that could not change
+what they could see by anything at all, and offered the same to anyone with **no business
+on their row**, where `pinnedBusinessId === null` means nothing is pinned and therefore
+nothing is excluded.
+
+That is the same defect as the payload one above, one layer up: a control that looks
+meaningful and cannot take effect. Fixed at the source, once — the route now answers with
+*why* a person already reaches everything (`reachesEverythingBy`), and the screen prints
+that reason instead of inferring one from the role:
+
+| the person | what the screen says | the server |
+|---|---|---|
+| administrator | "…reaches every business here by virtue of that role" | `409 ALREADY_REACHES_EVERY_BUSINESS` |
+| owner | "…is an owner, and an owner reaches every business in this deployment" | `409 ALREADY_REACHES_EVERY_BUSINESS` |
+| no business pinned | "…is not tied to any one business, so every business already reaches them" | `409 ALREADY_REACHES_EVERY_BUSINESS` |
+| a manager on one business | "Reaching 1 of 4…" with the switches live | the grant, and the withdrawal |
+
+The e2e suite now pins all of it, including the case the rule must **not** swallow — a
+manager is reported as *not* reaching everything, so the feature keeps working.
+
+## The probe had the defect it was built to catch
+
+The first live run of `tools/frontend-access.js` created its second business as
+`api('POST', '/api/businesses', { body: { … } })` and the deployment answered
+`400 {"error":"name is required.","code":"MISSING_FIELD"}` — the tool written to catch the
+`{body:…}` class, doing it.
+
+The screens are a fixed list of names, so the browser check is a list. Tools each bring
+their own helper, so the new test **reads the helpers out of the file**: any function
+whose body JSON-stringifies a parameter called `body` takes the payload as that parameter,
+and a call wrapping the payload in a `body` key is a lie. It was proved to fire — the
+wrapper reintroduced in a copy of the probe is reported at `tools/frontend-access.js:80`,
+with the source line — before being trusted to say nothing.
+
+## The deploy script invented a database
+
+Deploying `--env=prod` — a natural thing to type when the block is called
+`[env.production]` — produced this:
+
+```
+✓ created: c9824b2e-213a-47ca-921c-9faee989dfdc      ← a database nobody wanted
+✓ database_id set for env "prod" in worker/wrangler.toml
+✓ other environments untouched: … production → stockridge (32aa519c…)
+Deployment failed: wrangler d1 migrations apply stockridge-prod …
+```
+
+Two faults, both silent:
+
+1. **The database name was derived, not read.** `stockridge-${ENV_NAME}` is right for
+   staging and sample and wrong for production, whose database is called `stockridge`
+   because it was created first. So the script looked for `stockridge-production`, found
+   none, **created** one — and then rewrote the *production* binding to point at the empty
+   database while the real one sat untouched. The file says which database an environment
+   uses; that is now the only place the name comes from.
+2. **The no-op reported success.** `writeDatabaseId` refuses in a comment to be "a silent
+   no-op that reports success", and then was one: with no matching section it skipped the
+   write and printed `✓ database_id set` anyway. It throws now.
+
+An unknown environment name is refused before anything is created, and the refusal prints
+the environments the file actually declares.
+
+**Recovery, recorded because it matters to anyone reading the account:** `worker/wrangler.toml`
+was restored with `git checkout --`, the phantom database was deleted through the API, and
+the account is back to three databases — `stockridge`, `stockridge-staging`,
+`stockridge-sample`. Production was then deployed as `--env=production`, and prod answered
+`admin` / `1234`, `1 user (admin:ADMIN)`, `0 businesses` — the handover state — with the
+Stage-10 route live (`GET /api/users/:id/business-access` → 200).
+
+## Live on Cloudflare D1 — Stage 10
+
+Three environments redeployed, **6/6 readiness each** (schema, migrations, administrator,
+PIN hashing, sign-in lookup): `sample` and `production` awaiting their first business,
+`staging` ready with a business trading.
+
+Staging then proved the whole feature across the real Worker and the real database, as
+`admin` / `1234`, against a person created through the application's own staff flow:
+
+```
+✓ a second business to grant (created for this probe)   Verification Furniture Co
+✓ a person to grant to                                  Verification Staff · STAFF
+✓ opening a person shows the businesses they can reach   Reaching 1 of 2…
+✓ the section lists businesses with switches            2 businesses, 1 locked, 1 switchable
+✓ ticking a business grants it, and the server holds it  Verification Furniture Co · 0 → 1
+✓ unticking it withdraws the grant on the server         Verification Furniture Co · back to 0
+```

@@ -69,8 +69,65 @@ const ENV_NAME = valueOf('--env');
 const IS_DEFAULT_ENV = !ENV_NAME;
 const ENV_FLAG = ENV_NAME ? ['--env', ENV_NAME] : [];
 
-/** Two different D1 names on purpose: a sample must not write to production. */
-const D1_NAME = IS_DEFAULT_ENV ? 'stockridge' : `stockridge-${ENV_NAME}`;
+/**
+ * Refuse an environment name that wrangler.toml does not define.
+ *
+ * `--env=prod` is a natural thing to type when the block is called
+ * `[env.production]`, and nothing below the top level complains: wrangler cannot
+ * see a binding declared inside an environment it was not given, this script
+ * derives the database NAME from the environment name (`stockridge-prod`), finds
+ * no database by that name, and CREATES one — a brand-new, empty D1 database that
+ * no Worker points at, while the real production database sits untouched and the
+ * run fails later at a migration with a message about migrations.
+ *
+ * So the name is checked against the file before anything is created. The list of
+ * real environments is printed, because the fix is a one-word correction.
+ */
+function declaredEnvironments() {
+  const file = path.join(ROOT, WRANGLER_CONFIG);
+  if (!fs.existsSync(file)) return [];
+  const text = fs.readFileSync(file, 'utf8');
+  return [...text.matchAll(/^\[env\.([A-Za-z0-9_-]+)\]$/gm)].map((m) => m[1]);
+}
+
+if (ENV_NAME && !declaredEnvironments().includes(ENV_NAME)) {
+  const known = declaredEnvironments();
+  console.error(`\n  --env=${ENV_NAME} is not an environment in ${WRANGLER_CONFIG}.`);
+  console.error(known.length
+    ? `  It declares: ${known.join(', ')}.\n  Omit --env entirely to deploy production (the top-level configuration).\n`
+    : `  It declares none, so the top-level configuration is production.\n`);
+  process.exit(1);
+}
+
+/**
+ * The database this environment binds — read from wrangler.toml, never derived.
+ *
+ * It used to be computed as `stockridge-${ENV_NAME}`, which is right for staging
+ * and sample and WRONG for production, whose database is called `stockridge`
+ * because it was created first, before there was anything to distinguish it from.
+ * So `--env=production` looked for a database named `stockridge-production`,
+ * created one when it found none, and rewrote the production binding to point at
+ * the empty one — while the real production database sat there untouched. The
+ * file says which database an environment uses; that is the only answer that is
+ * true for every environment, and it is the one place a name is written down.
+ */
+function databaseNameForEnvironment() {
+  const file = path.join(ROOT, WRANGLER_CONFIG);
+  const text = fs.readFileSync(file, 'utf8');
+  const header = ENV_NAME ? `[[env.${ENV_NAME}.d1_databases]]` : '[[d1_databases]]';
+  const sections = text.split(/(?=^\[)/m);
+  const section = sections.find((part) => String(part.split('\n')[0] || '').trim() === header);
+  if (!section) {
+    throw new Error(`${header} is missing from ${WRANGLER_CONFIG}, so this deployment has no database to bind.`);
+  }
+  const name = (section.match(/database_name\s*=\s*"([^"]*)"/) || [])[1];
+  if (!name) {
+    throw new Error(`${header} in ${WRANGLER_CONFIG} has no database_name, so there is no way to tell which database this deployment uses.`);
+  }
+  return name;
+}
+
+const D1_NAME = databaseNameForEnvironment();
 
 // ---------------------------------------------------------------------
 // configuration
@@ -246,6 +303,14 @@ function writeDatabaseId(databaseId) {
     return section;
   }).join('');
 
+  if (changed === 0) {
+    // This function's own comment warns about a silent no-op that reports
+    // success, and that is exactly what it did: with no matching section the
+    // write was skipped and "database_id set" printed anyway. Reachable before
+    // the environment check above existed, and worth keeping as the last line of
+    // defence — a deploy that cannot bind its database must not proceed.
+    throw new Error(`The ${target} block in ${WRANGLER_CONFIG} has no database_id line to rewrite, so the deployment would not be bound to the database it just prepared.`);
+  }
   if (updated !== text) fs.writeFileSync(file, updated);
   ok(`database_id set for ${ENV_NAME ? `env "${ENV_NAME}"` : 'the default (production)'} in ${WRANGLER_CONFIG}`);
   if (others.length) ok(`other environments untouched: ${others.join('; ')}`);
