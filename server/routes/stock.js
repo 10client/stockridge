@@ -198,7 +198,13 @@ function mount(app, base = '/api') {
     // Cost is PER THE UNIT BEING RECEIVED, then converted to per-base. A clerk
     // books "₦480,000 for 20 cartons"; storing that as a per-piece cost would
     // overstate cost by the carton factor and invert the margin.
-    const costPerReceivedUnit = numField(requireField(body, 'cost_price', 'Cost price'), { field: 'Cost price', min: 0, places: 6 });
+    // `cost_price_per_unit` was the name the receiving FORM sent, and this endpoint
+    // never read it — so "Cost price is required" was the answer to every attempt to
+    // receive stock from the screen. The form now sends `cost_price` like every
+    // other client; both names are accepted so a payload already written elsewhere
+    // does not turn into a lost receipt.
+    const costField = body.cost_price != null ? body.cost_price : body.cost_price_per_unit;
+    const costPerReceivedUnit = numField(requireField({ cost_price: costField }, 'cost_price', 'Cost price'), { field: 'Cost price', min: 0, places: 6 });
     const costPerBase = round2((costPerReceivedUnit * conversion.factor) / conversion.factor) === costPerReceivedUnit
       ? costPerReceivedUnit / Number(conversion.factor || 1)
       : costPerReceivedUnit / Number(conversion.factor || 1);
@@ -212,7 +218,10 @@ function mount(app, base = '/api') {
       if (!supplier) throw new HttpError('That supplier does not exist.', { status: 404, code: 'SUPPLIER_NOT_FOUND' });
     }
 
-    const freight = numField(body.freight_cost, { field: 'Freight', min: 0 });
+    // Freight is entered per RECEIVED unit on the form and converted below, because
+    // "₦30,000 clearing on twenty cartons" is how the cost actually arrives.
+    const freight = numField(body.freight_cost != null ? body.freight_cost : body.freight_per_unit,
+      { field: 'Freight', min: 0 });
     const paidNow = numField(body.paid_now, { field: 'Amount paid', min: 0 });
     const onCredit = numField(body.on_credit, { field: 'Amount on credit', min: 0 });
     const expiryDate = body.expiry_date ? strField(body.expiry_date, { field: 'Expiry date', maxLength: 10 }) : null;

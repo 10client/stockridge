@@ -366,7 +366,17 @@ function weightedAverageCost(batches) {
   const rows = (batches || []).filter((b) => !b.is_deleted && Number(b.quantity) > 0);
   const qty = rows.reduce((a, b) => a + Number(b.quantity), 0);
   if (qty <= 0) return 0;
-  const value = rows.reduce((a, b) => a + Number(b.quantity) * Number(b.cost_price_per_unit || 0), 0);
+  // The cost of a row arrives in two shapes: straight from the database it is
+  // `cost_price_per_unit`, and a caller assembling rows in memory writes `cost`.
+  // Reading only the first meant the receiving route — which passes
+  // `{ quantity, cost }` — averaged every cost as 0, so receiving anything into a
+  // product that already had stock set `products.cost_price` to zero. That figure
+  // is the margin on the next sale and the value of the shelf, and it stayed wrong
+  // until somebody noticed the cost column reading ₦0.00.
+  //
+  // `??` rather than `||` so a genuine cost of zero survives.
+  const costOf = (b) => Number(b.cost ?? b.cost_price_per_unit ?? 0);
+  const value = rows.reduce((a, b) => a + Number(b.quantity) * costOf(b), 0);
   return value / qty; // FULL PRECISION — see splitTotalCost
 }
 

@@ -799,3 +799,80 @@ can be *operated*. Both now exist, and both run against a live deployment.
 - Sales rung end to end through the screen, each confirmed by the server: tile
   (variant, `SQUARE_METRE`, ₦7,600), carton of water (multi-unit, ₦14,400),
   warrantied kettle (₦19,500, warranty expiry 2027-10-05), power bank on D1 (₦34,000).
+
+---
+
+# CHECKPOINT — 2026-10-06 (3): the receiving side
+
+**Last updated:** `npm run verify` → **289 tests, 289 pass**. `tools/frontend-receive.js`
+is new: it receives stock through the real Stock screen and then asks the server what
+happened, in base units.
+
+```
+node tools/frontend-receive.js --url=… --user=<seat> --pin=<pin> --product=kettle --qty=3
+```
+
+Three more defects, all in the same place a shop's money enters the books.
+
+## 6. Stock could not be received from the screen at all
+
+The form posted `cost_price_per_unit`. The endpoint reads `cost_price`. So every
+attempt through the interface was answered:
+
+```
+Cost price is required.
+```
+
+Receiving was impossible from the UI — the API path was tested (the deployment
+verifier posts `cost_price`) and the screen was not. The form now sends the field
+names the endpoint reads, and the endpoint also accepts the old `_per_unit`
+spellings, so a payload written by an older client is not silently lost.
+
+## 7. Freight was never recorded
+
+The form posted `freight_per_unit`; the endpoint reads `freight_cost`, as a
+consignment total spread over the units received. It was ignored in silence, so
+clearing and carriage never reached the cost of the goods — which is the difference
+between a real margin and a flattering one. The form now asks for the delivery's
+freight as a total, which is also what a clearing invoice shows.
+
+## 8. Receiving zeroed the product's cost
+
+`weightedAverageCost` read `cost_price_per_unit` from each row, and **both** of its
+callers — the receiving route and purchase-order receiving — pass `{ quantity, cost }`.
+So every cost averaged as zero and `products.cost_price` was written as **0** on
+receipt into a product that already had stock. That figure is the margin on the next
+sale, the value of the shelf and the VAT split; it stayed wrong until somebody
+noticed the cost column reading ₦0.00. It now reads either shape (`??`, so a
+genuine cost of zero survives), and `test/integration/stock-receive.test.js` (5
+tests) pins the endpoint the way the screen calls it, the legacy names, a unit
+name, and the arithmetic the callers actually hand it.
+
+## 9. A stuck button on every failure path — in a dozen places
+
+Found on the receiving form's error path, which is where nobody looks:
+
+```js
+catch (err) {
+  ui.apiError(err);
+  ev.currentTarget.disabled = false;     // TypeError: null
+  ev.currentTarget.textContent = 'Receive';
+}
+```
+
+The DOM clears `currentTarget` the moment dispatch ends, and `await` ends it. So the
+catch block itself threw and the button stayed on "Recording…", disabled, for ever —
+the cashier could not retry without reopening the form. The same pattern appears in
+about a dozen handlers across the views. Fixed once in `ui.h`: every handler is now
+given an event whose `currentTarget` stays valid for the whole of its work, with a
+fallback for any runtime without `Proxy`. Every failure path in the application
+recovered its button and its error message from that one change.
+
+## Verified
+
+- `npm run verify` → **289 tests, 289 pass**, audits clean.
+- Receiving through the screen: stock 30 → 33 for 3 pieces, batch cost
+  ₦11,917.93 — exactly the weighted average the form offered.
+- Selling through the screen, same database, after the fixes: **receipt 000653,
+  ₦19,500, COMPLETED**.
+- The demo database was reseeded: the old bug had zeroed product costs in it.

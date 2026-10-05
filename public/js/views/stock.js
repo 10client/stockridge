@@ -383,9 +383,22 @@
         ui.field({ label: 'Product', name: 'product_id', required: true, placeholder: 'Search the catalogue…', span: true }),
         ui.field({ label: 'Batch number', name: 'batch_no', hint: 'The supplier\'s reference. Optional, but it is what you cite in a claim.' }),
         ui.field({ label: 'Quantity received', name: 'quantity', type: 'number', step: 'any', min: '0.001', required: true }),
-        ui.field({ label: 'Unit', name: 'unit_code', value: 'PIECE' }),
-        ui.field({ label: 'Cost per unit (₦)', name: 'cost_price_per_unit', type: 'number', step: '0.000001', min: '0', required: true }),
-        ui.field({ label: 'Freight / clearing per unit (₦)', name: 'freight_per_unit', type: 'number', step: '0.000001', min: '0' }),
+        // A REAL CHOOSER, defaulting to the base unit. It used to be free text that
+        // a product pick silently rewrote to the receipt WORD ("unit", "carton",
+        // "square metre") — a value the API has to interpret — while the cost field
+        // beside it held a price PER BASE UNIT. The two disagreed by the ladder
+        // factor, so receiving a carton recorded the cost of a single piece: a
+        // 48-piece carton booked at one forty-eighth of what was paid for it, and
+        // every margin and valuation computed from it afterwards was wrong.
+        ui.field({
+          label: 'Unit', name: 'unit_code',
+          options: [{ value: 'PIECE', label: 'Piece' }],
+          hint: 'What the quantity and the cost are counted in.',
+        }),
+        ui.field({ label: 'Cost per unit (₦)', name: 'cost_price_per_unit', type: 'number', step: '0.000001', min: '0', required: true, hint: 'Per the unit chosen above.' }),
+        // The whole consignment's carriage, not one unit's: that is what a clearing
+        // invoice shows, and the server spreads it across the units received.
+        ui.field({ label: 'Freight / clearing for this delivery (₦)', name: 'freight_cost', type: 'number', step: '0.01', min: '0', hint: 'Spread across the units in this receipt.' }),
         ui.field({ label: 'Selling price (₦)', name: 'selling_price', type: 'number', step: '0.01', min: '0' }),
         ui.field({ label: 'Manufactured', name: 'manufacture_date', type: 'date' }),
         ui.field({ label: 'Expires', name: 'expiry_date', type: 'date', hint: 'Refused if it is already in the past — receiving dead stock helps nobody.' }),
@@ -417,12 +430,7 @@
             onClick: () => {
               picked = p;
               productInput.value = p.name;
-              const unitSel = wrapEl.querySelector('[name="unit_code"]');
-              const cost = wrapEl.querySelector('[name="cost_price_per_unit"]');
-              const price = wrapEl.querySelector('[name="selling_price"]');
-              if (unitSel) unitSel.value = p.base_unit_name || 'PIECE';
-              if (cost && !cost.value) cost.value = U.numInput(p.cost_price);
-              if (price && !price.value) price.value = U.numInput(p.selling_price);
+              loadUnits(p);
               suggestions.hidden = true;
             },
           }, ui.h('div', { class: 'grow' },
@@ -432,6 +440,92 @@
         }
         suggestions.hidden = !rows.length;
       }, 260));
+
+      // The catalogue price of a product is per BASE unit. Whatever unit this
+      // receipt is counted in, the two figures shown must agree with the unit
+      // beside them, so the per-base price is remembered and re-expressed.
+      let perBaseCost = 0;
+      let perBasePrice = 0;
+
+      function unitsOf(p) {
+        return (p && Array.isArray(p.units) ? p.units : [])
+          .filter((u) => !Number(u.is_deleted))
+          .sort((a, b) => Number(a.quantity_in_base) - Number(b.quantity_in_base));
+      }
+
+      function priceFields(factor) {
+        const cost = wrapEl.querySelector('[name="cost_price_per_unit"]');
+        const price = wrapEl.querySelector('[name="selling_price"]');
+        if (cost) cost.value = U.numInput(U.round2(perBaseCost * factor));
+        if (price) price.value = U.numInput(U.round2(perBasePrice * factor));
+      }
+
+      function fillUnits(ladder) {
+        const sel = wrapEl.querySelector('[name="unit_code"]');
+        if (!sel) return;
+        sel.replaceChildren();
+        for (const u of ladder) {
+          const factor = Number(u.quantity_in_base) || 1;
+          const opt = document.createElement('option');
+          opt.value = u.code;
+          opt.textContent = factor > 1
+            ? `${u.name || u.code} (${U.qty(factor)} ${ladder[0].name || ladder[0].code})`
+            : `${u.name || u.code}`;
+          sel.appendChild(opt);
+        }
+        // The base unit by default: it is what stock is counted in, and it is what
+        // the catalogue price beside it means.
+        sel.value = ladder[0].code;
+        priceFields(1);
+      }
+
+      /**
+       * Load this product's ladder, then price the form in the chosen unit.
+       * Offline it falls back to the device mirror, so receiving keeps working on a
+       * phone with no line — which is when most receiving actually happens.
+       */
+      async function loadUnits(p) {
+        let ladder = unitsOf(p);
+        if (!ladder.length) {
+          try {
+            const detail = await SR.api.get(`/api/products/${encodeURIComponent(p.id)}`);
+            ladder = unitsOf(detail);
+          } catch (err) {
+            ladder = (await SR.store.all('product_units', { where: (u) => !Number(u.is_deleted) && String(u.product_id) === String(p.id) }).catch(() => []))
+              .map((u) => ({ code: u.code, name: u.name, quantity_in_base: Number(u.quantity_in_base) }))
+              .sort((a, b) => a.quantity_in_base - b.quantity_in_base);
+          }
+        }
+        perBaseCost = Number(p.cost_price) || 0;
+        perBasePrice = Number(p.selling_price) || 0;
+        if (ladder.length) {
+          fillUnits(ladder);
+          return;
+        }
+        // No ladder at all: one unit, called whatever the product calls its base.
+        const sel = wrapEl.querySelector('[name="unit_code"]');
+        if (sel) {
+          sel.replaceChildren();
+          const opt = document.createElement('option');
+          opt.value = p.default_unit_code || p.base_unit_name || 'PIECE';
+          opt.textContent = p.base_unit_name || 'Piece';
+          sel.appendChild(opt);
+        }
+        priceFields(1);
+      }
+
+      // Changing the unit re-prices the two money fields, so "3 CARTON at ₦12,400"
+      // never means "three pieces at the price of one".
+      const unitSelEl = wrapEl.querySelector('[name="unit_code"]');
+      if (unitSelEl) {
+        unitSelEl.addEventListener('change', () => {
+          const chosen = unitSelEl.selectedOptions && unitSelEl.selectedOptions[0];
+          const label = chosen ? chosen.textContent : '';
+          const m2 = /\((\d[\d,.]*)\s/.exec(label);
+          const factor = m2 ? Number(String(m2[1]).replace(/,/g, '')) : 1;
+          priceFields(factor > 0 ? factor : 1);
+        });
+      }
 
       const m = ui.openModal({
         title: 'Receive stock',
@@ -458,8 +552,11 @@
                   product_id: String(productId),
                   batch_no: v.batch_no || null,
                   quantity, unit_code: v.unit_code || 'PIECE',
-                  cost_price_per_unit: cost,
-                  freight_per_unit: Number(v.freight_per_unit) || 0,
+                  // The endpoint's names. It reads `cost_price` and `freight_cost`;
+                  // it never read the `_per_unit` spellings this form used, so the
+                  // form could not receive at all.
+                  cost_price: cost,
+                  freight_cost: Number(v.freight_cost) || 0,
                   selling_price: v.selling_price ? Number(v.selling_price) : null,
                   manufacture_date: v.manufacture_date || null,
                   expiry_date: v.expiry_date || null,

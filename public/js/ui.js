@@ -28,7 +28,7 @@
       if (k === 'class') el.className = v;
       else if (k === 'dataset') Object.assign(el.dataset, v);
       else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
+      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), (ev) => v(keepCurrentTarget(ev, el)));
       else if (k === 'html') el.innerHTML = v;
       else if (k === 'text') el.textContent = v;
       else if (v === true) el.setAttribute(k, '');
@@ -39,6 +39,48 @@
       el.appendChild(child instanceof Node ? child : document.createTextNode(String(child)));
     }
     return el;
+  }
+
+  /**
+   * An event whose `currentTarget` stays valid for the whole of a handler's work.
+   *
+   * WHY THIS EXISTS — found by receiving stock through the real screen, on the
+   * failure path where nobody looks:
+   *
+   *     const btn = ui.h('button', { onClick: async (ev) => {
+   *       ev.currentTarget.disabled = true;          // fine: still dispatching
+   *       ev.currentTarget.textContent = 'Recording…';
+   *       try { await SR.api.post(...); }
+   *       catch (err) {
+   *         ui.apiError(err);
+   *         ev.currentTarget.disabled = false;       // TypeError: null
+   *         ev.currentTarget.textContent = 'Receive';
+   *       }
+   *     }}, 'Receive');
+   *
+   * The DOM sets `currentTarget` to null as soon as the dispatch finishes, and
+   * `await` finishes it. So the catch block itself threw, and the button stayed on
+   * "Recording…" and disabled for ever — the cashier could not retry without
+   * reopening the form. Across this codebase that pattern appears in a dozen
+   * handlers: every one of them broke precisely when something else had already
+   * gone wrong, which is the worst possible moment to lose the recovery path.
+   *
+   * The element a listener is attached to is the currentTarget for the whole of
+   * that listener's work, so this keeps saying so. Synchronous handlers are
+   * unaffected; a runtime without Proxy gets the raw event and the old behaviour.
+   */
+  function keepCurrentTarget(ev, el) {
+    try {
+      return new Proxy(ev, {
+        get(target, prop) {
+          if (prop === 'currentTarget') return el;
+          const value = target[prop];
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    } catch (err) {
+      return ev;
+    }
   }
 
   function html(markup) {
