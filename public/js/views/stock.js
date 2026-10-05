@@ -456,8 +456,12 @@
       function priceFields(factor) {
         const cost = wrapEl.querySelector('[name="cost_price_per_unit"]');
         const price = wrapEl.querySelector('[name="selling_price"]');
-        if (cost) cost.value = U.numInput(U.round2(perBaseCost * factor));
-        if (price) price.value = U.numInput(U.round2(perBasePrice * factor));
+        // A cost of zero means "not known", and filling the box with 0 would book
+        // free stock — a batch at ₦0 that every later margin is computed against.
+        // Leave it empty: the field is required, so the storekeeper types the figure
+        // off the invoice, which is the only place it can come from.
+        if (cost) cost.value = perBaseCost > 0 ? U.numInput(U.round2(perBaseCost * factor)) : '';
+        if (price) price.value = perBasePrice > 0 ? U.numInput(U.round2(perBasePrice * factor)) : '';
       }
 
       function fillUnits(ladder) {

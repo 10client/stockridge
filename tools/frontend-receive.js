@@ -185,12 +185,23 @@ const money = (n) => `₦${Number(n || 0).toLocaleString('en-NG', { minimumFract
   const qtyInput = modal.querySelector('[name="quantity"]');
   qtyInput.value = String(QTY);
   qtyInput.dispatchEvent(new window.Event('change', { bubbles: true }));
-  if (COST) {
-    const costInput = modal.querySelector('[name="cost_price_per_unit"]');
-    costInput.value = String(COST);
+
+  const costInput = modal.querySelector('[name="cost_price_per_unit"]');
+  const typeCost = (value) => {
+    costInput.value = String(value);
     costInput.dispatchEvent(new window.Event('change', { bubbles: true }));
+  };
+  if (COST != null && COST !== '') typeCost(COST);
+
+  // The form deliberately leaves the cost empty when the product's cost is unknown,
+  // so that a batch is never booked at zero by default. A tool has no invoice to
+  // read, so it types one and says so — the defect it is reporting is that the
+  // product has no cost, not that the form refused it.
+  if (read('cost_price_per_unit') === '') {
+    typeCost(1000);
+    bad('the product has a known cost to prefill', 'the form offered no cost, so the tool typed one; check the product');
   }
-  const costUsed = Number(COST || read('cost_price_per_unit'));
+  const costUsed = Number(read('cost_price_per_unit'));
 
   const submit = [...modal.querySelectorAll('button')].find((b) => /^receive$/i.test(b.textContent.trim()));
   if (!submit) { bad('the form can be submitted'); console.log('\n1 problem.'); process.exit(1); }
@@ -234,7 +245,11 @@ const money = (n) => `₦${Number(n || 0).toLocaleString('en-NG', { minimumFract
       headers: { Authorization: `Bearer ${page.token}` },
     }).then((r) => r.json()).catch(() => null);
     const rows = (batches && (batches.data || batches.batches)) || [];
-    if (rows.length && costUsed) {
+    if (!rows.length) {
+      bad('the batch can be read back', 'no batches came back for this product');
+    } else if (!Number.isFinite(costUsed)) {
+      bad('the cost that was typed is known', 'the cost box was empty and could not be read back');
+    } else {
       // The batch this receipt created: the one whose quantity is the quantity
       // received (in base units). Matching on id would be better, but the endpoint's
       // response is about the product, and this tool only knows what the screen did.
@@ -243,13 +258,11 @@ const money = (n) => `₦${Number(n || 0).toLocaleString('en-NG', { minimumFract
       const costPerBase = Number(batch.cost_price_per_unit != null ? batch.cost_price_per_unit : batch.cost);
       const expectedPerBase = factor > 1 ? costUsed / factor : costUsed;
       const label = `${money(costUsed)} per ${unitField} should be ${money(expectedPerBase)} per base unit`;
-      if (Math.abs(costPerBase - expectedPerBase) < Math.max(1, expectedPerBase * 0.01)) {
+      if (Math.abs(costPerBase - expectedPerBase) < Math.max(0.01, expectedPerBase * 0.01)) {
         ok('the batch carries the cost that was typed', `${label}; the batch records ${money(costPerBase)}`);
       } else {
         bad('the batch carries the cost that was typed', `${label}, but the batch records ${money(costPerBase)}`);
       }
-    } else {
-      bad('the batch can be read back', 'no batches came back for this product');
     }
   }
 

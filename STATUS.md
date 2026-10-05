@@ -876,3 +876,14 @@ recovered its button and its error message from that one change.
 - Selling through the screen, same database, after the fixes: **receipt 000653,
   ₦19,500, COMPLETED**.
 - The demo database was reseeded: the old bug had zeroed product costs in it.
+
+## Also in this stage
+
+- **The cost box no longer prefills ₦0.** An unknown cost is left empty so the figure
+  has to come off the invoice: pre-filling zero booked free stock, and the live
+  staging run proved it — a batch was recorded at ₦0 because the product's cost had
+  been zeroed by defect 8. It now offers the real weighted average (₦9,520 for the
+  power bank) or nothing at all.
+- **Live verification:** receiving through the real Stock screen on Cloudflare D1 —
+  `stock 5 → 8` for 3 pieces, batch cost ₦25,000 exactly as typed. All three
+  environments redeployed (15 checks each) and pushed.
