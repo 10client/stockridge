@@ -55,15 +55,30 @@ if [ "${1:-}" != "--no-commit" ]; then
   fi
 fi
 
+# A fresh `git init` names the branch `master`. Rename it to match the remote so
+# that a later command without arguments pushes the right thing.
+git branch -M "$BRANCH" 2>/dev/null || true
+
 # --force-with-lease is only a safety net if git knows what the remote held a
-# moment ago. Without the fetch it compares against nothing and either refuses
-# ("stale info") or silently overwrites — so fetch first, then lease.
+# moment ago, and the EXPECTED SHA HAS TO BE NAMED.
+#
+# A bare `--force-with-lease` resolves its expectation from the upstream of the
+# branch being pushed. When the local branch is not called `main` — a fresh
+# `git init` calls it `master` — that upstream does not exist, and git refuses
+# with "stale info" even though the remote-tracking ref was just fetched. Naming
+# the ref and the SHA removes the guesswork and makes the guard actually guard:
+# if somebody else pushed in the meantime, this fails instead of overwriting.
 echo "── fetching the current remote state"
-if git fetch -q "$AUTH_URL" "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null \
-   && git rev-parse --verify -q "refs/remotes/origin/${BRANCH}" >/dev/null; then
-  echo "   remote ${BRANCH} is at $(git rev-parse --short "refs/remotes/origin/${BRANCH}")"
+REMOTE_SHA=""
+if git fetch -q "$AUTH_URL" "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>/dev/null; then
+  REMOTE_SHA="$(git rev-parse --verify -q "refs/remotes/origin/${BRANCH}" || true)"
+fi
+
+if [ -n "$REMOTE_SHA" ]; then
+  echo "   remote ${BRANCH} is at $(printf '%s' "$REMOTE_SHA" | cut -c1-7)"
   echo "── pushing to ${BRANCH}"
-  git push "$AUTH_URL" "HEAD:refs/heads/${BRANCH}" --force-with-lease
+  git push "$AUTH_URL" "HEAD:refs/heads/${BRANCH}" \
+    --force-with-lease="refs/heads/${BRANCH}:${REMOTE_SHA}"
 else
   echo "   no remote ${BRANCH} yet — this is a first push"
   git push "$AUTH_URL" "HEAD:refs/heads/${BRANCH}"

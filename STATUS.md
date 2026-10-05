@@ -204,6 +204,81 @@ seed and code returned `200` on Node. All 251 local tests passed throughout.
 **Test state:** 260/260 (`node --test test/unit/ test/integration/ test/e2e/`),
 `sql-audit --strict` and `name-audit --strict` both exit 0.
 
+# ---------------------------------------------------------------------
+# CHECKPOINT — the repository is on GitHub, and CI is green
+# Last updated: 2026-10-05
+# ---------------------------------------------------------------------
+
+**Repository:** https://github.com/10client/stockridge — `main` @ `3e186ca`,
+126 files, public, topics and description set, homepage pointing at the live
+deployment. Local branch renamed from `master` to `main` to match.
+
+## The old tree was not destroyed
+
+The repository held an **earlier generation** of this project — last commit
+`c6f562e` from 2026-10-04, with a single `schema.sql`, a `shared/` directory, a
+top-level `wrangler.toml`, a nested `stockridge/` copy and a committed `.cache/`.
+Rather than delete it, it is preserved at:
+
+    branch  archive/pre-restructure-20261004  @  c6f562e
+
+`main` was then replaced with the current tree as a single commit. The push goes
+through `scripts/push-github.sh`, which reads the token from `.env.deploy`, uses
+it for the duration of one push and never writes it into `.git/config`.
+
+## TWO PUSH DEFECTS FOUND AND FIXED IN THE SCRIPT
+
+1. **`--force-with-lease` refused with `stale info`** even though the fetched
+   remote-tracking ref was right there. The bare form resolves its expectation
+   from the *upstream of the branch being pushed*, and a fresh `git init` names
+   that branch `master`, which has no upstream. It now names the ref and the SHA
+   explicitly (`--force-with-lease=refs/heads/main:<sha>`), so the guard is real:
+   if somebody else pushes in between, the push fails instead of overwriting.
+2. **A fresh `git init` leaves the local branch called `master`**, so the next
+   argument-less command would push the wrong thing. The script renames it to
+   match the remote branch.
+
+## REPOSITORY HYGIENE ADDED
+
+| File | Why |
+|---|---|
+| `README.md` | The client-facing entry point: what it does, the two-backend diagram, the verticals, local development, the seven-step deploy, the first-run journey, the repository layout, and the PBKDF2 platform ceiling written down where an engineer will read it. |
+| `.github/workflows/ci.yml` | Two jobs, because the two backends fail differently. `verify` (Node 20) runs the three audits and the tests; `worker-bundle` (Node 22, no credentials) runs `wrangler deploy --dry-run`, which is the fifteen-second check that would have caught the service-worker module-format bug. |
+| `.github/workflows/deploy-cloudflare.yml` | **Manual only.** Deploying to production and seeding an administrator on every push takes that decision away from the person who should make it. Takes `reset_pin` and `dry_run` inputs and runs `npm run verify` first. |
+| `.gitattributes` | LF everywhere (`*.sql` is read by two runtimes), binary declarations, lockfile excluded from diffs. |
+| `.editorconfig` | Two-space indent, because a 4-space reindent of a 500-line route module hides the real change. |
+| `SECURITY.md` | How credentials are handled, the authentication design, the authorisation model, and the iteration ceiling as a security-relevant constraint. |
+| `.env.deploy.example` | The deploy credential template, with no values. |
+| `scripts/push-github.sh` | Reproducible authenticated push without storing a token. |
+| `package.json` | **Two dead scripts found by reading, not running:** `worker:seed` called `--print-sql`, a flag `tools/d1-seed.js` does not have; `pages:deploy` called `tools/deploy-pages.js`, which does not exist (the Worker serves the PWA from its assets binding, so there is no Pages project). Both replaced; `dbg.js`, a scratch file with absolute paths, deleted. |
+
+## VERIFIED
+
+    GitHub Actions run 37335694764 — success, 73s
+      job  Audits and tests (Node 20)   success
+      job  Worker bundle (Node 22)      success
+
+    npm run verify (local, on the committed tree) — 260 tests pass,
+    three static audits clean under --strict
+
+The Worker job passing on a clean GitHub runner is the meaningful one: it proves
+the bundle builds on a machine that has never seen this project.
+
+## SANDBOX FACTS WORTH KNOWING FOR THE NEXT TURN
+
+This workspace does **not** preserve `node_modules/` or `.local/` across a turn
+boundary — both are excluded from the snapshot. Consequences:
+
+- `npm install` must be re-run before any test run that touches SQLite
+  (`better-sqlite3`); without it, the 10 database-backed test files fail with
+  `Cannot find module 'better-sqlite3'` and the count reads 117/127 instead of
+  260/260. The audits and the pure-domain unit tests pass regardless, which is
+  exactly how that failure can be misread as a code regression.
+- **Node 22 is gone.** Wrangler 4 requires ≥22, so any deploy needs it
+  re-installed first:
+  `nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.xz` → `/home/user/.local`.
+  The `node` on PATH is the system **v20.20.2**.
+
 ## STILL OPEN (checked against the workspace, not memory)
 
 Verified present: `public/js/views/sync.js` (31 KB) and `account.js` (12 KB) both
@@ -212,16 +287,13 @@ carry the same `BUILD = 'ridge-1'`; `public/js/views/instalments.js` defines
 `takePayment(plan)` at module scope and calls it from the plan row — the defect
 recorded earlier does **not** exist. Memory was stale on all four.
 
-1. **GitHub: nothing is committed.** No git repository exists yet, and the target
-   is `https://github.com/10client/stockridge`. `.gitignore` already excludes
-   credentials, databases and `.data/`.
-2. **`docs/` and `scripts/` do not exist.** Needed: deployment (this file's
-   sequence in full), D1 operations, storage/R2, the GitHub Action, and a
-   client handover note.
-3. **No live browser smoke test of any screen.** Every screen is proven by
+1. **`docs/` does not exist** (`scripts/` now holds `push-github.sh`). Needed:
+   deployment in full, D1 operations, storage/R2, the GitHub Action, and a client
+   handover note.
+2. **No live browser smoke test of any screen.** Every screen is proven by
    contract tests and by the routes behind it; none has been rendered in a
    browser against the live deployment.
-4. **The first-run journey has been proven on Node, not yet against live D1.**
+3. **The first-run journey has been proven on Node, not yet against live D1.**
    `POST /api/businesses` → provisioning → `POST /api/users` → sale is covered by
    `test/e2e/onboarding.test.js` and `test/integration/d1-seed.test.js` on
    SQLite. The D1 path runs the same routes over a different storage adapter
@@ -229,9 +301,9 @@ recorded earlier does **not** exist. Memory was stale on all four.
    adapter has never executed a business creation against the live database.
    Plan: a `staging` environment on its own D1 database, run the whole journey
    there, and leave production at `awaiting_first_business`.
-5. `public/offline.html` is absent. The service worker synthesises an offline
+4. `public/offline.html` is absent. The service worker synthesises an offline
    page inline for a failed navigation, so the PWA still degrades correctly; a
    real file would be tidier, not more correct.
-6. `tools/seed.js` (the demo fixture generator) is now dead weight for a client
+5. `tools/seed.js` (the demo fixture generator) is now dead weight for a client
    deployment. It should keep working for local development but must never be
    part of the handover path.
