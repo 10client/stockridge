@@ -84,6 +84,53 @@ node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles --walk
 | `--expect-nav=N` | fail unless the nav has at least N items (default 1) |
 | `--wait=N` | ms to wait for the app to settle (default 30000) — it polls, it does not sleep and hope |
 
+### Probing every role, in both directions
+
+```
+# the four seats of a seeded demo database, every destination, every guarded GET
+node tools/frontend-roles.js --url=http://localhost:8787 --walk
+
+# a live deployment, naming the seats
+node tools/frontend-roles.js --url=https://stockridge-staging.stockridge.workers.dev \
+  --seat=admin:1234 --seat=liveseat:48213 --walk
+```
+
+`frontend-smoke.js` answers "does this screen draw?". This one answers the harder
+pair of questions: **does each kind of user get the capability the roles table says
+they get — and are they actually refused the ones it says they may not have?**
+
+| flag | what it does |
+|---|---|
+| `--seat=user:pin[:ROLE]` | a seat to probe (repeatable); without it, the demo database's four |
+| `--walk` | open every destination that role's navigation offers, and compare it against the routes the app declares for that role |
+| `--list` | print every guarded endpoint the probe found, straight from the server's source |
+| `--deep-writes` | also call guarded writes with an empty body — **opt-in, never against a customer's live deployment** |
+
+What it checks, and why each half matters:
+
+* **The navigation a role is given** must equal the destinations the route table
+  grants that role. A missing one is a capability nobody can reach; an extra one is
+  a screen that will refuse them at the first request.
+* **Every guarded endpoint, called with that role's token.** A route whose guard
+  demands more authority must answer 403; a route the role is entitled to must not.
+  A 5xx anywhere is a defect. A 2xx for a role the boundary excludes is the
+  dangerous direction — the capability was not refused — and it is the one nobody
+  tests.
+
+The expectations come from two independent places on purpose. The first is the
+server's own source (derived, so it cannot drift and cannot be forgotten). The
+second is `CRITICAL` inside the tool — a hand-written list of the boundaries that
+matter most, taken from `domain/roles.js`. The derived list catches a guard that
+exists but does not run; the hand-written one catches a guard that was **deleted**,
+because deleting it also deletes the derived expectation. Both were proved by
+breaking the code on purpose (see `STATUS.md`, Stage 7).
+
+Only GETs, plus critical writes for roles below their boundary, are called: probing
+a guarded POST with a real payload would create the thing it protects. Below-guard
+writes are safe because an empty body can only be refused or rejected — it cannot
+create anything valid out of nothing. The report says how many paths were skipped
+for needing an id rather than implying coverage it does not have.
+
 ### Ringing a sale through the screen
 
 ```

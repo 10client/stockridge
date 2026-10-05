@@ -191,4 +191,78 @@ async function bootPage({ origin, username, pin, token: givenToken = null, waitM
   };
 }
 
-module.exports = { bootPage, waitUntil, findByText, clickText, loadJsdom, sleep, PUBLIC_DIR, ROOT };
+// ---------------------------------------------------------------------
+// THE WALK — one definition, shared by every tool that drives the app
+// ---------------------------------------------------------------------
+// A screen that REFUSES ("Open a till first") and a screen that BROKE
+// ("Cannot read properties of null") render the same red block. The
+// difference is in the words, so it has to be read out of them: without
+// this, a page that could not draw itself passes a walk reporting "no
+// problems" — which is exactly how the administrator's Subscription screen
+// shipped broken.
+const FAULT_TEXT = /cannot read propert|is not a function|is not defined|of undefined|of null|undefined is not|not iterable|before initialization|out of range|Invalid time value|Cannot convert/i;
+
+/** True when an error message describes a fault rather than a deliberate refusal. */
+function isFault(alertText) {
+  return Boolean(alertText) && FAULT_TEXT.test(alertText);
+}
+
+/**
+ * Open every destination in the navigation, in turn, and record what appears.
+ *
+ * Settles on "non-empty text that has stopped changing" rather than a fixed
+ * sleep, because a fixed sleep once reported a perfectly good sidebar as EMPTY.
+ */
+async function walkNav(page, { settleMs = 15000, pauseMs = 400 } = {}) {
+  const { window, logs } = page;
+  const doc = window.document;
+  const nav = doc.getElementById('nav-list');
+  const walk = [];
+  if (!nav) return walk;
+
+  for (const btn of [...nav.querySelectorAll('.nav-item')]) {
+    const label = btn.textContent.trim();
+    const path = btn.dataset ? btn.dataset.path : '';
+    const logStart = logs.length;
+    const started = Date.now();
+    let thrown = null;
+    try {
+      btn.click();
+    } catch (err) {
+      thrown = err && err.message ? err.message : String(err);
+    }
+    const deadline = Date.now() + settleMs;
+    let text = '';
+    let stableSince = 0;
+    while (!thrown && Date.now() < deadline) {
+      const v = doc.getElementById('view');
+      const now = v ? v.textContent.replace(/\s+/g, ' ').trim() : '';
+      if (now.length > 0 && now === text) {
+        if (Date.now() - stableSince > pauseMs) break;
+      } else {
+        text = now;
+        stableSince = Date.now();
+      }
+      await sleep(250);
+    }
+    const view = doc.getElementById('view');
+    const alert = view ? view.querySelector('.alert-danger') : null;
+    walk.push({
+      label,
+      path,
+      ms: Date.now() - started,
+      chars: text.length,
+      snippet: text.slice(0, 90),
+      alert: alert ? alert.textContent.replace(/\s+/g, ' ').trim().slice(0, 110) : null,
+      newLogs: logs.slice(logStart).filter((l) => l.startsWith('[error]')).slice(0, 2),
+      thrown,
+      fault: Boolean(alert) && FAULT_TEXT.test(alert.textContent),
+    });
+  }
+  // Leave the app where it was, so a later report describes the same screen.
+  if (nav.querySelector('.nav-item')) nav.querySelector('.nav-item').click();
+  await sleep(1200);
+  return walk;
+}
+
+module.exports = { bootPage, waitUntil, findByText, clickText, loadJsdom, sleep, walkNav, isFault, PUBLIC_DIR, ROOT };

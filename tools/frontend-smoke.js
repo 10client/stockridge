@@ -77,25 +77,6 @@ const DEMO_SEATS = [
   { label: 'STAFF', username: 'blessing', pin: '26480' },
 ];
 
-/**
- * Does this screen's own error message describe a FAULT rather than a refusal?
- *
- * A refusal is the app working: "Open a till first", "Only an owner can see this".
- * A fault is the app broken: a null dereference, an undefined function, a value
- * that was never there. Both render as a red block with the same heading, so the
- * difference has to be read out of the text.
- *
- * This test exists because a fault hid behind that heading. The Subscription
- * screen read `activeBusiness().name` for its subtitle, which is null on any
- * deployment that has no business yet — so it threw, rendered "That failed.
- * Cannot read properties of null (reading 'name')", and the walk called it a
- * deliberate refusal and moved on. A screen that cannot draw itself is never
- * deliberate, and it must not be able to pass a walk.
- */
-const FAULT_TEXT = /cannot read propert|is not a function|is not defined|of undefined|of null|undefined is not|not iterable|before initialization|out of range|Invalid time value|Cannot convert/i;
-function isFault(alertText) {
-  return Boolean(alertText) && FAULT_TEXT.test(alertText);
-}
 
 /**
  * Boot the real frontend against `origin` and report what the user would see.
@@ -128,51 +109,10 @@ async function inspect({ origin, username, pin }) {
   // A screen whose view stays EMPTY, or whose render throws, is a defect. A
   // screen that deliberately refuses ("open a till first") is not: it rendered,
   // and it told the truth. Both are reported; only the first counts as a problem.
-  const walk = [];
-  if (has('walk') && nav) {
-    for (const btn of [...nav.querySelectorAll('.nav-item')]) {
-      const label = btn.textContent.trim();
-      const path = btn.dataset ? btn.dataset.path : '';
-      const logStart = logs.length;
-      const started = Date.now();
-      let thrown = null;
-      try {
-        btn.click();
-      } catch (err) {
-        thrown = String((err && err.message) || err);
-      }
-      // Settle: non-empty text that has stopped changing.
-      const deadline = Date.now() + 15000;
-      let text = '';
-      let stableSince = 0;
-      while (!thrown && Date.now() < deadline) {
-        const v = window.document.getElementById('view');
-        const now = v ? v.textContent.replace(/\s+/g, ' ').trim() : '';
-        if (now.length > 0 && now === text) {
-          if (Date.now() - stableSince > 400) break;
-        } else {
-          text = now;
-          stableSince = Date.now();
-        }
-        await new Promise((r) => { setTimeout(r, 250); });
-      }
-      const view = window.document.getElementById('view');
-      const alert = view ? view.querySelector('.alert-danger') : null;
-      walk.push({
-        label,
-        path,
-        ms: Date.now() - started,
-        chars: text.length,
-        snippet: text.slice(0, 90),
-        alert: alert ? alert.textContent.replace(/\s+/g, ' ').trim().slice(0, 110) : null,
-        newLogs: logs.slice(logStart).filter((l) => l.startsWith('[error]')).slice(0, 2),
-        thrown,
-      });
-    }
-    // Leave the app where it was, so the boot report describes the same screen.
-    if (nav.querySelector('.nav-item')) nav.querySelector('.nav-item').click();
-    await new Promise((r) => { setTimeout(r, 1500); });
-  }
+  // The walk itself lives in the harness, so the smoke test, the role probe and
+  // anything else that drives the app share ONE definition of "this screen is
+  // broken" — including the fault-versus-refusal judgement.
+  const walk = has('walk') ? await H.walkNav(page, { settleMs: 15000 }) : [];
   const boot = window.document.getElementById('boot');
   const bootLine = boot ? boot.textContent.replace(/\s+/g, ' ').trim() : '';
   const view = window.document.getElementById('view');
@@ -263,7 +203,7 @@ function report(seat, result) {
       if (dead) problems.push(`${seat.label}: the ${w.label} screen rendered nothing${w.thrown ? ` (${w.thrown})` : ''}`);
       // A screen that drew an error block because IT broke, rather than because it
       // refused to do what was asked, is a defect — and it used to pass unnoticed.
-      if (!dead && isFault(w.alert)) {
+      if (!dead && (w.fault || H.isFault(w.alert))) {
         problems.push(`${seat.label}: the ${w.label} screen (${w.path || '?'}) failed to render itself — ${w.alert}`);
       }
     }

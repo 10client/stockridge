@@ -1095,3 +1095,98 @@ now says it has no business yet — which is true, and is the administrator's cu
 and create one.
 
 All three environments were redeployed with 15 checks each and reported ready.
+
+---
+
+# CHECKPOINT — Stage 7: EVERY ROLE, EVERY CAPABILITY, PROBED BOTH WAYS
+
+## What was asked
+
+*"Make sure all the capabilities possible from the schema are fully utilised by all
+the forms of users, and probe a two-way probe on all aspects of the app, in stages."*
+
+## What was built
+
+`tools/frontend-roles.js` — a probe that signs in as each kind of user and answers two
+questions at once:
+
+1. **Does this role get what the roles table says it gets?** The navigation the app
+   hands the seat is compared against the destinations the route table declares for
+   that role.
+2. **Is this role actually refused what it may not do?** Every guarded endpoint the
+   server registers is called with that role's token. Below the guard: 403 required.
+   At or above it: anything but a 403. A 5xx anywhere is a defect.
+
+The second question is the one nothing in this repository asked before, and it is the
+one that matters most: a capability that is missing is reported by a user within a
+day, while a capability that is **not refused** — a cashier reading the profit
+figures, a manager editing the control switches — is reported by an auditor, if ever.
+
+The walk that decides "is this screen broken?" now lives in
+`tools/lib/page-harness.js` and is shared by the smoke test and this probe, so both
+use one definition — including the fault-versus-refusal judgement that the
+Subscription defect made necessary.
+
+## The instrument, measured against the app
+
+```
+164 route(s) registered · 54 carry a role guard
+per seat: 6 guarded GET(s) called (+48 guarded writes with --deep-writes)
+
+✓ admin (ADMIN)     6 navigation destinations   ·  5 answered, 0 refused, 0 broken
+✓ owner (OWNER)    25 navigation destinations   ·  5 answered, 1 refused, 0 broken
+✓ emeka (MANAGER)  21 navigation destinations   ·  4 answered, 13 refused, 0 broken
+✓ blessing (STAFF) 12 navigation destinations   ·  0 answered, 25 refused, 0 broken
+  declared for STAFF: 12 — every destination the route table grants a cashier
+```
+
+Every role's sidebar equals its declaration, exactly. A cashier answers **none** of
+the 25 guarded boundaries it is not entitled to. No screen in any of the four
+navigations fails to render — 65 destinations walked in one run, no faults.
+
+**Live on staging**, as `admin` and as the owner `liveseat`: clean, both directions,
+25 destinations for the owner, 54 guards examined.
+
+## Proving the probe can fail — twice, by breaking the app on purpose
+
+A probe that reports "no problems" on a broken app is worse than no probe. Both
+failure modes were constructed:
+
+1. **A guard that exists in the source but does not run** (`if (false && !atLeast(…)`).
+   Caught: *"GET /api/plan was served http 200 to MANAGER, and the subscription
+   position belongs to the owner — it must require OWNER"*, and the same for STAFF.
+2. **A guard deleted from the source entirely.** Missed on the first attempt, and
+   the reason is structural: the expectations are derived from the same file that
+   was edited, so deleting the guard deleted the expectation. Fixed by giving the
+   tool an **independent** truth — a hand-written `CRITICAL` list of the twelve
+   boundaries that matter most, taken from `domain/roles.js` rather than from the
+   routes. With that, the deleted guard is caught: same two findings.
+
+The first cut of the extractor was also **wrong in the accusing direction**: it read
+`atLeast(user.role, 'OWNER') ? featureLabels : null` — a route deciding how much of a
+public answer to give — as a guard, and accused four routes that behave correctly
+(`/api/settings`, `/api/dashboard`, `/api/tills/current`, `/api/branding/full`). A
+guard is a demand that REFUSES, so a guard now has to be followed by a `throw`. Four
+false accusations on the first run, zero on the last.
+
+## Two tooling faults found on the way, both of which had been hiding results
+
+- **`pkill -f "[n]ode server/app.js"` kills the shell running the command.** The
+  shell's own command line contains the pattern, so the pattern matched the bash
+  process and the command ended mid-way — which is why an edit "restored from a
+  backup" in an earlier stage was silently never restored, and why several tool calls
+  returned exit −1 after apparently finishing. Servers are now started with
+  `echo $! > /tmp/srv.pid` and stopped with `kill "$(cat /tmp/srv.pid)"`.
+- **Closing the jsdom window ends the run, not the page.** A screen still waiting on a
+  request resumed into a torn-down document, `ui.h` had no `document`, and the throw
+  landed outside jsdom and killed the probe — hiding the very screen it was about to
+  report. The window is no longer closed, and late faults are recorded and reported
+  instead of ending the process.
+
+## Verified
+
+- `npm run verify` → **292 tests, 292 pass**.
+- Local, four seats, `--walk --deep-writes`: no problems; 54 guarded endpoints called
+  per seat; 65 destinations walked.
+- Staging, `admin` + owner: no problems.
+- Both negative tests reproduce, and the clean run passes again afterwards.
