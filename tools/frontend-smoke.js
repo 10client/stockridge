@@ -48,15 +48,16 @@
 //                    console, for working out WHY a seat did not render
 //   --wait=N         ms to wait for the app to settle (default 30000). The tool
 //                    polls; it does not sleep a fixed time and hope.
+//   --walk           open every destination in the navigation, in turn, and report
+//                    what each screen renders. Catches a view that throws behind a
+//                    working sidebar.
 //
 // Exit code is 0 only when every check passed.
 // =====================================================================
 
-const fs = require('node:fs');
-const path = require('node:path');
-
-const ROOT = path.resolve(__dirname, '..');
-const PUBLIC_DIR = path.join(ROOT, 'public');
+// The booting itself lives in tools/lib/page-harness.js, shared with
+// tools/frontend-sale.js. This file is only about what to look at afterwards.
+const H = require('./lib/page-harness.js');
 
 const args = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -76,128 +77,82 @@ const DEMO_SEATS = [
   { label: 'STAFF', username: 'blessing', pin: '26480' },
 ];
 
-function loadJsdom() {
-  try {
-    // eslint-disable-next-line global-require
-    return { JSDOM: require('jsdom').JSDOM, VirtualConsole: require('jsdom').VirtualConsole };
-  } catch (err) {
-    // Say WHAT failed. This catch used to print only "jsdom is missing", which was
-    // wrong once already: jsdom WAS installed on CI, but CI's Node 20 pulled
-    // jsdom@30, whose engine is ^22.22.2, and the require threw. The message sent
-    // the reader to install a package that was already there.
-    console.error('\n  This tool needs jsdom, which is not a dependency of the project:\n');
-    console.error('      npm install --no-save jsdom@29.1.1 fake-indexeddb@6.2.5\n');
-    console.error(`  jsdom could not be loaded: ${err && err.message ? err.message : err}`);
-    if (process.version && Number(process.version.slice(1).split('.')[0]) < 22) {
-      console.error(`  You are on Node ${process.version}. jsdom 30 needs >= 22.22; pin jsdom 29 or use Node 22.`);
-    }
-    process.exit(2);
-  }
-}
-
 /**
  * Boot the real frontend against `origin` and report what the user would see.
  *
- * Everything here exists because the app genuinely needs it to start: the offline
- * store is IndexedDB, the theme asks matchMedia, and the scripts are plain
- * <script> tags with no bundler and no module system.
+ * The booting is the harness's job (tools/lib/page-harness.js). What is left here
+ * is the part that is specific to this tool: what the DOM looks like once it is up.
  */
 async function inspect({ origin, username, pin }) {
-  const { JSDOM, VirtualConsole } = loadJsdom();
-  const logs = [];
-  const vc = new VirtualConsole();
-  for (const level of ['error', 'warn', 'log']) vc.on(level, (...a) => logs.push(`[${level}] ${a.join(' ').slice(0, 220)}`));
-
-  // Sign in out of band, so the page boots the way a returning user's does.
-  const login = await (await fetch(`${origin}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, pin }),
-  })).json();
-  if (!login.token) return { ok: false, reason: `sign-in failed: ${JSON.stringify(login).slice(0, 160)}`, logs };
-
-  const dom = new JSDOM(fs.readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8'), {
-    url: `${origin}/`, runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole: vc,
+  const page = await H.bootPage({
+    origin, username, pin, waitMs: Number(flag('wait', 30000)),
   });
-  const { window } = dom;
+  if (!page.ok) return { ok: false, reason: page.reason, logs: page.logs };
 
-  // The gaps jsdom leaves, none of which are application bugs.
-  const { indexedDB, IDBKeyRange } = require('fake-indexeddb');
-  window.indexedDB = indexedDB;
-  window.IDBKeyRange = IDBKeyRange;
-  if (!window.structuredClone) window.structuredClone = (v) => JSON.parse(JSON.stringify(v));
-  if (!window.matchMedia) {
-    window.matchMedia = (q) => ({
-      matches: false, media: q, onchange: null,
-      addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return false; },
-    });
-  }
-  window.scrollTo = () => {};
-
-  // Send the page's requests to the real server, with its token attached.
-  const realFetch = globalThis.fetch;
-  window.fetch = (url, init = {}) => {
-    const u = String(url).startsWith('http') ? String(url) : `${origin}/${String(url).replace(/^\//, '')}`;
-    const headers = Object.assign({}, init.headers || {});
-    if (/\/api\//.test(u) && !headers.Authorization && window.SR && window.SR.api && window.SR.api.token) {
-      headers.Authorization = `Bearer ${window.SR.api.token}`;
-    }
-    return realFetch(u, { ...init, headers });
-  };
-  window.localStorage.setItem('sr.token', login.token);
-
-  // Load the page's own scripts, in the page's own order. Reading the order from
-  // the HTML is the point: a script the page forgets to include is exactly the
-  // kind of thing this tool should notice.
-  const scripts = [...window.document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src'));
-  const missing = [];
-  for (const src of scripts) {
-    const file = path.join(PUBLIC_DIR, src.replace(/^\//, ''));
-    if (!fs.existsSync(file)) { missing.push(src); continue; }
-    const el = window.document.createElement('script');
-    el.textContent = fs.readFileSync(file, 'utf8');
-    window.document.body.appendChild(el);
-  }
-
-  // WAIT FOR THE APP, DO NOT RACE IT.
-  //
-  // This used to sleep a flat 6 seconds. That was wrong, and it produced a false
-  // failure on a live deployment: a first boot signs in, then syncs the whole
-  // catalogue into IndexedDB before the shell settles, which on a real D1 database
-  // takes longer than six seconds. The tool inspected a working app mid-sync and
-  // reported "nav 0: (EMPTY)" — the exact symptom of the defect it was built to
-  // catch, for a completely different reason. A test that cries wolf about the
-  // thing it exists to watch for is worse than no test.
-  //
-  // So: poll until the app has actually settled — navigation built, a view
-  // rendered, or a visible failure — and only then judge it.
-  const WAIT_MS = Number(flag('wait', 30000));
-  const settle = async () => {
-    const deadline = Date.now() + WAIT_MS;
-    let last = null;
-    while (Date.now() < deadline) {
-      const boot = window.document.getElementById('boot');
-      const bootText = boot ? boot.textContent.replace(/\s+/g, ' ').trim() : '';
-      const navNow = window.document.getElementById('nav-list');
-      const items = navNow ? navNow.querySelectorAll('.nav-item').length : 0;
-      const viewNow = window.document.getElementById('view');
-      const viewText = viewNow ? viewNow.textContent.trim() : '';
-      last = { items, viewChars: viewText.length, bootText };
-      if (/failed to start/i.test(bootText)) return last;      // it is not going to settle
-      if (items > 0 && viewText.length > 0) return last;       // settled
-      await new Promise((r) => { setTimeout(r, 500); });
-    }
-    return last;
-  };
-  const startedAt = Date.now();
-  const settled = await settle();
-  const settleMs = Date.now() - startedAt;
-  if (settled && settled.items === 0) {
-    logs.push(`[wait] gave up after ${WAIT_MS}ms: ${settled.items} nav item(s), view ${settled.viewChars} char(s)`);
+  const { window, logs, missing, settleMs, settled } = page;
+  if (settled.state !== 'ready') {
+    logs.push(`[wait] gave up: ${settled.items || 0} nav item(s), view ${settled.viewChars || 0} char(s)`);
   }
 
   const nav = window.document.getElementById('nav-list');
   const items = nav ? [...nav.querySelectorAll('.nav-item')].map((b) => b.textContent.trim()) : [];
+
+  // -------------------------------------------------------------------
+  // --walk: visit every destination and see what comes up
+  // -------------------------------------------------------------------
+  // The shell rendering proves the navigation EXISTS. It says nothing about
+  // whether the 25 screens behind it render — a view that throws on open would
+  // still leave a perfect sidebar. This clicks each one, waits for the view to
+  // settle, and reports what a person would see.
+  //
+  // A screen whose view stays EMPTY, or whose render throws, is a defect. A
+  // screen that deliberately refuses ("open a till first") is not: it rendered,
+  // and it told the truth. Both are reported; only the first counts as a problem.
+  const walk = [];
+  if (has('walk') && nav) {
+    for (const btn of [...nav.querySelectorAll('.nav-item')]) {
+      const label = btn.textContent.trim();
+      const path = btn.dataset ? btn.dataset.path : '';
+      const logStart = logs.length;
+      const started = Date.now();
+      let thrown = null;
+      try {
+        btn.click();
+      } catch (err) {
+        thrown = String((err && err.message) || err);
+      }
+      // Settle: non-empty text that has stopped changing.
+      const deadline = Date.now() + 15000;
+      let text = '';
+      let stableSince = 0;
+      while (!thrown && Date.now() < deadline) {
+        const v = window.document.getElementById('view');
+        const now = v ? v.textContent.replace(/\s+/g, ' ').trim() : '';
+        if (now.length > 0 && now === text) {
+          if (Date.now() - stableSince > 400) break;
+        } else {
+          text = now;
+          stableSince = Date.now();
+        }
+        await new Promise((r) => { setTimeout(r, 250); });
+      }
+      const view = window.document.getElementById('view');
+      const alert = view ? view.querySelector('.alert-danger') : null;
+      walk.push({
+        label,
+        path,
+        ms: Date.now() - started,
+        chars: text.length,
+        snippet: text.slice(0, 90),
+        alert: alert ? alert.textContent.replace(/\s+/g, ' ').trim().slice(0, 110) : null,
+        newLogs: logs.slice(logStart).filter((l) => l.startsWith('[error]')).slice(0, 2),
+        thrown,
+      });
+    }
+    // Leave the app where it was, so the boot report describes the same screen.
+    if (nav.querySelector('.nav-item')) nav.querySelector('.nav-item').click();
+    await new Promise((r) => { setTimeout(r, 1500); });
+  }
   const boot = window.document.getElementById('boot');
   const bootLine = boot ? boot.textContent.replace(/\s+/g, ' ').trim() : '';
   const view = window.document.getElementById('view');
@@ -240,6 +195,7 @@ async function inspect({ origin, username, pin }) {
     } : null,
     missing,
     logs,
+    walk,
     dump,
   };
 }
@@ -272,6 +228,21 @@ function report(seat, result) {
   console.log(`      nav ${result.navItems.length}: ${result.navItems.join(' · ') || '(EMPTY)'}`);
   console.log(`      view: ${result.viewText || '(empty)'}`);
   if (problems.length) for (const p of problems) console.log(`      ${p}`);
+
+  if (result.walk && result.walk.length) {
+    console.log(`      walk: ${result.walk.length} destination(s)`);
+    for (const w of result.walk) {
+      // Empty view, a throw, or a console error is a dead screen. A deliberate
+      // refusal is not — it rendered, and it explained itself.
+      const dead = w.thrown || w.chars === 0;
+      const mark = dead ? '✗' : w.alert ? '!' : '·';
+      console.log(`        ${mark} ${w.label.padEnd(18)} ${String(w.chars).padStart(5)} char  ${w.snippet || '(nothing rendered)'}`);
+      if (w.thrown) console.log(`            threw: ${w.thrown}`);
+      if (w.alert) console.log(`            says : ${w.alert}`);
+      for (const l of w.newLogs || []) console.log(`            ${l}`);
+      if (dead) problems.push(`${seat.label}: the ${w.label} screen rendered nothing${w.thrown ? ` (${w.thrown})` : ''}`);
+    }
+  }
 
   // A failed boot usually explains itself in the page's own console.
   const errors = (result.logs || []).filter((l) => l.startsWith('[error]') || l.startsWith('[warn]'));

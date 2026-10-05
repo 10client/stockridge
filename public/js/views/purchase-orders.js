@@ -298,7 +298,7 @@
               onClick: () => {
                 lines.push({
                   product_id: String(p.id), name: p.name, quantity: 1,
-                  unit_code: p.base_unit_name || 'PIECE',
+                  unit_code: p.default_unit_code || p.base_unit_name || 'PIECE',
                   expected_unit_cost: Number(p.cost_price) || 0,
                 });
                 input.value = '';

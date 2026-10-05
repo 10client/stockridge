@@ -654,3 +654,133 @@ live deployment, so a deploy-time check belongs there.
 `node tools/frontend-smoke.js … --dump` is new: it prints the visible screen, the
 DOM state and the page's own console, so the next person does not have to guess why
 a seat did not render.
+
+---
+
+# CHECKPOINT — 2026-10-06 (2): what the Sell screen did when a cashier used it
+
+**Last updated:** `npm run verify` → **284 tests, 284 pass**, audits clean. Three
+live deployments carry this. Every defect below was found by *driving the real
+screen*, not by testing the API — and every one of them was invisible to 284
+passing tests.
+
+`tools/frontend-sale.js` is new: it opens the real Sell screen in a jsdom client
+against a real server, searches a product, adds it to the cart, takes the payment,
+completes the sale and reads the receipt back:
+
+```
+node tools/frontend-sale.js --url=https://stockridge-staging.stockridge.workers.dev \
+  --user=<seat> --pin=<pin> --product=Anker
+```
+
+Five defects, in the order the cashier hit them.
+
+## 1. The till sent a unit NAME where the API wanted a CODE — nothing was sellable
+
+```
+Line 1 ("Anker 20000mAh Power Bank"): Unknown unit "UNIT".
+This product is sold in: PIECE, CARTON.
+```
+
+The appliance ladder names its base unit **"Unit"** under the code **PIECE**. The
+product row carries `base_unit_name` ("unit") because that is the word a *receipt*
+prints, and `public/js/views/pos.js` sent it as if it were a code — uppercased to
+`UNIT`, which is not in the ladder. Search worked, the cart worked, the payment was
+taken, and the sale was refused at the last moment: on every appliance and gadget
+in the catalogue.
+
+It survived 284 tests because every test sent `unit_code: 'PIECE'`. The
+hand-written payload was more correct than the application.
+
+**Fixed in three places, deliberately:**
+
+- **`domain/uom.js`** now resolves a unit by CODE or by NAME (and plural), because
+  callers legitimately hold either. Ambiguity is refused (`AMBIGUOUS_UNIT`) rather
+  than guessed: if one word names two levels, choosing between them is the bug, not
+  the fix. This is the layer that makes an *already queued* offline sale — a payload
+  written by the old build, sitting on a phone — sync successfully instead of being
+  rejected forever.
+- **`GET /api/products`** carries `default_unit_code`, so no screen has to guess.
+- **`pos.js`, `purchase-orders.js`, `instalments.js`** use the code, falling back to
+  the word only if the code is absent.
+
+`test/integration/sale-units.test.js` (6 tests) pins all of it, including a sale
+posted with the exact payload the till sent (`unit_code: 'unit'`) and a check that
+the catalogue still contains a product whose unit name differs from its code — so
+the test cannot quietly stop testing the thing that broke.
+
+## 2. A product priced in the wrong unit — ₦300 for ₦14,400 of water
+
+The till switched to the default sell unit (a **carton** of water) but kept the
+**base** price (₦300 a bottle). It quoted the customer ₦300, took ₦300, and the
+server — which had always priced it correctly at 48 × ₦300 — refused the sale for a
+₦14,100 short payment. The money was never wrong; what the customer was shown was.
+
+**Fixed:** the catalogue now reports `default_unit_factor` beside the code, and the
+cart prices a line in the unit it is selling (a carton is ₦14,400 *because* a carton
+holds 48 bottles). `U.round2(basePrice * sell.factor)`.
+
+## 3. Variant goods could not be sold from search at all
+
+Ten of the demo catalogue's 78 products are variant-tracked — sofas in three
+fabrics, phones in four colours, beds in nine finishes. Clicking one in search put
+it in the cart with no variant, and the refusal only came at payment:
+
+```
+Line 1: "3-Seater Tiffany Fabric Sofa" comes in variants — choose the specific one
+(colour, size or finish) the customer is buying.
+```
+
+The endpoint always said so. The screen never asked. **Fixed:** the Sell screen now
+opens a variant chooser when the product has variants (with each variant's own price
+and stock), and a line that somehow reaches the cart without one carries a
+"Choose variant" button rather than an unsellable line.
+
+## 4. A wholesale branch could not sell a single piece
+
+The kettle's default sell unit at a wholesale branch is the CARTON. The shelf held
+sixteen pieces, so the till demanded 48 and refused:
+
+```
+only 16 pieces of "Binatone Kettle 1.8L" is available at this branch, and this line
+needs 48. Short by 32.
+```
+
+and nothing on the screen offered a way to sell one piece — the ladder was in the
+database all along. **Fixed:** the cart line carries a `Unit: CARTON` button that
+switches the unit and re-prices the line from the catalogue price per base unit,
+with the available quantity re-expressed in the chosen unit.
+
+## 5. Two ways a completed sale produced no receipt
+
+- **The receipt was created and then deleted.** `completeSale()` opened the receipt
+  while the payment sheet was still up, and the payment sheet's `close()` clears the
+  one modal root — so *every* sale ended on an empty cart with no receipt, no
+  confirmation and nothing to print. **Fixed:** the caller closes the payment sheet
+  first, then shows the receipt.
+- **Warranty receipts threw.** The warranty block computed an expiry from
+  `U.soldDate()`, which is a *display* string ("05 Oct 2026") — and
+  `new Date("05 Oct 2026T00:00:00Z")` is an Invalid Date whose `toISOString()`
+  throws `RangeError: Invalid time value`, taking the whole receipt with it. So a
+  warrantied appliance — the entire point of this vertical — produced no receipt at
+  all. **Fixed:** a new `U.isoDate()` for arithmetic (`soldDate()` stays for people),
+  a warranty line that prints the period when the date is unreadable, and a
+  try/catch so a layout fault can never cost a cashier the receipt for a sale that
+  is already recorded.
+
+## What this says about the testing
+
+Everything here was found in one stretch of operating the screen, by a tool that
+takes a minute to run. The suite had 284 tests and every one of them passed while a
+cashier could not sell a kettle. Contracts test the API; they cannot test the till.
+`frontend-smoke.js` asks whether the app renders; `frontend-sale.js` asks whether it
+can be *operated*. Both now exist, and both run against a live deployment.
+
+## Verification
+
+- `npm run verify` → 284 tests, 284 pass; `sql-audit`, `name-audit`, `args-audit` clean.
+- Sales rung through the real Sell screen, to a printed receipt, with the server
+  confirming each: a tile (variant, `SQUARE_METRE`), a carton of water (₦14,400,
+  multi-unit), a warrantied kettle (₦19,500, warranty expiry 2027-10-05).
+- All three environments deployed with these fixes: staging (1 business trading),
+  sample and production (admin-only handover state, readiness 6/6).

@@ -403,7 +403,7 @@
               const priceEl = wrapEl.querySelector('[name="unit_price"]');
               const unitEl = wrapEl.querySelector('[name="unit_code"]');
               if (priceEl) priceEl.value = U.numInput(p.selling_price);
-              if (unitEl) unitEl.value = p.base_unit_name || 'PIECE';
+              if (unitEl) unitEl.value = p.default_unit_code || p.base_unit_name || 'PIECE';
               productBox.hidden = true;
             },
           }, ui.h('div', { class: 'grow' }, ui.h('div', { class: 'ph-name' }, p.name),

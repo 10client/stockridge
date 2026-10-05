@@ -109,10 +109,23 @@
       L.push(rule(width));
       L.push('WARRANTY');
       for (const item of sale.items) {
-        if (!Number(item.warranty_months)) continue;
-        const from = new Date(`${U.soldDate(sale.sold_at)}T00:00:00Z`);
-        from.setUTCMonth(from.getUTCMonth() + Number(item.warranty_months));
-        L.push(cols(` ${(item.product_name || '').slice(0, width - 14)}`, from.toISOString().slice(0, 10), width));
+        const months = Number(item.warranty_months);
+        if (!months) continue;
+        // `U.isoDate`, never `U.soldDate`: the latter is a display string
+        // ("05 Oct 2026"), and `new Date("05 Oct 2026T00:00:00Z")` is Invalid, whose
+        // toISOString() throws — taking the whole receipt with it. A receipt for a
+        // warrantied appliance therefore never printed at all.
+        const soldIso = U.isoDate(sale.sold_at);
+        let to = null;
+        if (soldIso) {
+          const from = new Date(`${soldIso}T00:00:00Z`);
+          from.setUTCMonth(from.getUTCMonth() + months);
+          if (Number.isFinite(from.getTime())) to = from.toISOString().slice(0, 10);
+        }
+        // An unreadable sale date prints the period rather than nothing: the
+        // warranty still means something without a date beside it.
+        L.push(cols(` ${(item.product_name || '').slice(0, width - 14)}`,
+          to || `${months} month${months === 1 ? '' : 's'}`, width));
       }
       L.push(' Keep this receipt. A claim without it cannot be verified.');
     }

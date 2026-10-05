@@ -40,7 +40,57 @@ one more failing test in a list of 260.
 `npm ci`, not `npm install`: the lockfile is committed, and a build that resolves
 different versions than the developer's is a build nobody tested.
 
-## Why the deploy workflow is manual
+## The third job: the frontend is rendered, not just assumed
+
+`frontend-render` seeds the demo database, starts the Node server, loads
+`public/index.html` in jsdom and asserts the navigation actually reaches the DOM for
+all four roles. It exists because of a real defect that every other check passed:
+
+```
+SR.state = Object.assign(state, { branches, … })   // branches is the accessor
+state.branches = data.branches                     // …and now it is the array
+```
+
+so `SR.state.branches()` threw inside `paintIdentity()`, which `showShell()` ran
+*before* `buildNav()` — the sidebar was empty for **every role on every
+deployment**, while every API answered 200 and 272 tests passed. Nothing that
+tests routes can see that. Only rendering it can.
+
+jsdom and fake-indexeddb are installed in that job alone and **pinned**
+(`jsdom@29.1.1`, `fake-indexeddb@6.2.5`) on **Node 22**. They are not
+dependencies of the product — the application ships with no build step, and the
+test client should not become part of it. Unpinned, `jsdom` resolved to a version
+the job's Node could not load; the pins keep the instrument still.
+
+### Running it yourself
+
+```
+# against a live deployment
+node tools/frontend-smoke.js --url=https://sample.stockridge.workers.dev \
+  --user=admin --pin=48213
+
+# against the local demo database, every role
+npm run db:reset && npm start &        # then
+node tools/frontend-smoke.js --url=http://localhost:8787 --all-roles --walk
+```
+
+| flag | what it does |
+|---|---|
+| `--url=` | server origin (default `http://localhost:8787`) |
+| `--user=` `--pin=` | one seat to sign in as |
+| `--all-roles` | ADMIN, OWNER, MANAGER and STAFF in turn (seeded demo credentials only) |
+| `--walk` | **open every destination in the navigation** and report what each screen renders |
+| `--dump` | print the visible screen, the DOM state and the page's own console |
+| `--expect-nav=N` | fail unless the nav has at least N items (default 1) |
+| `--wait=N` | ms to wait for the app to settle (default 30000) — it polls, it does not sleep and hope |
+
+`--walk` is the useful one after a change: it opens all 25 owner screens (or 21
+manager, 12 staff, 7 admin) and reports the ones that render nothing. A screen
+that deliberately refuses — *"Choose which branch this applies to"* — is reported
+with a `!`, not failed: it rendered, and it told the truth. Only a screen that
+renders **nothing**, or throws, counts as a defect.
+
+
 
 It deploys to production and it can seed an administrator. A workflow that does
 that on every push to `main` takes the decision away from the person who should

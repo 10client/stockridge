@@ -22,7 +22,27 @@ fault and the others are noise.
 | PIN hashing round-trip | **A real defect in the platform or the runtime** | Read the `error` field. If it mentions an iteration count, see below. |
 | administrator sign-in lookup | The stored hash is malformed, or the row is not there | `--reset-pin`, or check the role |
 
-## "Username or PIN is incorrect" — for everyone, at once
+## The sidebar is empty (or a screen renders nothing)
+
+The app signs in, the header may or may not appear, and there is nothing to click.
+The API is fine — every endpoint answers 200. This is a **frontend** fault, and it
+is the reason the render check exists.
+
+```
+node tools/frontend-smoke.js --url=<origin> --user=admin --pin=<pin> --walk --dump
+```
+
+`--walk` opens every destination and names the ones that render nothing; `--dump`
+prints the visible screen, the DOM state and the page's own console. Between them
+they say *which* screen is dead and *why*, without a browser.
+
+The cause is almost always a name collision in `public/js/state.js`: the session
+load assigns raw rows onto the same object that carries the accessors. If a data
+field ever shares a name with an accessor, `load()` overwrites the function with
+the array and every caller throws "is not a function". `businessRows` /
+`branchRows` exist for exactly this reason — do not rename them back.
+
+
 
 The single most expensive failure this codebase has had. The schema was right,
 the administrator row was right, the hash format was right, and every sign-in

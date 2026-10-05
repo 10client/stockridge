@@ -115,6 +115,20 @@
   function soldAt(value) { return value ? dateTime(value, { zone: 'wat' }) : '—'; }
   function soldDate(value) { return value ? date(value, { zone: 'wat' }) : '—'; }
 
+  /**
+   * The calendar day a stamp falls on, as `YYYY-MM-DD`, in WAT — or null.
+   *
+   * For ARITHMETIC and machine-readable fields. `date()` is for people: it returns
+   * "05 Oct 2026", and interpolating that into `new Date()` produces an Invalid
+   * Date whose `toISOString()` throws `RangeError: Invalid time value`. That is
+   * exactly how every warranty receipt died — the warranty expiry was computed
+   * from the display string.
+   */
+  function isoDate(value, { zone = 'wat' } = {}) {
+    const d = parseStamp(value, { zone });
+    return d && Number.isFinite(d.getTime()) ? d.toISOString().slice(0, 10) : null;
+  }
+
   function relTime(value, { zone = 'utc' } = {}) {
     const d = parseStamp(value, { zone });
     if (!d) return '—';
@@ -317,7 +331,7 @@
   SR.util = {
     WAT_OFFSET_MINUTES,
     money, amount, numInput, qty, pct,
-    parseStamp, date, time, dateTime, soldAt, soldDate, relTime,
+    parseStamp, date, time, dateTime, soldAt, soldDate, isoDate, relTime,
     todayWat, nowWatSql, nowIso, addDays, daysBetween,
     esc, attr, titleCase, humanise, plural, initials,
     clamp, round2, sum, uniq, groupBy, by, slug,

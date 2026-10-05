@@ -176,7 +176,13 @@ test('UOM: a roll of cable converts to metres', () => {
 test('UOM: an unknown unit names the units that ARE available', () => {
   const r = uom.toBaseUnits({ quantity: 1, unitCode: 'PALLET', ladder: FMCG_LADDER });
   assert.equal(r.ok, false);
-  assert.match(r.error, /PIECE, PACK, CARTON/);
+  // Both the CODE and the WORD for each level. The words matter because a caller
+  // may be holding `base_unit_name` — the receipt word — rather than a code, and
+  // "Unknown unit" with only codes listed reads as "you sent nonsense" when the
+  // real answer is "you sent the name of a unit that exists".
+  for (const expected of ['PIECE', 'PACK', 'CARTON', 'Piece', 'Pack', 'Carton']) {
+    assert.match(r.error, new RegExp(`\\b${expected}\\b`), `the message must name ${expected}`);
+  }
 });
 
 test('UOM: a ladder must start at exactly one base unit', () => {

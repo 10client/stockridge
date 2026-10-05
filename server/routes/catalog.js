@@ -109,6 +109,20 @@ function mount(app, base = '/api') {
              p.base_unit_name, p.cost_price, p.selling_price, p.reorder_level, p.reorder_quantity,
              p.min_margin_pct, p.valuation_method, p.is_active, p.updated_at,
              c.name AS category_name, c.code AS category_code,
+             -- The unit a screen should sell or buy in, as a CODE. base_unit_name
+             -- is the WORD a receipt prints (unit, piece, metre), which is not
+             -- always the same as the ladder's code for that level: the appliance
+             -- ladder names PIECE "Unit", and a till that sent the name was refused
+             -- with 'Unknown unit'. Expose the code so no client has to guess.
+             (SELECT pu.code FROM product_units pu
+               WHERE pu.product_id = p.id AND pu.is_deleted = 0
+               ORDER BY pu.is_default_sell DESC, pu.quantity_in_base ASC LIMIT 1) AS default_unit_code,
+             -- ...and HOW MANY base units that code is. A till that knows the code
+             -- but not the factor prices a carton of water at the price of a bottle:
+             -- it showed the customer ₦300 for ₦14,400 of water.
+             (SELECT pu.quantity_in_base FROM product_units pu
+               WHERE pu.product_id = p.id AND pu.is_deleted = 0
+               ORDER BY pu.is_default_sell DESC, pu.quantity_in_base ASC LIMIT 1) AS default_unit_factor,
              ${stockExpr} AS on_hand
       FROM products p
       LEFT JOIN product_categories c ON c.id = p.category_id

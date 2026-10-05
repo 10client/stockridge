@@ -90,7 +90,14 @@ function buildLadder(unitRows) {
     }
   }
   const defaultSell = rows.find((r) => r.isDefaultSell && r.isSellable) || rows[rows.length - 1];
-  return { ok: true, ladder: rows, base, defaultSell, byCode: Object.fromEntries(rows.map((r) => [r.code, r])) };
+  return {
+    ok: true,
+    ladder: rows,
+    base,
+    defaultSell,
+    byCode: Object.fromEntries(rows.map((r) => [r.code, r])),
+    byLabel: labelIndex(rows),
+  };
 }
 
 /** Validate a proposed ladder before it is written. */
@@ -131,6 +138,43 @@ function validateLadder(levels) {
 }
 
 /**
+ * Index the ladder by the WORDS a unit is called, not just its code.
+ *
+ * WHY THIS EXISTS — a defect found by ringing a sale through the real Sell screen:
+ *
+ *   Line 1 ("Anker 20000mAh Power Bank"): Unknown unit "UNIT".
+ *   This product is sold in: PIECE, CARTON.
+ *
+ * The appliance ladder names its base unit "Unit" under the code `PIECE`. The
+ * product row carries `base_unit_name` ("unit") because that is the word a receipt
+ * prints, and the till used it as if it were the code: uppercased to `UNIT`, which
+ * is not in the ladder. A cashier could search the product, add it to the cart and
+ * take the payment — and then the sale was refused, on every appliance and gadget
+ * in the catalogue.
+ *
+ * Nothing caught it because for most verticals the name and the code coincide:
+ * `piece`→PIECE, `bag`→BAG, `metre`→METRE. Only where a ladder names a level
+ * differently from its code does the guess fail, and only running the screen shows
+ * it.
+ *
+ * A name is accepted when it identifies exactly ONE level. Two levels sharing a
+ * word ("Unit" for both a piece and a carton) stay ambiguous and are refused,
+ * because guessing between them is the bug, not the fix.
+ */
+function labelIndex(rows) {
+  const seen = new Map();
+  for (const r of rows) {
+    for (const label of [r.name, r.pluralName]) {
+      const key = String(label || '').trim().toUpperCase();
+      if (!key) continue;
+      if (!seen.has(key)) seen.set(key, { level: r, ambiguous: false });
+      else if (seen.get(key).level !== r) seen.get(key).ambiguous = true;
+    }
+  }
+  return seen;
+}
+
+/**
  * Resolve a quantity expressed in any ladder unit into base units.
  *
  * `quantity` may be fractional ONLY for a measured product; for a discrete
@@ -156,9 +200,25 @@ function toBaseUnits({ quantity, unitCode, ladder, measure = null }) {
   const resolved = buildLadder(Array.isArray(ladder) ? ladder : (ladder && ladder.ladder) || []);
   if (!resolved.ok) return resolved;
 
-  const level = resolved.byCode[code];
+  // By code first; then by the word the unit is called. A caller holding a
+  // product row has the NAME (`base_unit_name` is the receipt word), and for most
+  // verticals the two are the same string once uppercased — which is precisely why
+  // the difference went unnoticed until an appliance ladder disagreed.
+  let level = resolved.byCode[code];
+  let resolvedFrom = level ? 'code' : null;
   if (!level) {
-    const available = resolved.ladder.map((r) => r.code).join(', ');
+    const match = resolved.byLabel ? resolved.byLabel.get(code) : null;
+    if (match && match.ambiguous) {
+      return {
+        ok: false,
+        code: 'AMBIGUOUS_UNIT',
+        error: `"${unitCode}" names more than one unit on this product. Use the unit code instead: ${resolved.ladder.map((r) => r.code).join(', ')}.`,
+      };
+    }
+    if (match) { level = match.level; resolvedFrom = 'name'; }
+  }
+  if (!level) {
+    const available = resolved.ladder.map((r) => `${r.code} (${r.name})`).join(', ');
     return { ok: false, code: 'UNKNOWN_UNIT', error: `Unknown unit "${unitCode}". This product is sold in: ${available}.` };
   }
   if (!level.isSellable) {
@@ -173,6 +233,9 @@ function toBaseUnits({ quantity, unitCode, ladder, measure = null }) {
     baseQuantity: roundTo(q * level.quantityInBase, 4),
     unitCode: level.code,
     unitName: level.name,
+    // 'code' or 'name' — so a caller can tell that it sent a word rather than a
+    // code, and warn or tighten up.
+    resolvedFrom,
     factor: level.quantityInBase,
     measured: false,
     discrete,
