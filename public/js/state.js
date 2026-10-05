@@ -24,11 +24,30 @@
 
   const listeners = new Map();
 
+  // ---------------------------------------------------------------------
+  // RAW ROWS AND ACCESSORS MUST NOT SHARE A NAME.
+  //
+  // This object is later merged with `Object.assign(state, { businesses, branches, … })`
+  // so that `SR.state.branches()` is the reader. That assignment puts the
+  // FUNCTION on the key. But `load()` then did `state.branches = data.branches`,
+  // which puts the ARRAY back on the same key — so from the moment a session
+  // loaded, `SR.state.branches` was an array and `SR.state.branches()` threw
+  // "is not a function".
+  //
+  // `app.js` calls it inside `paintIdentity()`, which `showShell()` runs BEFORE
+  // `buildNav()`. The throw therefore skipped the navigation build entirely: the
+  // shell rendered with an EMPTY SIDEBAR for every role, on every deployment,
+  // including the platform administrator who has no business to load. One
+  // overwritten key, and the whole app looked broken.
+  //
+  // The rows now live under `*Rows`, which no accessor borrows, and the
+  // accessors are the only public way to read them.
+  // ---------------------------------------------------------------------
   const state = {
     user: null,
     scope: null,
-    businesses: [],
-    branches: [],
+    businessRows: [],
+    branchRows: [],
     vertical: null,
     settings: {},
     featureLabels: {},
@@ -88,8 +107,8 @@
   // -------------------------------------------------------------------
   // active business / branch
   // -------------------------------------------------------------------
-  function businesses() { return state.businesses || []; }
-  function branches() { return state.branches || []; }
+  function businesses() { return state.businessRows || []; }
+  function branches() { return state.branchRows || []; }
 
   function branchesFor(businessId) {
     if (!businessId) return branches();
@@ -160,16 +179,16 @@
     const data = await SR.api.me();
     state.user = data.user || null;
     state.scope = data.scope || null;
-    state.businesses = data.businesses || [];
-    state.branches = data.branches || [];
+    state.businessRows = data.businesses || [];
+    state.branchRows = data.branches || [];
     state.vertical = data.vertical || null;
     state.settings = data.settings || {};
     state.featureLabels = data.featureLabels || {};
     state.loadedAt = Date.now();
 
     // Mirror the reference data so the offline screens have names to show.
-    await SR.store.putMany('businesses', state.businesses).catch(() => {});
-    await SR.store.putMany('branches', state.branches).catch(() => {});
+    await SR.store.putMany('businesses', state.businessRows).catch(() => {});
+    await SR.store.putMany('branches', state.branchRows).catch(() => {});
     await SR.store.putMany('client_settings', state.settings && state.settings.id ? [state.settings] : []).catch(() => {});
     await SR.store.metaSet('me', {
       user: state.user, scope: state.scope, settings: state.settings,
@@ -190,8 +209,8 @@
     state.settings = cached.settings || {};
     state.featureLabels = cached.featureLabels || {};
     state.vertical = cached.vertical || null;
-    state.businesses = await SR.store.all('businesses').catch(() => []);
-    state.branches = await SR.store.all('branches').catch(() => []);
+    state.businessRows = await SR.store.all('businesses').catch(() => []);
+    state.branchRows = await SR.store.all('branches').catch(() => []);
     state.loadedAt = Date.now();
     resolveActive();
     emit('loaded', state);
@@ -253,7 +272,7 @@
   }
 
   function clear() {
-    state.user = null; state.scope = null; state.businesses = []; state.branches = [];
+    state.user = null; state.scope = null; state.businessRows = []; state.branchRows = [];
     state.vertical = null; state.settings = {}; state.featureLabels = {};
     state.activeBranchId = null; state.activeBusinessId = null; state.loadedAt = 0;
     state.cart = null;

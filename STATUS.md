@@ -492,3 +492,112 @@ recorded earlier does **not** exist. Memory was stale on all four.
 5. `tools/seed.js` (the demo fixture generator) is now dead weight for a client
    deployment. It should keep working for local development but must never be
    part of the handover path.
+
+---
+
+# CHECKPOINT — 2026-10-06: three environments, and the empty sidebar
+
+**Last updated:** build `ridge-2`, `npm run verify` → **278 tests, 278 pass**,
+`sql-audit`/`name-audit`/`args-audit --strict` all clean. Three live deployments,
+each verified in a real DOM.
+
+## The empty sidebar — the defect that made the whole app look broken
+
+The report was "I could not see anything on the nav bar to work with as admin".
+It was not an admin problem, and it was not a single deployment. It was **every
+role on every environment, from the first session load.**
+
+`state.js` did this:
+
+```js
+const state = { user: null, /* … */ };
+SR.state = Object.assign(state, { branches, businesses, /* … accessors */ });
+```
+
+`Object.assign` copies the *functions* onto `state`, so `SR.state.branches` is an
+accessor — and then `load()` ran `state.branches = data.branches` from the session
+response, replacing the function with the **array**. From then on every
+`SR.state.branches()` threw `is not a function`.
+
+That throw happened inside `paintIdentity()`, which `showShell()` called *before*
+`buildNav()`. The exception propagated out of `showShell()`, so `buildNav()` never
+ran and the sidebar was never populated. One overwritten key on one object made
+the application look completely dead while every route behind it answered 200 —
+which is exactly why 247 passing tests and a green deployment smoke test never saw
+it. The tests call the routes; they never rendered the shell.
+
+### The fix
+
+1. **`public/js/state.js`** — raw rows now live under names that cannot collide:
+   `businessRows` / `branchRows`. The accessors `businesses()` / `branches()` read
+   those. A data field can no longer overwrite a method on the same object. A long
+   comment in the file records the defect so nobody re-introduces it.
+2. **`public/js/app.js`** — `showShell()` wraps `paintIdentity()` in `try/catch`,
+   so a header failure can degrade the header and still leave the navigation
+   standing. A cosmetic failure must never be able to remove the way out.
+
+### Two regression guards, because the test suite was blind to this
+
+- **`test/unit/frontend-state.test.js`** (6 tests) — runs the real `state.js`
+  against a stub window, calls `load()` with a session payload, then asserts the
+  accessors are *still callable and still return the right rows*. Plus a static
+  audit that every `SR.state.<name>()` call site anywhere in `public/js/` names an
+  accessor that actually exists, which catches the same class of typo from the
+  other direction.
+- **`tools/frontend-smoke.js`** — a real browser-shaped client. Loads
+  `public/index.html` in jsdom against a live server, signs in, boots the app,
+  and reports the nav items that were actually rendered into the DOM:
+  `--url`, `--user`, `--pin`, `--all-roles`, `--expect-nav=N`. This is the check
+  that would have caught the defect on day one, and it now runs against live
+  deployments as well as the local demo database.
+
+**Nav verified in a real DOM.** Local seeded demo database, all four roles:
+ADMIN **7** · OWNER **25** · MANAGER **21** · STAFF **12** items, every screen
+reaching "Ready." rather than an error state. Then the same check against all
+three live deployments as `admin`: **7 items each, every time.**
+
+## Three live environments, three Workers, three D1 databases
+
+| `--env` | URL | D1 database | sign in |
+|---|---|---|---|
+| `sample` | **https://sample.stockridge.workers.dev** | `stockridge-sample` · `fd72e95b-c0c8-4073-8aba-d3ca5919b107` | `admin` / `48213` |
+| *(default)* production | https://stockridge.stockridge.workers.dev | `stockridge` · `32aa519c-a7fb-41d5-bc5b-083d0a0489bc` | `admin` / `48213` |
+| `staging` | https://stockridge-staging.stockridge.workers.dev | `stockridge-staging` · `abf164d9-f3bb-4e56-9a9f-addd795013f7` | `admin` / `70614` |
+
+All three: **1 user (the administrator), 0 businesses, 0 branches, 0 products,
+0 sales**, 10 withholding-tax rates, 1 settings row. Diagnose **6/6**, readiness
+`awaiting_first_business`, all carrying the nav fix. `sample` is the one to hand a
+client — it is where a fresh deployment's first-run experience is demonstrated.
+
+`--env=sample|staging` derives the D1 name (`stockridge-<env>`) and rewrites
+**only** that environment's `[[env.<name>.d1_databases]]` block, reporting the
+other environments as untouched. This is what makes three parallel environments
+safe to operate from one script.
+
+## What was learned about deploying
+
+- **A legacy Worker named `sample` already owned that hostname.** The deploy
+  replaced the script, and for about a minute the *old* version still answered
+  requests — its `/api/auth/login` 404'd and its health endpoint said
+  "StockRidge". A smoke test that only checks reachability would have passed.
+  The deploy smoke test now verifies **identity**: the
+  `runtime: 'cloudflare-workers'` marker plus a real PIN round-trip sign-in.
+- **401s on `/api/profiles` and `/api/plan` immediately after `--reset-pin` are
+  propagation, not defects.** `--reset-pin` rotates `JWT_SECRET`; during the
+  rollout a token can be issued by one isolate and validated by another. Every
+  endpoint answered 200 on a re-probe 25 seconds later. The deploy smoke test now
+  retries those first-run screens on a 401 the same way it retries sign-in, so a
+  rollout never reports a failure that is not one.
+- **`npm install --no-save jsdom` on its own prunes `fake-indexeddb`** and vice
+  versa. Install both in one command. The frontend smoke test needs three things
+  jsdom does not supply: `fake-indexeddb` (the app's offline store, without which
+  boot aborts), a `matchMedia` polyfill, and `window.scrollTo`.
+
+## Commands
+
+```
+node tools/frontend-smoke.js --url=… --user=admin --pin=48213          # one seat, live
+node tools/frontend-smoke.js --all-roles                              # every role, local demo DB
+node tools/deploy-cloudflare.js --env=sample [--reset-pin] [--pin=N]
+node tools/verify-deployment.js --url=… --username=… --pin=…          # the full journey
+```

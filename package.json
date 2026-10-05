@@ -17,6 +17,8 @@
     "names:audit": "node tools/name-audit.js --strict",
     "args:audit": "node tools/service-args-audit.js",
     "verify": "npm run db:audit && npm run names:audit && npm run args:audit && npm test",
+    "smoke:deployment": "node tools/verify-deployment.js",
+    "smoke:frontend": "node tools/frontend-smoke.js",
     "worker:dev": "wrangler dev --config worker/wrangler.toml",
     "worker:migrate": "wrangler d1 migrations apply stockridge --config worker/wrangler.toml",
     "worker:migrate:remote": "wrangler d1 migrations apply stockridge --remote --config worker/wrangler.toml",

@@ -281,7 +281,16 @@
     showBoot(false);
     document.getElementById('login-screen').hidden = true;
     document.getElementById('shell').hidden = false;
-    paintIdentity();
+    // paintIdentity() is decoration: the header, the chips, the user menu. The
+    // navigation is the way out of a screen. When a bug in a five-line header
+    // update threw, this ran in order and the throw took the whole sidebar with
+    // it — every role, every deployment, an empty nav and no way to move.
+    // Decoration must never be able to remove navigation.
+    try {
+      paintIdentity();
+    } catch (err) {
+      console.error('[chrome] identity paint failed', err);
+    }
     buildNav();
     updateNetChrome();
   }

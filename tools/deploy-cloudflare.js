@@ -461,11 +461,31 @@ async function smokeTest(baseUrl, { pinEffective = null } = {}) {
     ok(`sign-in works as ${ADMIN_USERNAME}`);
 
     // And the administrator can see the screens a first-time client needs.
-    for (const p of ['/api/auth/me', '/api/businesses', '/api/profiles', '/api/plan']) {
-      const res = await fetch(`${baseUrl}${p}`, { headers: { Authorization: `Bearer ${loginBody.token}` } });
-      if (res.status !== 200) problems.push(`${p} → ${res.status}`);
+    //
+    // These retry on 401 for the same reason the sign-in does: this deploy may
+    // have just rotated JWT_SECRET, and during the rollout a token can be issued
+    // by one isolate and checked by another. A 401 here means "try again in a
+    // moment", not "the deployment is broken".
+    const screens = ['/api/auth/me', '/api/businesses', '/api/profiles', '/api/plan'];
+    const checkScreens = async (bearer) => {
+      const bad = [];
+      for (const p of screens) {
+        const res = await fetch(`${baseUrl}${p}`, { headers: { Authorization: `Bearer ${bearer}` } });
+        if (res.status !== 200) bad.push(`${p} → ${res.status}`);
+      }
+      return bad;
+    };
+    let screenProblems = await checkScreens(loginBody.token);
+    if (screenProblems.some((p) => p.includes('401'))) {
+      console.log('      … a first-run screen answered 401 during the rollout, signing in again');
+      await new Promise((r) => { setTimeout(r, 15000); });
+      const again = await attemptLogin();
+      if (again.status === 200 && again.body && again.body.token) {
+        screenProblems = await checkScreens(again.body.token);
+      }
     }
-    if (problems.length === 0) ok('the administrator can reach the first-run screens');
+    for (const problem of screenProblems) problems.push(problem);
+    if (screenProblems.length === 0) ok('the administrator can reach the first-run screens');
   }
 
   results.problems = problems;
