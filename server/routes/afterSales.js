@@ -1203,7 +1203,16 @@ function mount(app, base = '/api') {
           interest_amount, total_payable, deposit_amount, tenure_months, frequency, schedule_start, status,
           guarantor_name, guarantor_phone, guarantor_address, guarantor_id_type, guarantor_id_no,
           next_due_date, amount_paid, outstanding, days_overdue, approved_by, created_by, notes, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?, 'ACTIVE', ?,?,?,?,?,?, ?, ?, ?, 0, ?, ?, datetime('now'), datetime('now'))`, [
+        -- THE LITERAL 0 SITS ON ITS OWN COLUMN (days_overdue), and the misalignment it
+        -- caused was this: with one placeholder too many before the literal and one too
+        -- few after it, approved_by was bound to 0 and days_overdue to a user id. The
+        -- FOREIGN KEY approved_by -> users(id) then refused EVERY instalment plan a
+        -- manager tried to open, with the message "That record refers to something which
+        -- does not exist (or was deleted). Reload the screen and try again." — an answer
+        -- about a stale reference, for a flow that could never have worked once.
+        -- Found by audit.fulfilment. Same class of defect as the purchase-order line in P2:
+        -- a literal in a VALUES list is a value, and it has to be counted.
+        VALUES (?,?,?,?,?,?,?,?,?,?, ?,?,?,?,?, 'ACTIVE', ?,?,?,?,?,?, ?, ?, 0, ?, ?, ?, datetime('now'), datetime('now'))`, [
         id, planNo, String(branch.id), String(business.id), customerId,
         body.sale_id ? String(body.sale_id) : null, body.deposit_id ? String(body.deposit_id) : null,
         principal, interestPercent, interestAmount, totalPayable, depositAmount, tenureMonths, frequency,
@@ -1284,6 +1293,29 @@ function mount(app, base = '/api') {
       amount, paidAt,
     });
     if (!applied.ok) throw new HttpError(applied.error || 'That payment could not be allocated.', { status: 400, code: applied.code || 'ALLOCATION_FAILED' });
+
+    // AND MONEY THE PLAN CANNOT ABSORB IS REFUSED BEFORE A ROW IS WRITTEN.
+    //
+    // The route took the whole amount and reported the surplus afterwards: "₦56,800 could
+    // NOT be allocated — the plan is nearly paid". Nothing recorded it. The plan's
+    // amount_paid went up by the FULL amount taken while its own instalment_payments rows
+    // totalled only what was allocated, and the customer's credit was untouched — so the
+    // cash was in the drawer and in no ledger at all, and the plan's own figures did not
+    // reconcile with its payment history. A cashier short of money at closing time is
+    // exactly the person that hole suits.
+    //
+    // `POST /api/deposits/:id/payments` already refuses this case by name
+    // (OVERPAYMENT: "Only ₦X is outstanding on this layaway. Taking ₦Y would leave the
+    // customer in credit on goods they have not collected."), and an instalment plan is the
+    // same situation with a longer schedule. The customer takes the difference back at the
+    // counter, or the extra is put on the plan as a separate, recorded decision.
+    if (round2(applied.unallocated || 0) > 0) {
+      const owed = round2(Number(plan.outstanding));
+      throw new HttpError(
+        `₦${amount.toLocaleString('en-NG')} was tendered against ₦${owed.toLocaleString('en-NG')} outstanding — ₦${round2(applied.unallocated).toLocaleString('en-NG')} more than this plan can absorb. Hand the difference back, or record it as a customer credit deliberately rather than letting it sit in a plan that does not show it.`,
+        { status: 400, code: 'OVERPAYMENT', fields: { amount: `Maximum ${owed}` } },
+      );
+    }
 
     const accountIds = await glService.loadAccountCodes(db, plan.business_id);
     const paymentId = newId();

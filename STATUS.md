@@ -3440,3 +3440,45 @@ Three live-only findings, all now closed:
 
 Deployed after the fixes: staging `readiness: ready` (2 businesses trading), sample and
 production `awaiting the first business — this is the expected handover state`.
+
+## P4 — the flows that outlive the sale: instalments and deliveries (2026-10-06)
+
+`test/audit/audit.fulfilment.js` — **18/18** — takes one product through a payment plan and
+through a delivery to the customer's gate, reading the deployment's own figures at each step.
+
+### Two production defects, both in `POST /api/instalments`
+
+1. **Every instalment plan was refused** (the flow could not be used at all). The
+   `instalment_plans` INSERT had the literal `0` one slot too far left: `days_overdue` was
+   bound to a user id and `approved_by` to `0`, and the FOREIGN KEY `approved_by -> users(id)`
+   refused the row. The client saw `400 BAD_REFERENCE — "That record refers to something which
+   does not exist (or was deleted). Reload the screen and try again."` — an answer about a
+   stale reference, for a manager opening a brand-new plan. **Same class of defect as the
+   purchase-order line in P2**, which is now twice that a literal in a VALUES list has silently
+   shifted a column.
+2. **An overpayment was taken and the surplus recorded nowhere.** Paying ₦111,200 against
+   ₦61,200 outstanding was accepted; the response said *"₦56,800 could NOT be allocated — the
+   plan is nearly paid"* and the money was never refunded, never credited to the customer and
+   never written to `instalment_payments`. Worse, the plan's `amount_paid` went up by the FULL
+   amount taken while its own payment rows totalled only what was allocated — so the plan did
+   not reconcile with its own history, and the drawer held cash that no ledger showed. It is
+   now refused before anything is written (`400 OVERPAYMENT`, with the maximum in `fields`),
+   exactly as `POST /api/deposits/:id/payments` already refuses the same case.
+
+### What the delivery flow proves (no defect found)
+
+A sale with `delivery_required` raises a job carrying the fee that was charged; the board shows
+it with its items and the address; `FAILED` needs a note (`MISSING_FIELD` with none,
+`NOTE_REQUIRED` with a two-letter one); a STAFF seat may drive it forward and **cannot** walk a
+delivered job backwards (`403 STATUS_REVERSAL`); the sale reads `PENDING_DELIVERY` while the
+goods are on the road and `COMPLETED` once delivered; a second installation job for one unit is
+refused (`409 INSTALLATION_ALREADY_BOOKED`); completing the installation sets the warranty to
+start at commissioning, not at sale, and completing it twice is refused; and a cancelled
+delivery puts the goods back on the shelf via a recorded adjustment.
+
+### Coverage
+
+**119 of 196 routes exercised by an audit** (was 109 after P3, 88 before P2). The four flows
+this stage and the last closed are now complete: returns 3/3, deposits 5/5, instalments 4/4,
+deliveries 4/4. `npm run verify` **395/395/0**; `bash test/run-audits.sh` **15 audits, every
+check green**.
