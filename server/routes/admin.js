@@ -25,6 +25,9 @@
 
 const { HttpError } = require('../lib/http');
 const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit');
+// EVERY BRANCH CHANGE GOES THROUGH THIS, including the ones made from this file — see
+// the module header in services/assignmentService.js for why a move is a handover.
+const assignments = require('../services/assignmentService');
 const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor } = require('../../domain/roles');
 const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
@@ -540,6 +543,20 @@ function mount(app, base = '/api') {
       null, commissionRate,
     ]);
 
+    // THE HISTORY STARTS HERE, not at somebody's first transfer. Most staff never
+    // transfer at all, so a history that began at the first move could not answer
+    // "who could see the Minna till on 14 March?" for the majority of the people it
+    // is asked about. The row says: from this moment, this person is at that branch.
+    await assignments.recordAssignment(db, {
+      userId: id,
+      fromBranchId: null,
+      toBranchId: effectiveBranch ? effectiveBranch.id : null,
+      fromBusinessId: null,
+      toBusinessId: business.id,
+      reason: `Created as ${roleLabel(role)}`,
+      changedBy: user.id,
+    });
+
     await recordFromCtx(ctx, {
       action: 'USER_CREATED', entityType: 'USER', entityId: id,
       branchId: effectiveBranch ? effectiveBranch.id : null, businessId: business.id,
@@ -582,6 +599,19 @@ function mount(app, base = '/api') {
     // MOVING A USER between branches is the sensitive edit: it changes everything
     // they can see. It is refused across businesses unless the caller is an admin,
     // and it is never allowed to reparent a row into a scope the caller controls.
+    //
+    // AND SINCE STAGE G3 IT IS A HANDOVER, NOT A ROW UPDATE. A move asked for in this
+    // request does not happen here: a transfer row is created and the person stays
+    // where they are until somebody at the receiving branch agrees. The rest of the
+    // edit (name, phone, job title, commission) applies immediately, because those do
+    // not change what the person can see.
+    //
+    // TWO MOVES STILL APPLY AT ONCE, and both are deliberate:
+    //   * a move to NO branch (releasing somebody), because no shop has to agree to
+    //     receive a person they are not receiving;
+    //   * a move by the platform ADMINISTRATOR, whose job is moving rows across
+    //     businesses and who has no branch to be refused by.
+    let pendingTransfer = null;
     if (body.branch_id !== undefined && body.branch_id !== target.branch_id) {
       if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only an owner can move somebody to another branch. Their branch is what they can see.', { status: 403, code: 'ROLE_REQUIRED' });
       const nb = body.branch_id ? await db.first('SELECT * FROM branches WHERE id = ? AND is_deleted = 0', [String(body.branch_id)]) : null;
@@ -590,8 +620,34 @@ function mount(app, base = '/api') {
         throw new HttpError(`${nb.name} belongs to another business. Moving somebody between businesses is an administrator action, because it moves them between two sets of books.`, { status: 403, code: 'CROSS_BUSINESS_MOVE' });
       }
       if (target.role === 'MANAGER' && !nb) throw new HttpError('A manager must be pinned to a branch.', { status: 400, code: 'BRANCH_REQUIRED' });
-      sets.push('branch_id = ?'); params.push(nb ? String(nb.id) : null);
-      if (nb) { sets.push('business_id = ?'); params.push(String(nb.business_id)); }
+
+      const immediate = !nb || atLeast(user.role, 'ADMIN');
+      if (immediate) {
+        sets.push('branch_id = ?'); params.push(nb ? String(nb.id) : null);
+        if (nb) { sets.push('business_id = ?'); params.push(String(nb.business_id)); }
+      } else {
+        // THE RECEIVING BRANCH DECIDES. Asked for in the same breath as the edit, so a
+        // screen that saves a form does not need to know about transfers — but the
+        // answer says plainly that the move is a question and not a fact.
+        const asked = await assignments.requestTransfer(db, {
+          userId: target.id, toBranchId: nb.id, requestedBy: user.id,
+          reason: strField(body.transfer_reason, { field: 'Reason', maxLength: 300 }) || `Asked from the staff screen by ${user.full_name || user.username}`,
+        });
+        if (asked.error === 'ALREADY_PENDING') {
+          throw new HttpError(`${target.full_name} already has a transfer waiting — to ${asked.to.name}. Cancel that one first, or wait for somebody at ${asked.to.name} to answer it.`, { status: 409, code: 'TRANSFER_ALREADY_PENDING' });
+        }
+        if (asked.error === 'ALREADY_THERE') {
+          throw new HttpError(`${target.full_name} is already at ${asked.to.name}.`, { status: 409, code: 'ALREADY_THERE' });
+        }
+        if (asked.error) throw new HttpError('That move could not be requested.', { status: 400, code: asked.error });
+        pendingTransfer = asked;
+        await recordFromCtx(ctx, {
+          action: 'USER_TRANSFER_REQUESTED', entityType: 'USER_TRANSFER', entityId: asked.transfer.id,
+          branchId: String(nb.id), businessId: String(nb.business_id),
+          before: { user_id: target.id, branch_id: target.branch_id },
+          after: { user_id: target.id, to_branch_id: nb.id, to_branch: nb.name },
+        });
+      }
     }
     if (body.role !== undefined && String(body.role).toUpperCase() !== target.role) {
       const newRole = valid(oneOf(body.role, [...ROLE_ORDER], { field: 'Role' }), 'role');
@@ -613,11 +669,33 @@ function mount(app, base = '/api') {
         sets.push('is_active = 1');
       }
     }
-    if (!sets.length) throw new HttpError('Nothing to update.', { status: 400, code: 'NO_CHANGES' });
+    // A REQUEST WITHOUT AN EDIT IS NOT AN EMPTY REQUEST. Sending only `branch_id` asks
+    // for a handover and changes no column on this row, and refusing it with "Nothing
+    // to update" would make the move impossible to ask for from a screen that saves one
+    // field at a time.
+    if (!sets.length && !pendingTransfer) throw new HttpError('Nothing to update.', { status: 400, code: 'NO_CHANGES' });
+    const willWrite = sets.length > 0;
     sets.push("updated_at = datetime('now')"); params.push(id);
 
     const before = { full_name: target.full_name, username: target.username, role: target.role, branch_id: target.branch_id, business_id: target.business_id, is_active: target.is_active, commission_rate_pct: target.commission_rate_pct };
-    await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND is_deleted = 0`, params);
+    if (willWrite) await db.run(`UPDATE users SET ${sets.join(', ')} WHERE id = ? AND is_deleted = 0`, params);
+
+    // AN IMMEDIATE MOVE IS STILL A MOVE. Without this the history would record every
+    // handover and none of the administrator's own corrections, which is the half of
+    // the story that is hardest to reconstruct afterwards.
+    if (!pendingTransfer && body.branch_id !== undefined && String(body.branch_id || '') !== String(target.branch_id || '')) {
+      await assignments.recordAssignment(db, {
+        userId: target.id,
+        fromBranchId: target.branch_id,
+        toBranchId: body.branch_id || null,
+        fromBusinessId: target.business_id,
+        toBusinessId: body.branch_id && body.branch_id !== target.branch_id
+          ? (await db.first('SELECT business_id FROM branches WHERE id = ?', [String(body.branch_id)]) || {}).business_id || null
+          : target.business_id,
+        reason: body.branch_id ? 'Moved directly, without a handover' : 'Released from a branch',
+        changedBy: user.id,
+      });
+    }
 
     // Deactivating someone must end their live session immediately. Their token
     // would otherwise keep working until it expired — up to twelve hours — which
@@ -633,9 +711,12 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true,
+      pendingTransfer: pendingTransfer ? pendingTransfer.transfer : null,
       message: body.is_active === false
         ? `${target.full_name} deactivated and signed out of every device. Their past sales and audit entries stay attributed to them.`
-        : `${target.full_name} updated.`,
+        : (pendingTransfer
+          ? `${target.full_name} updated. The move to ${pendingTransfer.to.name} is now a question for that branch — they keep working where they are until somebody there agrees to receive them.`
+          : `${target.full_name} updated.`),
     });
   });
 

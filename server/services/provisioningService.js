@@ -16,6 +16,7 @@
 // =====================================================================
 
 const { newId } = require('../../domain/crypto');
+const assignments = require('./assignmentService');
 const { round2 } = require('../../domain/money');
 const { getProfile, resolveProfile, PROFILE_CODES, MEASURE_AXES, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
 const glService = require('./glService');
@@ -373,6 +374,29 @@ function syntheticBarcode(seed) {
  * vendor's key, and it exists to create the first business and hand it to an
  * owner.
  */
+/**
+ * THE FIRST LINE OF SOMEBODY'S ASSIGNMENT HISTORY.
+ *
+ * Provisioning is where most users in a real deployment come from — the owner arrives
+ * with the business, the managers and cashiers arrive with their branches. If their
+ * creation were not recorded, the history would start at the first PERSON to move, and
+ * "who could see the Minna till on 14 March?" would answer with nobody for every
+ * branch whose staff have never transferred. So the same three lines run here as run
+ * on an accepted transfer: the row says "from here on, this person is at this branch".
+ */
+async function recordCreation(db, { userId, businessId = null, branchId = null, reason, changedBy = null }) {
+  if (!userId) return null;
+  return assignments.recordAssignment(db, {
+    userId,
+    fromBranchId: null,
+    toBranchId: branchId,
+    fromBusinessId: null,
+    toBusinessId: businessId,
+    reason,
+    changedBy,
+  });
+}
+
 async function provisionPlatform(db, {
   adminUsername = 'admin', adminPin = null, adminName = 'StockRidge Platform Administrator',
   businessName = null, seededBy = 'provisioningService',
@@ -476,6 +500,7 @@ async function provisionDeployment(db, {
     await db.run(`INSERT INTO users (id, business_id, branch_id, full_name, username, pin_hash, role, job_title, is_active, created_at, updated_at)
                   VALUES (?,?,?,?,?,?,'ADMIN',?,1, datetime('now'), datetime('now'))`,
     [adminId, null, null, 'StockRidge Platform Administrator', adminUsername, hashed.stored, 'Vendor Administrator']);
+    await recordCreation(db, { userId: adminId, reason: 'Platform administrator created' });
     userIds.admin = adminId;
   }
 
@@ -484,6 +509,7 @@ async function provisionDeployment(db, {
   await db.run(`INSERT INTO users (id, business_id, branch_id, full_name, username, pin_hash, role, job_title, is_active, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,'OWNER','Proprietor',1, datetime('now'), datetime('now'))`,
   [ownerId, businessId, null, ownerName, ownerUsername, ownerHash.stored]);
+  await recordCreation(db, { userId: ownerId, businessId, reason: 'Business created — proprietor' });
   userIds.owner = ownerId;
 
   // Branches
@@ -543,6 +569,7 @@ async function provisionDeployment(db, {
       await db.run(`INSERT INTO users (id, business_id, branch_id, full_name, username, pin_hash, role, job_title, is_active, created_at, updated_at)
                     VALUES (?,?,?,?,?,?,'MANAGER',?,1, datetime('now'), datetime('now'))`,
       [managerId, businessId, id, b.manager.name, b.manager.username, mHash.stored, b.manager.job_title || 'Branch Manager']);
+      await recordCreation(db, { userId: managerId, businessId, branchId: id, reason: 'Branch manager created' });
       userIds[b.manager.username] = managerId;
     }
     if (Array.isArray(b.staff)) {
@@ -553,6 +580,7 @@ async function provisionDeployment(db, {
         await db.run(`INSERT INTO users (id, business_id, branch_id, full_name, username, pin_hash, role, job_title, is_active, created_at, updated_at)
                       VALUES (?,?,?,?,?,?,'STAFF',?,1, datetime('now'), datetime('now'))`,
         [staffId, businessId, id, s.name, s.username, sHash.stored, s.job_title || 'Sales / Cashier']);
+        await recordCreation(db, { userId: staffId, businessId, branchId: id, reason: 'Staff created' });
         userIds[s.username] = staffId;
       }
     }

@@ -97,9 +97,26 @@ module.exports = {
     if (!toBranch) {
       audit.skip('the owner can move a colleague to another branch', 'this deployment has one branch for that business, so there is nowhere to move them to');
     } else {
+      // THE MOVE IS A HANDOVER, AND THIS CHECK IS WHERE THAT IS PROVED FROM THE
+      // TENANT'S SIDE (stage G3). Asking for the move no longer moves anybody: the
+      // receiving branch answers first, and until it does the manager keeps working
+      // where they are. Both halves are asserted, because either one alone would pass
+      // against a product that lost the move or one that applied it without asking.
       await audit.checkAsync('the owner CAN move a colleague to another branch, and the move is real', async () => {
         const res = await owner.put(`/api/users/${encodeURIComponent(appointed.id)}`, { branch_id: toBranch.id });
         assert2(res, 200, `the owner moving the manager to ${toBranch.name}`);
+        assert.ok(res.json && res.json.pendingTransfer,
+          `${toBranch.name} was not asked: the owner's move took effect without the receiving branch agreeing to it, which is exactly how somebody ends up able to see a shop they have never worked in`);
+        const asked = await d.request('GET', '/api/auth/me', { token: appointed.token || (await rules.signIn(d, appointed.username, appointed.pin)).json.token });
+        const stillThere = asked.json && asked.json.user && asked.json.user.branch && asked.json.user.branch.id;
+        assert.equal(String(stillThere), String(home.id),
+          `asking to move to ${toBranch.name} moved them already. A pending question must not change what a person can see`);
+
+        // The receiving branch answers. On a deployment where the only manager at that
+        // branch is the person being moved, the owner answers — and either way the move
+        // that follows must be real.
+        const accept = await owner.post(`/api/users/transfers/${encodeURIComponent(res.json.pendingTransfer.id)}/accept`, {});
+        assert2(accept, 200, `answering the transfer into ${toBranch.name}`);
         const back = await rules.signIn(d, appointed.username, appointed.pin);
         assert.equal(back.status, 200, 'the moved manager cannot sign in after the move');
         const me = await d.request('GET', '/api/auth/me', { token: back.json.token });

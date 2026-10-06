@@ -84,6 +84,12 @@ module.exports = {
       await audit.checkAsync('the owner moves the cashier to the other branch, and their world moves with them', async () => {
         const res = await owner.put(`/api/users/${encodeURIComponent(life.id)}`, { branch_id: destination.id });
         assert2(res, 200, `the owner moving the cashier to ${destination.name}`);
+        // THE HANDOVER FIRST (stage G3): the cashier does not move until the branch
+        // that receives them agrees. Asserted here rather than assumed, because the
+        // interesting failure is a move that quietly took effect anyway.
+        assert.ok(res.json && res.json.pendingTransfer, `${destination.name} was not asked before the cashier was moved into it`);
+        const accept = await owner.post(`/api/users/transfers/${encodeURIComponent(res.json.pendingTransfer.id)}/accept`, {});
+        assert2(accept, 200, `answering the transfer into ${destination.name}`);
         const back = await rules.signIn(d, life.username, life.pin);
         assert.equal(back.status, 200, 'the moved cashier cannot sign in');
         const list = await d.request('GET', '/api/branches?limit=100', { token: back.json.token });

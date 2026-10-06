@@ -45,6 +45,7 @@ const compliance = require('./compliance');
 const sync = require('./sync');
 const dataManagement = require('./dataManagement');
 const changeOwed = require('./changeOwed');
+const userTransfers = require('./userTransfers');
 
 /**
  * The complete set of endpoints reachable without a token.
@@ -160,6 +161,10 @@ function buildRoutes(app, env = {}) {
 
   // ---- GUARDED -----------------------------------------------------------
   branding.mountGuarded(app, '/api/branding');
+  // BEFORE `admin`, because these paths live under /api/users/... and belong to the
+  // same resource: whoever registers first matches first, and the transfer routes are
+  // the more specific ones.
+  userTransfers.mount(app, '/api');
   admin.mount(app, '/api');
   catalog.mount(app, '/api');
   stock.mount(app, '/api');
