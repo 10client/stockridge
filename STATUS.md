@@ -2962,3 +2962,17 @@ honest skips** (the role checks need seats a live run is not given): **4.4 MB of
 
 **Next: G1c** — `POST /api/data-management/purge`: the five modes, one test per mode proving what it
 PROMISES TO KEEP is still there afterwards, offline-replay quarantine, and the screened confirmation.
+
+### G1b refinement — capacity on a deployment that has no business yet
+
+Sample and production were handed over with one administrator and no business, and
+`/api/data-management/status` answered **400**. That was wrong for a reason worth writing down:
+**the size of a D1 database is a property of the deployment, not of a business** — every business
+on a deployment shares one database, so the figure is the same answer whoever asks. A 400 there
+would mean the one person who can act on a filling database — the platform administrator — cannot
+read the figure that tells them it is filling. Both data-management reads now resolve the business
+with `{ required: false }`.
+
+Proved on both handover deployments: **status 200 · 1.4 MB (sample) and 1.5 MB (production) of
+500 MB · 5 modes · 3 retention rules · the permanence notice present**. An empty deployment reading
+as its own floor is the model's cleanest validation — the measured floor and the live figure agree.

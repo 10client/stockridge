@@ -107,7 +107,14 @@ function mount(app, base = '/api') {
     if (!user || !atLeast(user.role, 'MANAGER')) {
       throw new HttpError('Only a manager, owner or administrator can see the data-management controls.', { status: 403, code: 'ROLE_REQUIRED' });
     }
-    const business = await resolveBusiness(db, ctx);
+    // CAPACITY IS A PROPERTY OF THE DATABASE, NOT OF A BUSINESS. All businesses on
+    // a deployment share one D1 database, so its size is the same answer whoever
+    // asks. `required: false` matters on a FRESH deployment: sample and production
+    // are deliberately handed over with an administrator and no business at all,
+    // and a 400 BUSINESS_REQUIRED there would mean the one person who could act on
+    // a filling database — the platform administrator — cannot read the figure
+    // that tells them it is filling.
+    const business = await resolveBusiness(db, ctx, null, { required: false });
 
     // Capacity and the retention rules. THE RUNS THEMSELVES ARE NOT EMBEDDED
     // HERE: they have their own endpoint below, because an embedded copy would be
@@ -141,7 +148,9 @@ function mount(app, base = '/api') {
     if (!user || !atLeast(user.role, 'MANAGER')) {
       throw new HttpError('Only a manager, owner or administrator can see the data-management history.', { status: 403, code: 'ROLE_REQUIRED' });
     }
-    await resolveBusiness(db, ctx);
+    // Optional for the same reason as the status read: a cleanup run is recorded
+    // against the deployment, and a fresh deployment has no business to name.
+    await resolveBusiness(db, ctx, null, { required: false });
     const { limit, offset } = pagination(ctx);
     const rows = await db.all(`SELECT id, mode, initiated_by, initiated_by_username, start_date, end_date, deleted_summary_json, created_at
                                  FROM data_cleanup_log ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, [limit, offset]);
