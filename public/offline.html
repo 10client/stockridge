@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>StockRidge — no connection</title>
+<meta name="theme-color" content="#0f766e">
+<!--
+  =====================================================================
+  public/offline.html — WHAT A SHOP SEES WHEN THE NETWORK IS GONE
+  =====================================================================
+  This page has ONE job and it is not to apologise. In a Nigerian market the
+  network drops several times a day, and the person looking at this screen is
+  standing at a counter with a customer in front of them. The questions they need
+  answered, in order, are:
+
+    1. Did I lose the sale I just took?          → "No. It is on this device."
+    2. Can I keep selling?                       → "Yes."
+    3. When will this fix itself?                → "By itself, when the network
+                                                    returns. You do not have to
+                                                    do anything."
+
+  So the page answers those three and nothing else. It is deliberately NOT the
+  app shell: the shell needs 20 JavaScript files, and if any of them failed to
+  cache the customer is left with a blank white screen and no explanation. This
+  file is one page with its own styles inline and no requests at all — it renders
+  even when nothing else will.
+
+  IT MUST NOT DEPEND ON ANYTHING. No external CSS, no fonts, no images, no icons
+  fetched over the network. The only decoration is an inline SVG, because a
+  network that has just failed is exactly the wrong time to ask it for a picture.
+
+  It is precached by sw.js and served as the navigation fallback when a fetch
+  fails, which is why the id below matters: `audit.http.js` fetches this page and
+  asserts it is a page, says it is offline, and contains no "undefined".
+  =====================================================================
+-->
+<style>
+  :root {
+    --ink: #14201f; --ink-500: #5b6b69; --line: #d8e0df;
+    --surface: #ffffff; --bg: #f5f8f7; --teal: #0f766e; --teal-050: #ecfdf9;
+    --amber-050: #fffbeb; --amber-line: #fcd34d; --amber-800: #92400e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #e8f1f0; --ink-500: #9db0ae; --line: #2a3a38; --surface: #14201f; --bg: #0b1413; --teal: #5eead4; --teal-050: #10241f; --amber-050: #241a06; --amber-line: #7c5a11; --amber-800: #fcd34d; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: var(--ink); background: var(--bg);
+    display: flex; min-height: 100svh; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  main { width: 100%; max-width: 560px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; color: var(--ink-500); font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+  .brand svg { display: block; }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 26px 24px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  h1 { font-size: 1.45rem; line-height: 1.25; margin: 0 0 6px; }
+  .sub { color: var(--ink-500); margin: 0 0 20px; font-size: .92rem; }
+  .signals { background: var(--amber-050); border: 1px solid var(--amber-line); color: var(--amber-800); border-radius: 10px; padding: 12px 14px; font-size: .88rem; margin-bottom: 20px; }
+  .signals b { display: block; margin-bottom: 2px; }
+  ul { margin: 0 0 22px; padding: 0; list-style: none; }
+  li { display: flex; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: .93rem; }
+  li:last-child { border-bottom: 0; }
+  li .mark { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: .72rem; font-weight: 700; color: #fff; background: var(--teal); margin-top: 2px; }
+  li .mark.no { background: var(--ink-500); }
+  li span { color: var(--ink-500); }
+  li strong { color: var(--ink); font-weight: 600; }
+  button {
+    width: 100%; font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--teal); color: #fff; border: 0; border-radius: 10px;
+    padding: 14px; min-height: 48px;
+  }
+  button:active { transform: translateY(1px); }
+  .hint { color: var(--ink-500); font-size: .8rem; text-align: center; margin: 12px 0 0; }
+  .queue { font-variant-numeric: tabular-nums; font-weight: 700; color: var(--teal); }
+  footer { margin-top: 18px; text-align: center; color: var(--ink-500); font-size: .78rem; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 17.5 8.5 11l4 4L21 5.5V9l-8.5 9.5-4-4L3 21z"/></svg>
+    StockRidge
+  </div>
+
+  <div class="card">
+    <h1>You are offline</h1>
+    <p class="sub">This device has no connection to the server right now. That is normal, and it is not a fault.</p>
+
+    <div class="signals">
+      <b>Your work is safe.</b>
+      Anything you have recorded on this device is queued and will be sent by itself when the network returns.
+    </div>
+
+    <ul>
+      <li><span class="mark" aria-hidden="true">✓</span><div><strong>Keep selling.</strong><span> A sale taken offline is stamped, receipted and queued on this device.</span></div></li>
+      <li><span class="mark" aria-hidden="true">✓</span><div><strong>Nothing to do.</strong><span> The queue pushes by itself. Do not re-enter a sale that may already be queued — it will be recorded twice.</span></div></li>
+      <li><span class="mark no" aria-hidden="true">×</span><div><strong>Live stock and prices need the server.</strong><span> The last figures this device downloaded are shown, with the time they were fetched.</span></div></li>
+    </ul>
+
+    <button type="button" onclick="location.replace('/')">Try the app again</button>
+    <p class="hint" id="hint-line">If this device has never been online, open the app once with a connection first.</p>
+  </div>
+
+  <footer>StockRidge — offline mode</footer>
+</main>
+
+<script>
+  // TELL THEM HOW MANY SALES ARE WAITING, IF THE DEVICE CAN TELL US.
+  //
+  // The number matters more than anything else on this page: a cashier who can see
+  // "3 waiting to send" knows the system has their back, and a cashier who sees
+  // nothing starts writing sales on paper. IndexedDB is read directly here because
+  // this page has no application scripts — and every failure is swallowed, because
+  // a fallback page that throws is worse than one that says less.
+  (function () {
+    var hint = document.getElementById('hint-line');
+    try {
+      if (!window.indexedDB) return;
+      var open = indexedDB.open('stockridge');
+      open.onerror = function () { };
+      open.onsuccess = function () {
+        try {
+          var db = open.result;
+          if (!db.objectStoreNames.contains('outbox')) return;
+          var tx = db.transaction('outbox', 'readonly');
+          var count = tx.objectStore('outbox').count();
+          count.onsuccess = function () {
+            var n = Number(count.result) || 0;
+            if (n > 0) {
+              hint.innerHTML = '<span class="queue">' + n + '</span> item' + (n === 1 ? '' : 's')
+                + ' on this device waiting to be sent. Nothing has been lost.';
+            }
+          };
+        } catch (e) { /* the hint is optional */ }
+      };
+    } catch (e) { /* the hint is optional */ }
+  }());
+
+  // AND TRY AGAIN BY ITSELF. A shopkeeper should not have to nurse this page: the
+  // connection usually returns within seconds, and a page that keeps trying turns
+  // a dead end into a two-second wait. `location.replace` rather than `assign`, so
+  // the back button does not land on an offline page that no longer applies.
+  var tries = 0;
+  (function again() {
+    if (tries > 6) return;
+    tries += 1;
+    fetch('/api/health', { cache: 'no-store' })
+      .then(function (r) { if (r.ok) location.replace('/'); else setTimeout(again, 3000); })
+      .catch(function () { setTimeout(again, 3000); });
+  }());
+</script>
+</body>
+</html>

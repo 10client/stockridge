@@ -2034,3 +2034,214 @@ The remaining baseline wire-ups: `user_assignment_history`, `pending_user_transf
 producer and no screen. `public/offline.html` and the live staging offline proof.
 A Features screen for the plan usage the audit reports (`planUsage`, `/api/settings`
 returns it) — the module flags are on Settings now, the plan limits are only API.
+
+# PLAN — Stage T: PHARMARIDGE'S TEST FORMS, REPLICATED IN STAGES
+
+PharmaRidge shipped **twelve forms of test**, and reading the dump (`uploads/0.txt`)
+is the fastest way to see what a production PWA in this market actually needs
+audited. They are forms, not files: each exists because a class of defect is
+invisible to the others.
+
+| form | PharmaRidge | why it exists |
+|---|---|---|
+| **Domain audits** | `audit.money.js`, `audit.wht.js`, `audit.inventory.js`, `audit.customers.js`, `audit.sync.js`, `audit.workflows.js`, `audit.exports.js`, `audit.expiry.js` | one script per domain, run against a **live server** via `WORKER_BASE` — not against services |
+| **Two-way probes** | `probe-change-owed`, `probe-cashfloor`, `probe-safe-till`, `probe-reversals`, `probe-receiving`, `probe-unit-alignment` | act, then **read the resulting figure back** over HTTP. A 200 is not evidence |
+| **Fresh-state runners** | `run-core-live.sh`, `run-full-domain-audit.sh` | `fresh_database()` + `start_server()` + `run_one X` per script, so no script's fixture becomes another's false failure; retry once on transient infra |
+| **Role-pair matrix** | `audit.adminowner`, `ownermanager`, `managerstaff`, `staffstaff`, `vendorseat`, `branchscope`, `rolelabels`, `rolelifecycle`, `promotionauthority` | **a file per PAIR of roles.** "Every role audited alone; nobody walked a transition BETWEEN them" |
+| **Three-month simulation** | `simulate-three-months.js` + `audit.three-month-simulation.js` | build a 90-day history, then audit that the **correlated records** agree — ageing, expiry, retention, arrears. Needs time; no unit test has it |
+| **Traps register** | 149 numbered entries | every defect found, and the rule that prevents it. The cheapest institutional memory there is |
+| **Docs audit** | `audit.docs.js` | docs are checked against the code, so a doc cannot drift into fiction |
+| **HTTP contract** | `audit.http.js` | the **real** response headers and status codes, not the config file that claims them |
+| **Concurrency** | `audit.concurrent-pos-sales.js`, `audit.single-session.js` | two writers on one row/batch |
+| **Platform limits** | `audit.d1limits.js` | D1 bindings, rows, statement size — fail locally, not in production |
+| **Go-live gate** | `audit.golive.js` | "does any endpoint exist with no UI at all"; readiness state |
+| **Suite self-check** | restored-artefact integrity check | every test file parses, every entry point exists, `package.json` is wired |
+
+## The stages
+
+* **T1 — the harness, the runner and the self-check.** `test/audit/lib/` (report
+  format, actors, two-way helpers, fresh live server), `test/run-audits.sh`
+  (fresh state per audit), `test/audit/suite.js` (the self-check form), and the
+  first domain audit to prove all of it: `audit.http.js`.
+* **T2 — money and tax, two ways.** `audit.money.js` (sale → split payment →
+  change owed → till → cash floor → safe → banking → void → ledger → trial
+  balance) and `audit.wht.js` (VAT-inclusive extraction, WHT rates as data, the
+  returns). Act, then read the figure back.
+* **T3 — the role matrix.** A file per pair (ADMIN×OWNER, OWNER×MANAGER,
+  MANAGER×STAFF, STAFF×STAFF, vendor seat×OWNER, branch scope, role labels) plus
+  the lifecycle: what happens to a user's access when their role CHANGES.
+* **T4 — sync, idempotency, concurrency, platform limits.** Stale replay,
+  duplicate push, LWW conflict capture, two sales on one batch, D1 binding and
+  statement limits, a soak.
+* **T5 — the three-month simulation.** A 90-day operating history built through
+  the API, then audited for internal consistency: ageing buckets against the
+  ledger, expiry alerts against dates, instalment arrears against the schedule,
+  warranty expiries, retention windows.
+* **T6 — docs, playbook, traps and the go-live gate.** `audit.docs.js`,
+  `docs/TESTING-PLAYBOOK.md`, `docs/TRAPS.md` (built from the defects this project
+  has already found), and `audit.golive.js` folding the capability audit and the
+  deployment readiness checks into one gate.
+
+Each stage: built, proved by a negative control, run against **live staging**,
+checkpointed here, pushed.
+
+---
+
+# CHECKPOINT — Stage T1: the audit harness, the runner and the self-check
+
+*Appended after Stage 12. Everything below is deployed and verified against the
+three live environments, not just locally.*
+
+## What T1 built
+
+| File | What it is |
+| --- | --- |
+| `test/audit/lib/harness.js` | `Audit` + `runAudit`: the report format, `pass/fail/skip/check/checkAsync/twoWay/refusal/capture/captureAsync/note/report`. One way to report, so the runner can run anything in `test/audit/` without knowing what it does |
+| `test/audit/lib/deployment.js` | A **real deployment per audit**: migrates a fresh tmp database, provisions it through `provisioningService`, spawns `server/app.js` as a child process on its own port, waits for `/api/health`, signs in actors, and cleans up. `Actor.get/post/put/del/call`, `Deployment.login/seat/describe/provision/retireUser/retireBusiness/close` |
+| `test/audit/audit.http.js` | The first audit: the HTTP surface, the PWA, UTF-8, response shapes, and the branch scope seen from a pinned manager's seat. **35 checks** |
+| `test/run-audits.sh` | The runner. One audit per process, fresh state each, retry once on a lost port, summary, exit code |
+| `test/audit/suite.js` | The self-check: every file in `test/audit/` accounted for, every audit parses, every audit uses the harness, `package.json` and the runner are wired to each other, the live-target variables are either set properly or not set at all |
+| `public/offline.html` | **NEW — the page a shop sees when the network is gone** (see the fix below) |
+
+`npm run test:audits` → the runner. `npm run test:audits:staging` → the same
+audits against live staging.
+
+## The one real product gap T1 found, and it is now closed
+
+**The service worker named no offline fallback page at all.** `public/offline.html`
+had never existed; `public/sw.js` built its fallback as an inline HTML string inside
+the navigation handler, which meant the page a shopkeeper sees at the counter with a
+customer waiting was written in a different file from every other page in the app,
+could not be styled, and no test could read it.
+
+Fixed properly:
+
+* `public/offline.html` — a real page, one file, own inline styles, no network
+  requests at all (it renders when nothing else will). It answers the three questions
+  the person at that counter actually has: *is my sale safe* (yes, it is queued on
+  this device), *can I keep selling* (yes), *what do I have to do* (nothing — the
+  queue pushes itself). It counts the outbox in IndexedDB and says how many items are
+  waiting, and it retries `/api/health` itself so the page turns into the app again
+  the moment the network returns.
+* `public/sw.js` — `'/offline.html'` added to `SHELL` (precached), served as the
+  navigation fallback **after** the app shell (a cached shell is the better answer;
+  the fallback is for a device that has never reached the server or a cleared cache),
+  and `BUILD` bumped `ridge-1` → `ridge-2` so every device throws the old cache away.
+* **Deployed to all three environments and verified live** — the audit reads `/sw.js`
+  off the live worker, asserts it precaches the page it names, then fetches that page
+  and asserts it is a page, says it is offline, and shows no `undefined`, `NaN`,
+  `null` or un-substituted placeholder **to the reader** (comments, styles and scripts
+  stripped — the first version of this check searched raw bytes for the word
+  "undefined" and went red on a comment that explained the check).
+
+## The one real product defect T1 found, and it is now closed
+
+**An owner whose row carries a branch could read every branch and write to none.**
+
+`resolveBranch` refused any request naming a branch other than the caller's own
+`branch_id` — before consulting what the caller could actually reach. For a
+branch-pinned MANAGER that is exactly right and is the fix that stopped a compliance
+record being posted into the wrong shop. For an OWNER (whose scope is *all* branches,
+because scope treats an owner as reaching everything) it produced a live
+inconsistency: staging's owner seat carries a branch, so that account could open every
+branch's stock, sales and reports and was then refused with *"You can only work in the
+branch you are assigned to"* the moment it tried to transfer from one.
+
+* Fixed in `server/lib/respond.js`: the pin refuses only what the scope cannot reach
+  (`reaches()`), and a named branch the caller may reach is honoured rather than
+  silently replaced by the pin, which remains the answer when nothing is named.
+* `npm run verify` **348/348**, `read-scope` 7/7, `compliance` 15/15 after the change.
+* Deployed to all three environments.
+* **Proved live**: `audit.http.js` now performs the write — as the owner, create a
+  STAFF user at a *different* branch — on staging in write mode. It was red before the
+  deploy (`403 BRANCH_SCOPE_VIOLATION`) and green after.
+
+## The difference that is NOT a defect, recorded so nobody "fixes" it
+
+Cloudflare's static-asset layer serves the shell as `text/html` **with no charset**;
+the Node backend serves the same file as `text/html; charset=utf-8`. The first version
+of the audit demanded the header and went red on all three live environments.
+
+Not a defect, and the reason matters: HTML has its own encoding rules — a browser
+reads the transport charset first, and with none it falls back to the byte-order mark
+and then to `<meta charset>` in the document. The shell declares it **at byte 62**,
+well inside the 1024 bytes a browser will look at, so ₦ and *Ọ̀ṣun* render correctly on
+both backends. The audit now asserts the rule that actually prevents mojibake: one of
+the two declarations must exist, it must say utf-8, and when it is the in-document one
+it must be within the first 1024 bytes. The API — where money and names travel — is
+held to the strict rule and carries `charset=utf-8` on both backends. The difference is
+printed as an audit **note**, so it is visible on every run instead of being
+rediscovered.
+
+## Negative controls — the audit was made to go red on purpose, twice
+
+A check that has never failed is a check nobody has seen work.
+
+1. `public/offline.html` replaced with a page rendering `${undefined}` → **the fallback
+   check went red**, then green on restore.
+2. `if (false)` wrapped around the scope filter in `GET /api/users` — a **real product
+   mutation**, the exact shape of bug that ships — → **"a manager cannot see staff at
+   another branch" went red**, then green on restore (file diff-verified byte-identical).
+
+## Traps this stage added to the register
+
+1. **`runAudit(name, fn, { setup })` returns `d = null` when the setup block is
+   forgotten** — every check then reports "the action itself failed: Cannot read
+   properties of null". The setup is what makes it a deployment, not a script.
+2. **A live target may have no owner seat.** Production has exactly one account
+   (the administrator), so a check that reaches for `d.owner` fails on the environment
+   that matters most — it did, on both sample and production, as *"Cannot read
+   properties of undefined (reading 'call')"*. A check must take whichever signed-in
+   seat exists when any signed-in caller will do.
+3. **`/api/auth/me` reports `user.branch` and `user.business` as OBJECTS**, with the
+   pinned ids in `scope`. Reading `user.branch_id` yields undefined — and an assertion
+   against undefined reports a scope defect the server does not have. Three checks in
+   the first draft of this audit failed for exactly this reason.
+4. **A username is never reusable, even by a deactivated user**, because their past
+   sales are still attributed to them. A fixed fixture name (`http-injected`) worked
+   once and then failed on the second live run with a correct `409 DUPLICATE_USERNAME`.
+   Live fixtures get a per-run suffix.
+5. **A PIN of `1234` or `12345` cannot be set through `POST /api/users`** (`PIN_WEAK`
+   refuses a straight run) even though every deployment's administrator holds `1234` —
+   the deploy tool writes that PIN straight into the database, which is a deliberate
+   bypass for a client's first sign-in. Audit fixtures use `73041`.
+6. **A self-reporting check is not also a pass.** `check()`/`checkAsync()` used to mark
+   a skip *and* a pass, so the count grew for checks that asserted nothing and a suite
+   could look more thorough the less it tested.
+7. **An unauthenticated path that does not exist is `401`, not `404`** — the auth guard
+   runs before routing, which is fail-closed and correct. With a token it is `404`
+   JSON. The audit asserts both, and does not "fix" the app.
+8. **A live deployment's administrator must be the seat that provisions fixtures.**
+   An owner on a real deployment may itself be branch-pinned, and a pinned seat cannot
+   create a user at another branch — the fixture failed with a `403
+   BRANCH_SCOPE_VIOLATION` that was entirely correct and entirely useless.
+9. **A live run must undo exactly its own work.** Live mode is READ-ONLY by default;
+   `AUDIT_WRITE=1` permits fixtures. What it creates is *deactivated*, never deleted,
+   because this product never deletes a person or a business — and it says so in its
+   own output rather than pretending it cleaned up.
+
+## Evidence
+
+| Run | Result |
+| --- | --- |
+| `node test/audit/audit.http.js` (fresh local deployment) | **35 checks passed** |
+| `node test/audit/audit.http.js` × staging / sample / production (read-only) | **26 passed, 2 reported** each — the two stand-downs are named in the output |
+| staging in **write mode** (`AUDIT_WRITE=1`) | **34 passed, 1 reported** — the four scope checks run against real D1, real Workers, real latency |
+| `node test/audit/suite.js` | 9 checks, "the audit suite is fit to run" |
+| `bash test/run-audits.sh` | 1 audit, every check green, exit 0 |
+| `npm run verify` | **348/348/0** (unit + integration + e2e) |
+| Leftovers on staging after write-mode runs | **0 active** audit accounts (9 deactivated; the audit reports the count it retired) |
+
+## Still open (T1's own debris, and what it hands to T2)
+
+* The audit's live write-mode runs leave **deactivated** users behind by design. Point
+  `AUDIT_WRITE=1` at staging, never at a client's production. Worth a `--clean` sweep
+  of `http-*`/`audit-*` accounts at the top of a live write run, as the compliance probe
+  already does for its `PROBE-` records.
+* `PROBE_DEBUG` in `tools/frontend-compliance.js` still needs removing.
+* The compliance screen's error path (a real 409 closes the modal with no toast) and
+  the notifications bell on screen are still owed from Stage 11/12.
+* **T2 next**: `audit.money.js` (sale → split payment → change owed → till → cash floor
+  → safe → banking → void → ledger → trial balance) and `audit.wht.js` (VAT-inclusive
+  extraction, WHT rates as data, the returns), both two-way: act, then read the figure
+  back over HTTP.

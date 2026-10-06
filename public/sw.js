@@ -25,7 +25,7 @@
 
 // Bump this on every deploy. It is what makes the old cache get thrown away
 // rather than served forever.
-const BUILD = 'ridge-1';
+const BUILD = 'ridge-2';
 const CACHE = `stockridge-${BUILD}`;
 
 const SHELL = [
@@ -70,6 +70,13 @@ const SHELL = [
   '/icons/icon.svg',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  // THE OFFLINE FALLBACK IS PART OF THE SHELL, and it was not. The navigation
+  // handler below used to build its own fallback as an inline HTML string, which
+  // meant the page a shop sees when the network drops was written in a different
+  // file from every other page and could not be styled, tested or read by anybody
+  // but a developer. It is a real page now, precached here, and `audit.http.js`
+  // fetches it and asserts it is a page that says it is offline.
+  '/offline.html',
 ];
 
 self.addEventListener('install', (event) => {
@@ -130,8 +137,21 @@ self.addEventListener('fetch', (event) => {
         cache.put('/index.html', fresh.clone()).catch(() => {});
         return fresh;
       } catch (e) {
+        // THE SHELL FIRST, THEN THE FALLBACK PAGE.
+        //
+        // Once the device has been online the shell is cached, and a navigation
+        // while offline is served the app itself — which is the good outcome, and
+        // it is why the app has an offline mode at all. The fallback page is for
+        // the case where the shell is NOT there: a first run that never reached the
+        // server, or a cache somebody cleared. That is precisely when a blank
+        // screen is least forgivable, so the page explains what happened and what
+        // the device has queued.
         const cache = await caches.open(CACHE);
-        return (await cache.match('/index.html')) || (await cache.match('/')) || new Response(
+        const shell = (await cache.match('/index.html')) || (await cache.match('/'));
+        if (shell) return shell;
+        const fallback = await cache.match('/offline.html');
+        if (fallback) return fallback;
+        return new Response(
           '<!doctype html><meta charset="utf-8"><title>Offline</title><body style="font-family:system-ui;padding:40px;text-align:center">'
           + '<h1>StockRidge is not installed on this device yet</h1>'
           + '<p>Open the app once with a connection and it will work offline from then on.</p></body>',

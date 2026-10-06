@@ -91,10 +91,37 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } =
   // The pin is still the answer when nothing is named, and still wins when it
   // agrees with what was named. It only stops being a way to answer a question
   // that was asked about somewhere else.
-  if (pinned && requested && String(requested) !== String(pinned)) {
+  // ...AND A PIN ONLY REFUSES WHAT THE SCOPE CANNOT REACH.
+  //
+  // The rule above was right about a pinned manager and wrong about everybody else,
+  // and the difference only shows on a deployment whose data has drifted from its
+  // intent. An OWNER whose row happens to carry a `branch_id` — which is what an
+  // owner created from inside a branch looks like — has `allBranches` scope: they
+  // READ every branch, every report, every transfer. But the pin check fired before
+  // the scope was consulted, so every WRITE naming another branch was refused with
+  // "You can only work in the branch you are assigned to", while the same screen
+  // happily showed them that branch. Found by the live write-mode run of
+  // test/audit/audit.http.js against staging, where the owner seat carries a branch.
+  //
+  // The pin is a real constraint for the roles it exists for — a MANAGER is the
+  // manager OF somewhere, and the compliance-record defect that put this check here
+  // is still refused. What it must not be is a way to refuse a branch the caller's
+  // scope already reaches: that is not a security boundary, it is an inconsistency
+  // between what a person can see and what they can do about it.
+  const reaches = (id) => {
+    if (!id) return false;
+    // Reaches every branch outright (owner, administrator), or the branch is in the
+    // granted set (a business-scoped manager, a branch-pinned one naming their own).
+    if (scope.allBranches && !scope.branchIds) return true;
+    if (scope.branchIds && scope.branchIds.has(String(id))) return true;
+    return false;
+  };
+  if (pinned && requested && String(requested) !== String(pinned) && !reaches(requested)) {
     throw new HttpError('That request names a branch outside your access. You can only work in the branch you are assigned to.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
   }
-  let branchId = pinned || requested;
+  // What was ASKED FOR, when the caller was allowed to ask for it. The pin remains the
+  // answer when nothing is named, which is the case it was written for.
+  let branchId = requested || pinned;
 
   if (!branchId && scope.branchIds && scope.branchIds.size === 1) {
     branchId = [...scope.branchIds][0];
