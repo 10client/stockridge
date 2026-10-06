@@ -206,16 +206,66 @@ const inClause = (ids) => `(${ids.map(() => '?').join(',')})`;
  * it, and a table added by a future migration is handled without editing this file.
  */
 async function describeSchema(db) {
-  const rows = await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
+  // NO PRAGMA. D1 REFUSES IT — `PRAGMA table_info(...)` answers
+  // "D1_ERROR: not authorized: SQLITE_AUTH" on Cloudflare while working perfectly on
+  // the better-sqlite3 the tests run against. That is the nastiest kind of difference
+  // between the two engines: every local test passes, and the feature is dead in
+  // production. The schema is readable from `sqlite_master.sql` instead, which D1
+  // allows, and the column names are parsed out of the `CREATE TABLE` text.
+  const rows = await db.all("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'");
   const schema = {};
   for (const row of rows) {
-    const cols = await db.all(`PRAGMA table_info(${row.name})`);
+    const cols = columnsFromSql(row.sql || '');
     schema[String(row.name)] = {
-      hasBusinessId: cols.some((c) => c.name === 'business_id'),
-      hasBranchId: cols.some((c) => c.name === 'branch_id'),
+      columns: cols,
+      hasBusinessId: cols.includes('business_id'),
+      hasBranchId: cols.includes('branch_id'),
     };
   }
   return schema;
+}
+
+/**
+ * The column names in a `CREATE TABLE` statement.
+ *
+ * Split on the commas that are NOT inside brackets (a `CHECK (a IN (1,2))` or a
+ * `REFERENCES t(a, b)` has commas of its own), then take the first word of each part
+ * unless the part is a table-level constraint. Enough for this schema and, more to
+ * the point, enough for a schema this project writes itself — and it fails safe: a
+ * column it cannot see is a column the purge will not scope by, which leaves rows
+ * behind rather than deleting the wrong ones.
+ */
+function columnsFromSql(sql) {
+  // COMMENTS FIRST. This schema documents itself in `--` comments attached to the
+  // columns, and a comment containing a comma ("-- RETAIL, WAREHOUSE") split a column
+  // definition in half: the parser then read words like "Niger" and "never" as column
+  // names and MISSED the real ones after them. Fifty-four of the seventy-six tables
+  // came out wrong. Strip the comments, then parse what is left.
+  const cleaned = String(sql).replace(/--[^\n]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  const open = cleaned.indexOf('(');
+  const close = cleaned.lastIndexOf(')');
+  if (open === -1 || close === -1 || close < open) return [];
+  const body = cleaned.slice(open + 1, close);
+  const parts = [];
+  let depth = 0;
+  let current = '';
+  for (const ch of body) {
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    if (ch === ',' && depth === 0) { parts.push(current); current = ''; continue; }
+    current += ch;
+  }
+  if (current.trim()) parts.push(current);
+
+  const TABLE_LEVEL = new Set(['PRIMARY', 'UNIQUE', 'CHECK', 'FOREIGN', 'CONSTRAINT']);
+  const cols = [];
+  for (const part of parts) {
+    const match = /^\s*"?([A-Za-z_][A-Za-z0-9_]*)"?\s+/.exec(part);
+    if (!match) continue;
+    if (TABLE_LEVEL.has(match[1].toUpperCase())) continue;
+    cols.push(match[1]);
+  }
+  return cols;
 }
 
 function planFor(mode, { businessIds = [], actorId = null, schema = null } = {}) {

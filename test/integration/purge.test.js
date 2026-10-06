@@ -227,3 +227,39 @@ test('no cleanup plan removes a parent while a row that points at it survives', 
       `a plan deletes rows that something still points at:\n      ${[...new Set(broken)].join('\n      ')}`);
   });
 });
+
+test('the schema reader agrees with the engine on every table', async () => {
+  // D1 REFUSES `PRAGMA table_info` — "not authorized: SQLITE_AUTH" — while the
+  // better-sqlite3 these tests run against answers it happily. So the cleanup reads the
+  // schema out of `sqlite_master.sql` instead, and parses the columns from the
+  // `CREATE TABLE` text. That parser is the one piece of this feature that CANNOT be
+  // checked by the engine it will run on: if it reads a column wrong, D1 finds out in
+  // production and nobody finds out locally.
+  //
+  // So the test does the one thing the production code cannot: parse the same schema
+  // both ways and compare. The first version of the parser was wrong on fifty-four of
+  // the seventy-six tables — it split column definitions on commas inside the `--`
+  // comments this schema is full of — and every local test still passed.
+  await withDb(async (db) => {
+    const parsed = await describeSchema(db);
+    const tables = db.raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all().map((r) => String(r.name));
+    assert.deepEqual(Object.keys(parsed).sort(), [...tables].sort(), 'the schema reader did not see every table');
+    const wrong = [];
+    for (const t of tables) {
+      const actual = db.raw.prepare(`PRAGMA table_info(${t})`).all().map((c) => String(c.name));
+      const mine = parsed[t].columns || [];
+      const missing = actual.filter((c) => !mine.includes(c));
+      const invented = mine.filter((c) => !actual.includes(c));
+      if (missing.length || invented.length) wrong.push(`${t}: missing [${missing.join(', ')}] invented [${invented.join(', ')}]`);
+    }
+    assert.deepEqual(wrong, [], `the schema reader disagrees with the engine:\n      ${wrong.join('\n      ')}`);
+
+    // And the two facts the scoping actually turns on, asserted against known tables
+    // rather than trusted: a table with a business_id, one with only a branch, and one
+    // with neither.
+    assert.equal(parsed.products.hasBusinessId, true);
+    assert.equal(parsed.serial_numbers.hasBusinessId, false, 'serial_numbers has no business_id, so business-scoping it is a query error');
+    assert.equal(parsed.serial_numbers.hasBranchId, true, 'serial_numbers must be reachable through its branch');
+    assert.equal(parsed.stock_transfers.hasBranchId, false, 'stock_transfers names two branches and has neither column, so it must be scoped through a parent');
+  });
+});

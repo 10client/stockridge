@@ -3082,3 +3082,40 @@ started recording its own cleanup, answered with the wrong run and quietly asser
 
 **Next:** deploy staging, run `AUDIT_BASE=… node test/audit/audit.purge.js` against it, probe the two
 endpoints on sample and production, then **G2 — change-owed settlement**.
+
+### G1c closed — and the defect that only existed on Cloudflare
+
+**D1 REFUSES `PRAGMA`.** `describeSchema()` read the table list and columns with
+`PRAGMA table_info(...)`, which better-sqlite3 answers happily and D1 refuses with
+`D1_ERROR: not authorized: SQLITE_AUTH`. Every local test passed and the preview answered **500**
+on staging. Nothing in this repository's local toolchain could have caught it, and nothing in the
+local *tests* did — the only thing that caught it was pointing the audit at the deployment.
+
+The fix reads the schema out of `sqlite_master.sql` (which D1 allows) and parses the columns out of
+the `CREATE TABLE` text. That parser then needed a test of its own, because it is the one piece of
+the feature that **cannot be exercised by the engine it runs on**: `the schema reader agrees with the
+engine on every table` parses the same schema both ways and compares, for all 76 tables. It
+immediately found that the first parser was wrong on **54 of them** — it split column definitions on
+commas inside the `--` comments this schema is full of ("-- RETAIL, WAREHOUSE"), invented columns
+called `Niger`, `never` and `and`, and missed real ones. Comments now come out before the split, and
+the two readings agree on every table. **Rule for anything added later: no `PRAGMA` in server code.**
+
+**Proved on the live deployments** (all three carrying this build):
+
+| | staging | sample | production |
+|---|---|---|---|
+| `/api/data-management/status` | 200 · 5 modes | 200 · 5 modes · 1.4 MB | 200 · 5 modes · 1.5 MB |
+| `audit.purge` (live) | **16 checks passed** | — | — |
+| `POST …/purge/preview` (as admin, no business) | 200 | 400 `BUSINESS_REQUIRED` | 400 `BUSINESS_REQUIRED` |
+| `POST …/purge` (as admin, no business) | — | 400 `BUSINESS_REQUIRED` | 400 `BUSINESS_REQUIRED` |
+
+A handover deployment refusing a cleanup with "Choose which business this applies to" is the feature
+working: there is nothing to purge yet, and it says so instead of reporting a successful deletion of
+nothing. **Also learned:** a probe fired immediately after a deploy can catch the PREVIOUS bundle
+mid-rollout — the first sample probe reported `preview` from the new build and the run from the old
+one. Re-probe before believing a single odd answer.
+
+**G1c is closed.** `docs/pharmaridge-parity.md`'s first gap — data management — is now: capacity and
+retention on a live deployment, a cleanup engine proved against a fully-used database, a screened
+OWNER-only endpoint with a receipt, and an offline queue that cannot undo a deletion by replaying.
+**Next: G2 — change-owed settlement.**
