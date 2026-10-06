@@ -110,6 +110,29 @@ runAudit('sync', async (audit, d) => {
       `the status says the device has ${row.pending_push_count} pending pushes and the heartbeat sent 3 — a device with a stuck queue is the thing this figure exists to reveal`);
   });
 
+  await audit.checkAsync('TWO devices in one branch are both visible, which is the ordinary case', async () => {
+    // THE CHECK THAT FOUND MIGRATION 0006. `branch_sync_status` was keyed on `branch_id`
+    // ALONE and no upsert ever wrote `device_id`, so a branch could only ever show the FIRST
+    // device that synced there: the counter phone and the manager's phone are two devices,
+    // and "which one is stuck, and how much has it got queued?" was unanswerable for the
+    // second one — with its pending count attributed to the other phone.
+    const second = `${device}-second`;
+    const hb = await o.post('/api/sync/heartbeat', {
+      branch_id: branch.id, device_id: second, app_version: 'audit-1.0', pending_push_count: 7,
+    });
+    assert.ok(hb.status === 200 || hb.status === 201, `the second device's heartbeat answered ${hb.status}`);
+    const res = await o.get('/api/sync/status');
+    const rows = res.json.devices || [];
+    const ids = rows.map((r) => String(r.device_id));
+    assert.ok(ids.includes(device), `the first device is missing from the status list (${ids.length} device(s): ${ids.join(', ')})`);
+    assert.ok(ids.includes(second),
+      `a second device in the same branch sent a heartbeat and the status list does not know it (${ids.length} device(s): ${ids.join(', ')}). A shop with a counter phone and a manager's phone is the ordinary case, and "which phone is stuck" is the question this list exists to answer`);
+    const mine = rows.filter((r) => String(r.device_id) === second);
+    assert.equal(mine.length, 1, `the second device appears ${mine.length} times — a heartbeat must update its own row, not add one per call`);
+    assert.equal(Number(mine[0].pending_push_count), 7,
+      `the second device's queue reads ${mine[0].pending_push_count} and it reported 7 — one device's backlog attributed to another is how a stuck phone stays invisible`);
+  });
+
   // ===================================================================
   audit.section('A day of queued work replays through the real endpoints');
   // ===================================================================

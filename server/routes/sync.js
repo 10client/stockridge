@@ -423,19 +423,19 @@ function mount(app, base = '/api') {
           rejected > 0 ? `${rejected} of ${operations.length} operation(s) refused` : null,
         ]);
       }
-      // `branch_sync_status` has ONE ROW PER BRANCH: `branch_id` is its primary
-      // key, so `device_id` records whichever device synced most recently. The
-      // conflict target has to be the primary key itself — naming a
-      // (branch_id, device_id) pair would fail outright, because no such unique
-      // constraint exists to conflict on.
-      // Written only when we know WHICH branch synced: `branch_sync_status` has one
-      // row per branch, so inventing a branchless one would overwrite a real
-      // branch's heartbeat with somebody else's push count.
+      // ONE ROW PER (BRANCH, DEVICE) — migration 0006. The conflict target is the
+      // table's own primary key, which is now the pair. Before 0006 it was `branch_id`
+      // alone and `device_id` was never updated, so this row described the first device
+      // that ever synced at the branch and no other phone could appear.
+      //
+      // Written only when we know WHICH branch synced: a push that named no branch has no
+      // honest row to write, and inventing one would attribute this device's queue to a
+      // shop it is not standing in.
       if (branchKey) {
         tx.queue(`INSERT INTO branch_sync_status (branch_id, device_id, app_version, last_heartbeat_at, last_push_at,
               pending_push_count, last_sync_error, updated_at)
             VALUES (?,?,?, datetime('now'), datetime('now'), ?, ?, datetime('now'))
-            ON CONFLICT(branch_id) DO UPDATE SET
+            ON CONFLICT(branch_id, device_id) DO UPDATE SET
               app_version = excluded.app_version,
               last_push_at = datetime('now'),
               last_heartbeat_at = datetime('now'),
@@ -579,7 +579,7 @@ function mount(app, base = '/api') {
     if (deviceId && branch) {
       await db.run(`INSERT INTO branch_sync_status (branch_id, device_id, app_version, last_pull_at, last_heartbeat_at, updated_at)
           VALUES (?,?,?, datetime('now'), datetime('now'), datetime('now'))
-          ON CONFLICT(branch_id) DO UPDATE SET
+          ON CONFLICT(branch_id, device_id) DO UPDATE SET
             last_pull_at = datetime('now'), last_heartbeat_at = datetime('now'),
             app_version = COALESCE(excluded.app_version, app_version), updated_at = datetime('now')`,
       [branch ? String(branch.id) : null, deviceId, strField(body.app_version, { field: 'App version', maxLength: 40 })]);
@@ -703,9 +703,13 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx);
     const deviceId = strField(body.device_id || body.deviceId || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
     if (!deviceId) throw new HttpError('A heartbeat must say which device it is from.', { status: 400, code: 'DEVICE_ID_REQUIRED' });
+    // ONE ROW PER (BRANCH, DEVICE) — migration 0006. It used to conflict on `branch_id`
+    // alone and never write `device_id` on the update path, so the second phone in a branch
+    // was invisible in `/api/sync/status` and its pending count was attributed to whichever
+    // device synced there first. See the migration for the whole reasoning.
     await db.run(`INSERT INTO branch_sync_status (branch_id, device_id, app_version, last_heartbeat_at, pending_push_count, updated_at)
         VALUES (?,?,?, datetime('now'), ?, datetime('now'))
-        ON CONFLICT(branch_id) DO UPDATE SET
+        ON CONFLICT(branch_id, device_id) DO UPDATE SET
           last_heartbeat_at = datetime('now'), app_version = COALESCE(excluded.app_version, app_version),
           pending_push_count = excluded.pending_push_count, updated_at = datetime('now')`,
     [String(branch.id), deviceId, strField(body.app_version, { field: 'App version', maxLength: 40 }), Number(body.pending_push_count) || 0]);

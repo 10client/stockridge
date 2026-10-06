@@ -40,6 +40,11 @@
       "table": "data_cleanup_log",
       "purpose": "A record of housekeeping runs (purged sessions, expired holds, pruned sync logs).",
       "decision": "WIRE UP — worker/src/housekeeping.js already runs the work; it simply does not record what it did."
+    },
+    {
+      "table": "branch_sync_status_v2",
+      "purpose": "NOT A CAPABILITY — the intermediate name of the SQLite table-rebuild in schema/migrations/0006_sync_status_per_device.sql, which renames the result to branch_sync_status two statements later. The scanner reads every CREATE TABLE in every migration, so a rebuild always shows up here.",
+      "decision": "RECORDED, NOT WIRED — there is nothing to create. If this name ever appears outside 0006, the migration was copied and the copy matters."
     }
   ]
 }

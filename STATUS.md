@@ -2676,3 +2676,47 @@ afterSales 4 · finance 2 · stock 2 · customers 1.
   same signature, route otherwise identical) → **the retry check goes red** — and only it.
 - **Negative control 2:** the null-safe fix reverted in the partial-push record → **8 checks go
   red**, every path that answers a partial push. Both restored → 35 green.
+
+## Stage T4b — a branch can have two phones (2026-10-06)
+
+The live sync run found one thing the local run could not, and it was a schema decision
+rather than a bug in a line of code.
+
+**`branch_sync_status` could hold ONE DEVICE PER BRANCH, and its upserts never wrote
+`device_id`.** The table was created with `branch_id TEXT PRIMARY KEY`; the heartbeat, the push
+and the pull all upserted `ON CONFLICT(branch_id)` and none of them touched `device_id` on the
+update path. So `/api/sync/status` — the screen that answers *"which tills are actually syncing,
+and which one is stuck with a queue?"* — could only ever name the FIRST device that had synced
+at a branch. The second phone was invisible, and the `pending_push_count` and `last_sync_error`
+it reported were attributed to the other device. A `last_sync_error` belonging to a device
+nobody can see is an error nobody can fix.
+
+A shop with a counter phone and a manager's phone is the ordinary case. Found by
+`test/audit/audit.sync.js` pushing a heartbeat from a second device and reading the status list
+back — a check that did not exist until this stage, which is why the defect survived the whole
+T1–T3 line of work.
+
+### The fix
+
+- **`schema/migrations/0006_sync_status_per_device.sql`** — the table is rebuilt with
+  `PRIMARY KEY (branch_id, device_id)`, the shape the endpoint's own field name (`devices`)
+  always claimed. Existing rows are carried across (a row with no device is dropped rather than
+  invented). `v_branch_sync_overview` — which SQLite validates against its tables when one is
+  dropped, so the migration **refuses before changing anything** — is dropped first and
+  recreated to judge each branch by the device heard from most recently, so the view's meaning
+  does not change when a branch gains a second phone.
+- **All three upserts** (heartbeat, push, pull) now conflict on `(branch_id, device_id)`.
+- **The check that would have caught it**: two devices heartbeat into one branch and BOTH must
+  appear, exactly once each, with each one's own pending count.
+- `tools/capability-baseline.json` records `branch_sync_status_v2` for what it is — the
+  intermediate name of a SQLite table rebuild, not a capability. The scanner reads every
+  `CREATE TABLE` in every migration, so a rebuild always lands in its report; the baseline is
+  where that decision belongs rather than a silent exception in the scanner.
+
+### Proving it
+
+- **Local:** `audit.sync.js` **36 checks passed**; `bash test/run-audits.sh` — 5 audits, every
+  check green; `npm run verify` **348/348/0** (capability audit clean at 8 baselined entries).
+- **Negative control:** the heartbeat's conflict target reverted to `branch_id` alone → the
+  heartbeat 500s (`ON CONFLICT clause does not match any PRIMARY KEY`) and **3 checks go red**,
+  including the two-device check. Restored → 36 green.
