@@ -466,7 +466,18 @@ async function main() {
   }
 
   // ---- VAT on, so the seed demonstrates inclusive extraction end to end.
-  await db.run('UPDATE client_settings SET vat_enabled = 1, vat_rate_percent = 7.5 WHERE id = 1');
+  //
+  // AND THE PLAN SET TO FIT THE DATA THIS FILE CREATES. The demo builds four
+  // businesses and six branches; the default settings row allows three and five, so
+  // every demo deployment opened with "your plan is nearly full — 6 of 5 branches and
+  // 4 of 3 businesses" on the first screen. A demonstration that starts by breaking its
+  // own commercial rules teaches the wrong thing about the product, and a client who
+  // sees it on day one learns to ignore the banner that is supposed to warn them.
+  //
+  // The caps are not decorative here — they are what `assertCanCreateBranch` and
+  // friends enforce, so the demo has to be INSIDE them for its own flows to work.
+  await db.run(`UPDATE client_settings SET vat_enabled = 1, vat_rate_percent = 7.5,
+      max_businesses = 5, max_branches = 10, max_staff = 30 WHERE id = 1`);
   const settings = await getSettings(db);
 
   // ---- 90 days of trading, driven through the real sale engine
@@ -934,8 +945,26 @@ async function seedWarrantyClaims(db, rng) {
     const opener = await db.first("SELECT * FROM users WHERE branch_id = ? AND role IN ('MANAGER','STAFF') LIMIT 1", [s.branch_id]);
     if (!branch || !opener) continue;
 
-    const status = pick(rng, ['OPEN', 'INSPECTION', 'APPROVED', 'IN_REPAIR', 'REPLACED', 'CLOSED', 'REJECTED']);
-    const resolved = ['REPLACED', 'CLOSED', 'REJECTED'].includes(status);
+    // THE OUTCOMES THE SCHEMA DEFINES, NOT THE NOUNS THIS FILE USED TO INVENT.
+    //
+    // This wrote `REPAIR`, `REPLACE`, `REFUND`, `REJECT` — the vocabulary that existed
+    // before migration 0007, which rebuilt the claim table around the six outcomes the
+    // resolve route actually accepts: REPAIRED, REPLACED, REFUNDED, REJECTED,
+    // SUPPLIER_RETURN, PAID_REPAIR. NOT ONE OF THE FOUR OVERLAPPED, so every seeded
+    // claim tripped the new CHECK constraint and **`npm run db:reset` failed outright**
+    // — which is the command a new developer runs first, and the one the sample
+    // deployment is built from. The migration converted the rows that existed; nothing
+    // converted the seeder that writes them.
+    //
+    // The pairing is the app's own, too: resolving a claim sets its status to CLOSED and
+    // records the outcome beside it (see POST /api/warranty-claims/:id/resolve). So a
+    // resolved claim here is CLOSED with an outcome, and an open one is somewhere on the
+    // way to it — rather than a random status with a random outcome bolted on.
+    const OPEN_STATUSES = ['OPEN', 'INSPECTION', 'APPROVED', 'IN_REPAIR'];
+    const RESOLUTIONS = ['REPAIRED', 'REPLACED', 'REFUNDED', 'REJECTED', 'SUPPLIER_RETURN', 'PAID_REPAIR'];
+    const resolved = chance(rng, 55);
+    const status = resolved ? 'CLOSED' : pick(rng, OPEN_STATUSES);
+    const resolution = resolved ? pick(rng, RESOLUTIONS) : null;
     const openedOffset = -between(rng, 2, 40);
     await run(db, 'warranty_claims', {
       id: newId(), claim_no: `WC-${String(made + 1).padStart(4, '0')}`,
@@ -943,13 +972,19 @@ async function seedWarrantyClaims(db, rng) {
       product_id: s.product_id, variant_id: s.variant_id, customer_id: s.customer_id,
       status, fault_reported: pick(rng, FAULTS),
       fault_found: resolved ? pick(rng, ['Faulty power board', 'Manufacturing defect in panel', 'Compressor failure', 'Confirmed fault, unit replaced']) : null,
-      resolution: resolved ? pick(rng, ['REPAIR', 'REPLACE', 'REFUND', 'REJECT']) : null,
+      resolution,
+      // A rejected claim needs the written explanation the route insists on — without it
+      // the demonstration data shows a refusal with no reason, which is the shape the
+      // route exists to prevent.
+      resolution_notes: resolution === 'REJECTED'
+        ? 'Not a manufacturing fault — the unit was connected to an unregulated supply.'
+        : null,
       in_warranty: 1, warranty_ends_at: s.warranty_ends_at,
       supplier_id: null, supplier_recovery_amount: 0,
       cost_to_business: resolved ? round2(between(rng, 5000, 120000)) : 0,
       opened_by: opener.id, opened_at: utcStamp(openedOffset, 11, 0),
       resolved_at: resolved ? utcStamp(openedOffset + between(rng, 1, 15), 14, 0) : null,
-      closed_at: status === 'CLOSED' ? utcStamp(openedOffset + between(rng, 2, 20), 16, 0) : null,
+      closed_at: resolved ? utcStamp(openedOffset + between(rng, 2, 20), 16, 0) : null,
       created_at: sql("datetime('now')"), updated_at: sql("datetime('now')"),
     });
     made += 1;

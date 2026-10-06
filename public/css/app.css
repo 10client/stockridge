@@ -275,7 +275,15 @@ button.chip:hover { background: var(--surface-3); }
 
 /* KPI tiles */
 .kpi { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 13px 15px; box-shadow: var(--shadow-1); }
-.kpi-label { font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-500); font-weight: 650; margin-bottom: 6px; }
+.kpi-label { font-size: .74rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-500); font-weight: 650; margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+.kpi-icon { display: inline-flex; align-items: center; color: var(--ink-400, var(--ink-500)); flex: none; }
+/* The leading glyph on an action row — same vocabulary as the sidebar, so a row that
+   says "3 batches expiring" carries the calendar the Stock screen uses. */
+.row-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; border-radius: 8px; background: var(--surface-2, rgba(127,127,127,.09)); color: var(--ink-600, var(--ink-500)); flex: none; margin-right: 10px; }
+.kpi.tone-good .kpi-icon { color: var(--green-700); }
+.kpi.tone-warn .kpi-icon { color: var(--amber-700); }
+.kpi.tone-bad  .kpi-icon { color: var(--red-700); }
+.kpi.tone-info .kpi-icon { color: var(--blue-700); }
 .kpi-value { font-size: 1.42rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .kpi-value.sm { font-size: 1.1rem; }
 .kpi-foot { font-size: .76rem; color: var(--ink-500); margin-top: 4px; }

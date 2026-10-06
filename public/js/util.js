@@ -110,10 +110,29 @@
     const d = parseStamp(value, { zone });
     return d ? `${dateFmt.format(d)} ${timeFmt.format(d)}` : '—';
   }
-  /** Sales timestamps are WAT. Spelling it once here stops the wrong zone being
-   *  passed at 30 call sites. */
-  function soldAt(value) { return value ? dateTime(value, { zone: 'wat' }) : '—'; }
-  function soldDate(value) { return value ? date(value, { zone: 'wat' }) : '—'; }
+  /**
+   * Sales timestamps are WAT — and they are ALREADY WAT when they arrive.
+   *
+   * `sales.sold_at` is written as Lagos wall clock (the server's own `watNow()`
+   * produces the same digits), and `/api/sales` hands back exactly what is stored.
+   * So a display must render those digits AS THEY ARE — zone `utc` here means "the
+   * formatter is pinned to UTC and applies no shift", which is precisely right for
+   * a stamp that is already local.
+   *
+   * These two used to pass `{ zone: 'wat' }`, which converts a wall-clock stamp to
+   * the true instant (minus one hour) before printing it — so every sale in the
+   * list, every warranty date, and **the time on every printed receipt** read an
+   * hour early, while the column header said WAT.
+   *
+   * `{ zone: 'wat' }` is still the right call for ARITHMETIC against the current
+   * moment — `minutesSince()` in the sales screen uses it to decide what falls
+   * inside the staff void window, where comparing a wall clock to `Date.now()`
+   * without the shift would silently stretch the window by an hour. Display and
+   * arithmetic want opposite things from the same stamp; that is why the shift
+   * lives in `parseStamp` and not in here.
+   */
+  function soldAt(value) { return value ? dateTime(value) : '—'; }
+  function soldDate(value) { return value ? date(value) : '—'; }
 
   /**
    * The calendar day a stamp falls on, as `YYYY-MM-DD`, in WAT — or null.

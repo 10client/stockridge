@@ -274,6 +274,9 @@
       search: 'M11 4a7 7 0 100 14 7 7 0 000-14zM20 20l-4-4',
       cart: 'M4 5h2l2.5 11h10L21 8H7M10 20a1 1 0 100-2 1 1 0 000 2zm8 0a1 1 0 100-2 1 1 0 000 2z',
       chart: 'M4 19V9m5 10V5m5 14v-7m5 7V8',
+      // The drawer is a cash drawer, not a locked door: 'lock' is what a screen says
+      // when the way in is shut, and "no till is open" is not that.
+      cash: 'M2 7h20v10H2zM12 15a3 3 0 100-6 3 3 0 000 6z',
       lock: 'M7 11V8a5 5 0 0110 0v3M5 11h14v10H5z',
     };
     const node = h('div', { class: 'empty' });
@@ -424,9 +427,29 @@
   }
   const statusBadge = (status) => badge(status);
 
-  function kpi({ label, value, foot = null, tone = null, small = false }) {
+  /**
+   * A KPI TILE, WITH THE ICON THAT SAYS WHAT IT COUNTS.
+   *
+   * The fourth argument is a name from the navigation's icon set (`SR.app.iconPath`),
+   * not markup, so a tile cannot invent its own glyph and the vocabulary stays the
+   * one the sidebar already teaches. It is optional: a tile whose meaning is in the
+   * label needs no decoration, and an icon that does not help the reader find the
+   * number is one more thing to look past.
+   */
+  function kpi({ label, value, foot = null, tone = null, small = false, icon = null }) {
     const node = h('div', { class: `kpi ${tone ? `tone-${tone}` : ''}`.trim() });
-    node.appendChild(h('div', { class: 'kpi-label' }, label));
+    const labelRow = h('div', { class: 'kpi-label' });
+    if (icon) {
+      const path = (global.SR && SR.app && SR.app.iconPath) ? SR.app.iconPath(icon) : null;
+      if (path) {
+        labelRow.appendChild(h('span', {
+          class: 'kpi-icon',
+          html: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="${path}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+        }));
+      }
+    }
+    labelRow.appendChild(h('span', {}, label));
+    node.appendChild(labelRow);
     node.appendChild(h('div', { class: `kpi-value ${small ? 'sm' : ''}`.trim() }, value));
     if (foot) node.appendChild(h('div', { class: 'kpi-foot' }, foot));
     return node;

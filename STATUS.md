@@ -433,3 +433,101 @@ same list.
 ringing sales — the gate only covers creating businesses, branches and staff); P8c the **Platform**
 screen and the notifications board (the notification engine writes messages no screen can show or
 dismiss); P8d `audit.platformAdmin.js`, two-way, on staging.
+
+---
+
+## P9 — THE DASHBOARD WAS READING TEN NAMES THE SERVER DOES NOT SEND
+
+`/api/dashboard` answers with `debtors.totalOwed`. The dashboard read `debtors.total`.
+Neither throws. `undefined` renders as "₦0" through `U.money`, as "—" through a fallback
+chain, or as an empty string — so the tile said **"Owed to us ₦0" to every shop, however much
+was owed**, and looked exactly like a quiet morning. Ten of these, read out of the two files
+side by side:
+
+| the screen read | the server sends | what it showed |
+|---|---|---|
+| `today.periodGross` | `period.grossRevenue` | **"Sales this period" printed the COUNT of sales with a naira sign** — ₦4 where the shop had taken ₦34,000 — because the fallback was `today.sales` |
+| `today.vs_yesterday_pct` | `today.vsYesterday.changePct` | "up 12% on yesterday" had **never once** appeared |
+| `debtors.total` | `debtors.totalOwed` | **"Owed to us ₦0" for every shop** |
+| `debtors.overdue` | `debtors.likelyBad` / `overdueInvoices` | money genuinely at risk never took the colour that asks for action |
+| `cash.till \|\| data.till` | `cash.myTill` / `cash.openTills` | **the drawer card said "No till is open" to a cashier with a till open in front of them** |
+| `till.opening_cash`, `till.cash_sales_total` … | `openingCash`, `cashSales`, `expectedCash`, `saleCount` | snake_case against a camelCase payload |
+| `b.revenue \|\| b.gross` | `b.period.gross` | **every "By business" and "By branch" bar was zero-length** |
+| `a.message`, `a.kind`, `a.path` | `a.label`, `a.severity`, `a.route` | **the whole "Needs attention" card**: blank second line, no severity, every row navigating back to the dashboard |
+| `usage.branchesPct`, `plan.maxBranches` | `plan.branches.used / .allowed` | **the "your plan is nearly full" warning never fired** — a client learned they had run out of seats when they tried to hire |
+| `stock.stockValue ?? stock.atCost` | `stock.atCost` | worked *because* the first name does not exist. Off by a hidden fallback is still off |
+
+Also on this screen: the "Needs attention" list was built **twice** — the screen's own low-stock and
+overdue rows plus the server's `actions` — so two problems appeared as three rows, two about the same
+shelf. The server's list owns it now (it knows about expiring batches, till variances, expenses,
+deliveries, devices and flagged clock-ins; the screen knew about two of those).
+
+### The wrong number that was worst, and was not on the dashboard
+
+`U.soldAt()`/`U.soldDate()` rendered a sale's WAT stamp by converting it to a true instant first, so
+**every sale time in the app — the sales list, the warranty date, and the time on every printed
+receipt — read an hour early** while the column header said "Date (WAT)". Fixed at the three display
+sites. The arithmetic use is deliberately left alone and now documented: `minutesSince()` compares a
+wall clock against `Date.now()` to decide what falls inside the **staff void window**, and removing
+the shift there would silently stretch the window by an hour.
+
+### The guard, so this cannot come back
+
+`test/unit/frontend-wire.test.js` extracts every `<alias>.<field>` read out of a view, boots a real
+deployment, calls the real route, and fails the build for any read the response does not answer —
+proved by mutating `debtors.totalOwed` back to `debtors.total` and watching it fail with
+`server has no "debtors.total"`. It also pins the money helpers (no ₦NaN, `amount()` carries no
+symbol) and the display-versus-arithmetic split for sale times.
+
+### `npm run db:reset` was broken, and nothing ran it
+
+The documented first command for a new developer, and the source of the sample deployment's data,
+**aborted part-way with a CHECK constraint failure**:
+
+```
+Error: CHECK constraint failed: resolution IS NULL OR resolution IN
+  ('REPAIRED','REPLACED','REFUNDED','SUPPLIER_RETURN','PAID_REPAIR','REJECTED')
+```
+
+Migration 0007 rebuilt `warranty_claims` around the six outcomes the resolve route accepts and
+converted the rows that existed — **and left the seeder writing the four old nouns**
+(`REPAIR`/`REPLACE`/`REFUND`/`REJECT`). Not one of them is in the new set. The seeder now speaks the
+schema's vocabulary and pairs outcome with status the way `POST /:id/resolve` does (resolved ⇒
+`CLOSED` + outcome, rejected ⇒ with the written reason the route insists on). `test/integration/demo-seed.test.js`
+now runs the real seeder into a temporary database and holds it to the product's own arithmetic
+(`total = subtotal − discounts + delivery`, VAT-inclusive) — the check that first reported 83
+mismatches in a database that was entirely correct, because my first assertion was a guess at the
+arithmetic rather than the product's.
+
+The demo also **shipped over its own plan**: four businesses and six branches against a settings row
+allowing three and five, so every demo deployment opened on "your plan is nearly full — 6 of 5
+branches". The seed now sets caps that fit what it creates. When a real client *is* over a cap the
+banner says so properly — "6 branches in use against a plan limit of 5 … the next one will be
+refused" — instead of the "6 of 5" that reads as arithmetic gone wrong.
+
+### Icons and naira
+
+KPI tiles carry an icon now (`ui.kpi({ icon })`), drawn from the same vocabulary as the sidebar so a
+row about expiring stock carries the calendar the Stock screen uses; the action rows pick their
+glyph per action key, and the empty drawer uses the cash mark rather than a padlock. On the naira
+question: the sweep found **no doubled symbol anywhere**, and every `(₦)` label is a bare number
+input where the unit belongs — the one place the symbol appeared where it was not meant to be was
+exactly the "Sales this period" tile printing a **count** as money.
+
+### Verified
+
+`npm run verify` **421/421/0** (416 before) · `bash test/run-audits.sh` **19 audits green** · the
+whole frontend rendered in jsdom against a live local server: **27 destinations, every screen draws,
+no faults** — Dashboard / Sell / Till / Sales / Catalogue / Stock / Stocktake / Transfers / Purchase
+orders / Suppliers / Expenses / Customers / Change owed / Instalments / Deliveries / Returns /
+Attendance / Staff / Accounting / Reports / Branches / Businesses / Subscription / Settings /
+Audit trail / Compliance / Sync.
+
+### Two screen/branch misalignments the walk found, carried forward
+
+The owner holds six branches, so **Till & safe** and **Stock** render "That failed. Choose which
+branch this applies to" as an error block under an "All branches" heading. The server is right to
+refuse a branch-less read (`400 BRANCH_REQUIRED`); the screens are wrong to offer the scope and then
+report a failure — they should ask for the branch the way the rest of the app does. That is the next
+UI/UX alignment item, with the Platform screen (the administrator's own controls, which still have
+no UI) and the notifications board.

@@ -276,7 +276,7 @@
             columns: [
               { key: 'serial_no', label: 'Serial' },
               { key: 'product_name', label: 'Product' },
-              { key: 'warranty_start', label: 'Warranty from', render: (r) => U.date(r.warranty_starts_at || sale.sold_at, { zone: 'wat' }) },
+              { key: 'warranty_start', label: 'Warranty from', render: (r) => U.soldDate(r.warranty_starts_at || sale.sold_at) },
               { key: 'warranty_end', label: 'Warranty to', render: (r) => (r.warranty_ends_at ? U.date(r.warranty_ends_at) : '—') },
             ],
             rows: serials,

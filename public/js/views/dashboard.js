@@ -15,11 +15,62 @@
 // dashboard endpoint; offline it computes the same figures from the device
 // mirror, and labels them "as at the last sync" so nobody mistakes a stale
 // number for a live one.
+//
+// ---------------------------------------------------------------------
+// EVERY FIELD BELOW IS THE FIELD THE SERVER ACTUALLY SENDS.
+//
+// This screen had been reading a different set of names from the ones
+// `/api/dashboard` answers with — ten mismatches, and not one of them threw. A
+// screen that reads `undefined` renders ₦0, or "—", or a blank row, and looks
+// exactly like a quiet morning:
+//
+//   read                          server sends                    what it showed
+//   today.periodGross             period.grossRevenue             ** ₦4 ** — the tile
+//                                                                 "Sales this period" printed
+//                                                                 the COUNT of sales with a naira
+//                                                                 sign, because the fallback was
+//                                                                 `today.sales`, a number of sales
+//   today.vs_yesterday_pct        today.vsYesterday.changePct     "up 12% on yesterday" never once
+//                                                                 appeared
+//   debtors.total                 debtors.totalOwed               "Owed to us ₦0" for every shop,
+//                                                                 however much was owed
+//   debtors.overdue               debtors.likelyBad / overdueInvoices   the overdue figure never took
+//                                                                 the colour that asks for action
+//   cash.till || data.till        cash.myTill / cash.openTills    ** the drawer card said "No till
+//                                                                 is open" while a till was open **
+//   till.opening_cash,            openingCash, cashSales,
+//   till.cash_sales_total …       expectedCash, saleCount
+//   b.revenue || b.gross          b.period.gross, b.today.gross   every "By business" and "By
+//                                                                 branch" bar was zero-length
+//   a.message, a.kind, a.path     a.label, a.severity, a.route    the whole "Needs attention" card:
+//                                                                 blank second line, no severity,
+//                                                                 and every row navigated back to
+//                                                                 the dashboard
+//   usage.branchesPct,            plan.branches.used / .allowed   ** the "your plan is nearly full"
+//   plan.maxBranches                                              warning never fired **
+//
+// OFF BY A HIDDEN FALLBACK IS STILL OFF. `stock.stockValue ?? stock.atCost` worked
+// because `stockValue` does not exist — the same shape as the two above, one word
+// away from a wrong number. The dead names are gone; what is left is what the
+// endpoint sends, and `test/unit/frontend-wire.test.js` fails the build if the two
+// lists drift again.
 // =====================================================================
 (function (global) {
   const SR = global.SR;
   const ui = SR.ui;
   const U = SR.util;
+
+  /** Which icon belongs to each thing the server can ask somebody to look at. */
+  const ACTION_ICONS = {
+    low_stock: 'box',
+    expiring: 'calendar',
+    overdue: 'receipt',
+    till_review: 'cash',
+    expenses: 'wallet',
+    deliveries: 'truck',
+    devices: 'idcard',
+    attendance: 'clock',
+  };
 
   async function render(ctx) {
     ctx.setTitle('Dashboard');
@@ -61,8 +112,11 @@
       // replica of the server's dashboard: everything here is something a till
       // can know on its own, and anything that needs the ledger is left out
       // rather than approximated.
+      //
+      // It returns the SERVER'S SHAPE, not a convenient one. A mirror that
+      // answers with its own key names is the same defect as the ten above,
+      // waiting for the day the device goes offline.
       const branchId = SR.state.activeBranchId;
-      const today = U.todayWat();
       const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && (!branchId || String(b.branch_id) === String(branchId)) });
       const products = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
       const byProduct = new Map();
@@ -74,22 +128,24 @@
         cur.value += Number(b.quantity || 0) * Number(b.cost_price_per_unit || 0);
         byProduct.set(key, cur);
       }
-      let lowStock = 0; let stockValue = 0;
+      let lowStockCount = 0; let atCost = 0;
       for (const p of products) {
         const s = byProduct.get(String(p.id)) || { qty: 0, value: 0 };
-        if (Number(p.reorder_level) > 0 && s.qty <= Number(p.reorder_level)) lowStock += 1;
-        stockValue += s.value;
+        if (Number(p.reorder_level) > 0 && s.qty <= Number(p.reorder_level)) lowStockCount += 1;
+        atCost += s.value;
       }
       const outbox = await SR.sync.queueStats();
       return {
         offline: true,
-        today: { sales: 0, gross: 0, count: 0, queued: outbox.pending },
-        stock: { products: products.length, lowStock, stockValue },
-        debtors: { total: 0, count: 0 },
-        cash: null,
-        attendance: null,
+        view: 'STAFF',
+        today: { sales: 0, count: 0, gross: 0, queued: outbox.pending, vsYesterday: null },
+        period: null,
+        stock: { products: products.length, lowStockCount, atCost },
+        debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
+        cash: { safeBalance: null, myTill: null, openTills: [] },
         topProducts: [],
-        view: 'staff',
+        actions: [],
+        plan: null,
       };
     }
 
@@ -107,36 +163,60 @@
       }
 
       const today = data.today || {};
+      const period = data.period || {};
       const stock = data.stock || {};
       const debtors = data.debtors || {};
       const cash = data.cash || {};
-      const plan = data.plan || {};
 
       // ---- the four numbers every owner looks at first
+      const until = today.vsYesterday || null;
+      // "up 12% on yesterday" — the number the server sends is `changePct`, inside
+      // `vsYesterday`. It sends null rather than 0 when there is no yesterday to
+      // compare with, which is not the same statement as "no change".
+      const change = until && until.changePct != null
+        ? ` · ${until.changePct >= 0 ? 'up' : 'down'} ${Math.abs(until.changePct)}% on yesterday`
+        : (until ? ` · ₦${U.amount(Math.abs(until.change))} ${until.change >= 0 ? 'up' : 'down'} on yesterday` : '');
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({
           label: 'Takings today',
-          value: U.money(today.gross != null ? today.gross : today.sales),
-          foot: `${U.plural(today.count || today.saleCount || 0, 'sale')}${today.vs_yesterday_pct != null ? ` · ${today.vs_yesterday_pct >= 0 ? 'up' : 'down'} ${Math.abs(today.vs_yesterday_pct)}% on yesterday` : ''}`,
+          value: U.money(today.gross),
+          foot: `${U.plural(today.count || 0, 'sale')}${change}`,
           tone: 'good',
+          icon: 'cash',
         }),
         ui.kpi({
-          label: 'Sales this period',
-          value: U.money(today.periodGross != null ? today.periodGross : (today.sales != null ? today.sales : 0)),
-          foot: data.period ? `${U.date(data.period.from)} → ${U.date(data.period.to)}` : null,
+          // THE DATE RANGE IS THE TITLE, because "Sales this period" beside "Takings
+          // today" asks the reader to hold two periods in their head. This tile used
+          // to fall back to `today.sales` — a COUNT — and print it with a naira sign.
+          label: period.from ? `Sales ${U.date(period.from)} → ${U.date(period.to)}` : 'Sales this period',
+          value: U.money(period.grossRevenue),
+          foot: period.sales != null ? `${U.plural(period.sales, 'sale')} · ${U.money(period.netRevenue)} after VAT` : null,
+          icon: 'chart',
         }),
         ui.kpi({
           label: 'Stock at cost',
-          value: U.money(stock.stockValue != null ? stock.stockValue : stock.atCost),
-          foot: `${U.plural(stock.products || stock.productCount || 0, 'product')} · ${Number(stock.lowStock || stock.lowStockCount || 0)} need reordering`,
-          tone: Number(stock.lowStock || stock.lowStockCount || 0) > 0 ? 'warn' : null,
+          value: U.money(stock.atCost),
+          // `lowStockCount` counts PRODUCT × BRANCH lines — the same product short at
+          // two shops is two lines — so it can legitimately exceed the product count and
+          // the tile read "78 products · 106 need reordering", which looks impossible.
+          foot: `${U.plural(stock.products || 0, 'product')} · ${Number(stock.lowStockCount || 0)} line${Number(stock.lowStockCount) === 1 ? '' : 's'} to reorder`
+            + (Array.isArray(stock.expiringSoon) && stock.expiringSoon.length ? ` · ${stock.expiringSoon.length} expiring` : ''),
+          tone: Number(stock.lowStockCount || 0) > 0 ? 'warn' : null,
+          icon: 'box',
         }),
         ui.kpi({
+          // ONE NAIRA SIGN IN THIS TILE, ON THE VALUE. The foot counts the invoices
+          // that are actually past their date — a second money figure in 11px type
+          // under a money figure is noise, and "3 invoices past due" is what tells
+          // somebody to go and ring three people.
           label: 'Owed to us',
-          value: U.money(debtors.total),
-          foot: `${U.plural(debtors.count || 0, 'debtor')}${Number(debtors.overdue) ? ` · ${U.money(debtors.overdue)} overdue` : ''}`,
-          tone: Number(debtors.overdue) > 0 ? 'bad' : null,
+          value: U.money(debtors.totalOwed),
+          foot: `${U.plural(debtors.count || 0, 'debtor')}`
+            + (Number(debtors.overdueInvoices) ? ` · ${U.plural(debtors.overdueInvoices, 'invoice')} past due` : '')
+            + (Number(debtors.likelyBad) ? ` · ${U.money(debtors.likelyBad)} over 90 days` : ''),
+          tone: Number(debtors.likelyBad) > 0 ? 'bad' : (Number(debtors.overdueInvoices) > 0 ? 'warn' : null),
           small: true,
+          icon: 'users',
         })));
 
       // ---- change the shop is holding for customers
@@ -150,12 +230,13 @@
         owedCard.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Change owed to customers')));
         owedCard.appendChild(ui.h('div', { class: 'card-body' },
           ui.h('div', { class: 'grid grid-3' },
-            ui.kpi({ label: 'Held for customers', value: U.money(changeOwed.outstanding_amount), foot: U.plural(changeOwed.outstanding_claims, 'claim'), small: true }),
+            ui.kpi({ label: 'Held for customers', value: U.money(changeOwed.outstanding_amount), foot: U.plural(changeOwed.outstanding_claims, 'claim'), small: true, icon: 'wallet' }),
             ui.kpi({
               label: 'Expiring this week',
               value: U.money(changeOwed.expiring_soon_amount),
               tone: Number(changeOwed.expiring_soon_amount) > 0 ? 'warn' : null,
               small: true,
+              icon: 'clock',
             }),
             ui.kpi({
               label: 'Past its window',
@@ -163,6 +244,7 @@
               foot: changeOwed.next_expiry ? `next expiry ${U.date(changeOwed.next_expiry)}` : null,
               tone: Number(changeOwed.expired_amount) > 0 ? 'bad' : null,
               small: true,
+              icon: 'calendar',
             })),
           ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/change-owed') }, 'Open change owed'))));
@@ -173,25 +255,45 @@
       const tillCard = ui.h('div', { class: 'card' });
       tillCard.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'The drawer')));
       const tillBody = ui.h('div', { class: 'card-body' });
-      if (cash.till || data.till) {
-        const till = cash.till || data.till;
+      // THE DRAWER IS `cash.myTill`. It was read as `cash.till || data.till`, neither
+      // of which the server has ever sent, so this card said "No till is open" to a
+      // cashier with a till open in front of them.
+      const myTill = cash.myTill || null;
+      const otherTills = Array.isArray(cash.openTills) ? cash.openTills : [];
+      if (myTill) {
         tillBody.appendChild(ui.h('div', { class: 'grid grid-4' },
-          ui.kpi({ label: 'Opening float', value: U.money(till.opening_cash), small: true }),
-          ui.kpi({ label: 'Cash sales', value: U.money(till.cash_sales_total), small: true }),
-          ui.kpi({ label: 'Expected in drawer', value: U.money(till.expected_cash), tone: 'info', small: true }),
-          ui.kpi({ label: 'Transactions', value: String(till.sale_count || 0), foot: `${till.void_count || 0} voided`, small: true })));
+          ui.kpi({ label: 'Opening float', value: U.money(myTill.openingCash), small: true, icon: 'wallet' }),
+          ui.kpi({ label: 'Cash sales', value: U.money(myTill.cashSales), small: true, icon: 'cash' }),
+          ui.kpi({ label: 'Expected in drawer', value: U.money(myTill.expectedCash), tone: 'info', small: true, icon: 'box' }),
+          ui.kpi({ label: 'Transactions', value: String(myTill.saleCount || 0), foot: `since ${U.time(myTill.openedAt)}`, small: true, icon: 'receipt' })));
         if (cash.safeBalance != null) {
           tillBody.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '10px' } }, `Branch safe: ${U.money(cash.safeBalance)}`));
         }
         tillBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
           ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => SR.app.navigate('/till') }, 'Open till & safe'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/pos') }, 'Go to the counter')));
+      } else if (otherTills.length) {
+        // A manager with no till of their own, on a shift where somebody else has one.
+        // "No till is open" would be wrong, and the count of open drawers is what they
+        // came here to check.
+        const list = ui.h('div', { class: 'list' });
+        for (const t of otherTills.slice(0, 5)) {
+          list.appendChild(ui.h('div', { class: 'row' },
+            ui.h('div', { class: 'grow' },
+              ui.h('div', { class: 'row-title' }, t.cashier || 'Unassigned'),
+              ui.h('div', { class: 'row-meta' }, `${t.branch || ''}${t.openedAt ? ` · opened ${U.date(t.openedAt)}` : ''}`)),
+            ui.h('div', { class: 'row-value' }, U.money(t.grandTotal))));
+        }
+        tillBody.appendChild(ui.h('p', { class: 'hint' }, `You have no till of your own open. ${U.plural(otherTills.length, 'till')} open at this branch:`));
+        tillBody.appendChild(list);
+        tillBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/till') }, 'Open a till')));
       } else {
         tillBody.appendChild(ui.empty({
           title: 'No till is open',
           message: 'Open a till before taking cash, so the drawer has an opening float to count against at the end of the shift.',
           action: { label: 'Open a till', run: () => SR.app.navigate('/till') },
-          mark: 'lock',
+          mark: 'cash',
         }));
       }
       tillCard.appendChild(tillBody);
@@ -206,78 +308,102 @@
         card.appendChild(ui.h('div', { class: 'card-body' },
           ui.bars(data.topProducts.slice(0, 8).map((p) => ({
             label: String(p.product_name || p.name || '').slice(0, 34),
-            value: p.revenue != null ? p.revenue : p.units_sold,
+            value: p.revenue != null ? p.revenue : p.units,
           })), { format: (v) => (data.topProducts[0] && data.topProducts[0].revenue != null ? U.money(v) : U.qty(v)) })));
         cols.appendChild(card);
       }
 
+      // BY BUSINESS AND BY BRANCH: the money is under `today`/`period`, not at the top
+      // level — the bars were reading `b.revenue || b.gross`, so every bar was zero.
+      const groupRows = (rows) => rows.map((b) => ({ label: b.name, value: (b.period && b.period.gross) || (b.today && b.today.gross) || 0 }));
       if (Array.isArray(data.byBusiness) && data.byBusiness.length > 1) {
         const card = ui.h('div', { class: 'card' });
         card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'By business')));
-        card.appendChild(ui.h('div', { class: 'card-body' },
-          ui.bars(data.byBusiness.map((b) => ({ label: b.name, value: b.revenue || b.gross || 0 })), { format: U.money, tone: 'b2' })));
+        card.appendChild(ui.h('div', { class: 'card-body' }, ui.bars(groupRows(data.byBusiness), { format: U.money, tone: 'b2' })));
         cols.appendChild(card);
       } else if (Array.isArray(data.byBranch) && data.byBranch.length > 1) {
         const card = ui.h('div', { class: 'card' });
         card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'By branch')));
-        card.appendChild(ui.h('div', { class: 'card-body' },
-          ui.bars(data.byBranch.map((b) => ({ label: b.name, value: b.revenue || b.gross || 0 })), { format: U.money, tone: 'b2' })));
+        card.appendChild(ui.h('div', { class: 'card-body' }, ui.bars(groupRows(data.byBranch), { format: U.money, tone: 'b2' })));
         cols.appendChild(card);
       }
       if (cols.childElementCount) host.appendChild(cols);
 
       // ---- what needs somebody to do something
-      const actions = [];
-      if (Number(stock.lowStock || stock.lowStockCount || 0) > 0) {
-        actions.push(actionRow('Reorder ' + U.plural(stock.lowStock || stock.lowStockCount, 'line'), 'Products at or below their reorder level.', 'Products', () => SR.app.navigate('/stock?filter=low')));
-      }
-      if (Number(debtors.overdue || 0) > 0) {
-        actions.push(actionRow(`${U.money(debtors.overdue)} overdue`, 'Debtor balances past their terms.', 'Money', () => SR.app.navigate('/customers?tab=debtors')));
-      }
-      if (Array.isArray(data.actions)) {
-        for (const a of data.actions) {
-          actions.push(actionRow(a.title || a.label || 'Action needed', a.message || a.detail || '', a.kind || '', () => SR.app.navigate(a.path || a.href || '/dashboard')));
-        }
-      }
+      //
+      // THE SERVER'S LIST IS THE LIST. This screen used to build its own low-stock and
+      // overdue rows from the figures above AND append the server's `actions`, so a
+      // shop with two problems was shown three rows — two of them about the same
+      // shelf. The server knows about expiring batches, unreviewed till variances,
+      // expenses, deliveries, devices and flagged clock-ins; the screen knows about
+      // two of those. One source, one row each.
+      const actions = Array.isArray(data.actions) ? data.actions.slice() : [];
       if (offline) {
-        actions.push(actionRow('Queued work', 'Sales and other records made on this device and not yet sent.', 'Sync', () => SR.app.navigate('/sync')));
+        actions.push({ key: 'sync', severity: 'INFO', label: 'Queued work', route: '/sync' });
       }
       if (actions.length) {
         const card = ui.h('div', { class: 'card' });
         card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Needs attention')));
         const list = ui.h('div', { class: 'card-body tight' });
-        for (const row of actions) list.appendChild(row);
+        for (const a of actions) list.appendChild(actionRow(a));
         card.appendChild(list);
         host.appendChild(card);
       }
 
       // ---- the plan, only when it is nearly full
-      const usage = plan.usage || data.planUsage;
-      if (usage && (usage.branchesPct >= 80 || usage.staffPct >= 80 || usage.businessesPct >= 80)) {
-        host.appendChild(ui.h('div', { class: 'alert alert-warn' },
-          ui.h('strong', {}, 'Your plan is nearly full. '),
-          `${usage.branches || 0} of ${plan.maxBranches || '—'} branches and ${usage.staff || 0} of ${plan.maxStaff || '—'} staff in use. `,
+      //
+      // Every cap is `{ used, allowed, unlimited, remaining }` and a cap of zero means
+      // UNLIMITED, which is why this no longer prints "0 of 0". `branchesPct` was never
+      // a field the server sent, so this warning had never once appeared: a client
+      // learned they had run out of staff seats at the moment they tried to hire.
+      const plan = data.plan || null;
+      const pressure = plan ? [
+        ['branches', plan.branches],
+        ['staff', plan.staff],
+        ['businesses', plan.businesses],
+      ].filter(([, cap]) => cap && !cap.unlimited && cap.allowed > 0 && (cap.used / cap.allowed) >= 0.8) : [];
+      if (plan && pressure.length) {
+        // A client can legitimately be OVER a cap — a plan is lowered while the rows it
+        // governs already exist, because lowering a cap never deletes anything. "6 of 5
+        // branches" reads as arithmetic gone wrong; over the line says which way round it
+        // is and what follows, which is that the next create will be refused.
+        const over = pressure.filter(([, cap]) => cap.used > cap.allowed);
+        const nearly = pressure.filter(([, cap]) => cap.used <= cap.allowed);
+        host.appendChild(ui.h('div', { class: `alert ${over.length ? 'alert-danger' : 'alert-warn'}` },
+          ui.h('strong', {}, over.length ? 'You are over your plan. ' : 'Your plan is nearly full. '),
+          [
+            ...over.map(([noun, cap]) => `${cap.used} ${noun} in use against a plan limit of ${cap.allowed}`),
+            ...nearly.map(([noun, cap]) => `${cap.used} of ${cap.allowed} ${noun}`),
+          ].join(' and '),
+          ` on the ${plan.plan} plan${plan.renewalDate ? `, renewing ${U.date(plan.renewalDate)}` : ''}. `,
+          over.length ? 'Nothing has been removed, but the next one will be refused until one is deactivated or the plan is raised. ' : '',
           ui.h('button', { class: 'link-btn', onClick: () => SR.app.navigate('/plan') }, 'See the plan')));
       }
+    }
+
+    /**
+     * One row per thing that needs somebody. The field names are the server's:
+     * `label`, `severity`, `route` — this read `message`, `kind` and `path`.
+     */
+    function actionRow(a) {
+      const tone = String(a.severity || 'INFO').toUpperCase();
+      const row = ui.h('button', {
+        class: 'pos-hit',
+        style: { width: '100%' },
+        onClick: () => SR.app.navigate(a.route || '/dashboard'),
+      });
+      row.appendChild(ui.h('span', { class: 'row-icon', html: SR.app.icon(ACTION_ICONS[a.key] || 'shield', 18) }));
+      row.appendChild(ui.h('div', { class: 'grow' },
+        ui.h('div', { class: 'ph-name' }, a.label || 'Action needed'),
+        ui.h('div', { class: 'ph-meta' }, a.count != null ? U.plural(a.count, 'item') : '')));
+      if (tone && tone !== 'INFO') row.appendChild(ui.badge(tone === 'CRITICAL' ? 'Urgent' : 'Review', tone === 'CRITICAL' ? 'badge-bad' : 'badge-warn'));
+      row.appendChild(ui.h('span', { class: 'ph-price' }, '›'));
+      return row;
     }
 
     void render; // initial paint happens here
     await refresh();
     return wrap;
-  }
-
-  function actionRow(title, detail, kind, run) {
-    const row = ui.h('button', {
-      class: 'pos-hit',
-      style: { width: '100%' },
-      onClick: run,
-    });
-    row.appendChild(ui.h('div', { class: 'grow' },
-      ui.h('div', { class: 'ph-name' }, title),
-      ui.h('div', { class: 'ph-meta' }, detail || '')));
-    if (kind) row.appendChild(ui.badge(kind, 'badge-warn'));
-    row.appendChild(ui.h('span', { class: 'ph-price' }, '›'));
-    return row;
   }
 
   function greeting() {
