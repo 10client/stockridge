@@ -461,7 +461,14 @@ async function startDeployment({
     // branch they are pinned to, and a seat pinned to the wrong business is a fixture
     // that proves nothing about the scopes under test.
     const branchRes = await (deployment.admin || deployment.owner).get('/api/branches?limit=100');
-    deployment.branches = (branchRes.json && (branchRes.json.data || branchRes.json.branches)) || [];
+    deployment.branches = ((branchRes.json && (branchRes.json.data || branchRes.json.branches)) || [])
+      // A DEACTIVATED BRANCH IS NOT SOMEWHERE A SEAT CAN BE PINNED, and the product says
+      // so: `409 BRANCH_INACTIVE — "Pair Owner Branch" is deactivated. Reactivate it under
+      // Admin before trading through it.` A live audit run picks its branches from this
+      // list, and on a deployment where an earlier run (or the client) closed a branch, the
+      // one it picked was closed: the run stopped before its first check, on a rule it had
+      // no business arguing with. An audit stands on the branches the shop actually uses.
+      .filter((b) => b.is_active === undefined || Number(b.is_active) === 1);
 
     // THE FIXTURE'S OWN FIRST BRANCH GOES FIRST — AND SEATS PIN TO IT.
   //
@@ -637,7 +644,8 @@ async function startDeployment({
   // agrees exists — a fixture id it invented would be a branch only the fixture can
   // see, and every scope assertion after it would be about nothing.
   const branchesRes = await (deployment.owner || deployment.admin).get('/api/branches?limit=100');
-  deployment.branches = (branchesRes.json && (branchesRes.json.data || branchesRes.json.branches)) || [];
+  deployment.branches = ((branchesRes.json && (branchesRes.json.data || branchesRes.json.branches)) || [])
+    .filter((b) => b.is_active === undefined || Number(b.is_active) === 1);
   if (seats.length && !deployment.branches.length) throw new Error('seats were asked for but the deployment reports no branches to pin them to');
 
   // THE FIXTURE'S FIRST BRANCH GOES FIRST HERE TOO, before a seat is pinned to

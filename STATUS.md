@@ -2503,3 +2503,98 @@ checkout and payout path is now the standard** — a 500 here reads to a shopkee
    toast), `PROBE_DEBUG` in `tools/frontend-compliance.js`, and the notifications bell.
 3. Every checkout/payout path needs its own route-level check — done for the safe; the till,
    bank, POS and mobile-money expense methods are asserted only through the service.
+
+## Stage T3 — the role matrix, a file per pair (2026-10-06)
+
+T1 proved the contract at the edge. T2 and T2b proved the money. T3 asks the question
+underneath all of them: **for this seat, is the product allowed to work at all** — and is the
+answer the one the product's own role module gives?
+
+### What shipped
+
+- **`test/audit/lib/role-rules.js`** — the matrix, READ FROM THE PRODUCT'S OWN RULES. It
+  `require`s `domain/roles.js` and calls `canManageUser`, `canResetPin`, `canChangeRole`,
+  `outranks` and `atLeast` for every expectation, then holds the API to the answer. A test
+  that restates the hierarchy passes forever, including after somebody changes it; this one
+  moves with the rule and fails when a route and the rule disagree. It also owns
+  `expectRule()` (allow-or-refuse, with the message quality asserted on the refusal) and the
+  pair-file helpers `makeUser()` / `signIn()`.
+- **`test/audit/audit.roles.js`** — the entry audit: five seats (admin, owner, a manager and
+  a cashier in branch A, a manager and a cashier in branch B), the declared hierarchy probed
+  over HTTP against real people, self-change, PIN resets, the floor boundary, what each seat
+  can see, cross-branch scope, and **a gate that refuses the suite if a role pair has no
+  file**. A missing pair is a question nobody asked, and it looks identical to a pair that
+  passes.
+- **`test/audit/pairs/`** — six files, one per unordered pair: `admin-manager`,
+  `admin-owner`, `admin-staff`, `manager-staff`, `owner-manager`, `owner-staff`. Every rule
+  in them is probed in BOTH directions — the lower role refused AND the higher role allowed —
+  because a product that refuses everything is not secure, it is broken, and a suite that
+  only asserts 403 will certify it. They also carry the lifecycle probes: hire, move between
+  branches, the dashboard-follows-the-person test, deactivate, reactivate, reset a PIN, void
+  another person's sale, approve the counter's expense, open and close a drawer, sign it off.
+
+### The product change this stage forced: the books are not a cashier's to read
+
+`requireBooks(ctx)` in **`server/routes/accounting.js`** now guards the trial balance, the
+profit and loss (and its by-category breakdown), the balance sheet and the journal at
+**MANAGER and above**. Before it, any account holding a token — including the cashier on the
+shared phone at the counter — could read the shop's margins, its trading position and what it
+owes FIRS. Margins are the most commercially sensitive numbers a shop owns, and the person
+most likely to be negotiating a discount or leaving for a competitor is the one at the till.
+
+One deliberate exception, written where the exception lives: **`GET /api/accounting/wht` stays
+open to the floor.** A storekeeper receiving goods has to see what was withheld from the
+supplier standing in front of them; hiding it does not protect the business, it pushes the
+arithmetic onto paper. `audit.wht.js` already asserted both halves of that (a staff seat can
+read the position, and cannot file it), which is why the first draft of `requireBooks` — which
+guarded all seven endpoints — was wrong and the suite said so within one run.
+
+### Proving it
+
+- **Local:** `test/audit/audit.roles.js` **142 checks passed**; `bash test/run-audits.sh`
+  — **4 audits, every check green**; `node test/audit/suite.js` — **15 checks, 4 audits wired**;
+  `npm run verify` **348/348/0**.
+- **Live staging, write mode:** `audit.roles` **147 checks passed (46.7s)**.
+- **Negative control:** the rank gate on `POST /api/users` was bypassed in
+  `server/routes/admin.js` (`if (false && !canManageUser(...))`) and the suite went red in
+  **exactly four places, across four different files** — the cashier cannot create a user, the
+  manager cannot create a manager, the cashier cannot add anybody, the manager cannot appoint a
+  manager. Restored → 142 green. It is the control that matters: it proves the pairs reach the
+  ROUTE and not the domain function.
+
+### What the live run taught (fixture bugs, not product bugs — but only visible live)
+
+| Symptom on staging | Cause | Fix |
+| --- | --- | --- |
+| `403 CROSS_BUSINESS_MOVE` on three move probes | `branches[1]` was another business's first branch | derive a same-business destination (`ctx.otherBranchFor`); open a second branch when the deployment has only one, and close it on the way out |
+| `409 DUPLICATE_BRANCH_CODE` | the auto-derived branch code collided on the third run | the probe states its own unique code |
+| `"assert is not a function"` on four passing checks | `const { assert } = require('node:assert')` — destructuring a callable | `require('node:assert')` |
+| the owner's branch list "leaked" another business | it does not: `business-access` declares `reachesEverything: true, reachesEverythingBy: ROLE:OWNER` | the check derives the declared reach and reports it |
+| the owner's PIN could not be put back | `12345` is a straight run and the strength rule refuses to re-set it | restore the seat's own PIN when the product allows; when it does not, print `⚠ THIS SEAT NOW HOLDS PIN …` so nobody is left locked out |
+| `402 MAX_BRANCHES_REACHED` on the branch probes | staging is at its plan's branch ceiling | a plan limit is a SHOP STATE: reported, not failed |
+| `409 BRANCH_INACTIVE` when seating | the harness picked a branch an earlier run had closed | both harness paths now keep only active branches |
+
+**The one that mattered:** the first live run of `audit.roles` changed the `liveseat` owner's
+PIN on staging and walked away. The next run could not sign in at all. A live deployment belongs
+to somebody, and a test that leaves a client locked out of their own shop is worse than any bug
+it could find — the audit now restores the PIN it found, or says in capitals what the seat holds.
+
+**Open, for the record:** an OWNER reaches every business on the deployment, by role. That is
+declared behaviour and correct for one client per deployment; it is the line to re-examine the
+day a single deployment hosts two clients owned by different people. Recorded here so the
+decision is deliberate rather than accidental.
+
+### Deployment — all three environments carry `requireBooks`
+
+| Environment | Result |
+| --- | --- |
+| staging | deployed; write-mode: **roles 147 ✅ · money 83 ✅ · wht 36 ✅ · http 34 + 1 reported** |
+| sample | deployed; read-only http audit **26 passed, 2 reported** |
+| production | deployed; read-only http audit **26 passed, 2 reported** |
+
+### Next: T4 — sync, idempotency, concurrency and the D1 limits
+
+The plan for T4 is unchanged: two clients writing the same row (LWW with conflict capture),
+the same `Idempotency-Key` replayed, a request retried after a timeout, concurrent tills
+against one product's stock, and the D1 ceilings — statements per request, row size, the
+`batch()` limit — probed against the live deployment rather than assumed.

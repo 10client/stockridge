@@ -36,6 +36,29 @@ const { oneOf } = require('../../domain/validation');
 const { extractVatFromInclusive, whtRemittanceDueDate, WHT_REMITTANCE_DAY_OF_MONTH, WHT_SCHEDULE_2024 } = require('../../domain/nigerianTax');
 const glService = require('../services/glService');
 
+// =====================================================================
+// WHO MAY READ THE BOOKS
+// =====================================================================
+// The mutations on this surface were always guarded — only an owner may open an
+// account, post a manual journal or declare tax remitted — and the REPORTS were open
+// to anybody holding a token. A cashier with a phone could read the shop's profit and
+// loss, its margins by category, its trial balance and what it owes FIRS.
+//
+// That is not a hole in the accounting; it is a hole in the shop. Margins are the most
+// commercially sensitive numbers the business holds, they are visible to every member
+// of staff on a shared device, and the person they leak to is the one who is about to
+// be asked to negotiate a discount or who is about to leave for a competitor.
+//
+// So: the books are MANAGER and above. A manager runs a branch and answers for its
+// numbers; a cashier runs a till. This is ONE function because a rule written out at
+// eight endpoints is a rule that will be true at seven of them.
+function requireBooks(ctx) {
+  const user = ctx.get('user');
+  if (!atLeast(user && user.role, 'MANAGER')) {
+    throw new HttpError('Only a manager or above can read the accounts. Ask a manager to run this report.', { status: 403, code: 'ROLE_REQUIRED' });
+  }
+}
+
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // CHART OF ACCOUNTS
@@ -104,6 +127,7 @@ function mount(app, base = '/api') {
   // JOURNAL
   // -------------------------------------------------------------------
   app.get(`${base}/accounting/journal`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'e', allowNull: true });
     const scope = ctx.get('scope');
@@ -139,6 +163,7 @@ function mount(app, base = '/api') {
   });
 
   app.get(`${base}/accounting/journal/:id`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     const id = String(ctx.req.param('id'));
     const entry = await db.first(`SELECT e.*, u.full_name AS posted_by_name, b.name AS branch_name, biz.name AS business_name
@@ -278,6 +303,7 @@ function mount(app, base = '/api') {
    * is the worst possible failure mode, because it looks like it worked.
    */
   app.get(`${base}/accounting/trial-balance`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     const business = await resolveBusiness(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -302,6 +328,7 @@ function mount(app, base = '/api') {
   });
 
   app.get(`${base}/accounting/profit-loss`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     const business = await resolveBusiness(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -325,6 +352,7 @@ function mount(app, base = '/api') {
   });
 
   app.get(`${base}/accounting/balance-sheet`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     const business = await resolveBusiness(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -351,6 +379,7 @@ function mount(app, base = '/api') {
    * return is filed against and the two must not disagree.
    */
   app.get(`${base}/accounting/vat`, async (ctx) => {
+    requireBooks(ctx);
     const db = ctx.env.DB || ctx.env.db;
     // THIS ONE NEEDS THE BUSINESS'S OWN FACTS, NOT JUST A FILTER — whether it is
     // registered for VAT decides whether an input-VAT credit exists at all. A
@@ -421,6 +450,12 @@ function mount(app, base = '/api') {
    * liability and an asset cancelling out, and both would go unmanaged.
    */
   app.get(`${base}/accounting/wht`, async (ctx) => {
+    // NOT GUARDED, AND DELIBERATELY SO — the exception to `requireBooks`, written down
+    // where the exception lives. The withholding position is the tax ON INVOICES IN THE
+    // PERSON'S HAND: a storekeeper receiving goods has to see what was withheld from the
+    // supplier in front of them. Hiding it does not protect the business, it pushes the
+    // arithmetic onto paper. `audit.wht.js` asserts a staff seat can read this and cannot
+    // file it, and both halves of that are the rule.
     const db = ctx.env.DB || ctx.env.db;
     const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'w', allowNull: false });
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
