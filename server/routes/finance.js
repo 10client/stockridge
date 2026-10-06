@@ -196,10 +196,25 @@ function mount(app, base = '/api') {
       // the freight — which for a container of building materials is not small.
       for (const item of items) {
         const allocation = subtotal > 0 ? round2(freightTotal * (item.expectedTotalCost / subtotal)) : 0;
+        // THE ZERO BELONGS TO `quantity_received`, AND IT USED TO SIT ONE PLACE TOO FAR
+        // RIGHT.
+        //
+        // Fourteen columns and thirteen bound values is a shape that hides its own
+        // mistyping: the literal 0 landed in `expected_total_cost`, so every line was
+        // written with `quantity_received = expected_unit_cost`, `expected_unit_cost =
+        // expected_total_cost` and `freight_allocation = allocation` — and the schema's
+        // own CHECK (`quantity_received <= quantity_in_base`) then refused the order
+        // outright whenever a unit cost exceeded the quantity ordered in base units,
+        // which is to say almost always. The flow had never been exercised by any test,
+        // which is how it survived: `tools/flow-coverage.js` found it by reporting that
+        // purchase orders were covered by NO live audit.
+        //
+        // Binding `quantity_received` as 0 in its own column keeps every value next to
+        // the name it belongs to.
         tx.queue(`INSERT INTO purchase_order_items (
             id, purchase_order_id, product_id, variant_id, unit_code, quantity_ordered, quantity_in_base,
             quantity_received, expected_unit_cost, expected_total_cost, freight_allocation, notes, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?, 0, ?,?, datetime('now'), datetime('now'))`, [
+          VALUES (?,?,?,?,?,?,?, 0, ?,?,?,?, datetime('now'), datetime('now'))`, [
           newId(), id, item.productId, item.variantId, item.unitCode, item.quantityOrdered,
           item.quantityInBase, item.expectedUnitCost, item.expectedTotalCost, allocation, item.notes,
         ]);

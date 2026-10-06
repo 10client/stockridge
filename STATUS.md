@@ -3271,3 +3271,56 @@ a deploy is not evidence, and re-probing is.
 
 **G3 is closed.** **Next: G4 — dashboard depth** (void audit, unreconciled cash, branch breakdown, the
 plan/storage card).
+
+## P2 — the stock chain, bought → moved → counted (2026-10-06)
+
+`test/audit/audit.stockchain.js` is green: **16/16 checks**, and the whole suite runs **12
+audits, every check green** (`bash test/run-audits.sh`); `npm run verify` is still
+**395/395/0**. One product is bought into `Stockchain Depot` (purchase order → receipt),
+transferred to `Stockchain Shop` (dispatch → over-receipt refusal → clean receipt), and
+counted at the shop (variance → refused commit over an uncounted line → commit). Every
+figure is read back from the deployment, front to back and back to front.
+
+### Two production defects, both found by this stage
+
+1. **`POST /api/purchase-orders` wrote almost every order into a schema CHECK**
+   (`server/routes/finance.js`). The `purchase_order_items` INSERT listed **14 columns
+   and bound 13 values** with the literal `0` one place too far to the right, so
+   `expected_unit_cost` was written into `quantity_received`. The CHECK
+   (`0 ≤ quantity_received ≤ quantity_in_base`) then refused the row and the client saw
+   `400 "The figures do not add up"`. Raising a purchase order is the first step of
+   buying stock, and it had never been exercised by any test — including the 82-check
+   money audit, which pays suppliers without ever raising an order. Fixed by binding the
+   zero in its own column.
+
+2. **`GET /api/transfers/:id` answered 500 every single time** (`server/routes/stock.js`).
+   The line query joined `stock_batches` on `i.batch_id` — a column `stock_transfer_items`
+   does not have (a line points at `from_batch_id`, and at `to_batch_id` once received).
+   The route exists precisely so the receiving screen can read the per-item ids it must
+   post back, so **the screen that books a transfer in could not read the lines it was
+   booking**; the over-receipt refusal and the partial-receipt flow were unreachable from
+   the UI. Fixed to join both batch ends.
+
+Neither defect was visible to the 395-test suite: no unit or integration test called
+either endpoint. `tools/flow-coverage.js` named both flows as 0%-audited, which is how
+they were chosen — that is the P-series working as intended.
+
+### What the audit itself got wrong, and the rule taken from it
+
+Five separate checks failed because **the audit's readers looked for fields that do not
+exist** and silently answered `0` or `undefined`, which then looked like lost stock:
+
+- `/api/stock` rows are `on_shelf` / `reserved` / `available`, not `quantity_in_base`;
+- `/api/creditors` answers under `creditors` (and deliberately **omits suppliers owed
+  nothing** — a zero balance is not a creditor);
+- `GET /api/stocktakes/:id` answers under `session`, not `stocktake`;
+- a transfer's over-receipt override travels as `items: [{ item_id, quantity_received_base }]`,
+  and `quantity_received_base` is **base units** — the audit now reads `quantity_sent_base`
+  from the line rather than assuming a unit;
+- `const line` inside one check is invisible to the next one, which threw *before* posting
+  its receipt, so a transfer was never received and two later sections failed for that
+  single reason.
+
+**Rule for the rest of the P-series: a reader that cannot find its field must fail loudly,
+never answer zero.** Each of these was a wrong-key read wearing the costume of a
+production defect, and each one cost a diagnosis cycle.

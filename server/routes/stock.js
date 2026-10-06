@@ -595,12 +595,20 @@ function mount(app, base = '/api') {
       }
     }
 
+    // `i.batch_id` DOES NOT EXIST. A transfer line points at the batch it LEFT
+    // (`from_batch_id`) and, once received, the batch it became (`to_batch_id`). Reading
+    // a column that is not there made this route answer 500 EVERY TIME it was called —
+    // the screen that books a transfer in could not read the lines it was booking, and
+    // the partial-receipt flow that item ids exist for was unreachable from the UI. No
+    // test called it; `tools/flow-coverage.js` is what pointed at the flow.
     const items = await db.all(`SELECT i.*, p.name AS product_name, p.sku, p.base_unit_name, v.name AS variant_name,
-          b.batch_no, b.expiry_date
+          fb.batch_no AS from_batch_no, fb.expiry_date AS from_batch_expiry,
+          tb.batch_no AS to_batch_no
         FROM stock_transfer_items i
         LEFT JOIN products p ON p.id = i.product_id
         LEFT JOIN product_variants v ON v.id = i.variant_id
-        LEFT JOIN stock_batches b ON b.id = i.batch_id
+        LEFT JOIN stock_batches fb ON fb.id = i.from_batch_id
+        LEFT JOIN stock_batches tb ON tb.id = i.to_batch_id
         WHERE i.transfer_id = ? AND i.is_deleted = 0
         ORDER BY p.name, i.id`, [id]);
 
