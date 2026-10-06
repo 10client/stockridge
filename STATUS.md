@@ -353,3 +353,35 @@ byte-order-mark check tests the file rather than the text decoder (which strips 
 `npm run verify` **395/395/0** · `bash test/run-audits.sh` **19 audits green** · coverage
 **197 routes · 149 audited · 32 screen-only · 16 unreached**, with **reports 8/8**, warranty-claims
 3/3 and serials 2/2.
+
+### P7 — THE LIVE LEG, AND THE ONE DEFECT THAT WAS THE AUDIT'S OWN FAULT
+
+`audit.reports` **31/31 on staging in 13.3 s** (local 0.9 s), leaving 2 seats retired and 3
+settings put back. **All three environments now run the P7 build.**
+
+The first live run failed seven checks, and **not one of them was the product's fault**:
+
+* **The reports resolve the branch from the caller when the request names none.** Correct for a
+  cashier, wrong for the audit: on staging the administrator's resolved branch is `Verify Branch`,
+  but the fixture trades at `branches[0]` — another audit's branch. So every read reported on a shop
+  this run never traded in. Locally the two coincide, which is exactly how a live-only false failure
+  is born. Every read now names the branch it traded at.
+* **A receipt number is not an identity.** Receipts are numbered per branch, so `000003` at
+  `Verify Branch` is somebody else's sale — which made the export look like it carried a
+  still-COMPLETED version of the voided sale, and made the cross-branch leak check report a leak
+  that was not there. Rows are now identified by the customer and the SKU, which this run owns.
+* **The leak check names no branch on purpose.** Pinning it would make the product refuse a scope
+  violation and the check would pass without proving anything — it asks what a cashier at another
+  shop sees *by default*.
+
+### What the live run left behind, and the sweep this makes necessary
+
+The staging runs have now written: a product, stock, sales, a void, an expense, a target, a
+customer, 9 serials with their claims, and stock/sales behind all of it — **across branches that
+belong to other audit fixtures**, because a live deployment has no branch that is "the audit's own".
+Everything the audits can retire, they do (products, customers, seats, targets, every setting). The
+rest is history the product deliberately keeps, and the expense rows sit on another fixture's branch.
+
+That makes the `--clean` pass a **real** item rather than a tidy-up: it needs to retire fixture
+ROWS by the marker the fixtures already carry (`audit-*`, `AUD-*`, `rtn-*`, `dep-*`, `ful-*`,
+`stf-*`, `ser-*`, `war-*`, `rpt-*`, `PROBE-`, `AUDIT-`), never touching history a shop created.

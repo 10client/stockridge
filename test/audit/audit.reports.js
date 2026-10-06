@@ -204,6 +204,16 @@ runAudit('reports', async (audit, d) => {
     return { id, receiptNo: made.json.receiptNo || made.json.receipt_no, total: PRICE };
   });
 
+  // ===================================================================
+  // EVERY REPORT READ NAMES THE BRANCH THIS RUN TRADED AT
+  // ===================================================================
+  // The reports resolve the branch from the caller when the request names none — right for a
+  // cashier, wrong for this audit: on a live deployment the administrator's resolved branch
+  // ("Verify Branch") is NOT the fixture's (`branches[0]`, another audit's branch), so an unpinned
+  // read reports on a shop this run never traded in. Locally the two coincide, which is exactly
+  // how a live-only false failure is born.
+  const SC = (query, path = 'sales') => `/api/reports/${path}?${query}&branch_id=${encodeURIComponent(branch.id)}`;
+
   const expected = {
     units: 5,                       // 3 cash + 2 credit; the voided unit is not sold
     gross: round2(5 * PRICE),       // 10,000
@@ -217,7 +227,7 @@ runAudit('reports', async (audit, d) => {
   // THE SALES REPORT
   // ===================================================================
   await audit.checkAsync('the product line reports the revenue, the cost and the margin of the sales made', async () => {
-    const res = await owner.get('/api/reports/sales?group_by=PRODUCT&branch_scope=all&days=7');
+    const res = await owner.get(SC('group_by=PRODUCT&days=7'));
     assert.equal(res.status, 200, `the sales report answered ${res.status}: ${String(res.text).slice(0, 240)}`);
     const row = (res.json.rows || []).filter((r) => String(r.label).includes(MARK) || String(r.key) === String(product.id))[0];
     assert.ok(row, `the product just sold is not on the product report. Products: ${(res.json.rows || []).map((r) => r.label).slice(0, 8).join(', ')}`);
@@ -234,12 +244,12 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the day’s grouping carries the same money as the product grouping', async () => {
-    const res = await owner.get('/api/reports/sales?group_by=DAY&branch_scope=all&days=7');
+    const res = await owner.get(SC('group_by=DAY&days=7'));
     const today = (res.json.rows || []).filter((r) => String(r.key) === day(0))[0];
     assert.ok(today, `today (${day(0)}) is not on the daily report. Rows: ${(res.json.rows || []).map((r) => r.key).join(', ')}`);
     assert.ok(round2(today.grossRevenue) >= expected.gross,
       `today's gross revenue reads ${money(today.grossRevenue)} against at least ${money(expected.gross)} of trade this run just wrote to this branch`);
-    const productReport = await owner.get('/api/reports/sales?group_by=PRODUCT&branch_scope=all&days=7');
+    const productReport = await owner.get(SC('group_by=PRODUCT&days=7'));
     const mine = (productReport.json.rows || []).filter((r) => String(r.label).includes(MARK))[0];
     assert.ok(round2(mine.grossRevenue) <= round2(today.grossRevenue),
       `the product grouping reports ${money(mine.grossRevenue)} of a product sold today while the day total is ${money(today.grossRevenue)} — a line cannot exceed its day`);
@@ -248,7 +258,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the cash sale and the credit sale land in different places', async () => {
-    const res = await owner.get('/api/reports/sales?group_by=SALE_TYPE&branch_scope=all&days=7');
+    const res = await owner.get(SC('group_by=SALE_TYPE&days=7'));
     assert.equal(res.status, 200, `the report by sale type answered ${res.status}`);
     const rows = res.json.rows || [];
     const credit = rows.filter((r) => String(r.key).toUpperCase() === 'CREDIT')[0];
@@ -266,20 +276,20 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the void is counted separately and excluded from the takings', async () => {
-    const res = await owner.get('/api/reports/sales?group_by=DAY&branch_scope=all&days=7');
+    const res = await owner.get(SC('group_by=DAY&days=7'));
     assert.equal(res.status, 200, `the sales report answered ${res.status}`);
     assert.ok(Number(res.json.voided.count) >= 1,
       `the report says ${res.json.voided.count} sale(s) were voided and this run voided one — a void that does not appear anywhere is a void nobody is watching for`);
     assert.ok(round2(res.json.voided.value) >= PRICE,
       `voided value reads ${money(res.json.voided.value)} against at least ${money(PRICE)}`);
-    const productReport = await owner.get('/api/reports/sales?group_by=PRODUCT&branch_scope=all&days=7');
+    const productReport = await owner.get(SC('group_by=PRODUCT&days=7'));
     const mine = (productReport.json.rows || []).filter((r) => String(r.label).includes(MARK))[0];
     assert.equal(round2(mine.grossRevenue), expected.gross,
       `the product reports ${money(mine.grossRevenue)}: if the voided sale were counted it would be ${money(round2(expected.gross + PRICE))}. The two figures are the whole test`);
   });
 
   await audit.checkAsync('the cashier’s own line carries the trade they rang', async () => {
-    const res = await owner.get('/api/reports/sales?group_by=CASHIER&branch_scope=all&days=7');
+    const res = await owner.get(SC('group_by=CASHIER&days=7'));
     assert.equal(res.status, 200, `the report by cashier answered ${res.status}`);
     const row = (res.json.rows || []).filter((r) => String(r.key) === String(seat.id))[0];
     assert.ok(row, `the seat that rang the sales is not on the cashier report (${(res.json.rows || []).length} row(s))`);
@@ -306,7 +316,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('inventory movement reports units in, units out and what is left', async () => {
-    const res = await owner.get('/api/reports/inventory-movement?days=7');
+    const res = await owner.get(SC('days=7', 'inventory-movement'));
     assert.equal(res.status, 200, `the inventory report answered ${res.status}: ${String(res.text).slice(0, 240)}`);
     const row = (res.json.data || []).filter((r) => String(r.product_id || r.id) === String(product.id))[0];
     assert.ok(row, `the product is not on the inventory movement report (${(res.json.data || []).length} row(s))`);
@@ -322,7 +332,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the fast-mover report names the product that sold', async () => {
-    const res = await owner.get('/api/reports/movers?kind=FAST&days=7');
+    const res = await owner.get(SC('kind=FAST&days=7', 'movers'));
     assert.equal(res.status, 200, `the movers report answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     const row = (res.json.data || []).filter((r) => String(r.product_id) === String(product.id))[0];
     assert.ok(row, 'a product that sold five units in a week is not on the fast-mover report');
@@ -332,7 +342,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the shrinkage report carries the write-off and its value', async () => {
-    const res = await owner.get('/api/reports/movers?kind=SHRINKAGE&days=7');
+    const res = await owner.get(SC('kind=SHRINKAGE&days=7', 'movers'));
     assert.equal(res.status, 200, `the shrinkage report answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     const row = (res.json.data || []).filter((r) => String(r.product_id) === String(product.id))[0];
     assert.ok(row, 'the unit written off as damaged today is not on the shrinkage report — a write-off no report shows is a write-off nobody reviews');
@@ -342,7 +352,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the dead-stock report is the one list a product that just sold must NOT be on', async () => {
-    const res = await owner.get('/api/reports/movers?kind=DEAD&days=7');
+    const res = await owner.get(SC('kind=DEAD&days=7', 'movers'));
     assert.equal(res.status, 200, `the dead-stock report answered ${res.status}`);
     const row = (res.json.data || []).filter((r) => String(r.product_id) === String(product.id))[0];
     assert.ok(!row, `a product that sold ${expected.units} units today is reported as dead stock — the shop would discount or transfer stock that is moving`);
@@ -359,7 +369,7 @@ runAudit('reports', async (audit, d) => {
   // CUSTOMERS, COMMISSION, TARGETS
   // ===================================================================
   await audit.checkAsync('the top-customers report carries the credit the customer took', async () => {
-    const res = await owner.get('/api/reports/top-customers?days=7');
+    const res = await owner.get(SC('days=7', 'top-customers'));
     assert.equal(res.status, 200, `the customer report answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     const row = (res.json.data || []).filter((r) => String(r.id) === String(customer.id))[0];
     assert.ok(row, 'the customer who bought today is not on the report');
@@ -372,7 +382,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('commission is paid on net revenue, and matches the sales report', async () => {
-    const res = await owner.get('/api/reports/commission?days=7');
+    const res = await owner.get(SC('days=7', 'commission'));
     assert.equal(res.status, 200, `the commission report answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     const row = (res.json.data || []).filter((r) => String(r.id) === String(seat.id))[0];
     assert.ok(row, 'the seat that made the sales is not on the commission report');
@@ -385,7 +395,7 @@ runAudit('reports', async (audit, d) => {
     // THE TWO REPORTS MUST AGREE ABOUT THE SAME PERIOD: the commission report derives its
     // revenue from the same sales as the sales report, and if they disagree one of them is
     // wrong — which one, nobody at the counter can tell.
-    const sales = await owner.get('/api/reports/sales?group_by=DAY&branch_scope=all&days=7');
+    const sales = await owner.get(SC('group_by=DAY&days=7'));
     const mine = (sales.json.rows || []).filter((r) => String(r.key) === day(0))[0];
     assert.ok(mine, 'today is not on the sales report');
     assert.ok(round2(mine.grossRevenue) >= round2(row.revenue),
@@ -459,7 +469,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the sales export carries every row the screen reports, and the same money', async () => {
-    const res = await owner.get('/api/reports/export?report=SALES&days=7');
+    const res = await owner.get(SC('report=SALES&days=7', 'export'));
     assert.equal(res.status, 200, `the sales export answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     // THE BYTES, NOT THE DECODED TEXT: reading a body as text strips a leading BOM by
     // standard, so a check against `res.text` would fail on a file that is perfectly correct.
@@ -483,7 +493,7 @@ runAudit('reports', async (audit, d) => {
   });
 
   await audit.checkAsync('the line-level export’s margin agrees with the margin the sales report shows', async () => {
-    const res = await owner.get('/api/reports/export?report=SALES_DETAIL&days=7');
+    const res = await owner.get(SC('report=SALES_DETAIL&days=7', 'export'));
     assert.equal(res.status, 200, `the line export answered ${res.status}: ${String(res.text).slice(0, 200)}`);
     const parsed = parseCsv(res.text);
     assert.ok(parsed[0].includes('Margin'), `the line export has no Margin column: ${parsed[0].join(', ')}`);
@@ -492,33 +502,33 @@ runAudit('reports', async (audit, d) => {
     const marginAt = parsed[0].indexOf('Margin');
     const margin = round2(mine.reduce((a, r) => a + Number(r[marginAt]), 0));
 
-    const screen = await owner.get('/api/reports/sales?group_by=PRODUCT&branch_scope=all&days=7');
+    const screen = await owner.get(SC('group_by=PRODUCT&days=7'));
     const row = (screen.json.rows || []).filter((r) => String(r.label).includes(MARK))[0];
     assert.equal(margin, round2(row.grossMargin),
       `the download reports ${money(margin)} of margin on this product and the screen reports ${money(row.grossMargin)}. An export that disagrees with the screen is worse than no export, because it is the one that gets filed`);
   });
 
   await audit.checkAsync('the debtor export carries the balance the credit sale left, and the stock export the shelf', async () => {
-    const debtors = parseCsv((await owner.get('/api/reports/export?report=DEBTORS')).text);
+    const debtors = parseCsv((await owner.get(SC('report=DEBTORS', 'export'))).text);
     assert.ok(debtors[0].includes('Customer'), `the debtor export header is ${debtors[0].join(', ')}`);
     const row = csvRows(debtors, 'Customer', [customerName])[0];
     assert.ok(row, `the customer owing ${money(expected.outstanding)} is not on the debtor export`);
     assert.equal(round2(Number(row[debtors[0].indexOf('Balance')])), expected.outstanding,
       `the debtor export says the customer owes ${money(row[debtors[0].indexOf('Balance')])} against ${money(expected.outstanding)}`);
 
-    const stock = parseCsv((await owner.get('/api/reports/export?report=STOCK')).text);
+    const stock = parseCsv((await owner.get(SC('report=STOCK', 'export'))).text);
     const stockRow = csvRows(stock, 'SKU', [`AUD-RPT-${MARK}`])[0];
     assert.ok(stockRow, 'the product received this run is not on the stock export');
     const qty = Number(stockRow[stock[0].indexOf('Qty')]);
     assert.equal(round2(qty), 6, `the stock export says ${qty} unit(s) on the shelf against 12 received, ${expected.units} sold and 1 written off`);
 
-    const expenses = parseCsv((await owner.get('/api/reports/export?report=EXPENSES&days=7')).text);
+    const expenses = parseCsv((await owner.get(SC('report=EXPENSES&days=7', 'export'))).text);
     const expAt = expenses[0].indexOf('Gross');
     const expRow = csvRows(expenses, 'Reference', [`AUD-RPT-${MARK}`])[0] || (expenses.slice(1).filter((r) => r.some((c) => String(c).includes(`Audit report run ${MARK}`)))[0]);
     assert.ok(expRow, `the expense recorded this run is not on the expense export. Header: ${expenses[0].join(', ')}`);
     assert.equal(round2(Number(expRow[expAt])), expense.amount, `the expense export shows ${money(expRow[expAt])} against ${money(expense.amount)} recorded`);
 
-    const adjustments = parseCsv((await owner.get('/api/reports/export?report=ADJUSTMENTS&days=7')).text);
+    const adjustments = parseCsv((await owner.get(SC('report=ADJUSTMENTS&days=7', 'export'))).text);
     const adjRow = csvRows(adjustments, 'Product', [product.name])[0];
     assert.ok(adjRow, `the write-off is not on the adjustment export. Header: ${adjustments[0].join(', ')}`);
     assert.ok(String(adjRow.join(' ')).includes('DAMAGE'), `the adjustment export shows the write-off as ${adjRow[adjustments[0].indexOf('Type')]}`);
@@ -535,6 +545,12 @@ runAudit('reports', async (audit, d) => {
   // THE SCOPE — TAKINGS ARE NOT FOR EVERYBODY
   // ===================================================================
   await audit.checkAsync('a cashier at another branch cannot see this branch’s takings in any report', async () => {
+    // THESE READS NAME NO BRANCH ON PURPOSE. The question is what a cashier at another shop sees
+    // by DEFAULT — pinning the request to this branch would make the product refuse a scope
+    // violation and the check would pass without proving anything. And the rows are identified by
+    // the CUSTOMER and the SKU rather than by receipt number: receipts are numbered per branch, so
+    // a cashier's own shop legitimately has a receipt with the same number, which is how an
+    // earlier version of this check reported a leak that was not there.
     const productReport = await elsewhere.get('/api/reports/sales?group_by=PRODUCT&days=7');
     assert.equal(productReport.status, 200, `the sales report as another branch's staff answered ${productReport.status}`);
     const leaked = (productReport.json.rows || []).filter((r) => String(r.label).includes(MARK));
@@ -546,10 +562,12 @@ runAudit('reports', async (audit, d) => {
     assert.ok(!moverRow, `the mover report leaks ${branch.name}'s trade to a cashier at ${other.name}`);
 
     const exportRes = await elsewhere.get('/api/reports/export?report=SALES&days=7');
-    const parsed = parseCsv(exportRes.text);
-    const rows = csvRows(parsed, 'Receipt', [cashSale.receiptNo, creditSale.receiptNo]);
-    assert.equal(rows.length, 0,
-      `the sales EXPORT gives a cashier at ${other.name} the receipts from ${branch.name}. A download is the easiest leak there is: one tap and the whole day's takings leave the shop`);
+    const leakedSales = csvRows(parseCsv(exportRes.text), 'Customer', [customerName]);
+    assert.equal(leakedSales.length, 0,
+      `the sales EXPORT gives a cashier at ${other.name} a sale to ${customerName} at ${branch.name}. A download is the easiest leak there is: one tap and the whole day's takings leave the shop`);
+    const detail = await elsewhere.get('/api/reports/export?report=SALES_DETAIL&days=7');
+    const leakedLines = csvRows(parseCsv(detail.text), 'SKU', [`AUD-RPT-${MARK}`]);
+    assert.equal(leakedLines.length, 0, `the line-level export leaks ${branch.name}'s sales of product ${MARK} to another branch's cashier`);
   });
 }, {
   setup: () => startDeployment({
