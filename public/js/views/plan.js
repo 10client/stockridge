@@ -19,6 +19,9 @@
   const ui = SR.ui;
   const U = SR.util;
 
+  /** The rows out of a paged list response, whichever shape the server used. */
+  function inRows(res) { return (res && (res.data || res.rows || res.cleanups)) || []; }
+
   async function render(ctx) {
     ctx.setTitle('Subscription');
     const wrap = ui.h('div', { class: 'stack' });
@@ -47,6 +50,26 @@
           host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
           return;
         }
+      }
+      // THE CAPACITY AND RETENTION HALF, FETCHED SEPARATELY AND NEVER FATALLY.
+      //
+      // A STAFF or CASHIER seat may open this screen and will be refused with a
+      // 403 by /api/data-management/status, because capacity is a manager's
+      // business. A screen that threw on that refusal would show a shop's
+      // subscription as broken for the person most likely to open it. So the
+      // failure is caught, remembered as null, and the rest of the screen renders
+      // exactly as before — the same choice PharmaRidge made, for the same reason:
+      // a data-management problem must not take the plan screen down with it.
+      try {
+        data.dataManagement = await SR.api.get('/api/data-management/status', { query: SR.state.query({}) });
+        // The cleanup runs are their own request: a shop that has never run one
+        // gets an empty list from a cheap read rather than a bigger status body it
+        // will not look at.
+        data.dataCleanups = await SR.api.get('/api/data-management/history', { query: SR.state.query({ limit: 20 }) });
+      } catch (err) {
+        data.dataManagement = null;
+        data.dataCleanups = null;
+        data.dataManagementRefused = err && err.status === 403 ? 'role' : (err && err.message) || 'unavailable';
       }
       await SR.store.metaSet('plan', data);
       render(data);
@@ -87,6 +110,63 @@
         ui.kpi({ label: 'Branches allowed', value: Number(s.maxBranches) === 0 ? 'Unlimited' : U.qty(s.maxBranches), foot: `${U.qty(counts.branches || 0)} in use` }),
         ui.kpi({ label: 'Staff allowed', value: Number(s.maxStaff) === 0 ? 'Unlimited' : U.qty(s.maxStaff), foot: `${U.qty(counts.staff || 0)} active` }),
         ui.kpi({ label: 'Features on', value: `${Object.values(features).filter((f) => f.enabled).length} / ${Object.keys(features).length}` })));
+
+      // ---- RECORDS AND ROOM -------------------------------------------
+      // What the shop keeps, how much room is left, and what the daily
+      // housekeeping would let go. The message is deliberately in the
+      // proprietor's words: "nearly full" is a fact about a business, not a
+      // percentage about a database.
+      const dm = data.dataManagement;
+      if (dm && dm.storage) {
+        const st = dm.storage;
+        const tone = st.status === 'CRITICAL' ? 'alert-warn' : st.status === 'WARNING' ? 'alert-info' : 'alert-ok';
+        const roomRows = (st.largest || []).map((t) => ({ table: U.humanise(String(t.table).replace(/_/g, ' ')), rows: t.rows, megabytes: `${t.megabytes} MB` }));
+        const rules = ((dm.retention && dm.retention.rules) || []).map((r) => ({
+          rule: r.name,
+          window: `${r.retainDays} days`,
+          removes_now: r.wouldRemove == null ? '—' : U.qty(r.wouldRemove),
+        }));
+        const card = ui.h('div', { class: 'card' },
+          ui.h('div', { class: 'card-body' },
+            ui.h('h2', {}, 'Records and room'),
+            ui.h('div', { class: `alert ${tone}` },
+              `${U.qty(st.megabytes)} MB of ${U.qty(st.limit_megabytes)} MB used (${st.percent_used}%). ${st.message || ''}`),
+            st.assumption ? ui.h('p', { class: 'sub' }, st.assumption.note || '') : null,
+            roomRows.length ? ui.dataCard({
+              title: 'The largest records',
+              rows: roomRows,
+              columns: [
+                { key: 'table', label: 'What' },
+                { key: 'rows', label: 'Rows', render: (t) => U.qty(t.rows) },
+                { key: 'megabytes', label: 'Estimated' },
+              ],
+            }) : null,
+            ui.h('p', { class: 'sub' }, 'Housekeeping runs on the daily schedule. Nothing here removes a sale, a payment, the ledger, a stock movement or the audit log.'),
+            rules.length ? ui.dataCard({
+              title: 'What housekeeping lets go, and when',
+              rows: rules,
+              columns: [
+                { key: 'rule', label: 'Record' },
+                { key: 'window', label: 'Kept for' },
+                { key: 'removes_now', label: 'Would remove now' },
+              ],
+            }) : null,
+            ((data.dataCleanups && inRows(data.dataCleanups)) || []).length ? ui.dataCard({
+              title: 'Past cleanups',
+              rows: inRows(data.dataCleanups).map((c) => ({ when: U.date(c.created_at), mode: c.mode, by: c.by })),
+              columns: [
+                { key: 'when', label: 'When' },
+                { key: 'mode', label: 'What was removed' },
+                { key: 'by', label: 'By' },
+              ],
+            }) : ui.h('p', { class: 'sub' }, 'No cleanup has ever been run on this deployment.'),
+            ui.h('p', { class: 'hint' }, dm.retention_notice || '')));
+        stack.appendChild(card);
+      } else if (data.dataManagementRefused === 'role') {
+        stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Records and room'),
+          ui.h('p', { class: 'sub' }, 'Ask a manager or the owner how much room this deployment has left. Capacity and retention are shown to managers and above.'))));
+      }
 
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'What is in use'),

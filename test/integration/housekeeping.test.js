@@ -121,6 +121,68 @@ test('idempotency keys are pruned at the retention window and not before', async
   });
 });
 
+test('device sync history is pruned at 90 days, and the shop recognises a phone that synced yesterday', async () => {
+  // sync_change_log is the fastest-growing table in the schema: one row per push,
+  // pull and heartbeat, per device, per day. A row from last year answers nothing.
+  await withDb(async (db) => {
+    const insert = "INSERT INTO sync_change_log (id, device_id, direction, status, synced_at) VALUES (?,?,?,?, datetime('now'))";
+    await db.run(insert, ['log-fresh', 'device-1', 'PUSH', 'SUCCESS']);
+    await db.run(insert, ['log-stale', 'device-1', 'PUSH', 'SUCCESS']);
+    await db.run("UPDATE sync_change_log SET synced_at = datetime('now', ?) WHERE id = 'log-stale'", ['-91 days']);
+
+    const result = await runHousekeeping(db);
+    assert.equal(result.errors.length, 0, `housekeeping reported: ${result.errors.join('; ')}`);
+    assert.equal(result.retentionPruned['sync change log'], 1, 'one row is past the 90-day window');
+
+    const left = await db.all('SELECT id FROM sync_change_log');
+    assert.deepEqual(left.map((r) => r.id), ['log-fresh'], 'yesterday must survive: the sync screen reads it');
+  });
+});
+
+test('a REVIEWED conflict ages out at 180 days and an UNREVIEWED one never does', async () => {
+  // The distinction is the whole feature. A reviewed conflict is a decision
+  // somebody made and can be summarised; an unreviewed conflict is an unanswered
+  // question about a customer's record, and it holds the only copy of the version
+  // a device typed while it was offline. Deleting that would destroy the shop's
+  // own data to save bytes.
+  await withDb(async (db) => {
+    const id = await adminId(db);
+    const insert = "INSERT INTO sync_conflicts (id, table_name, row_id, losing_version_json, winning_version_json, detected_at, reviewed_by, reviewed_at) VALUES (?,?,?,?,?, datetime('now'), ?, ?)";
+    await db.run(insert, ['conflict-reviewed-old', 'customers', 'row-1', '{}', '{}', id, null]);
+    await db.run(insert, ['conflict-reviewed-new', 'customers', 'row-2', '{}', '{}', id, null]);
+    await db.run(insert, ['conflict-unreviewed-old', 'customers', 'row-3', '{}', '{}', null, null]);
+    await db.run("UPDATE sync_conflicts SET reviewed_at = datetime('now', ?) WHERE id = 'conflict-reviewed-old'", ['-181 days']);
+    await db.run("UPDATE sync_conflicts SET reviewed_at = datetime('now', ?) WHERE id = 'conflict-reviewed-new'", ['-10 days']);
+    await db.run("UPDATE sync_conflicts SET detected_at = datetime('now', ?) WHERE id = 'conflict-unreviewed-old'", ['-400 days']);
+
+    const result = await runHousekeeping(db);
+    assert.equal(result.errors.length, 0, `housekeeping reported: ${result.errors.join('; ')}`);
+    assert.equal(result.retentionPruned['reviewed sync conflicts'], 1, 'one REVIEWED conflict is past 180 days');
+
+    const left = await db.all('SELECT id FROM sync_conflicts ORDER BY id');
+    assert.deepEqual(left.map((r) => r.id), ['conflict-reviewed-new', 'conflict-unreviewed-old'],
+      'a reviewed conflict inside the window and an UNREVIEWED conflict of any age must both survive');
+  });
+});
+
+test('sign-in attempts are pruned at 90 days but the throttle can still see this morning', async () => {
+  await withDb(async (db) => {
+    const id = await adminId(db);
+    const insert = "INSERT INTO login_attempts (id, username, user_id, succeeded, attempted_at) VALUES (?,?,?,?, datetime('now'))";
+    await db.run(insert, ['attempt-fresh', 'admin', id, 0]);
+    await db.run(insert, ['attempt-stale', 'admin', id, 0]);
+    await db.run("UPDATE login_attempts SET attempted_at = datetime('now', ?) WHERE id = 'attempt-stale'", ['-91 days']);
+
+    const result = await runHousekeeping(db);
+    assert.equal(result.errors.length, 0, `housekeeping reported: ${result.errors.join('; ')}`);
+    assert.equal(result.retentionPruned['login attempts'], 1, 'one attempt is past the 90-day window');
+
+    const left = await db.all('SELECT id FROM login_attempts');
+    assert.deepEqual(left.map((r) => r.id), ['attempt-fresh'],
+      'a fresh failed attempt must survive: the throttle counts these to lock an account');
+  });
+});
+
 test('housekeeping reports its failures instead of throwing', async () => {
   // A cron that throws takes its own evidence with it, and the platform retries
   // the same failing work. The handler has to survive a broken statement and say

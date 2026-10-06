@@ -2900,3 +2900,65 @@ broader via 19 `FLAG_SETTINGS`).
 
 **Stages G1–G8** are planned in the document with acceptance criteria each. G1 (data management) is
 first, because the user named it.
+
+### Stage G1a — what the shop forgets, and what it never forgets
+
+`server/lib/retention.js` (new), wired into the daily `scheduled` handler through
+`worker/src/housekeeping.js`. Three tables that grow with use and stop meaning anything:
+
+| Table | Window | Why that window |
+| --- | --- | --- |
+| `sync_change_log` | **90 days** | one row per push/pull/heartbeat per device per day; a row from last year answers nothing, and it is the fastest-growing table in the schema |
+| `login_attempts` | **90 days** | the throttle needs fifteen minutes; the rest is forensic. This REVERSES `NEVER_PRUNED`'s original "keep forever" call, and the comment now records both the reversal and the reasoning |
+| `sync_conflicts` | **180 days, REVIEWED only** | an unreviewed conflict is an unanswered question about a customer's record and the only copy of a version typed offline — never removed at any age |
+
+This closes a real unbounded-growth hole: the cron pruned sessions, idempotency keys and raised
+compliance alerts, but **never touched the sync log or reviewed conflicts**.
+
+**Proof:** 3 new integration tests in `test/integration/housekeeping.test.js` (8/8 total) — each
+proves an AGED row goes and a FRESH row stays. **Negative control:** the reviewed-only predicate
+replaced with `detected_at < …` → exactly 1 red ("an UNREVIEWED conflict of any age must both
+survive"); restored → 8/8.
+
+### Stage G1b — how full is the shop, and what may it let go
+
+`server/lib/storage.js` (new) — a capacity estimate, modelled the only way D1 allows (Cloudflare
+exposes no database size to the Worker reading it): one `COUNT(*)` per known table, per-row byte
+costs, ×1.35 overhead, **+ a measured 1.39 MB empty-schema floor** (76 tables, 244 indexes, 22
+views — measured, not copied from PharmaRidge, whose figure is for a different schema).
+`test/integration/storage.test.js` (4 tests) **re-measures that floor and fails if it drifts more
+than 25%**, and proves the retention **preview agrees with the run** — so a status screen can never
+report a number it does not act on.
+
+`server/routes/dataManagement.js` (new), mounted at `/api/data-management`:
+
+* `GET /status` — capacity with its assumptions attached, the retention windows and what each would
+  remove right now, the five purge modes each with its confirmation phrase, and the notice that
+  deletion is permanent **in the response** (not only in a modal a browser happened to render).
+* `GET /history` — the runs from `data_cleanup_log`, pageable.
+
+Both are **MANAGER and above** (403 `ROLE_REQUIRED` for a staff seat), which is the same line the
+books follow.
+
+**Front-to-back:** `public/js/views/plan.js` gains a *Records and room* card — capacity, the largest
+records, what housekeeping lets go and when, past cleanups, and the permanence warning. A 403 for a
+staff seat renders a sentence, not an error block. The capability audit now counts **130 API paths
+written by the frontend**, up from 128 by exactly these two — the tooling proves the wiring, rather
+than the claim doing so.
+
+**Caught by our own tooling during this stage:** the first cut embedded the cleanup runs in `/status`
+AND added `/history`, which left `/history` with no caller — "Routes no frontend code asks for" went
+19 → **20**. Fixed by giving each endpoint one job and one caller, back to 19.
+
+**Proof:** `audit.data` **15 checks green** locally (owner reads it, **manager reads it**, **STAFF is
+refused in both directions**, every mode's phrase, no duplicate phrases, the notice present, the
+history answers the screen's own `?limit=20`, a run reads back with its mode and summary, and a
+static check that the retention SQL never names a table the shop must keep). **Negative control:**
+the MANAGER guard disabled → the STAFF checks go red; restored → 15/15. Live staging **11 passed, 3
+honest skips** (the role checks need seats a live run is not given): **4.4 MB of 500 MB (0.9%) → OK**.
+
+**Gate:** `run-audits.sh` **8 audits, every check green**; `npm run verify` **355/355/0**; suite
+**23 checks / 8 audits wired**.
+
+**Next: G1c** — `POST /api/data-management/purge`: the five modes, one test per mode proving what it
+PROMISES TO KEEP is still there afterwards, offline-replay quarantine, and the screened confirmation.

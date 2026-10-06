@@ -20,6 +20,7 @@
 // =====================================================================
 
 const { prune, RETENTION_DAYS } = require('../../server/lib/idempotency');
+const { runRetention } = require('../../server/lib/retention');
 const { notifyStatement } = require('../../domain/compliance');
 const { TOKEN_TTL_SECONDS } = require('../../domain/crypto');
 
@@ -69,7 +70,7 @@ function housekeepingStatements({ sessionGraceHours = SESSION_GRACE_HOURS } = {}
  * what happened, including what failed.
  */
 async function runHousekeeping(db, { sessionGraceHours = SESSION_GRACE_HOURS } = {}) {
-  const result = { sessionsPruned: 0, idempotencyKeysPruned: 0, complianceAlertsRaised: 0, errors: [] };
+  const result = { sessionsPruned: 0, idempotencyKeysPruned: 0, complianceAlertsRaised: 0, retentionPruned: {}, errors: [] };
 
   for (const statement of housekeepingStatements({ sessionGraceHours })) {
     try {
@@ -92,6 +93,15 @@ async function runHousekeeping(db, { sessionGraceHours = SESSION_GRACE_HOURS } =
     result.errors.push(`idempotency keys: ${err && err.message ? err.message : err}`);
   }
 
+  // The three tables that grow with use and stop meaning anything: device sync
+  // history, reviewed sync conflicts, and sign-in attempts. See
+  // server/lib/retention.js for each window and for the two things this must
+  // never touch — an UNREVIEWED conflict (an unanswered question about a
+  // customer's record) and the trading history itself.
+  const retention = await runRetention(db);
+  result.retentionPruned = retention.pruned;
+  result.errors.push(...retention.errors);
+
   return result;
 }
 
@@ -99,12 +109,19 @@ async function runHousekeeping(db, { sessionGraceHours = SESSION_GRACE_HOURS } =
  * Records deliberately NOT pruned, and why — so that a future reader does not
  * "finish the job" by deleting a shop's history.
  *
- *   login_attempts   An authentication audit trail. The throttle window is
- *                    fifteen minutes, so only the last few rows have any use to
- *                    the throttle — but the value of the rest is forensic, in
- *                    exactly the situation where somebody wants to know who tried
- *                    to sign in as whom. Growth is a few rows per staff member
- *                    per day, which is not a problem worth trading history for.
+ *   login_attempts   An authentication audit trail, and the one entry here that
+ *                    CHANGED ITS MIND. It used to be kept forever on the grounds
+ *                    that its value is forensic and its growth is small. Both
+ *                    halves of that are true and neither made it bounded: a shop
+ *                    with twenty staff, several sign-ins a day each, and one
+ *                    device per counter writes tens of thousands of rows a year,
+ *                    and the question the trail answers — "who tried to sign in
+ *                    as whom" — is asked about a recent incident, not a
+ *                    two-year-old one. It is now pruned at 90 days by
+ *                    server/lib/retention.js. The forensic value inside that
+ *                    window is untouched, and the window is stated on the
+ *                    Owner's data-management screen rather than being a number
+ *                    only this comment knows.
  *
  *   branch_devices   A registered device is revoked explicitly, by a person, with
  *                    `revoked_at` set — the partial unique index and the Devices
