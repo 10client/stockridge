@@ -74,14 +74,23 @@ runAudit('deposits', async (audit, d) => {
     const rows = (res.json.data || res.json.products || []);
     const pick = rows.filter((p) => Number(p.selling_price) > 0)[0];
     assert.ok(pick, 'the catalogue has no priced product — the starter catalogue is missing and this audit cannot trade');
+    // A UNIQUE PHONE PER RUN, and the customer is TRACKED so the harness retires it when the
+    // audit ends. The product refuses a second customer on the same number — correctly:
+    // "Deposit Audit Customer 77a2 is already on 08031234567 and owes ₦25,500. Open that
+    // record instead — creating a second one splits their credit limit in two." That refusal
+    // was the previous RUN's customer: a deleted-but-not-removed fixture from a run that
+    // failed mid-way, still owing money on a live deployment, which is exactly why the
+    // numbers below are unique and the row is handed to the harness rather than forgotten.
+    const suffix = Date.now().toString(36).slice(-4);
     const cust = await owner.post('/api/customers', {
-      name: `Deposit Audit Customer ${Date.now().toString(36).slice(-4)}`,
-      phone: '08031234567',
+      name: `Deposit Audit Customer ${suffix}`,
+      phone: `0803${String(Date.now()).slice(-7)}`,
       customer_type: 'INDIVIDUAL',
     });
     assert.ok(cust.status < 400, `creating the customer answered ${cust.status}: ${String(cust.text).slice(0, 200)}`);
     const customerId = cust.json.id || (cust.json.customer && cust.json.customer.id);
     assert.ok(customerId, 'the customer was created and the answer carries no id');
+    d.trackCustomer(customerId);
     return { product: pick, customerId };
   });
   const unitPrice = round2(product.product.selling_price);
@@ -291,6 +300,45 @@ runAudit('deposits', async (audit, d) => {
     const row = await depositRow(opened.json.id);
     assert.ok(row && String(row.status) === 'CANCELLED',
       `the cancelled deposit reads ${row ? row.status : 'absent'}. A cancellation the book does not show is money the shop cannot account for`);
+  });
+
+  // ===================================================================
+  audit.section('The promise, on the record — and collected');
+  // ===================================================================
+  await audit.checkAsync('the balance the shop carried is on the customer’s account, and can be collected', async () => {
+    // BACK TO FRONT: THE PROMISE IS ON THE CUSTOMER'S ACCOUNT, WITH A NUMBER ON IT.
+    // Goods left on a manager's say-so, so the debt has to be somewhere an owner can see it
+    // — on the customer, not only in a note. And a debtor cannot even be removed from the
+    // book (`409 CUSTOMER_HAS_DEBT`), which is how this check found its way in here: a live
+    // run of this audit could not retire its own fixture customer because the balance the
+    // override had just created was still outstanding.
+    // Goods left on a manager's say-so, so the debt has to be somewhere an owner can see it
+    // — on the customer, not only in a note. And a debtor cannot even be removed from the
+    // book (`409 CUSTOMER_HAS_DEBT`), which is how this check found its way in here: a live
+    // run of this audit could not retire its own fixture customer because the balance the
+    // override had just created was still outstanding.
+    const owed = round2(unitPrice - round2(unitPrice * 0.25));
+    const who = await owner.get(`/api/customers/${encodeURIComponent(product.customerId)}`);
+    assert.equal(who.status, 200, `reading the customer back answered ${who.status}`);
+    const person = who.json.customer || who.json;
+    assert.equal(round2(person.credit_balance), owed,
+      `the sale carried ${money(owed)} on account and the customer's balance is ${money(person.credit_balance)}. A balance the customer's record does not show is money nobody will ever collect`);
+
+    const paid = await manager.post(`/api/customers/${encodeURIComponent(product.customerId)}/payments`,
+      { amount: owed, method: 'CASH' }, { idempotencyKey: `deposits-settle-${Date.now().toString(36)}` });
+    assert.ok(paid.status < 400, `settling the account answered ${paid.status}: ${String(paid.text).slice(0, 240)}`);
+    const settled = await owner.get(`/api/customers/${encodeURIComponent(product.customerId)}`);
+    const person2 = settled.json.customer || settled.json;
+    assert.equal(round2(person2.credit_balance), 0,
+      `the account was settled in full and still shows ${money(person2.credit_balance)} owing`);
+
+    // AND NOW THE FIXTURE CAN BE TAKEN OFF THE BOOK — which is also the product's own rule:
+    // "A debtor cannot be deleted — collect or write off the balance first, so the decision
+    // is on the record."
+    const removed = await manager.del(`/api/customers/${encodeURIComponent(product.customerId)}`);
+    assert.ok(removed.status < 300,
+      `a settled customer could not be removed: ${removed.status} ${String(removed.text).slice(0, 200)}. A customer who owes nothing and is not wanted is one the book should be able to let go`);
+    if (Array.isArray(d.created.customers)) d.created.customers = d.created.customers.filter((c) => String(c.id) !== String(product.customerId));
   });
 }, {
   setup: () => startDeployment({

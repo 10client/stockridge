@@ -3410,3 +3410,33 @@ sale)"*. Neither half of that promise was true:
 Neither had any test, and neither is reachable in normal trading until a customer arrives to
 collect goods they have not finished paying for — which is the moment the shop least wants to
 discover it.
+
+### P3 live leg — and one more finding only a live deployment had (2026-10-06)
+
+`audit.returns` **13/13** and `audit.deposits` **10/10** against staging, both writing real
+fixtures and retiring them. `npm run verify` **395/395/0**; `bash test/run-audits.sh`
+**14 audits, every check green**. Coverage after P3: **109 of 196 routes exercised by an
+audit**, 68 reached by a screen only, 19 unreached. Returns 3/3 and deposits 5/5.
+
+Three live-only findings, all now closed:
+
+1. **A deploy rotates the JWT secret and the old bundle keeps serving for a few seconds.**
+   The first live deposits run after deploying produced `401 TOKEN_BAD_SIGNATURE` on
+   *intermittent* calls inside a single run — one request served by the new bundle, the next
+   by the old one, each with a different secret. Waited 45 s and re-ran: green. Worth knowing
+   before blaming a token bug.
+2. **A customer who owes money cannot be deleted** (`409 CUSTOMER_HAS_DEBT — "A debtor cannot
+   be deleted — collect or write off the balance first, so the decision is on the record."`).
+   The audit's `allow_outstanding` completion deliberately creates a debt, so on a live
+   deployment its fixture customer could never be retired: the previous run's debtor was still
+   on staging owing ₦25,500, and the run after that was refused a new customer on the same
+   phone number. The audit now reads the balance back, **collects it** (a real payment through
+   `POST /api/customers/:id/payments`), asserts the account goes to zero and only then removes
+   the customer — and the customer numbers are unique per run.
+3. **The audit's own readers are the first suspect.** A reader closed over `{ product }` but
+   asked for `product.id`, matched no row and answered 0 for every shelf reading — the same
+   silent-zero trap as P2, caught in a minute this time because the reader now asserts the
+   product id it is reading before it reads.
+
+Deployed after the fixes: staging `readiness: ready` (2 businesses trading), sample and
+production `awaiting the first business — this is the expected handover state`.
