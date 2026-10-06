@@ -259,5 +259,44 @@ does, and when it started.
 #### Counts
 
 `npm run verify` **395/395/0** · `bash test/run-audits.sh` **18 audits green** (serials 27,
-warranty 26) · coverage **197 routes · 145 audited · 36 screen-only · 16 unreached**, with
+warranty 26) · coverage **197 routes · 141 audited · 40 screen-only · 16 unreached**, with
 **warranty-claims 3/3** and **serials 2/2**.
+
+### P6a/P6b — THE LIVE LEGS
+
+Both new audits run against **staging** in write mode and pass:
+
+| audit | local | staging | left behind |
+| --- | --- | --- | --- |
+| `audit.serials` | 27 checks, 0.9 s | **27 checks, 14.4 s** | 2 seats retired, 3 settings put back (both products retired, the serial-capture switch restored) |
+| `audit.warranty` | 26 checks, 0.9 s | **26 checks, 13.9 s** | 2 seats retired, 2 settings put back (both products retired) |
+
+**Migration `0007` was applied to all three environments** by the deploy itself — staging, sample
+and production all report `ready` / `awaiting_first_business` and all three now carry it.
+
+*One flaw fixed before the live run, and it was the live run's fault that I saw it:* the register's
+`counts` were computed **without** the filters on the list, so `GET /api/serials?product_id=X`
+would have answered three rows of one product beside a deployment-wide count. On a fresh database
+the two agree by accident; on staging (nine serials from other runs) the audit would have read
+"the register disagrees with itself". The counts now follow the same `WHERE` as the list.
+
+**What the live runs left on staging, said plainly:** 9 serial numbers in the register, 4 closed
+warranty claims, and the stock/sales behind them. This is *history the product deliberately does
+not delete* — a serial is evidence, and a claim that was resolved is a fact about a customer — so
+the audit retires what it can (both products, both customers, all four seats, every setting it
+touched) and reports the rest instead of pretending. Sample and production have no such debris:
+nothing was written there.
+
+**The sweep item is now larger and is worth doing properly:** staging carries `http-*`, `audit-*`,
+`rtn-*`, `dep-*`, `ful-*`, `stf-*`, `ser-*`, `war-*` fixtures across users, businesses, customers,
+products, serials and claims. A `--clean` pass that retires fixture ROWS (never history) belongs
+in the deploy tooling.
+
+### Where the coverage stands now
+
+**197 routes · 141 audited · 40 screen-only · 16 unreached.** Every flow at 100%: **warranty-claims
+3/3**, **serials 2/2**, attendance 8/8, compliance 7/7, returns, deposits, instalments, deliveries,
+products. Next by size: **reports 8**, then audit 3, notifications 3, suppliers 2/5, stock 4/7,
+transfers (including `stock_transfer_serials`, which the capability baseline still lists as
+WIRE UP — a serialised unit moved between branches is not yet traceable), and parity **G4
+dashboard depth**.

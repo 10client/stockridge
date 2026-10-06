@@ -848,14 +848,20 @@ function mount(app, base = '/api') {
         LEFT JOIN products p ON p.id = sn.product_id
         LEFT JOIN customers c ON c.id = sn.customer_id
         WHERE ${whereSql}`, params);
-    // The counts answer "how many units have I identified, and how many are still
-    // mine" — the question a shop asks after a first goods receipt with serials.
+    // The counts answer "how many units have I identified, and how many are still mine" —
+    // the question a shop asks after a first goods receipt with serials. They follow THE SAME
+    // FILTERS AS THE LIST: a count that ignored them would report the whole deployment's
+    // register beside three rows of one product, and a shop (or an audit) comparing the two
+    // would be told the register disagrees with itself.
     const counts = await db.first(`SELECT
           COUNT(*) AS total,
           SUM(CASE WHEN sn.sale_id IS NULL THEN 1 ELSE 0 END) AS unsold,
           SUM(CASE WHEN sn.sale_id IS NOT NULL THEN 1 ELSE 0 END) AS sold,
           SUM(CASE WHEN sn.sale_id IS NOT NULL AND sn.warranty_ends_at IS NOT NULL AND sn.warranty_ends_at >= ? THEN 1 ELSE 0 END) AS in_warranty
-        FROM serial_numbers sn WHERE sn.is_deleted = 0`, [watToday()]);
+        FROM serial_numbers sn
+        LEFT JOIN products p ON p.id = sn.product_id
+        LEFT JOIN customers c ON c.id = sn.customer_id
+        WHERE ${whereSql}`, [watToday(), ...params]);
     ctx.json({ ...listResponse(rows, { limit, offset }, total), counts, today: watToday() });
   });
 
