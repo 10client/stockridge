@@ -3034,3 +3034,51 @@ Still open in G1c: `POST /api/data-management/purge` (OWNER-only, exact mode phr
 `export_confirmed` + `retention_acknowledged`, writes `data_cleanup_log`), the screened
 confirmation modal, the offline-replay quarantine hook in `server/routes/sync.js`, and
 `test/audit/audit.purge.js` (8 → 9 audits).
+
+### G1c checkpoint 2 — the door, the receipt, and the queue that came back from the dead
+
+The cleanup is now reachable, guarded and recorded end to end. `npm run verify` → **373/373/0**;
+`test/run-audits.sh` → **9 audits, every check green** (`audit.purge`, 16 checks, new).
+
+**The endpoint** (`server/routes/dataManagementPurge.js`, mounted from `dataManagement.js` so the
+mode list and its phrases have ONE home): `POST /api/data-management/purge/preview` counts without
+deleting, and `POST /api/data-management/purge` requires, in this order —
+
+* an **OWNER or ADMIN** seat (a manager runs the shop; the proprietor owns its records; the vendor
+  seat is included deliberately so a client who cannot get in can be helped — and every platform run
+  is **attributed** in the log and the audit trail, so it is never mistaken for the client's own);
+* the **exact phrase** for the mode, trimmed of surrounding whitespace and nothing else. The refusal
+  carries `fields.expected_phrase`, so the screen can show the phrase instead of "try again";
+* `export_confirmed` **and** `retention_acknowledged` as literal `true` (428 otherwise);
+* a non-empty scope. A cleanup that applies to nothing is refused with `BUSINESS_REQUIRED` rather
+  than reported as a success over an unchanged database.
+
+A run writes `data_cleanup_log` (mode, who, the window, and a summary with per-table removals **and
+what survived**) and an audit entry `DATA_CLEANUP_RUN` that records the **phrase that was typed and
+the declarations that were made** — the useful question six months later is not whether a cleanup
+ran but what the person agreed to. The answer back to the screen carries `continuity`
+(batches/units/products still on the shelf, seats remaining), counted AFTER the deletion.
+
+**The queue that came back from the dead.** `server/routes/sync.js` now reads the last cleanup
+(`MAX(created_at) FROM data_cleanup_log`) once per push and **quarantines** any queued operation
+dated before it: not applied, reported as `QUARANTINED / STALE_AFTER_CLEANUP` with a sentence a
+cashier can act on, and stored in `sync_conflicts` so a manager can re-enter it by hand. The
+watermark is deployment-wide on purpose — over-quarantining costs a review, under-quarantining
+recreates records that were deleted on purpose. The PWA side (`public/js/sync.js`) marks a
+quarantined item **FAILED** rather than retrying it forever; a queue that never drains is worse than
+a queue that stops and asks.
+
+**Proved by running** (`test/integration/data-management-purge.test.js`, 9 tests): a manager and a
+cashier are refused 403 on both endpoints; a lowercase phrase is refused 428 *and names the phrase*;
+a missing export declaration is refused; the preview counts and writes **nothing**; a period cleanup
+with no period and a backwards period are refused; the run removes, logs, audits and reports
+continuity; and the **two-way quarantine check** — an operation dated before the cleanup is
+quarantined *and stored*, while one dated after it goes down the ordinary replay path.
+
+Two test bugs were found by running and are recorded because both would have been read as product
+defects: a hard-coded afternoon on a morning that had not finished (the sale engine refused the
+"fresh" replay for being in the future), and "the newest cleanup-log row" — which, after this file
+started recording its own cleanup, answered with the wrong run and quietly asserted nothing.
+
+**Next:** deploy staging, run `AUDIT_BASE=… node test/audit/audit.purge.js` against it, probe the two
+endpoints on sample and production, then **G2 — change-owed settlement**.

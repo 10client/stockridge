@@ -38,6 +38,7 @@ const { HttpError } = require('../lib/http');
 const { atLeast } = require('../../domain/roles');
 const { estimate } = require('../lib/storage');
 const { RETENTION_DAYS, retentionPreview } = require('../lib/retention');
+const purgeRoutes = require('./dataManagementPurge');
 
 /** The modes a purge will offer, with the phrase that must be typed to mean it. */
 const PURGE_MODES = Object.freeze([
@@ -164,6 +165,11 @@ function mount(app, base = '/api') {
       };
     }), { limit, offset }, Number((total && total.c) || 0)));
   });
+
+  // THE DESTRUCTIVE HALF, in its own file, mounted with THIS file's mode list so
+  // the phrases the screen shows and the phrases the endpoint demands cannot drift
+  // apart. Called last so a failure to mount it cannot hide the two safe reads.
+  purgeRoutes.mount(app, base, { modes: PURGE_MODES, notice: RETENTION_NOTICE });
 }
 
 module.exports = { mount, PURGE_MODES, RETENTION_NOTICE };

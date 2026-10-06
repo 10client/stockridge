@@ -132,7 +132,7 @@
     }
 
     const results = (result && result.results && result.results.operations) || [];
-    let applied = 0; let rejected = 0; let conflicts = 0;
+    let applied = 0; let rejected = 0; let conflicts = 0; let quarantined = 0;
     const failures = [];
 
     for (const r of results) {
@@ -141,6 +141,17 @@
       if (r.status === 'APPLIED' || r.status === 'ALREADY_APPLIED') {
         applied += 1;
         await SR.store.markSynced(key, r.result ? r.result.saleId || r.result.receiptNo || null : null);
+      } else if (r.status === 'QUARANTINED') {
+        // THE SERVER WILL QUARANTINE IT AGAIN EVERY TIME, SO IT MUST NOT BE RETRIED.
+        //
+        // This is the one outcome where "leave it and try later" is the wrong
+        // answer: the operation is dated before a data cleanup, so it can never be
+        // applied — retrying it forever would show the counter a queue that never
+        // drains. It is marked FAILED, which puts it in front of a person on the Sync
+        // screen, with the server's own sentence about why.
+        quarantined += 1;
+        await SR.store.markFailed(key, { code: r.code || 'STALE_AFTER_CLEANUP', message: r.message });
+        failures.push({ key, code: r.code || 'STALE_AFTER_CLEANUP', message: r.message, quarantined: true });
       } else if (r.status === 'REJECTED' || r.status === 'ERROR') {
         if (r.retryable) {
           conflicts += 1;
@@ -171,11 +182,11 @@
     await SR.store.log({
       kind: 'PUSH', status: rejected ? 'PARTIAL' : 'OK',
       count: queued.length, applied, rejected,
-      message: rejected ? `${rejected} refused, ${applied} applied` : `${applied} applied`,
+      message: `${applied} applied${rejected ? `, ${rejected} refused` : ''}${quarantined ? `, ${quarantined} quarantined after a cleanup` : ''}`,
     });
     await SR.store.purgeSynced({ olderThanHours: 48 });
     emit('change', status());
-    return { ok: true, applied, rejected, retrying: conflicts, failures, server: result };
+    return { ok: true, applied, rejected, retrying: conflicts, quarantined, failures, server: result };
   }
 
   /** Strip the fields this client added for its own bookkeeping. */

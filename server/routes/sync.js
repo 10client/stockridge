@@ -165,7 +165,23 @@ function mount(app, base = '/api') {
     }
 
     const results = { operations: [], mutations: [] };
-    let applied = 0; let rejected = 0; let conflicts = 0;
+    let applied = 0; let rejected = 0; let conflicts = 0; let quarantined = 0;
+
+    // THE CLEANUP WATERMARK, read once per sync rather than per operation.
+    //
+    // A device that was offline while a cleanup ran is holding operations that
+    // describe a shop that no longer exists in this database: a sale for a product
+    // that was purged, a transfer against a batch that is gone. Applying them would
+    // RE-CREATE THE VERY ROWS THE OWNER DELETED, days later, from a queue nobody is
+    // watching — and it would look, in the audit trail, exactly like ordinary trade.
+    //
+    // The watermark is deployment-wide rather than per business, deliberately.
+    // `data_cleanup_log` records a run against a deployment, and on a multi-business
+    // deployment the conservative error is the cheap one: quarantining a stale replay
+    // that belonged to a neighbouring business costs a manager thirty seconds of
+    // review, while applying one recreates records that were deleted on purpose.
+    const watermark = await db.scalar('SELECT MAX(created_at) FROM data_cleanup_log');
+    const lastCleanupAt = watermark ? String(watermark) : null;
 
     // ---- 1. OPERATIONS: replayed through the real HTTP endpoints.
     //
@@ -186,6 +202,30 @@ function mount(app, base = '/api') {
         results.operations.push({ clientId: null, type: kind, status: 'REJECTED', code: 'IDEMPOTENCY_KEY_REQUIRED', message: 'Every queued operation needs an idempotency key, or a retried sync would apply it twice.' });
         rejected += 1;
         continue;
+      }
+
+      // ---- QUARANTINE: queued BEFORE the last cleanup, applied NEVER.
+      if (lastCleanupAt) {
+        const occurredAt = strField(op.occurred_at || op.occurredAt || '', { field: 'Occurred at', maxLength: 40 });
+        if (occurredAt && String(occurredAt) < String(lastCleanupAt)) {
+          quarantined += 1;
+          // STORED, NOT DISCARDED. The device's operation is evidence: it says what
+          // the shop believed had happened, and a manager may need to re-enter it by
+          // hand. Conflict storage already exists for exactly this "the server wins
+          // but keep what the device sent" case, so it is used rather than a new table.
+          await db.run(`INSERT INTO sync_conflicts (
+              id, table_name, row_id, branch_id, device_id, losing_version_json, winning_version_json, detected_at)
+            VALUES (?,?,?,?,?,?,?, datetime('now'))`, [
+            newId(), 'offline_queue', key, branch ? String(branch.id) : null, deviceId,
+            JSON.stringify({ type: kind, occurred_at: occurredAt, payload: op.payload || op.data || op.body || null }),
+            JSON.stringify({ applied: false, reason: 'STALE_AFTER_CLEANUP', last_cleanup_at: lastCleanupAt, quarantined_at: new Date().toISOString() }),
+          ]);
+          results.operations.push({
+            clientId: key, type: kind, status: 'QUARANTINED', code: 'STALE_AFTER_CLEANUP',
+            message: `This was queued before the data cleanup of ${lastCleanupAt} and was NOT applied — replaying it would put back records that were deliberately removed. It is stored under Sync → Conflicts for a manager to review and re-enter by hand if it is still true.`,
+          });
+          continue;
+        }
       }
 
       // Substitute the path parameters. A missing one is a device-side bug and
@@ -470,22 +510,22 @@ function mount(app, base = '/api') {
         action: 'SYNC_PUSH_PARTIAL', entityType: 'SYNC', entityId: deviceId,
         branchId: branch ? String(branch.id) : null,
         businessId: business ? String(business.id) : null,
-        after: { deviceId, appVersion, operations: operations.length, mutations: mutations.length, applied, rejected, conflicts, clockSkewMinutes },
+        after: { deviceId, appVersion, operations: operations.length, mutations: mutations.length, applied, rejected, conflicts, quarantined, clockSkewMinutes },
       });
     }
 
     ctx.json({
       ok: rejected === 0,
-      applied, rejected, conflicts,
+      applied, rejected, conflicts, quarantined,
       clockSkewMinutes,
       results,
       // The cursor the device should use for its next pull. Taken from the
       // server clock AFTER the push, so the device's own writes come back to it
       // on the next pull rather than being missed.
       cursor: new Date().toISOString(),
-      message: rejected === 0 && conflicts === 0
+      message: rejected === 0 && conflicts === 0 && quarantined === 0
         ? `${applied} item(s) synced from ${deviceId}.`
-        : `${applied} applied, ${rejected} refused${conflicts ? `, ${conflicts} conflict(s)` : ''}. The refused items are listed with a reason for each — they will not apply on retry, so they need a person.`,
+        : `${applied} applied, ${rejected} refused${conflicts ? `, ${conflicts} conflict(s)` : ''}${quarantined ? `, ${quarantined} quarantined after a cleanup` : ''}. Each item is listed with its reason — the refused and quarantined ones will not apply on retry, so they need a person.`,
     }, rejected === 0 ? 200 : 207);
   });
 

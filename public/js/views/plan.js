@@ -22,6 +22,170 @@
   /** The rows out of a paged list response, whichever shape the server used. */
   function inRows(res) { return (res && (res.data || res.rows || res.cleanups)) || []; }
 
+  /**
+   * THE CLEANUP, SCREENED THE WAY A DESTRUCTIVE ACTION DESERVES.
+   *
+   * Three things stand between the button and the deletion, and each one exists
+   * because the others can be got past by reflex:
+   *
+   *   a COUNT, so the operator agrees to a number rather than to prose;
+   *   a TYPED PHRASE, because typing "CLEAR ALL BUSINESS DATA" cannot happen by
+   *     accident the way a double-click can;
+   *   two DECLARATIONS, which are not security — they are the two questions a
+   *     person should have answered before they got this far, asked in writing.
+   *
+   * The request is sent with the default offline behaviour (`queue: false`), so a
+   * cleanup is ONLINE ONLY: it fails loudly rather than sitting in the queue to be
+   * replayed hours later against a database that has moved on. A queued deletion
+   * is the one thing in this application that must never happen.
+   */
+  function openCleanupFlow(mode) {
+    return new Promise((resolve) => {
+      let settled = false;
+      let busy = false;
+
+      const body = ui.h('div', { class: 'stack' });
+      body.appendChild(ui.h('p', {}, mode.description || ''));
+      if (mode.keeps) body.appendChild(ui.h('p', { class: 'sub' }, `Kept: ${mode.keeps}`));
+
+      const dates = {};
+      if (mode.needs_dates) {
+        const row = ui.h('div', { class: 'row' });
+        for (const field of ['start_date', 'end_date']) {
+          const input = ui.h('input', { type: 'date' });
+          dates[field] = input;
+          row.appendChild(ui.h('label', { class: 'ctl' }, field === 'start_date' ? 'First day' : 'Last day (included)'));
+          row.appendChild(input);
+        }
+        body.appendChild(row);
+      }
+
+      const counts = ui.h('div', {});
+      const previewBtn = ui.h('button', {
+        class: 'btn btn-sm',
+        onClick: async () => {
+          if (busy) return;
+          busy = true;
+          counts.replaceChildren(ui.loading('Counting…'));
+          try {
+            const res = await SR.api.post('/api/data-management/purge/preview', {
+              mode: mode.code,
+              start_date: dates.start_date ? dates.start_date.value : null,
+              end_date: dates.end_date ? dates.end_date.value : null,
+            });
+            const rows = Object.entries(res.would_remove || {}).map(([table, n]) => ({ table, n }));
+            if (!rows.length) {
+              counts.replaceChildren(ui.h('div', { class: 'alert' }, 'Nothing matches. This cleanup would remove no rows at all — check the period before running it.'));
+            } else {
+              counts.replaceChildren(ui.h('p', { class: 'sub' }, `${U.qty(res.total)} row(s) would be removed:`),
+                ui.renderTable({
+                  columns: [{ key: 'table', label: 'Record' }, { key: 'n', label: 'Rows', render: (r) => U.qty(r.n) }],
+                  rows,
+                }),
+                ui.h('p', { class: 'hint' }, 'Counting follows the same plan the cleanup runs, against this database as it is now.'));
+            }
+          } catch (err) {
+            counts.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'The count could not be taken.'));
+          } finally { busy = false; }
+        },
+      }, 'Count what would be removed');
+      body.appendChild(ui.h('div', { class: 'row' }, previewBtn));
+      body.appendChild(counts);
+
+      body.appendChild(ui.h('hr'));
+      body.appendChild(ui.h('p', {}, 'To continue, type this exactly:'));
+      body.appendChild(ui.h('p', {}, ui.h('code', {}, mode.phrase)));
+      const phrase = ui.h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'characters', spellcheck: 'false', placeholder: 'Type the phrase' });
+      body.appendChild(phrase);
+
+      const exportBox = ui.h('input', { type: 'checkbox' });
+      const noticeBox = ui.h('input', { type: 'checkbox' });
+      body.appendChild(ui.h('label', { class: 'ctl' }, exportBox, ' I have exported and verified every record I must keep, and I understand this cannot be undone.'));
+      body.appendChild(ui.h('label', { class: 'ctl' }, noticeBox, ' I have read the notice below and checked my retention obligations.'));
+      body.appendChild(ui.h('div', { class: 'alert alert-warn' }, mode.notice || 'Deleting a record is permanent from this application.'));
+
+      const runBtn = ui.h('button', { class: 'btn btn-danger', onClick: run }, 'Run this cleanup');
+      runBtn.disabled = true;
+      const cancel = ui.h('button', { class: 'btn', onClick: () => finish(null) }, 'Cancel');
+
+      function ready() {
+        return phrase.value.trim() === mode.phrase && exportBox.checked && noticeBox.checked;
+      }
+      function refresh() { runBtn.disabled = !ready(); }
+      phrase.addEventListener('input', refresh);
+      exportBox.addEventListener('change', refresh);
+      noticeBox.addEventListener('change', refresh);
+
+      async function run() {
+        if (busy || !ready()) return;
+        busy = true;
+        runBtn.disabled = true;
+        runBtn.textContent = 'Running…';
+        try {
+          const res = await SR.api.post('/api/data-management/purge', {
+            mode: mode.code,
+            phrase: phrase.value.trim(),
+            export_confirmed: true,
+            retention_acknowledged: true,
+            start_date: dates.start_date ? dates.start_date.value : null,
+            end_date: dates.end_date ? dates.end_date.value : null,
+          });
+          const kept = res.continuity || {};
+          ui.ok(`${res.label || mode.label}: ${U.qty(res.total)} row(s) removed. Still trading with ${U.qty(kept.stock_batches || 0)} batch(es) holding ${U.qty(kept.stock_base_units || 0)} unit(s).`);
+          finish(res);
+        } catch (err) {
+          const message = (err && err.message) || 'The cleanup did not run.';
+          body.appendChild(ui.h('div', { class: 'alert alert-warn' }, `Nothing was deleted: ${message}`));
+          runBtn.disabled = false;
+          runBtn.textContent = 'Try again';
+        } finally { busy = false; }
+      }
+
+      const modal = ui.openModal({
+        title: `Cleanup — ${mode.label}`,
+        body,
+        footer: [cancel, runBtn],
+        size: 'lg',
+        onClose: () => finish(null),
+      });
+      setTimeout(() => phrase.focus(), 40);
+
+      function finish(value) { if (settled) return; settled = true; resolve(value); modal.close(value); }
+    });
+  }
+
+  /** The five cleanups, offered only to the seat the endpoint will accept. */
+  function cleanupCard(data, reload) {
+    const dm = data.dataManagement || {};
+    const modes = dm.modes || [];
+    if (!modes.length) return null;
+    const canRun = SR.state.atLeast('OWNER');
+
+    const list = ui.h('div', { class: 'stack' });
+    for (const m of modes) {
+      list.appendChild(ui.h('div', { class: 'row' },
+        ui.h('div', {},
+          ui.h('strong', {}, m.label),
+          ui.h('p', { class: 'sub' }, m.description || ''),
+          m.keeps ? ui.h('p', { class: 'hint' }, `Kept: ${m.keeps}`) : null),
+        ui.h('div', { class: 'spacer' }),
+        canRun ? ui.h('button', {
+          class: 'btn btn-sm btn-danger',
+          onClick: async () => {
+            const result = await openCleanupFlow({ ...m, notice: dm.retention_notice });
+            if (result) reload();
+          },
+        }, 'Start') : null));
+    }
+
+    return ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+      ui.h('h2', {}, 'Data cleanup'),
+      ui.h('p', { class: 'sub' }, canRun
+        ? 'These remove records permanently. Every one of them counts first, asks you to type a phrase, and writes what it removed to the cleanup log.'
+        : 'Only the owner — or the platform administrator — can run a cleanup. You can see what each one does, and how much room the deployment has left.'),
+      list));
+  }
+
   async function render(ctx) {
     ctx.setTitle('Subscription');
     const wrap = ui.h('div', { class: 'stack' });
@@ -167,6 +331,12 @@
           ui.h('h2', {}, 'Records and room'),
           ui.h('p', { class: 'sub' }, 'Ask a manager or the owner how much room this deployment has left. Capacity and retention are shown to managers and above.'))));
       }
+
+      // THE CLEANUPS THEMSELVES, under the card that says how full the database is:
+      // "there is no room left" and "here is how you make room" are the two halves of
+      // one answer, and the second half is destructive enough to deserve its own card.
+      const cleanup = cleanupCard(data, load);
+      if (cleanup) stack.appendChild(cleanup);
 
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'What is in use'),
