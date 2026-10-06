@@ -59,6 +59,7 @@ console.log('='.repeat(64));
 /** Files in test/audit/ that are not audits, with the reason. Nothing else is allowed. */
 const NOT_AN_AUDIT = Object.freeze({
   'suite.js': 'this file — the guard, not an audit',
+  'probe-catalog-write.js': 'a one-shot reproduction, run by hand against a named deployment with AUDIT_BASE/AUDIT_USER/AUDIT_PIN — it asserts nothing and leaves a PROBE- product behind, so it must NOT run in a suite. Declared here so the guard above still means "every file in this directory is accounted for"',
 });
 
 const files = fs.readdirSync(DIR, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.js')).map((e) => e.name).sort();

@@ -2828,3 +2828,41 @@ against the real database with room to spare; a 501-item push is refused before 
 written (`SYNC_BATCH_TOO_LARGE`).
 
 **Files:** `server/lib/respond.js` (+`searchTerm`, `MAX_SEARCH_BYTES`), `server/routes/{accounting,admin,afterSales,catalog,customers,sales,stock}.js`, `test/audit/audit.limits.js` (new).
+
+### T4 closed — the gate, and the live proof, on all three deployments
+
+* `npm run verify` **348/348/0**; `test/audit/suite.js` **21 checks / 7 audit(s) wired**;
+  `bash test/run-audits.sh` **"7 audit(s), every check green"**.
+* Live: staging `audit.sync` **36/36**, `audit.limits` **16/16**, `audit.concurrency` green;
+  sample and production carry the whole stage and now answer a 60-character search with **200**
+  where every deployment used to answer **500**.
+* `T4a` idempotency · `T4b` per-device sync status (migration 0006) · `T4c` the catalogue write
+  path (create 500, ladder edit 409) · `T4d` the platform ceilings (the 50-byte pattern).
+
+### Stage T5 — the simulation (the plan, in stages)
+
+Every probe so far tests ONE thing. T5 runs the whole shop, because the defects that hurt most are
+the ones nobody thought to probe: a sale that posts to the ledger, a return against it, a till
+closing over or short, month-end VAT, a stocktake — one continuous scenario where the numbers have
+to agree at every step, not just at the end.
+
+* **T5a — one trading day, end to end.** Open a till; sell for cash, transfer and POS; a credit
+  sale against a limit; a layaway deposit; a return; a stock receive; an expense; close the till
+  over or short. Assert after EVERY step that stock, the ledger and the till agree, and at the end
+  that the day's profit equals the sum of its transactions.
+* **T5b — the same day with the network pulled.** The identical sequence queued through the PWA's
+  own sync engine with the server unreachable, then pushed: the receipts must match the online
+  day's, and nothing may apply twice.
+* **T5c — a quarter in a day.** Three months of trading: VAT return, WHT, P&L, trial balance,
+  balance sheet at each month end. The trial balance must balance, the P&L must equal the ledger,
+  and the balance-sheet identity must hold.
+* **T5d — the physical shop.** A stocktake with a variance and its approval, a multi-branch
+  transfer, a delivery job through to installation, and a warranty claim.
+
+One audit file per stage (`audit.sim-day.js`, `audit.sim-offline.js`, `audit.sim-quarter.js`,
+`audit.sim-shop.js`), each green locally AND on staging before the next begins.
+
+**Open, still owed:** the `--clean` sweep for `http-*`/`audit-*` accounts and `PROBE-`/`AUDIT-`
+fixtures; the `updated_at` second-precision tie in LWW (sub-second timestamps); Stage 11/12
+leftovers (compliance 409 path, `PROBE_DEBUG`, notifications bell); till/bank/POS/mobile-money
+expense methods at route level.
