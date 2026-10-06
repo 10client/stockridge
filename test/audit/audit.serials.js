@@ -332,6 +332,69 @@ runAudit('serials', async (audit, d) => {
   });
 
   // ===================================================================
+  // THE OTHER INTAKE — GOODS BOUGHT ON A PURCHASE ORDER
+  // ===================================================================
+  // Two routes receive goods, and the first version of this capture lived in only one of
+  // them: the direct goods-received route, which is what a shop uses when a load arrives
+  // with no paperwork. Appliances are bought on a purchase order, so the ordinary path was
+  // the one still unable to register a unit — the same dead end one route over.
+  audit.section('The same numbers, arriving against an order');
+
+  await audit.checkAsync('a purchase-order receipt without serials is refused, and a line with them is filed', async () => {
+    const supplier = await audit.captureAsync('a supplier to order from', async () => {
+      const res = await owner.post('/api/suppliers', {
+        name: `Serial Audit Supplier ${MARK}`, phone: `0809${String(Date.now()).slice(-7)}`,
+        supplier_type: 'DISTRIBUTOR', payment_terms_days: 30,
+      });
+      assert.ok(res.status < 400, `creating the supplier answered ${res.status}: ${String(res.text).slice(0, 200)}`);
+      const id = res.json.id || (res.json.supplier && res.json.supplier.id);
+      assert.ok(id, 'the supplier was created and the answer carries no id');
+      d.trackSupplier(id);
+      return { id };
+    });
+
+    const po = await audit.captureAsync('a purchase order for two freezers', async () => {
+      const res = await manager.post('/api/purchase-orders', {
+        branch_id: branch.id, supplier_id: supplier.id,
+        items: [{ product_id: product.id, quantity: 2, expected_unit_cost: 185000 }],
+        notes: 'Serial audit — received with serial numbers.',
+      });
+      assert.ok(res.status < 400, `raising the purchase order answered ${res.status}: ${String(res.text).slice(0, 240)}`);
+      const id = res.json.id || res.json.purchase_order_id || (res.json.purchase_order && res.json.purchase_order.id);
+      assert.ok(id, 'the order was raised and the answer carries no id');
+      return { id, number: res.json.po_number || res.json.poNumber || null };
+    });
+
+    const lines = await audit.captureAsync('the order read back with its line', async () => {
+      const res = await owner.get(`/api/purchase-orders/${encodeURIComponent(po.id)}`);
+      const items = res.json.items || res.json.data || [];
+      assert.ok(Array.isArray(items) && items.length === 1, `the order read back with ${Array.isArray(items) ? items.length : 'no'} line(s)`);
+      return items[0];
+    });
+
+    const noSerials = await manager.post(`/api/purchase-orders/${encodeURIComponent(po.id)}/receive`, {
+      receipts: [{ item_id: lines.id, quantity_received: 2 }], on_credit: 370000,
+    });
+    assert.equal(noSerials.status, 400,
+      `receiving two serial-tracked units against an order with no serial numbers answered ${noSerials.status}. Appliances are bought on orders, so this is the path a shop actually uses — and stock that arrives here has to be sellable`);
+    assert.equal(noSerials.json.code, 'SERIALS_REQUIRED', `the refusal came back as ${noSerials.json.code}`);
+
+    const res = await manager.post(`/api/purchase-orders/${encodeURIComponent(po.id)}/receive`, {
+      receipts: [{ item_id: lines.id, quantity_received: 2, serials: [SERIAL(11), SERIAL(12)] }],
+      on_credit: 370000,
+    });
+    assert.ok(res.status < 400, `receiving the order with its serials answered ${res.status}: ${String(res.text).slice(0, 300)}`);
+    assert.equal(Number(res.json.serialCount), 2, `the receipt filed ${res.json.serialCount} serial number(s) for two units`);
+
+    const register = await owner.get(`/api/serials?product_id=${encodeURIComponent(product.id)}&q=${encodeURIComponent(SERIAL(11))}&limit=10`);
+    const row = (register.json.data || [])[0];
+    assert.ok(row, `${SERIAL(11)} was received against a purchase order and is not in the register`);
+    assert.equal(String(row.status), 'IN_STOCK', `${SERIAL(11)} came in as ${row.status}`);
+    assert.equal(String(row.branch_id), String(branch.id), `${SERIAL(11)} is filed at the wrong branch`);
+    assert.equal(Number(row.event_count), 1, `${SERIAL(11)} has ${row.event_count} event(s) in its chain and should have exactly one`);
+  });
+
+  // ===================================================================
   // THE SWITCH — WHAT TURNING SERIAL CAPTURE OFF HAS TO MEAN
   // ===================================================================
   audit.section('The switch in Settings, which used to control nothing');

@@ -36,6 +36,7 @@ const { oneOf } = require('../../domain/validation');
 const { resolveDeduction, exemptionHint, whtRemittanceDueDate, WHT_REMITTANCE_DAY_OF_MONTH } = require('../../domain/nigerianTax');
 const { ageBalance } = require('../../domain/credit');
 const glService = require('../services/glService');
+const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
 
 const PO_STATUSES = ['DRAFT', 'PENDING', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
 
@@ -345,6 +346,7 @@ function mount(app, base = '/api') {
   app.post(`${base}/purchase-orders/:id/receive`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
+    const settings = ctx.get('settings');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can receive goods against a purchase order.', { status: 403, code: 'ROLE_REQUIRED' });
     const id = String(ctx.req.param('id'));
     const body = await ctx.req.json();
@@ -397,8 +399,29 @@ function mount(app, base = '/api') {
       const { weightedAverageCost } = require('../../domain/uom');
       const newAvg = weightedAverageCost(layers);
 
+      // ===================================================================
+      // SERIALS ARRIVE WITH THE GOODS ON A PURCHASE ORDER TOO
+      // ===================================================================
+      // This is the route a shop actually uses to buy appliances and phones — the direct
+      // goods-received route is for a load that arrives with no paperwork. Serial capture
+      // went into that one first, which left the ordinary path unable to register a unit:
+      // the same dead end the feature was built to remove, one route over. Both routes now
+      // call server/services/serialsService.js, so neither can drift.
+      const accepted = await acceptSerials(db, {
+        product, quantityBase: qtyBase,
+        supplied: parseSerials(r.serials || r.serial_numbers || r.serial_no),
+        featureOn: !settings || Number(settings.serial_tracking_enabled) !== 0,
+        what: 'order',
+      });
+      const batchId = newId();
       plan.push({
-        item, product, qtyBase, landed, costPerUnit, freightPerUnit, sellingPrice, newAvg, ladder,
+        item, product, qtyBase, landed, costPerUnit, freightPerUnit, sellingPrice, newAvg, ladder, batchId,
+        serialRows: await planSerialRows(db, accepted.serials, {
+          branchId: String(branch.id), batchId, productId: String(item.product_id),
+          variantId: item.variant_id || null, actorId: String(user.id),
+          note: `Received on ${po.po_number} at ${branch.name}.`,
+        }),
+        serialWarnings: accepted.warnings,
         batchNo: strField(r.batch_no, { field: 'Batch number', maxLength: 60 }) || `${po.po_number}-${(plan.length + 1).toString().padStart(2, '0')}`,
         expiryDate: strField(r.expiry_date, { field: 'Expiry date', maxLength: 10 }),
       });
@@ -427,7 +450,7 @@ function mount(app, base = '/api') {
         tx.queue(`UPDATE purchase_order_items SET quantity_received = quantity_received + ?, updated_at = datetime('now') WHERE id = ?`,
           [p.qtyBase, String(p.item.id)]);
 
-        const batchId = newId();
+        const batchId = p.batchId;
         tx.queue(`INSERT INTO stock_batches (
             id, branch_id, business_id, product_id, variant_id, batch_no, supplier_id, purchase_order_id,
             cost_price_per_unit, selling_price_per_unit, quantity, quantity_reserved, initial_quantity,
@@ -442,6 +465,7 @@ function mount(app, base = '/api') {
         if (p.newAvg != null) {
           tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ?", [round2(p.newAvg), String(p.product.id)]);
         }
+        if (p.serialRows && p.serialRows.length) serialStatements(tx, p.serialRows);
       }
 
       tx.queue(`UPDATE purchase_orders SET status = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -471,10 +495,18 @@ function mount(app, base = '/api') {
       action: 'PO_RECEIVED', entityType: 'PURCHASE_ORDER', entityId: id, branchId: branch.id, businessId: business.id,
       after: { poNumber: po.po_number, lines: plan.length, receivedValue, fullyReceived },
     });
+    const serialCount = plan.reduce((a, p) => a + ((p.serialRows || []).length), 0);
     ctx.json({
       ok: true,
-      message: `${plan.length} line(s) received against ${po.po_number} — ₦${receivedValue.toLocaleString('en-NG')} of stock added at ${branch.name}.${fullyReceived ? ' The order is now complete.' : ' The order remains partly outstanding.'}`,
-      receivedValue, fullyReceived,
+      message: `${plan.length} line(s) received against ${po.po_number} — ₦${receivedValue.toLocaleString('en-NG')} of stock added at ${branch.name}.${fullyReceived ? ' The order is now complete.' : ' The order remains partly outstanding.'}`
+        + (serialCount ? ` ${serialCount} serial number(s) filed, so each unit can be sold and its warranty proved.` : ''),
+      receivedValue, fullyReceived, serialCount,
+      serials: plan.flatMap((p) => (p.serialRows || []).map((r) => r.serialNo)),
+      warnings: [
+        ...plan.flatMap((p) => p.serialWarnings || []),
+        ...plan.filter((p) => Number(p.product.requires_serial) === 1 && !(p.serialRows || []).length && settings && Number(settings.serial_tracking_enabled) === 0)
+          .map((p) => `Serial numbers were not asked for: serial capture is switched off in Settings. ${p.product.name} expects them, so its warranty cannot be proved from the serial until it is switched back on.`),
+      ],
       newStatus: fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED',
     });
   }));

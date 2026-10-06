@@ -193,3 +193,19 @@ live until this stage:
 Next: the other two intakes (purchase-order receipt, transfer receipt) so a shop that buys on a
 PO is not half-covered, then **the warranty-claims audit** — the flow this stage cleared the way
 for, and the one that will exercise migration `0007` (the resolutions the schema refused).
+
+### P6a (continued) — the second intake, and the drift that would have followed
+
+Appliances are bought **on a purchase order**; the direct goods-received route is for a load
+that arrives with no paperwork. Serial capture went into the direct route first, which left the
+ordinary path still unable to register a unit — the same dead end, one route over. Rather than
+copy the rules, they now live in **`server/services/serialsService.js`** (`parseSerials`,
+`acceptSerials`, `planSerialRows`, `serialStatements`) and both intakes call in, so the two
+cannot drift apart again. The PO receipt also answers with `serialCount` and the numbers filed,
+and warns when a serial-tracked line arrives with the switch off.
+
+`audit.serials` now proves both intakes: **27 checks**, including a PO receipt with no serials
+(400 `SERIALS_REQUIRED`), the same order received with them (both units in the register, at the
+right branch, each with one link in its chain).
+
+**Counts:** `npm run verify` **395/395/0** · **17 audits green** · serials **27 checks**.

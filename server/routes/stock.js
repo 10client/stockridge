@@ -35,8 +35,7 @@ const { watNow, watToday, addDays, watToUtc } = require('../../domain/time');
 const { canAdjustStock } = require('../../domain/planLimits');
 const { oneOf } = require('../../domain/validation');
 const glService = require('../services/glService');
-const { serialEventFields, serialHeadHash } = require('../services/salesService');
-const { computeRowHash } = require('../../domain/hashChain');
+const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
 
 const ADJUSTMENT_TYPES = ['DAMAGE', 'THEFT', 'EXPIRED', 'COUNT_VARIANCE', 'SAMPLE', 'SHRINKAGE', 'FOUND', 'RETURN_TO_SUPPLIER', 'WRITE_OFF', 'OTHER'];
 
@@ -211,94 +210,33 @@ function mount(app, base = '/api') {
     if (!conversion.ok) throw new HttpError(conversion.error, { status: 400, code: conversion.code, fields: { quantity: conversion.error } });
     const quantityBase = conversion.baseQuantity;
 
+    // The batch these units are filed against, generated here because the serial rows
+    // reference it and the hash of each one's first chain link is computed before the
+    // transaction opens.
+    const batchId = newId();
+
     // ===================================================================
     // SERIALS ARRIVE WITH THE GOODS, OR THEY NEVER ARRIVE AT ALL
     // ===================================================================
-    // THIS IS THE ONLY PLACE A SERIAL NUMBER CAN ENTER THE SYSTEM, and until now
-    // it did not. The sale engine demands one serial per unit for a
-    // serial-tracked product and refuses any serial "not in this system", the
-    // POS scans serials off the label, the warranty register, the claims flow and
-    // the hash-chained life story of a unit all hang off `serial_numbers` — and
-    // NOTHING WROTE A ROW TO IT. Not this route, not goods-received from a
-    // purchase order, not a transfer receipt: the only INSERTs in the whole
-    // repository were in a test. So a serial-tracked product could be received as
-    // anonymous quantity and then never sold, and the warranty that a serial is
-    // supposed to prove could never be proved — nor claimed on, which is how the
-    // claims flow's own defects stayed invisible behind a 404.
-    //
-    // The settings switch (`serial_tracking_enabled`, "Capture serial numbers for
-    // products that track them") was shown to every administrator and read by
-    // nothing. It now decides whether the demand below is made at all: switched
-    // off, a serial-tracked product is received and sold as ordinary stock, which
-    // is what switching the feature off has to mean.
+    // The rules are in server/services/serialsService.js, because there are two routes that
+    // receive goods and the first version of this capture lived in only one of them.
     const serialTrackingOn = !settings || Number(settings.serial_tracking_enabled) !== 0;
-    const serialTracked = Number(product.requires_serial) === 1;
-    const suppliedSerials = (Array.isArray(body.serials) ? body.serials
-      : Array.isArray(body.serial_numbers) ? body.serial_numbers
-        : (body.serial_no ? [body.serial_no] : []))
-      .map((sn) => {
-        // A plain string, or `{serial_no, imei}` for the phones and appliances whose
-        // second identity (IMEI) the police and the networks ask for.
-        if (sn && typeof sn === 'object') {
-          return { serialNo: String(sn.serial_no || sn.serialNo || sn.serial || '').trim(), imei: strField(sn.imei, { field: 'IMEI', maxLength: 40 }) };
-        }
-        return { serialNo: String(sn == null ? '' : sn).trim(), imei: null };
-      })
-      .filter((sn) => sn.serialNo !== '');
-    const expectedSerials = Math.ceil(quantityBase);
+    const accepted = await acceptSerials(db, {
+      product, quantityBase,
+      supplied: parseSerials(body.serials || body.serial_numbers || body.serial_no),
+      featureOn: serialTrackingOn,
+    });
 
-    if (suppliedSerials.length && !serialTracked) {
-      throw new HttpError(`${product.name} is not serial-tracked, so there is nowhere to file ${suppliedSerials.length} serial number(s). If every unit is individually identified, tick "Track serial numbers" on the product first — that flag is what makes the serial follow the unit through the sale and into the warranty.`, { status: 400, code: 'SERIALS_NOT_EXPECTED', fields: { serials: 'Not a serial-tracked product.' } });
-    }
-    if (serialTracked && serialTrackingOn && suppliedSerials.length !== expectedSerials) {
-      throw new HttpError(`"${product.name}" is serial-tracked, so each unit needs its own serial number: ${expectedSerials} expected for ${round2(quantityBase)} ${product.base_unit_name}, ${suppliedSerials.length} given. Scan or type the number off each label — a serial captured later cannot be matched to the unit it came in on, and the warranty claim it is needed for is exactly the one that arrives after the box is in the bin.`, { status: 400, code: 'SERIALS_REQUIRED', fields: { serials: `${expectedSerials} required.` } });
-    }
-
-    const serials = [];
-    if (suppliedSerials.length) {
-      // A duplicate INSIDE one delivery is a mistyped or re-scanned label, and it
-      // is caught before the unique index turns it into a 409 that names no line.
-      const seen = new Map();
-      for (const entry of suppliedSerials) {
-        const key = entry.serialNo.toUpperCase();
-        if (seen.has(key)) {
-          throw new HttpError(`Serial "${entry.serialNo}" is on this delivery twice. A serial identifies one unit, so it cannot be entered twice — check the label against the box.`, { status: 400, code: 'DUPLICATE_SERIAL_IN_REQUEST' });
-        }
-        seen.set(key, entry.serialNo);
-      }
-      // The register is the other half: a serial already on file will hit the
-      // unique index (product_id, serial_no) anyway, but as a raw constraint
-      // failure. Read first so the refusal can name the serial and its branch.
-      // Chunked because D1 caps a statement at 100 bound parameters.
-      const keys = [...seen.keys()];
-      const taken = new Map();
-      for (let i = 0; i < keys.length; i += 50) {
-        const chunk = keys.slice(i, i + 50);
-        const rows = await db.all(`SELECT UPPER(sn.serial_no) AS serial_no, sn.branch_id, b.name AS branch_name, sn.product_id, p.name AS product_name
-              FROM serial_numbers sn
-              LEFT JOIN branches b ON b.id = sn.branch_id
-              LEFT JOIN products p ON p.id = sn.product_id
-            WHERE UPPER(sn.serial_no) IN (${chunk.map(() => '?').join(',')}) AND sn.is_deleted = 0`, chunk);
-        for (const r of rows) taken.set(String(r.serial_no), r);
-      }
-      const sameProduct = keys.filter((k) => taken.has(k) && String(taken.get(k).product_id) === String(productId));
-      if (sameProduct.length) {
-        const first = taken.get(sameProduct[0]);
-        throw new HttpError(`Serial "${seen.get(sameProduct[0])}" is already on file${first.branch_name ? ` at ${first.branch_name}` : ''}${sameProduct.length > 1 ? ` (and ${sameProduct.length - 1} more on this delivery)` : ''}. Two rows for one serial means either a double goods-received or a duplicated label — open the serial to see where it is before receiving it again.`, { status: 409, code: 'SERIAL_ALREADY_RECEIVED', fields: { serials: 'Already received.' } });
-      }
-      // A serial carried by a DIFFERENT product is legal in this schema and a
-      // real-world alarm: it is a cloned IMEI or a label stuck on the wrong unit.
-      // It is a warning rather than a refusal, because a shop that sells two
-      // brands of the same phone model meets it legitimately.
-      const elsewhere = keys.filter((k) => taken.has(k) && String(taken.get(k).product_id) !== String(productId));
-      for (const entry of suppliedSerials) {
-        serials.push({
-          serialNo: entry.serialNo,
-          imei: entry.imei,
-          duplicateOfProduct: elsewhere.includes(entry.serialNo.toUpperCase()) ? taken.get(entry.serialNo.toUpperCase()).product_name : null,
-        });
-      }
-    }
+    // Hashes before the write phase: a transaction body may only queue statements, and a
+    // hash is async (domain/crypto uses WebCrypto where it exists).
+    const serialRows = await planSerialRows(db, accepted.serials, {
+      branchId: String(branch.id),
+      batchId,
+      productId,
+      variantId: body.variant_id ? String(body.variant_id) : null,
+      note: `Received ${watNow()} at ${branch.name} on goods receipt ${strField(body.batch_no, { field: 'Batch number', maxLength: 60 }) || batchId.slice(0, 8)}.`,
+      actorId: String(user.id),
+    });
 
     // Cost is PER THE UNIT BEING RECEIVED, then converted to per-base. A clerk
     // books "₦480,000 for 20 cartons"; storing that as a per-piece cost would
@@ -339,7 +277,6 @@ function mount(app, base = '/api') {
       throw new HttpError(`That expiry date (${expiryDate}) is today or already past. If the stock is genuinely expired, receive it and quarantine it so the decision is on the record.`, { status: 400, code: 'EXPIRED_ON_RECEIPT' });
     }
 
-    const batchId = newId();
     const receivedAt = body.received_at ? String(body.received_at) : watToUtc(watNow());
     const accountIds = await glService.loadAccountCodes(db, business.id);
 
@@ -364,24 +301,6 @@ function mount(app, base = '/api') {
       ...heldBatches.map((h) => ({ quantity: Number(h.quantity), cost: Number(h.cost_price_per_unit) })),
       { quantity: quantityBase, cost: landedCostPerBase },
     ]);
-
-    // Hashes before the write phase: a transaction body may only queue statements,
-    // and a hash is async (domain/crypto uses WebCrypto where it exists).
-    const serialRows = [];
-    for (const s of serials) {
-      const note = `Received on goods receipt`;
-      const prevHash = await serialHeadHash(db, s.serialNo);
-      serialRows.push({
-        ...s,
-        // The row's own id: the PRIMARY KEY is NOT NULL in SQLite, and a missing id here
-        // surfaced as the response "A required value is missing" with no column named.
-        id: newId(),
-        eventId: newId(),
-        prevHash,
-        note,
-        rowHash: await computeRowHash(prevHash, serialEventFields({ serial_no: s.serialNo, event_type: 'RECEIVED', branch_id: branch.id, notes: note })),
-      });
-    }
 
     await db.transaction(async (tx) => {
       tx.queue(`INSERT INTO stock_batches (
@@ -416,27 +335,7 @@ function mount(app, base = '/api') {
       }
 
       // ---- the serials, and the first link of each one's story
-      //
-      // `serial_events` is a hash chain per serial (domain/hashChain.js), and until
-      // this line its only writer was the sale — so a unit's history started at
-      // "SOLD", with no record of arriving. A chain that cannot show where a unit
-      // came from cannot answer the question it exists for (is this the unit we
-      // received, or one swapped in behind a real serial?).
-      for (const s of serialRows) {
-        tx.queue(`INSERT INTO serial_numbers (id, product_id, variant_id, serial_no, imei, batch_id, branch_id,
-            status, notes, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?, 'IN_STOCK', ?, datetime('now'), datetime('now'))`, [
-          s.id, productId, body.variant_id ? String(body.variant_id) : null, s.serialNo,
-          s.imei || null, batchId, String(branch.id),
-          `Received ${watNow()} at ${branch.name} on ${strField(body.batch_no, { field: 'Batch number', maxLength: 60 }) || 'a goods receipt'}.`,
-        ]);
-        tx.queue(`INSERT INTO serial_events (id, serial_id, serial_no, event_type, from_status, to_status, branch_id,
-            reference_type, reference_id, actor_id, customer_id, notes, prev_hash, row_hash, created_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`, [
-          s.eventId, s.id, s.serialNo, 'RECEIVED', null, 'IN_STOCK', String(branch.id),
-          'GOODS_RECEIVED', batchId, String(user.id), null, s.note, s.prevHash, s.rowHash,
-        ]);
-      }
+      serialStatements(tx, serialRows);
 
       const grossValue = round2(quantityBase * landedCostPerBase);
       for (const st of glService.postPurchaseReceiptStatements({
@@ -461,8 +360,8 @@ function mount(app, base = '/api') {
       serials: serialRows.map((s) => s.serialNo),
       warnings: [
         freight > 0 && quantityBase === 0 ? 'Freight was charged but no quantity was received, so it could not be allocated.' : null,
-        serialTracked && !serialTrackingOn ? `Serial numbers were not asked for: serial capture is switched off in Settings for this deployment. ${product.name} expects them, so its warranty cannot be proved from the serial until it is switched back on.` : null,
-        ...serialRows.filter((s) => s.duplicateOfProduct).map((s) => `Serial ${s.serialNo} is also on file against ${s.duplicateOfProduct}. Both rows are kept — two products can share a serial across brands — but a label that has been copied is how a warranty claim ends up investigating the wrong unit.`),
+        Number(product.requires_serial) === 1 && !serialTrackingOn ? `Serial numbers were not asked for: serial capture is switched off in Settings for this deployment. ${product.name} expects them, so its warranty cannot be proved from the serial until it is switched back on.` : null,
+        ...accepted.warnings,
       ].filter(Boolean),
     }, 201);
   }));
