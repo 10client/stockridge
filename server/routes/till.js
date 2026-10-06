@@ -28,7 +28,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, utcToWat } = require('../../domain/time');
@@ -84,6 +84,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 't' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 't' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('t.status = ?'); params.push(String(status).toUpperCase()); }
     const userId = ctx.req.queryParam('user_id');
@@ -228,10 +232,34 @@ function mount(app, base = '/api') {
           newId(), String(branch.id), String(business.id), 'TILL_FUND', -openingCash, safeAfter,
           'TILL_SESSION', id, id, String(user.id),
         ]);
-        for (const st of glService.postBankingStatements({
-          businessId: String(business.id), branchId: String(branch.id), amount: openingCash,
-          from: 'SAFE', reference: `Till float ${id.slice(0, 8)}`, accountIds, user,
-        })) tx.queue(st.sql, st.params);
+        // NO GENERAL-LEDGER ENTRY, AND THAT IS THE FIX.
+        //
+        // This used to post a BANKING entry — debit Bank Account, credit Cash in Safe —
+        // as though the float had been carried to the bank. It had not: the money went
+        // from the safe into the drawer, which is a move between two tills of cash
+        // inside the same building. The entry invented a bank deposit that never
+        // happened, and it left "Cash at Till" short by the float for the life of the
+        // business, because a CASH sale debits that account and the float never arrived
+        // in it. The banking screen then reported a bank balance the shop did not have
+        // and a negative cash-in-safe figure.
+        //
+        // It is also inconsistent with this system's own rule, stated two hundred lines
+        // below and repeated on the safe screen: cash moving between the drawer and the
+        // safe is still cash at the branch, so nothing in the general ledger moves.
+        // Deposits to the safe post nothing; withdrawals post nothing; the till-close
+        // sweep to the safe posts nothing; only BANKING does. A till float is the same
+        // kind of move as the till-close sweep, in the other direction.
+        //
+        // Found by test/audit/audit.money.js: after a ₦50,000 float the safe ledger said
+        // ₦50,000 while the ledger reported Cash in Safe as −₦50,000 and Bank Account
+        // ₦50,000 richer. The trial balance was perfectly balanced throughout, which is
+        // why only a per-account assertion could see it.
+        //
+        // The deeper question — should the safe be a real general-ledger account, with
+        // deposits and withdrawals posting to 1010 instead of being invisible — is
+        // recorded as open work in STATUS.md. It changes the composition of the balance
+        // sheet on live books, so it is not a patch to slip into this stage.
+        void accountIds;
       }
     });
 
@@ -325,7 +353,8 @@ function mount(app, base = '/api') {
     if (!till) throw new HttpError('That till session does not exist.', { status: 404, code: 'TILL_NOT_FOUND' });
     if (till.status === 'CLOSED') throw new HttpError('That till is already closed. Its count is a signed-off record and cannot be changed.', { status: 409, code: 'TILL_ALREADY_CLOSED' });
 
-    const branch = await resolveBranch(db, ctx);
+    // The till row IS the branch here — see the row-scoped rule in resolveBranch.
+    const branch = await resolveBranch(db, ctx, { fallback: till.branch_id });
     if (String(till.branch_id) !== String(branch.id)) throw new HttpError('That till belongs to another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
     // A cashier closes their OWN drawer. Somebody else's drawer needs a manager,
     // because the count is that person's accountability.
@@ -468,10 +497,22 @@ function mount(app, base = '/api') {
         LEFT JOIN users u ON u.id = sl.created_by
         LEFT JOIN users a ON a.id = sl.approved_by
         WHERE sl.branch_id = ? AND sl.is_deleted = 0
-        ORDER BY sl.created_at DESC, sl.id DESC LIMIT ? OFFSET ?`, [String(branch.id), limit, offset]);
+        ORDER BY sl.created_at DESC, sl.rowid DESC LIMIT ? OFFSET ?`, [String(branch.id), limit, offset]);
     const balance = await safeBalance(db, branch.id);
     // Recomputed from the rows rather than trusted from the last row: if the two
     // disagree, somebody edited a row, and that is worth knowing.
+    //
+    // "THE LAST ROW" HAS TO MEAN THE LAST ONE INSERTED, and it used to mean the one with
+    // the largest id — an id that is RANDOM HEX. Two safe entries written in the same
+    // second therefore came back in an arbitrary order, and when the newest row happened
+    // to sort second, the running balance on the row being compared belonged to an older
+    // entry. The screen then told an owner "A row has been edited outside this ledger"
+    // about a ledger nobody had touched. Found by test/audit/audit.money.js: a ₦200,000
+    // opening float and a ₦50,000 transfer to a drawer, both in the same second.
+    //
+    // `rowid` is the insertion order SQLite already keeps, so the newest row is the
+    // newest row. The derived balance is a SUM and was always right; it was the row it
+    // was compared against that was wrong.
     const storedLast = entries.length ? round2(Number(entries[0].balance_after)) : 0;
     ctx.json({
       ...listResponse(entries, { limit, offset }),
@@ -750,6 +791,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 'e' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'e' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('e.status = ?'); params.push(String(status).toUpperCase()); }
     const category = ctx.req.queryParam('category');

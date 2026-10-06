@@ -26,7 +26,7 @@ const { atLeast } = require('../../domain/roles');
 // `valid` was missing from this list while POST /api/stock/adjust called it at
 // the adjustment-type line, so every stock adjustment — the write-off that
 // records a broken TV — answered 500 "valid is not defined".
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, numField, strField, boolField, dateRange, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, requireField, numField, strField, boolField, dateRange, valid } = require('../lib/respond');
 const { toBaseUnits, buildLadder, validateLadder, weightedAverageCost } = require('../../domain/uom');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
@@ -127,6 +127,18 @@ function mount(app, base = '/api') {
     const where = ['sb.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'sb' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS REPORT TO THAT BRANCH — and on THIS
+    // endpoint the filter lands on `b.id`, not on `sb.`, because the rows being
+    // returned ARE branches (the query groups by branch). The scope clause above is
+    // the other half of the same rule: which BATCHES count towards each branch.
+    //
+    // The parameter has to be added exactly where it is referenced. The first version
+    // of this line pushed it into the `where` array, which this query does not use —
+    // and every caller who named a branch got `500 Too many parameter values were
+    // provided` from the engine, caught by the views test the moment it ran. A filter
+    // that is dead code is worse than a missing one: the placeholder count still moves.
+    const named = await branchFilter(db, ctx, {});
     const asAt = ctx.req.queryParam('as_at');
 
     const rows = await db.all(`
@@ -138,15 +150,15 @@ function mount(app, base = '/api') {
       FROM branches b
       LEFT JOIN stock_batches sb ON sb.branch_id = b.id AND sb.is_deleted = 0
            AND sb.status NOT IN ('QUARANTINED','EXPIRED')
-      WHERE b.is_deleted = 0 AND b.is_active = 1 ${f.sql ? `AND ${f.sql.replace(/\bsb\./g, 'sb.')}` : ''}
-      GROUP BY b.id ORDER BY b.name`, params);
+      WHERE b.is_deleted = 0 AND b.is_active = 1 ${f.sql ? `AND ${f.sql}` : ''} ${named.branchId ? 'AND b.id = ?' : ''}
+      GROUP BY b.id ORDER BY b.name`, named.branchId ? [...params, named.branchId] : params);
 
     const byCategory = await db.all(`
       SELECT c.name AS category_name, COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost
       FROM stock_batches sb JOIN products p ON p.id = sb.product_id
       LEFT JOIN product_categories c ON c.id = p.category_id
-      WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED')
-      GROUP BY c.id ORDER BY at_cost DESC LIMIT 20`, []);
+      WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''}
+      GROUP BY c.id ORDER BY at_cost DESC LIMIT 20`, named.branchId ? [named.branchId] : []);
 
     const totals = rows.reduce((a, r) => ({
       units: round2(a.units + Number(r.units)), at_cost: round2(a.at_cost + Number(r.at_cost)),
@@ -453,6 +465,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 'a' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'a' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const type = ctx.req.queryParam('type');
     if (type) { where.push('a.adjustment_type = ?'); params.push(String(type).toUpperCase()); }
 
@@ -489,7 +505,8 @@ function mount(app, base = '/api') {
     const id = String(ctx.req.param('id'));
     const batch = await db.first('SELECT * FROM stock_batches WHERE id = ? AND is_deleted = 0', [id]);
     if (!batch) throw new HttpError('That batch does not exist.', { status: 404, code: 'BATCH_NOT_FOUND' });
-    const branch = await resolveBranch(db, ctx);
+    // Row-scoped: the batch names the branch — see resolveBranch's fallback note.
+    const branch = await resolveBranch(db, ctx, { fallback: batch.branch_id });
     if (String(batch.branch_id) !== String(branch.id)) throw new HttpError('That batch is at another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
 
     const quarantine = body.release ? false : true;
@@ -522,6 +539,10 @@ function mount(app, base = '/api') {
       where.push(`(t.from_branch_id IN (${ids.map(() => '?').join(',')}) OR t.to_branch_id IN (${ids.map(() => '?').join(',')}))`);
       params.push(...ids, ...ids);
     }
+    // A NAMED BRANCH NARROWS A TRANSFER LIST THE SAME WAY — either end counts as
+    // "this branch's transfer", which is the same rule the scope clause above uses.
+    const nbf = await branchFilter(db, ctx, { alias: 't', column: 'from_branch_id', also: ['to_branch_id'], nullMeansEveryBranch: false });
+    if (nbf.sql) { where.push(nbf.sql); params.push(...nbf.params); }
     if (status) { where.push('t.status = ?'); params.push(String(status).toUpperCase()); }
     const rows = await db.all(`SELECT t.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
           fbm.name AS from_business_name, tbm.name AS to_business_name,
@@ -816,6 +837,10 @@ function mount(app, base = '/api') {
     const where = ['s.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 's' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 's' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const rows = await db.all(`SELECT s.*, b.name AS branch_name, u.full_name AS opened_by_name,
           (SELECT COUNT(*) FROM stocktake_lines l WHERE l.stocktake_id = s.id AND l.is_deleted = 0) AS line_count,
           (SELECT COUNT(*) FROM stocktake_lines l WHERE l.stocktake_id = s.id AND l.is_deleted = 0 AND COALESCE(l.variance,0) <> 0) AS variance_count

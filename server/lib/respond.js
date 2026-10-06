@@ -60,7 +60,7 @@ async function idFromBody(ctx, param) {
   }
 }
 
-async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } = {}) {
+async function resolveBranch(db, ctx, { required = true, param = 'branch_id', fallback = null } = {}) {
   const scope = ctx.get('scope');
   const user = ctx.get('user');
   if (!scope) throw new HttpError('Please sign in to continue.', { status: 401, code: 'NO_TOKEN' });
@@ -119,13 +119,53 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } =
   if (pinned && requested && String(requested) !== String(pinned) && !reaches(requested)) {
     throw new HttpError('That request names a branch outside your access. You can only work in the branch you are assigned to.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
   }
+  // A ROW-SCOPED ACTION ALREADY NAMES ITS BRANCH — and asking for it a second time is a
+  // wall in front of a button that cannot work.
+  //
+  // `POST /api/tills/:id/close` and `POST /api/sales/:id/pay` address ONE row, and both
+  // load that row (with its `branch_id`) before calling this function — the close even
+  // compares the two afterwards. But a multi-branch OWNER with no branch of their own was
+  // refused outright with "Choose which branch this applies to", while the screens that
+  // call them (public/js/views/till.js, sales.js) send no branch at all: Close Drawer and
+  // Record Payment could only ever answer 400 for exactly the client this product is for.
+  // Found by test/audit/audit.money.js the moment its fixture grew a second branch, which
+  // is the shape a real deployment has.
+  //
+  // The row's branch is used only when the caller REACHES it — the same rule a named
+  // branch gets — so nothing is opened up: a cashier who guesses another shop's till id
+  // still has their PIN win first, and the endpoint still refuses the mismatch.
+  const rowBranch = fallback && reaches(fallback) ? String(fallback) : null;
+
   // What was ASKED FOR, when the caller was allowed to ask for it. The pin remains the
   // answer when nothing is named, which is the case it was written for.
-  let branchId = requested || pinned;
+  let branchId = requested || pinned || rowBranch;
 
   if (!branchId && scope.branchIds && scope.branchIds.size === 1) {
     branchId = [...scope.branchIds][0];
   }
+  // ONE BRANCH IS NOT A GUESS.
+  //
+  // The fallback above — "if the scope names exactly one branch, use it" — is written
+  // against `scope.branchIds`, and an OWNER or a vendor ADMINISTRATOR has no branch
+  // list at all, because reaching every branch is expressed by carrying none. So the
+  // people most likely to have a single shop were the ones the fallback could never
+  // help: a shop with one shop was told "You have access to more than one, and the
+  // system will not guess" — a sentence that is untrue, on a screen that offers nothing
+  // to choose from. Found by test/audit/audit.money.js, which could not create a
+  // customer on a one-branch deployment without naming the branch it had just created.
+  //
+  // So before refusing, COUNT what the caller can actually reach. Exactly one live
+  // branch, and it is the answer. Two or more, and the refusal below stands, because
+  // guessing there would post stock or cash against the wrong shop.
+  if (!branchId) {
+    const f = scopeFilter(scope, { alias: 'b' });
+    const reachable = await db.all(
+      `SELECT b.id FROM branches b WHERE b.is_deleted = 0 AND b.is_active = 1${f.sql ? ` AND ${f.sql}` : ''} LIMIT 2`,
+      f.params,
+    );
+    if (reachable.length === 1) branchId = String(reachable[0].id);
+  }
+
   if (!branchId) {
     // An owner with several branches has to say which one. Guessing would post
     // stock or cash against the wrong shop.
@@ -371,6 +411,61 @@ function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'busi
   return { sql: clauses.length ? clauses.join(' AND ') : '', params };
 }
 
+
+/**
+ * THE BRANCH A READ NAMED, as a WHERE fragment for a LIST — or a refusal.
+ *
+ * `scopeFilter` above narrows a read to what the caller is ALLOWED to see. It is the
+ * security rule, and it is not the same question as "which branch is this list of?".
+ * A caller who may see five branches and who asks for one of them was, until this
+ * function existed, given all five: `GET /api/sales?branch_id=X` returned every branch's
+ * sales, `GET /api/tills?branch_id=X` returned every branch's drawers, and the summary
+ * block above the list reported the whole group's takings under a heading that named one
+ * shop. Nothing errored. No figure looked wrong. The only symptom was a number that was
+ * larger than the shop it was labelled with — and an OWNER (whose scope reaches every
+ * branch) is exactly the caller who gets it, because a branch-pinned MANAGER is saved
+ * from it by their own scope.
+ *
+ * Found by test/audit/audit.money.js against staging: it rings a sale at one branch,
+ * reads the sales list back with `?branch_id=<that branch>`, and counted 41 sales it had
+ * not made — the other branch's trading, in the same envelope. The receipt-number
+ * collision that led there was a red herring; receipt numbers are per branch and were
+ * correct all along.
+ *
+ * THE RULE:
+ *   nothing named            → no narrowing (the caller's scope still applies)
+ *   a branch they can reach  → `x.branch_id = ?`
+ *   a branch they cannot     → 403 BRANCH_SCOPE_VIOLATION, the same refusal a WRITE
+ *                              naming somebody else's branch gets from resolveBranch
+ *                              above. Silently answering a question about another shop
+ *                              with your own shop's rows is the defect this replaces;
+ *                              quietly answering it with an empty list would be the same
+ *                              lie in a quieter voice.
+ *   ?branch_scope=all        → the explicit opt-out, for a screen that really wants the
+ *                              group (reports.js has documented it since it was written).
+ *                              It cannot widen past the caller's scope — it only stops
+ *                              the NAMED branch from narrowing.
+ *
+ * Rows whose own branch is NULL are business-wide rather than branch-specific (a
+ * catalogue line, a settings row), so they stay in every branch's list — the same
+ * convention `scopeFilter` and the journal both already use.
+ */
+async function branchFilter(db, ctx, { alias = '', column = 'branch_id', also = null, nullMeansEveryBranch = true } = {}) {
+  const named = ctx.req.queryParam('branch_id') || ctx.req.param('branch_id');
+  const optedOut = String(ctx.req.queryParam('branch_scope') || '').toLowerCase() === 'all';
+  if (!named || optedOut) return { sql: '', params: [], branchId: null, optedOut };
+  const scope = ctx.get('scope');
+  if (!scope) throw new HttpError('Please sign in to continue.', { status: 401, code: 'NO_TOKEN' });
+  const reaches = Boolean(scope.allBranches)
+    || Boolean(scope.branchIds && [...scope.branchIds].some((id) => String(id) === String(named)));
+  if (!reaches) {
+    throw new HttpError("That request names a branch outside your access. You can only read the branches you are assigned to.", { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+  }
+  const cols = [column, ...(also || [])].map((c) => (alias ? `${alias}.${c}` : c));
+  const sql = `(${cols.map((c) => (nullMeansEveryBranch ? `(${c} IS NULL OR ${c} = ?)` : `${c} = ?`)).join(' OR ')})`;
+  return { sql, params: cols.map(() => String(named)), branchId: String(named), optedOut: false };
+}
+
 /**
  * The business restriction a READ should carry, in one call.
  *
@@ -572,5 +667,5 @@ module.exports = {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
   valid, numField, strField, boolField,
   resolveBranch, resolveBusiness, readBusinessFilter, readBusinessId, inScope, inBranchScope, assertRowAccess,
-  scopeFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
+  scopeFilter, branchFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
 };

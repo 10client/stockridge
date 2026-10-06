@@ -142,6 +142,35 @@ class Deployment {
   }
 
   /**
+   * WHICH BRANCH AN AUDIT SHOULD TRADE IN, given who it is trading as.
+   *
+   * An audit that just takes `branches[0]` is correct on a fresh single-business database
+   * and wrong everywhere else. On a real deployment `GET /api/branches` returns everything
+   * the caller can reach — an OWNER reaches every branch of every business — and the order
+   * is whatever the query returns. Trading in a branch that belongs to a different business
+   * from the audit's own product and customer produced
+   * `403 CROSS_BUSINESS_CUSTOMER`, which is the product being right about a fiction the
+   * audit invented.
+   *
+   * The rule: the branch the actor is PINNED to if they have one (that is where they work),
+   * otherwise the first branch of the business they belong to, otherwise the first branch
+   * on the deployment.
+   */
+  branchFor(actor) {
+    const list = this.branches || [];
+    if (!list.length) return null;
+    if (actor && actor.branchId) {
+      const pinned = list.find((b) => String(b.id) === String(actor.branchId));
+      if (pinned) return pinned;
+    }
+    if (actor && actor.businessId) {
+      const own = list.find((b) => String(b.business_id) === String(actor.businessId));
+      if (own) return own;
+    }
+    return list[0];
+  }
+
+  /**
    * GIVE THIS AUDIT SOMEBODY TO SIGN IN AS.
    *
    * Everything interesting in this system is a question about WHO is asking, so an
@@ -245,6 +274,22 @@ class Deployment {
     return userId || null;
   }
 
+  /** A customer, a supplier, a product — anything an audit creates that a live
+   *  deployment would otherwise keep. Recorded so `close()` can retire it. */
+  trackCustomer(id) {
+    if (!id) return null;
+    this.created.customers = this.created.customers || [];
+    this.created.customers.push({ id });
+    return id || null;
+  }
+
+  trackSupplier(id) {
+    if (!id) return null;
+    this.created.suppliers = this.created.suppliers || [];
+    this.created.suppliers.push({ id });
+    return id || null;
+  }
+
   /** A user this run created, removed the way the app removes one. There is no
    *  DELETE /api/users — people are deactivated, never deleted, because their
    *  name is attached to sales they took years ago. */
@@ -306,14 +351,25 @@ class Deployment {
       // a user or a business — their past sales are still attributed to them — and
       // pretending otherwise in an audit would be its own small lie.
       if (!this.writable) return;
-      const undone = { users: 0, businesses: 0 };
+      const undone = { users: 0, businesses: 0, customers: 0, suppliers: 0 };
       for (const actor of this.created.users) {
         try { const r = await this.retireUser(actor); if (r && r.status < 300) undone.users += 1; } catch (e) { /* reported below */ }
       }
       for (const businessId of this.created.businesses) {
         try { const r = await this.retireBusiness(businessId); if (r && r.status < 300) undone.businesses += 1; } catch (e) { /* reported below */ }
       }
-      console.log(`  left the live deployment as it was found: ${undone.users} user(s) and ${undone.businesses} business(es) deactivated (not deleted — this product never deletes a person or a business)`);
+      // A CUSTOMER IS SOFT-DELETED, WHICH IS THE ONE THING AN AUDIT MAY DO.
+      // `DELETE /api/customers/:id` is a soft delete — the row stays, the ledger stays,
+      // and the audit's test sale still reconciles. Leaving the fixture customer active
+      // instead would put a person called "Audit Customer" on a client's debtors list
+      // forever, which is worse than an invisible soft delete.
+      for (const c of this.created.customers || []) {
+        try { const r = await this.admin.del(`/api/customers/${encodeURIComponent(c.id)}`); if (r && r.status < 300) undone.customers += 1; } catch (e) { /* reported in the count */ }
+      }
+      for (const s of this.created.suppliers || []) {
+        try { const r = await this.admin.put(`/api/suppliers/${encodeURIComponent(s.id)}`, { is_active: false }); if (r && r.status < 300) undone.suppliers += 1; } catch (e) { /* counted below */ }
+      }
+      console.log(`  left the live deployment as it was found: ${undone.users} user(s), ${undone.businesses} business(es), ${undone.customers} customer(s) and ${undone.suppliers} supplier(s) retired (never deleted with their history — this product does not do that)`);
       return;
     }
     if (!this.child || this.child.killed) return;
@@ -371,6 +427,14 @@ async function startDeployment({
     if (process.env.AUDIT_OWNER_USER) {
       deployment.owner = await deployment.login({ username: process.env.AUDIT_OWNER_USER, pin: process.env.AUDIT_OWNER_PIN || pin });
     }
+    // WHO THESE ACTORS ARE, BEFORE ANYTHING USES THEM. Without this the owner carries no
+    // `businessId`, and the branch chooser below silently fell back to `branches[0]` — the
+    // exact behaviour it exists to replace. A describe() that never ran is invisible: no
+    // error, just a fixture quietly trading in somebody else's business.
+    for (const actor of [deployment.owner, deployment.admin].filter(Boolean)) {
+      await deployment.describe(actor);
+    }
+
     const settings = await deployment.admin.get('/api/settings').catch(() => null);
     deployment.settings = settings && settings.json ? settings.json.settings : null;
 
@@ -394,6 +458,28 @@ async function startDeployment({
     // that proves nothing about the scopes under test.
     const branchRes = await (deployment.admin || deployment.owner).get('/api/branches?limit=100');
     deployment.branches = (branchRes.json && (branchRes.json.data || branchRes.json.branches)) || [];
+
+    // PUT THE OWNER'S OWN BRANCHES FIRST.
+    //
+    // `GET /api/branches` reaches everything the caller can see, and on a deployment with
+    // two businesses an OWNER — whose scope is "all branches" — gets both sets back in
+    // whatever order the query returns. An audit that took `branches[0]` as its branch
+    // then created its customer in one business and rang the sale at a branch of the
+    // other, and the product refused it with CROSS_BUSINESS_CUSTOMER — correctly, and at
+    // the sixth check of eight, which is a confusing way to learn it. Found by running
+    // audit.money against staging, where the two businesses are real.
+    //
+    // The owner's own business is what an audit trading as that owner is trading in, and
+    // the branch they are pinned to (if any) is the one they actually work at.
+    const ownerBusiness = deployment.owner && deployment.owner.businessId;
+    const pinned = deployment.owner && deployment.owner.branchId;
+    if (ownerBusiness) {
+      deployment.branches = deployment.branches.slice().sort((a, b) => {
+        const score = (row) => (String(row.id) === String(pinned) ? 0 : (String(row.business_id) === String(ownerBusiness) ? 1 : 2));
+        return score(a) - score(b);
+      });
+      console.log(`  the owner trades in business ${ownerBusiness}; its ${deployment.branches.filter((b) => String(b.business_id) === String(ownerBusiness)).length} branch(es) come first`);
+    }
 
     // Seats, where the target allows them. A read-only run leaves `seats` empty and the
     // scope sections stand down with a reason rather than a false alarm — see
@@ -447,6 +533,7 @@ async function startDeployment({
       adminUsername: admin.username,
       adminPin: admin.pin,
       branches: businesses[0].branches || [],
+      vatRegistered: Boolean(businesses[0].vatRegistered),
     });
     // Further businesses belong to the same owner: that is the multi-business
     // shape, and it is provisioned the same way the app provisions one.

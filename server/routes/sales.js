@@ -26,7 +26,7 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -146,14 +146,44 @@ async function resolveCustomer(db, ctx, branch, business, body) {
     ? await db.first('SELECT * FROM customer_classes WHERE id = ? AND is_deleted = 0', [String(customer.customer_class_id)])
     : null;
 
+  // WHICH PRICE LISTS APPLY TO THIS CUSTOMER.
+  //
+  // The query this replaces filtered on `price_lists.customer_class_id` — a column that
+  // has never existed in this schema. SQLite reports that as `no such column`, so EVERY
+  // sale that named a customer answered 500 INTERNAL: credit sales, wholesale sales,
+  // anything with a customer on it. The customer-free paths kept working, which is
+  // exactly why it survived: a shop that only ever rang walk-in cash sales never saw it,
+  // and the unit tests exercise the service rather than this route.
+  //
+  // Found by test/audit/audit.money.js the first time it tried to sell on credit.
+  //
+  // The schema expresses the link the other way round, and it always did:
+  //
+  //   customers.price_list_id             — this customer's own list
+  //   customer_classes.default_price_list_id — the list their class gets
+  //
+  // So a list applies when the customer names it, or when their class does. Lists with
+  // `business_id IS NULL` are system-wide and always apply.
+  //
+  // A business's OTHER lists deliberately do NOT apply. The pricing engine takes the
+  // deepest quantity break among the lists it is handed (domain/pricing.js, step 3), so
+  // sweeping in every list belonging to the business would hand a walk-in retail
+  // customer the wholesale price the moment a wholesale list shared a product code with
+  // the retail one. Assignment is the gate.
+  const assigned = [];
+  if (customer && customer.price_list_id) assigned.push(String(customer.price_list_id));
+  if (customerClass && customerClass.default_price_list_id && !assigned.includes(String(customerClass.default_price_list_id))) {
+    assigned.push(String(customerClass.default_price_list_id));
+  }
   const priceLists = await db.all(
-    `SELECT * FROM price_lists WHERE is_deleted = 0 AND is_active = 1
-       AND (business_id = ? OR business_id IS NULL)
-       AND (customer_class_id IS NULL OR customer_class_id = ?)
-       AND (valid_from IS NULL OR valid_from <= date('now'))
-       AND (valid_to IS NULL OR valid_to >= date('now'))
-     ORDER BY priority ASC, name ASC`,
-    [String(business.id), customerClass ? String(customerClass.id) : '__none__'],
+    `SELECT * FROM price_lists
+      WHERE is_deleted = 0 AND is_active = 1
+        AND (business_id IS NULL${assigned.length ? ` OR id IN (${assigned.map(() => '?').join(',')})` : ''})
+        AND (business_id IS NULL OR business_id = ?)
+        AND (valid_from IS NULL OR valid_from <= date('now'))
+        AND (valid_to IS NULL OR valid_to >= date('now'))
+      ORDER BY priority ASC, name ASC`,
+    [...assigned, String(business.id)],
   );
 
   return { customer, customerClass, priceLists };
@@ -380,6 +410,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 's' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 's' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
 
     const status = ctx.req.queryParam('status');
     if (status) { where.push('s.status = ?'); params.push(String(status).toUpperCase()); }
@@ -626,7 +660,9 @@ function mount(app, base = '/api') {
     if (outstanding <= 0) throw new HttpError('That sale is already settled in full.', { status: 409, code: 'NO_BALANCE' });
     if (!sale.customer_id) throw new HttpError('That sale has no customer on it, so there is no debtor account to credit. Record the payment as a separate receipt instead.', { status: 409, code: 'NO_CUSTOMER' });
 
-    const branch = await resolveBranch(db, ctx);
+    // The sale row names the branch (and the debtors ledger it settles) — see the
+    // row-scoped rule in resolveBranch.
+    const branch = await resolveBranch(db, ctx, { fallback: sale.branch_id });
     const business = await resolveBusiness(db, ctx, branch);
     const payments = normalisePayments(body.payments);
     if (!payments.length) throw new HttpError('Send at least one payment.', { status: 400, code: 'NO_PAYMENT' });
@@ -799,6 +835,10 @@ function mount(app, base = '/api') {
     const where = ['d.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'd' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'd' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('d.status = ?'); params.push(String(status).toUpperCase()); }
     else where.push("d.status NOT IN ('DELIVERED','CANCELLED','RETURNED')"); // the board shows work, not history

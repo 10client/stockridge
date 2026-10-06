@@ -2245,3 +2245,149 @@ A check that has never failed is a check nobody has seen work.
   → safe → banking → void → ledger → trial balance) and `audit.wht.js` (VAT-inclusive
   extraction, WHT rates as data, the returns), both two-way: act, then read the figure
   back over HTTP.
+
+# ---------------------------------------------------------------------
+# CHECKPOINT — Stage T2: FOLLOW ONE NAIRA, AND THE BRANCH A LIST NAMES
+# ---------------------------------------------------------------------
+Date: 2026-10-06. `main` @ this commit. Suites: `audit.money` **69 checks**,
+`audit.wht` **35**, `audit.http` **34 + 1 reported**, `npm run verify` **348/348/0**.
+
+## What T2 set out to do
+
+Follow one naira through the whole system and read the figure back at every hop from a
+DIFFERENT endpoint than the one that wrote it: catalogue → drawer funded from the safe →
+cash sale with change → the drawer's expected cash → the count at close → the safe → the
+bank → the ledger → the trial balance → the VAT return → a credit sale and a payment
+against it → a void → idempotency. Then the tax: VAT extracted FROM an inclusive price,
+WHT on the GROSS, the rates as data, the returns and their due date.
+
+Every figure asserted is either arithmetic the audit did itself from prices it read, or a
+figure read back from a second endpoint. Nothing is mocked, nothing calls a service
+function, and nothing touches a database — the whole audit runs over HTTP, which is the
+only layer a shop's money actually travels through.
+
+## The seven product defects T2 found and fixed (all deployed)
+
+1. **A till float funded from the safe posted a BANKING entry** — the float invented a
+   bank deposit that never happened, leaving "Cash at Till" short for the life of the
+   business and reporting a bank balance the shop did not have.
+2. **`resolveBranch` refused a caller who reaches exactly one branch** — "You have access
+   to more than one, and the system will not guess", said to the owner of a one-shop
+   business, on a screen that offered nothing to choose from.
+3. **The price-list query handed the pricing engine every list it could find**, leaking
+   wholesale prices onto retail sales; and it named a column (`customer_class_id`) that
+   does not exist, so any sale naming a customer answered `500`.
+4. **The safe ledger sorted same-second rows arbitrarily** (`created_at DESC, id DESC`),
+   which made the hash chain accuse a shop of editing its own safe. Now `rowid DESC`.
+5. **`salesService.validatePayments` read snake_case where callers pass camelCase** —
+   `cash_tendered` and `change_given` were NULL on every sale. Found only by an audit that
+   goes over HTTP; the unit tests called the function with the names it was reading.
+6. **`CHANGE_OWED_NEEDS_CUSTOMER`** now says what it wants (a customer RECORD, not a
+   walk-in name).
+7. **The supplier payment posted the NET into a helper written for the GROSS** — the bank
+   was short by the withholding while the supplier stayed in credit, and the entry
+   balanced, so the trial balance reported nothing wrong.
+
+## The two defects THIS stage's live runs found, and fixed
+
+Both were found by running the audit against staging — where the data is real — and both
+are in the class the register keeps filling with: **a screen that answers, wrongly, without
+ever erroring.**
+
+1. **A branch filter that was not applied.** `GET /api/sales?branch_id=X` returned every
+   branch's sales; so did the tills list, the expenses list, the purchase orders, the
+   adjustments, the transfers, the stocktakes, the returns, the deposits, the instalments,
+   the customers, the debtors, the journal and the dashboard. An OWNER — the one caller
+   whose scope reaches every branch — is exactly who gets it, because a branch-pinned
+   manager is saved by their own scope. Nothing errored; the only symptom was a total
+   larger than the shop named above it. Fixed with **`branchFilter()`** in
+   `server/lib/respond.js`, applied to fourteen list endpoints: a named branch narrows the
+   read, a branch the caller cannot reach is **refused** (403 `BRANCH_SCOPE_VIOLATION`, the
+   same refusal a write naming another branch gets), and `?branch_scope=all` is the
+   documented opt-out that still cannot widen the caller's scope.
+2. **A row-scoped action demanded the branch it could read off the row.**
+   `POST /api/tills/:id/close` and `POST /api/sales/:id/pay` both load the row — with its
+   `branch_id` — and then asked for it again. No branch, no pin, more than one branch, and
+   the answer was `400 BRANCH_REQUIRED`; the screens that call them
+   (`public/js/views/till.js`, `sales.js`) send no branch at all, so **Close Drawer and
+   Record Payment could only ever fail** for a multi-branch owner. `resolveBranch` now
+   takes a `fallback` derived from the addressed row, used only when the caller reaches
+   that branch — a cashier guessing another shop's till id still has their pin win and the
+   endpoint still refuses the mismatch.
+
+Both were proven by negative control: the filter was deleted from the route and the two
+branch checks went red; the row fallback was removed and eleven checks went red.
+
+## The audit/harness fixes that made the live run possible
+
+* **A live run must clean up after its own failure.** An aborted run leaves a drawer open,
+  and the next run died on `409 TILL_ALREADY_OPEN` six checks in. The audit now finds the
+  drawers **belonging to its own account** (by ownership, not by branch — an aborted run
+  may have traded at a branch this run does not use) and closes each at its expected count.
+* **An empty safe and an already-funded drawer are shop states, not defects.** The audit
+  funds a short safe (DEPOSIT, reason OTHER) and retries the float.
+* **Assert MOVEMENTS, never absolutes, on a live target.** Staging already held ₦306,000
+  at the till, ₦205,500 booked in and out of the safe and real banking; the first run
+  reported a live shop's own trading as defects in a ₦34,000 sale. Cash at Till, the bank
+  and the VAT return are now read before the audit trades and compared as deltas.
+* **The drawer's revenue is counted from the till's OWN sales** (`?branch_id=` on the
+  sales list, matched on `till_session_id`), not from a figure the audit keeps in its head.
+* **The deployment sorts the owner's own branches first**, and the audit picks the branch
+  its seat works at — a creation without a `branch_id` falls back to the oldest live
+  business, and the audit's own branch then refused its own sale with
+  `403 CROSS_BUSINESS_CUSTOMER`. Locally the fixture now carries **two** branches: a
+  second shop that trades, so a dropped filter has something to leak, and never trades
+  from the audit's own point of view.
+
+## A live observation, recorded and NOT asserted: the two cash accounts do not move
+
+On staging, **Cash in Safe reads −₦205,500 in the books while the branch safe ledger holds
+₦4,000**. The product states the rule in two places — only BANKING moves the general
+ledger, because cash moving between the drawer and the safe is still cash at the branch —
+so the OUTFLOWS from the safe post (banking, an expense paid from the safe) and the
+INFLOWS do not (a deposit, the till-close sweep). The first time a shop banks money that
+reached the safe by a route the ledger never saw, 1010 goes negative.
+
+It is a real reporting defect, it is already recorded as open work (the code says so at
+the float; this file said so in the T1 checkpoint), and the fix is known: **post the
+intra-cash moves** — DR 1000 / CR 1010 for a float, the reverse for a sweep — so the two
+cash lines move while total assets do not. It changes the composition of a live balance
+sheet, so it is its own stage with its own proof and its own negative controls. The audit
+prints the two figures as a note every run, so it cannot be forgotten.
+
+## The trap this stage added to the register
+
+**A receipt number is unique PER BRANCH, so two branches legitimately carry `000012`.**
+The audit matched sales by receipt number, found two, and accused the product of recording
+a retried push twice — with a red check that looked exactly like an idempotency failure.
+The idempotency path was correct all along; the audit was reading a branch-wide list with
+no branch filter (which is how defect 1 above was found), and receipt numbers restart per
+branch by design. Sales are now matched by **id**, and the branch filter is asserted
+directly: the list for a branch must hold that branch's sale and no other branch's.
+
+## Evidence
+
+| Run | Result |
+| --- | --- |
+| `node test/audit/audit.money.js` (fresh local deployment, two branches, a manager seat) | **69 checks passed** |
+| `node test/audit/audit.wht.js` | **35 checks passed** |
+| staging, **write mode**: `audit.money` | **69 checks passed** (17.2s, real D1 + Workers) |
+| staging, **write mode**: `audit.wht` | **35 checks passed** |
+| staging, **write mode**: `audit.http` | **34 passed, 1 reported** (the documented non-ASCII stand-down) |
+| `bash test/run-audits.sh` | 3 audits, every check green, exit 0 |
+| `npm run verify` | **348/348/0** |
+| negative controls | dropped branch filter → 2 checks red; removed row fallback → 11 checks red; restored → green |
+
+## Open items this stage leaves behind
+
+1. **The cash-account split** (above): post the intra-cash moves so Cash in Safe cannot
+   read negative. Recommended next, as **T2b**, with its own checks and negative controls.
+2. **Deposits into the safe have no source.** Posting them needs to know where the money
+   came from (bank withdrawal, owner's capital, till sweep), so the safe-entry route wants
+   a `source` field before 1010 can be a true account.
+3. Still owed from Stage 11/12: the compliance screen's error path (a real 409 closes the
+   modal with no toast), `PROBE_DEBUG` in `tools/frontend-compliance.js`, and the
+   notifications bell on screen.
+4. A `--clean` sweep of `http-*`/`audit-*` accounts and `PROBE-`/`AUDIT-` fixtures at the
+   start of a live write run — the audits retire their own users but leave stock, sales and
+   safe entries behind, by design, on a staging deployment.

@@ -530,8 +530,30 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
       reference: leg.reference ? String(leg.reference).slice(0, 120) : null,
       bankName: leg.bank_name || leg.bankName || null,
       status: method === 'CHEQUE' ? 'PENDING' : (leg.status || 'CLEARED'),
-      cashTendered: leg.cash_tendered != null ? round2(Number(leg.cash_tendered)) : null,
-      changeGiven: leg.change_given != null ? round2(Number(leg.change_given)) : null,
+      // EITHER SPELLING, AND THAT IS THE FIX.
+      //
+      // These two lines used to read `leg.cash_tendered` and `leg.change_given` — the raw
+      // names a JSON body carries. But every caller of this function hands over
+      // ALREADY-NORMALISED legs, and both of them use camelCase: the sales route maps
+      // `cash_tendered` → `cashTendered` in `normalisePayments()`, and the after-sales
+      // route builds `cashTendered` directly. So both reads were always undefined, and
+      // the consequence was total rather than partial:
+      //
+      //   * `sale_payments.cash_tendered` was NULL on every sale ever recorded;
+      //   * `sale_payments.change_given` was NULL on every sale ever recorded;
+      //   * `sales.change_given` fell through to 0 — the figure the receipt, the till
+      //     argument and any dispute about the counter would have to rest on;
+      //   * `sales.cash_tendered` fell back to the cash APPLIED, which quietly turned
+      //     "the customer handed over ₦35,500" into "the customer handed over ₦34,000".
+      //
+      // A key renamed between two layers, which no compiler sees and no unit test caught
+      // because the unit tests call this function with the names it was reading. Found by
+      // test/audit/audit.money.js, which rings a sale over HTTP and reads the tender back.
+      //
+      // Both spellings are accepted so a caller written either way works, and the snake
+      // form stays first because that is what the function documented.
+      cashTendered: (leg.cash_tendered ?? leg.cashTendered) != null ? round2(Number(leg.cash_tendered ?? leg.cashTendered)) : null,
+      changeGiven: (leg.change_given ?? leg.changeGiven) != null ? round2(Number(leg.change_given ?? leg.changeGiven)) : null,
       notes: leg.notes || null,
     });
     sum = round2(sum + amount);
@@ -609,6 +631,9 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
       );
     }
   }
+
+  // What actually went back over the counter — see deriveChangeGiven().
+  deriveChangeGiven(out, changeOwed);
 
   return {
     legs: out,
@@ -799,7 +824,21 @@ async function complete(db, params) {
   // ₦2,500 sale, ₦500 owed back" as a ₦500 overpayment.
   const changeOwed = round2(Math.max(0, Number(changeOwedAmount) || 0));
   if (changeOwed > 0 && !customer) {
-    throw err('Change owed needs a customer name and phone — an anonymous claim code cannot be redeemed by anybody.', 'CHANGE_OWED_NEEDS_CUSTOMER');
+    // THE MESSAGE USED TO PROMISE SOMETHING THE CODE REFUSED.
+    //
+    // It said "needs a customer name and phone", so a clerk would type a name and a phone
+    // number into the sale — and be refused anyway, because the check below requires a
+    // CUSTOMER RECORD, not two typed fields. A refusal that names a remedy the caller
+    // cannot carry out is worse than a blunt one: it sends them round the loop twice and
+    // teaches them the system is arbitrary.
+    //
+    // The rule itself is right and is not being changed. Change owed is the shop holding
+    // somebody else's money, payable on a claim code, and it has to be attributable: a
+    // name typed at the counter cannot be chased, cannot be found again, and cannot be
+    // reconciled when the claim is redeemed. So the message now says what to do — put the
+    // customer on the sale (their record, or the phone number they are already known by,
+    // which `resolveCustomer` looks up).
+    throw err('Change owed has to be attributable to a customer: the shop is holding their money until they come back for it. Put the customer on the sale — choose their record, or the phone number they are already known by — and the claim code will be redeemable.', 'CHANGE_OWED_NEEDS_CUSTOMER');
   }
   if (changeOwed > totals.total) throw err('Change owed cannot exceed the sale total.', 'CHANGE_OWED_EXCEEDS_TOTAL');
 
@@ -1231,6 +1270,45 @@ function totalsByMethod(legs) {
   out.MOBILE_MONEY = round2(out.MOBILE_MONEY + out.USSD);
   out.USSD = 0;
   return out;
+}
+
+/**
+ * CASH HANDED BACK ACROSS THE COUNTER — derived, because nothing derived it.
+ *
+ * `sale_payments.change_given` and `sales.change_given` have existed since the first
+ * schema, and `changeGivenFrom()` has always read `leg.changeGiven` — but that field
+ * was only ever read from the REQUEST (`leg.change_given`), and the route's
+ * `normalisePayments()` never copied it out of the body. So no client could set it, and
+ * nothing computed it: EVERY cash sale in this system recorded ₦0 change given.
+ *
+ * What that costs is not the till's arithmetic — the drawer is reconciled from the
+ * payment AMOUNTS, which were always right. It is the argument afterwards. A customer
+ * tendered ₦35,500 for a ₦34,000 sale and the record said ₦0 went back; the cashier has
+ * no evidence for the ₦1,500 that left the drawer, and neither does the owner. This
+ * system exists to be that evidence.
+ *
+ * Found by test/audit/audit.money.js reading the sale back and finding a zero where the
+ * receipt in the customer's hand said ₦1,500.
+ *
+ * The arithmetic: what the customer handed over, less what was applied to the sale, less
+ * anything the till kept as change OWED. That last term matters and is the bug this
+ * function's sibling already documents: change GIVEN is cash that left the drawer, change
+ * OWED is cash that stayed in it, and lumping them together made every drawer that owed
+ * change look short by exactly that amount.
+ *
+ * A client that states a figure itself still wins — some counters hand back from a
+ * different drawer, and the person who was standing there outranks arithmetic.
+ */
+function deriveChangeGiven(legs, changeOwed) {
+  const cashLegs = legs.filter((l) => l.method === 'CASH');
+  if (!cashLegs.length) return legs;
+  if (cashLegs.some((l) => l.changeGiven != null)) return legs; // the client said; do not override
+  const tendered = round2(cashLegs.reduce((a, l) => a + Number(l.cashTendered || 0), 0));
+  if (tendered <= 0) return legs;
+  const applied = round2(cashLegs.reduce((a, l) => a + Number(l.amount || 0), 0));
+  const given = round2(Math.max(0, tendered - applied - (Number(changeOwed) || 0)));
+  cashLegs[0].changeGiven = given;
+  return legs;
 }
 
 function cashTenderedFrom(legs) {

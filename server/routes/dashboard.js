@@ -18,7 +18,7 @@
 // `created_at` (UTC) would move every sale before 01:00 WAT onto the wrong day.
 // =====================================================================
 
-const { resolveBranch, resolveBusiness, scopeFilter, dateRange, numField } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, scopeFilter, branchFilter, dateRange, numField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { watToday, watNow, addDays, utcToWat } = require('../../domain/time');
 const { atLeast, navigationFor } = require('../../domain/roles');
@@ -43,8 +43,16 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx, { required: false });
     const useBranch = branch && !scope.allBranches ? String(branch.id) : null;
 
+    // A BRANCH THE CALLER NAMED NARROWS THE WHOLE SCREEN. The comment above explains why
+    // the owner's DEFAULT view is the group: it is the shape of the answer that is derived
+    // from the user. Naming a branch is the opposite — it is the user asking a question
+    // about one shop — and it was being ignored here while reports.js honoured it, so an
+    // owner who switched branch saw the same group figures under a branch's name.
+    const named = await branchFilter(db, ctx, {});
+
     const scopeClause = (alias) => {
       const where = []; const params = [];
+      if (named.branchId) { where.push(`(${alias}.branch_id IS NULL OR ${alias}.branch_id = ?)`); params.push(named.branchId); }
       if (business) { where.push(`${alias}.business_id = ?`); params.push(String(business.id)); }
       if (useBranch) { where.push(`${alias}.branch_id = ?`); params.push(useBranch); }
       else if (!scope.allBranches && scope.branchIds) {

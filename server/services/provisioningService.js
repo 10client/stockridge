@@ -422,6 +422,13 @@ async function provisionPlatform(db, {
 async function provisionDeployment(db, {
   businessName, profileCode = 'GENERAL_RETAIL', ownerName, ownerUsername, ownerPin,
   adminUsername = 'admin', adminPin = null, branches = [], seededBy = 'provisioningService',
+  // Whether this business is registered for VAT. The route that creates a business has
+  // always accepted it (`POST /api/businesses` → vat_registered), and the deployment
+  // seeder did not — so a fixture built through this function could never be VAT
+  // registered, and input VAT was unrecoverable on every seeded deployment even with VAT
+  // switched on. A fixture that cannot be put into the state a real client is in cannot
+  // audit that state.
+  vatRegistered = false,
 }) {
   const { hashPin } = require('../../domain/crypto');
   if (!getProfile(profileCode)) {
@@ -453,9 +460,9 @@ async function provisionDeployment(db, {
   }
 
   const businessId = newId();
-  await db.run(`INSERT INTO businesses (id, name, legal_name, profile_code, is_active, created_at, updated_at)
-                VALUES (?,?,?,?,1, datetime('now'), datetime('now'))`,
-  [businessId, businessName, businessName, profileCode]);
+  await db.run(`INSERT INTO businesses (id, name, legal_name, profile_code, vat_registered, is_active, created_at, updated_at)
+                VALUES (?,?,?,?,?,1, datetime('now'), datetime('now'))`,
+  [businessId, businessName, businessName, profileCode, vatRegistered ? 1 : 0]);
   await db.run('UPDATE client_settings SET primary_business_id = ? WHERE id = 1 AND primary_business_id IS NULL', [businessId]);
 
   const business = await db.first('SELECT * FROM businesses WHERE id = ?', [businessId]);

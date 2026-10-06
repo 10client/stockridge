@@ -28,7 +28,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, readBusinessId, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -62,6 +62,10 @@ function mount(app, base = '/api') {
     const params = [];
     const f = scopeFilter(scope, { alias: 'c' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'c' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
 
     const search = (ctx.req.queryParam('q') || '').trim();
     if (search) {
@@ -136,6 +140,10 @@ function mount(app, base = '/api') {
     const params = [];
     const f = scopeFilter(scope, { alias: 'c' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'c' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
 
     const rows = await db.all(`SELECT c.id, c.name, c.company_name, c.phone, c.credit_limit, c.credit_balance,
           c.payment_terms_days, c.branch_id, c.business_id, c.customer_class_id,
@@ -546,7 +554,10 @@ function mount(app, base = '/api') {
     const customer = await db.first('SELECT * FROM customers WHERE id = ? AND is_deleted = 0', [id]);
     if (!customer) throw new HttpError('That customer does not exist.', { status: 404, code: 'CUSTOMER_NOT_FOUND' });
 
-    const branch = await resolveBranch(db, ctx);
+    // Row-scoped: the customer names the branch when they have one — see resolveBranch's
+    // fallback note. A customer with no branch of their own (the common case for a
+    // business-wide account) changes nothing: the rule below still applies.
+    const branch = await resolveBranch(db, ctx, { fallback: customer.branch_id });
     const business = await resolveBusiness(db, ctx, branch);
     const amount = numField(requireVal(body, 'amount'), { field: 'Amount', min: 0.01 });
     const method = valid(oneOf(body.method || body.payment_method || 'CASH', ['CASH', 'BANK_TRANSFER', 'POS_TERMINAL', 'MOBILE_MONEY', 'USSD', 'CHEQUE'], { field: 'Payment method' }), 'method');

@@ -26,7 +26,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, readBusinessId, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -51,6 +51,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 'po' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'po' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('po.status = ?'); params.push(String(status).toUpperCase()); }
     const supplierId = ctx.req.queryParam('supplier_id');
@@ -561,9 +565,24 @@ function mount(app, base = '/api') {
           `Withheld on payment to ${supplier.name}, ref ${reference}`,
         ]);
       }
+      // THE GROSS, NOT THE NET. This passed `net`, and the helper then subtracted the
+      // withholding a SECOND time:
+      //
+      //   debit  payables  net            ← should have been the gross: the invoice
+      //   credit WHT       wht               being discharged is the gross one
+      //   credit bank      net - wht
+      //
+      // So on a ₦200,000 invoice with ₦4,000 withheld, the bank was credited ₦192,000
+      // when ₦196,000 actually left it, and the supplier's account stayed ₦4,000 in
+      // credit — a supplier who has been paid in full still looks owed money, and the
+      // business pays them twice. The entry BALANCED (196,000 = 192,000 + 4,000), so the
+      // trial balance reported nothing wrong; only reading the bank balance and the
+      // supplier's account back catches it, which is what test/audit/audit.wht.js does.
+      //
+      // The helper was written for the gross all along — `value - wht` is the cash line.
       for (const st of glService.postCreditorPaymentStatements({
         businessId: String(business.id), branchId: String(branch.id), supplierId: id,
-        supplierName: supplier.name, amount: net, method, reference, whtAmount, accountIds, user,
+        supplierName: supplier.name, amount: gross, method, reference, whtAmount, accountIds, user,
       })) tx.queue(st.sql, st.params);
     });
 

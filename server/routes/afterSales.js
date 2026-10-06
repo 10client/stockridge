@@ -27,7 +27,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -382,6 +382,10 @@ function mount(app, base = '/api') {
     const params = [from, to];
     const f = scopeFilter(scope, { alias: 'r' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'r' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('r.status = ?'); params.push(String(status).toUpperCase()); }
     const whereSql = where.join(' AND ');
@@ -621,6 +625,10 @@ function mount(app, base = '/api') {
     const where = ['w.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'w' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'w' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('w.status = ?'); params.push(String(status).toUpperCase()); }
     else where.push("w.status <> 'CLOSED'");
@@ -1057,6 +1065,10 @@ function mount(app, base = '/api') {
     const where = ['d.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'd' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'd' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('d.status = ?'); params.push(String(status).toUpperCase()); }
     else where.push("d.status NOT IN ('COMPLETED','FORFEITED','CANCELLED','EXPIRED')");
@@ -1316,6 +1328,10 @@ function mount(app, base = '/api') {
     const where = ['ip.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'ip' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+
+    // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
+    const bf = await branchFilter(db, ctx, { alias: 'ip' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
     const status = ctx.req.queryParam('status');
     if (status) { where.push('ip.status = ?'); params.push(String(status).toUpperCase()); }
     const customerId = ctx.req.queryParam('customer_id');
