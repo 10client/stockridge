@@ -2391,3 +2391,15 @@ directly: the list for a branch must hold that branch's sale and no other branch
 4. A `--clean` sweep of `http-*`/`audit-*` accounts and `PROBE-`/`AUDIT-` fixtures at the
    start of a live write run — the audits retire their own users but leave stock, sales and
    safe entries behind, by design, on a staging deployment.
+
+## Deployment — all three environments on `969cd27`
+
+| Environment | Result |
+| --- | --- |
+| staging | deployed, `ready`, 2 businesses trading; write-mode audits: money 69 ✅ · wht 35 ✅ · http 34 + 1 reported |
+| sample | deployed, readiness 6 checks, `awaiting_first_business`; read-only http audit **26 passed, 2 reported** |
+| production | deployed, readiness 6 checks, `awaiting_first_business`; read-only http audit **26 passed, 2 reported** |
+
+The two reported checks on the handover environments are the documented stand-downs (no
+manager seat to create on a read-only target, and no non-ASCII fixture on a deployment the
+audit did not provision). Both are named in the output, not silently skipped.
