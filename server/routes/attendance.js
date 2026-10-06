@@ -141,7 +141,16 @@ function mount(app, base = '/api') {
       ]);
       // A device seen for the first time is registered as pending rather than
       // ignored, so the manager can approve it once instead of every shift.
-      if (deviceId && classification.deviceStatus === 'UNREGISTERED') {
+      //
+      // THE VALUE COMPARED HERE IS THE ONE THE CLASSIFIER ACTUALLY RETURNS. This guard read
+      // `'UNREGISTERED'`, a spelling that appears NOWHERE else in the product: the classifier
+      // answers REGISTERED / UNRECOGNIZED / NOT_APPLICABLE (domain/geofence.js:67), so the
+      // branch below was dead code and a first-seen machine was never registered. The effect
+      // is the exact opposite of the comment: the device list stayed empty, no manager could
+      // ever approve the machine, and every shift from it was flagged for ever — the flag
+      // nobody can clear is the flag everybody learns to ignore. Found by audit.staff, which
+      // looked for the pending device it had just clocked in from and found none.
+      if (deviceId && classification.deviceStatus === DEVICE_STATUS.UNRECOGNIZED) {
         // Registered with `registered_by` LEFT NULL, which is the PENDING state:
         // the manager sees it on the device list and approves it once, rather
         // than the shift being flagged every single day forever.
