@@ -24,7 +24,7 @@
 
 const { HttpError } = require('../lib/http');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, scopeFilter, pagination, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 // `newId` was used at the sales-target insert without being imported here, so
 // setting a target answered 500 "newId is not defined". node --check cannot see
@@ -56,7 +56,14 @@ function mount(app, base = '/api') {
   app.get(`${base}/reports/sales`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
-    const business = await resolveBusiness(db, ctx);
+    // The business this report covers: what the request named, or the caller's
+    // scope. NOT a guess — an owner who runs two businesses and names neither is
+    // reporting on both, and a report narrowed to one of them is a report that
+    // quietly omits half the takings. (This handler already knew half of that:
+    // see the branch-vs-business note below, which fixed the same family of bug
+    // for the branch pin.)
+    const namedBusiness = await resolveBusiness(db, ctx, null, { required: false });
+    const biz = namedBusiness ? String(namedBusiness.id) : null;
     const branch = await resolveBranch(db, ctx, { required: false });
     const settings = ctx.get('settings');
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
@@ -72,11 +79,14 @@ function mount(app, base = '/api') {
     //
     // Found exactly that way: an owner with two businesses could not read the
     // second one's sales report, and the response was a clean 200 with no rows.
-    const branchBelongsToBusiness = branch && String(branch.business_id) === String(business.id);
+    // With no business named and several in reach, `biz` is null and there is no
+    // business to disagree with, so the branch still applies.
+    const branchBelongsToBusiness = branch && (!biz || String(branch.business_id) === biz);
     const useBranch = branchBelongsToBusiness && ctx.req.queryParam('branch_scope') !== 'all' ? String(branch.id) : null;
 
-    const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?', 's.business_id = ?'];
-    const params = [from, to, String(business.id)];
+    const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?'];
+    const params = [from, to];
+    if (biz) { where.push('s.business_id = ?'); params.push(biz); }
     if (useBranch) { where.push('s.branch_id = ?'); params.push(useBranch); }
     if (!scope.allBranches && scope.branchIds && !useBranch) {
       const ids = [...scope.branchIds];
@@ -176,13 +186,15 @@ function mount(app, base = '/api') {
     }), { transactions: 0, grossRevenue: 0, vat: 0, netRevenue: 0, cogs: 0, grossMargin: 0, discounts: 0, deliveryFees: 0, outstanding: 0 });
 
     const voided = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS value
-        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' AND s.business_id = ?
+        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' ${biz ? 'AND s.business_id = ?' : ''}
           AND date(s.sold_at) BETWEEN ? AND ? ${useBranch ? 'AND s.branch_id = ?' : ''}`,
-    useBranch ? [String(business.id), from, to, useBranch] : [String(business.id), from, to]);
+    [...(biz ? [biz] : []), from, to, ...(useBranch ? [useBranch] : [])]);
 
     ctx.json({
       ok: true, range: { from, to }, groupBy,
-      scope: useBranch ? { branch: (await db.first('SELECT name FROM branches WHERE id = ?', [useBranch]) || {}).name } : { business: business.name },
+      scope: useBranch
+        ? { branch: (await db.first('SELECT name FROM branches WHERE id = ?', [useBranch]) || {}).name }
+        : { business: namedBusiness ? namedBusiness.name : 'Every business you can reach' },
       rows, totals: { ...totals, grossMarginPct: totals.netRevenue > 0 ? round2((totals.grossMargin / totals.netRevenue) * 100) : 0 },
       voided: { count: Number(voided.count) || 0, value: round2(Number(voided.value)) },
       vatRatePercent: vatRate,
@@ -208,7 +220,9 @@ function mount(app, base = '/api') {
    */
   app.get(`${base}/reports/inventory-movement`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    // `biz` behaves exactly like `bId` below — null means NO NARROWING — because
+    // that is what "this caller reaches every business and named none" means.
+    const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const days = Math.max(1, daysBetween(from, to));
@@ -216,23 +230,23 @@ function mount(app, base = '/api') {
 
     const products = await db.all(
       `SELECT p.id, p.name, p.sku, p.base_unit_name, p.cost_price, p.selling_price, p.reorder_level
-         FROM products p WHERE p.is_deleted = 0 AND p.business_id = ? ORDER BY p.name`,
-      [String(business.id)],
+         FROM products p WHERE p.is_deleted = 0 ${biz ? 'AND p.business_id = ?' : ''} ORDER BY p.name`,
+      biz ? [biz] : [],
     );
 
     const onHand = await db.all(
       `SELECT sb.product_id, COALESCE(SUM(sb.quantity),0) AS qty, COALESCE(SUM(sb.quantity_reserved),0) AS reserved
          FROM stock_batches sb
         WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED')
-          AND sb.business_id = ? ${bId ? 'AND sb.branch_id = ?' : ''}
+          ${biz ? 'AND sb.business_id = ?' : ''} ${bId ? 'AND sb.branch_id = ?' : ''}
         GROUP BY sb.product_id`,
-      bId ? [String(business.id), bId] : [String(business.id)],
+      [...(biz ? [biz] : []), ...(bId ? [bId] : [])],
     );
     const reservedAll = await db.all(
       `SELECT sb.product_id, COALESCE(SUM(sb.quantity_reserved),0) AS reserved
-         FROM stock_batches sb WHERE sb.is_deleted = 0 AND sb.business_id = ? ${bId ? 'AND sb.branch_id = ?' : ''}
+         FROM stock_batches sb WHERE sb.is_deleted = 0 ${biz ? 'AND sb.business_id = ?' : ''} ${bId ? 'AND sb.branch_id = ?' : ''}
         GROUP BY sb.product_id`,
-      bId ? [String(business.id), bId] : [String(business.id)],
+      [...(biz ? [biz] : []), ...(bId ? [bId] : [])],
     );
     const sold = await db.all(
       `SELECT si.product_id,
@@ -240,18 +254,18 @@ function mount(app, base = '/api') {
               COALESCE(SUM(si.line_total),0) AS revenue,
               COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
          FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND s.business_id = ?
+        WHERE si.is_deleted = 0 AND ${COUNTS} ${biz ? 'AND s.business_id = ?' : ''}
           AND date(s.sold_at) BETWEEN ? AND ? ${bId ? 'AND s.branch_id = ?' : ''}
         GROUP BY si.product_id`,
-      bId ? [String(business.id), from, to, bId] : [String(business.id), from, to],
+      [...(biz ? [biz] : []), from, to, ...(bId ? [bId] : [])],
     );
     const adjusted = await db.all(
       `SELECT sa.product_id, COALESCE(SUM(sa.quantity),0) AS net_qty, COALESCE(SUM(ABS(sa.total_value)),0) AS value
          FROM stock_adjustments sa
-        WHERE sa.is_deleted = 0 AND sa.business_id = ? AND date(sa.created_at) BETWEEN ? AND ?
+        WHERE sa.is_deleted = 0 ${biz ? 'AND sa.business_id = ?' : ''} AND date(sa.created_at) BETWEEN ? AND ?
           ${bId ? 'AND sa.branch_id = ?' : ''}
         GROUP BY sa.product_id`,
-      bId ? [String(business.id), from, to, bId] : [String(business.id), from, to],
+      [...(biz ? [biz] : []), from, to, ...(bId ? [bId] : [])],
     );
 
     const idx = (rows, key = 'product_id') => new Map(rows.map((r) => [String(r[key]), r]));
@@ -318,7 +332,7 @@ function mount(app, base = '/api') {
   /** Fast and slow movers — the reorder decision, made from evidence. */
   app.get(`${base}/reports/movers`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const kind = valid(oneOf(ctx.req.queryParam('kind') || 'FAST', ['FAST', 'SLOW', 'DEAD', 'SHRINKAGE'], { field: 'Report kind' }), 'kind');
@@ -329,11 +343,11 @@ function mount(app, base = '/api') {
             COALESCE(SUM(ABS(sa.quantity)),0) AS units_lost, COALESCE(SUM(ABS(sa.total_value)),0) AS value_lost,
             COUNT(sa.id) AS entries
           FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id
-          WHERE sa.is_deleted = 0 AND sa.business_id = ? AND date(sa.created_at) BETWEEN ? AND ?
+          WHERE sa.is_deleted = 0 ${biz ? 'AND sa.business_id = ?' : ''} AND date(sa.created_at) BETWEEN ? AND ?
             AND sa.adjustment_type IN ('DAMAGE','THEFT','EXPIRED','SHRINKAGE','WRITE_OFF')
             ${branch ? 'AND sa.branch_id = ?' : ''}
           GROUP BY p.id ORDER BY value_lost DESC LIMIT 50`,
-      [String(business.id), from, to].concat(branch ? [String(branch.id)] : []));
+      [...(biz ? [biz] : []), from, to].concat(branch ? [String(branch.id)] : []));
       return ctx.json({ ok: true, kind, range: { from, to }, data: rows.map((r) => ({ ...r, units_lost: round2(Number(r.units_lost)), value_lost: round2(Number(r.value_lost)) })) });
     }
 
@@ -349,11 +363,11 @@ function mount(app, base = '/api') {
         LEFT JOIN sale_items si ON si.product_id = p.id AND si.is_deleted = 0
         LEFT JOIN sales s ON s.id = si.sale_id AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ?
               ${branch ? 'AND s.branch_id = ?' : ''}
-        WHERE p.is_deleted = 0 AND p.business_id = ?
+        WHERE p.is_deleted = 0 ${biz ? 'AND p.business_id = ?' : ''}
         GROUP BY p.id`,
     // Bind order follows the placeholder order: the on_hand subquery's branch
     // filter, then the sales join's dates and branch, then the outer business id.
-    (branch ? [String(branch.id)] : []).concat([from, to], branch ? [String(branch.id)] : [], [String(business.id)]));
+    (branch ? [String(branch.id)] : []).concat([from, to], branch ? [String(branch.id)] : [], biz ? [biz] : []));
 
     let data = rows.map((r) => {
       const sold = round2(Number(r.units_sold));
@@ -398,7 +412,7 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/reports/top-customers`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const biz = await readBusinessId(db, ctx);
     const { from, to } = dateRange(ctx, { defaultDays: 90 });
     const rows = await db.all(`SELECT c.id, c.name, c.company_name, c.phone, c.credit_limit, c.credit_balance,
           cc.name AS class_name,
@@ -407,9 +421,9 @@ function mount(app, base = '/api') {
         FROM customers c
         LEFT JOIN sales s ON s.customer_id = c.id AND ${COUNTS.replace(/\bs\./g, 's.')} AND date(s.sold_at) BETWEEN ? AND ?
         LEFT JOIN customer_classes cc ON cc.id = c.customer_class_id
-        WHERE c.is_deleted = 0 AND c.business_id = ?
+        WHERE c.is_deleted = 0 ${biz ? 'AND c.business_id = ?' : ''}
         GROUP BY c.id HAVING purchases > 0
-        ORDER BY revenue DESC LIMIT 100`, [from, to, String(business.id)]);
+        ORDER BY revenue DESC LIMIT 100`, [from, to, ...(biz ? [biz] : [])]);
     ctx.json({
       ok: true, range: { from, to },
       data: rows.map((r) => ({ ...r, revenue: round2(Number(r.revenue)), outstanding: round2(Number(r.outstanding)), averagePurchase: round2(Number(r.revenue) / Math.max(1, Number(r.purchases))) })),
@@ -426,7 +440,7 @@ function mount(app, base = '/api') {
   /** Commission per salesperson — derived, so it always matches the sales report. */
   app.get(`${base}/reports/commission`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const biz = await readBusinessId(db, ctx);
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const rows = await db.all(`SELECT u.id, u.full_name, u.username, u.role, u.commission_rate_pct, b.name AS branch_name,
           COUNT(s.id) AS sales, COALESCE(SUM(s.total),0) AS revenue,
@@ -438,10 +452,10 @@ function mount(app, base = '/api') {
              AND date(s3.sold_at) BETWEEN ? AND ?) AS voids
         FROM users u
         LEFT JOIN branches b ON b.id = u.branch_id
-        LEFT JOIN sales s ON s.salesperson_id = u.id AND ${COUNTS.replace(/\bs\./g, 's.')} AND date(s.sold_at) BETWEEN ? AND ? AND s.business_id = ?
-        WHERE u.is_deleted = 0 AND u.business_id = ? AND u.role IN ('STAFF','MANAGER')
+        LEFT JOIN sales s ON s.salesperson_id = u.id AND ${COUNTS.replace(/\bs\./g, 's.')} AND date(s.sold_at) BETWEEN ? AND ? ${biz ? 'AND s.business_id = ?' : ''}
+        WHERE u.is_deleted = 0 ${biz ? 'AND u.business_id = ?' : ''} AND u.role IN ('STAFF','MANAGER')
         GROUP BY u.id ORDER BY revenue DESC`,
-    [from, to, from, to, from, to, String(business.id), String(business.id)]);
+    [...[from, to, from, to, from, to], ...(biz ? [biz, biz] : [])]);
 
     ctx.json({
       ok: true, range: { from, to },
@@ -470,7 +484,7 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/reports/targets`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
     const today = watToday();
     const monthStart = today.slice(0, 8) + '01';
@@ -478,13 +492,14 @@ function mount(app, base = '/api') {
         FROM sales_targets t
         LEFT JOIN branches b ON b.id = t.branch_id
         LEFT JOIN users u ON u.id = t.user_id
-        WHERE t.is_deleted = 0 AND t.business_id = ? AND t.period_start <= ? AND t.period_end >= ?
-        ORDER BY t.period_start DESC, t.target_revenue DESC LIMIT 100`, [String(business.id), today, today]);
+        WHERE t.is_deleted = 0 ${biz ? 'AND t.business_id = ?' : ''} AND t.period_start <= ? AND t.period_end >= ?
+        ORDER BY t.period_start DESC, t.target_revenue DESC LIMIT 100`, [...(biz ? [biz] : []), today, today]);
 
     const data = [];
     for (const t of rows) {
-      const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?', 's.business_id = ?'];
-      const params = [t.period_start, t.period_end, String(business.id)];
+      const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?'];
+      const params = [t.period_start, t.period_end];
+      if (biz) { where.push('s.business_id = ?'); params.push(biz); }
       if (t.branch_id) { where.push('s.branch_id = ?'); params.push(String(t.branch_id)); }
       if (t.user_id) { where.push('s.salesperson_id = ?'); params.push(String(t.user_id)); }
       const actual = await db.first(`SELECT COALESCE(SUM(s.total),0) AS revenue, COUNT(*) AS sales,
@@ -557,7 +572,10 @@ function mount(app, base = '/api') {
   app.get(`${base}/reports/export`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const what = valid(oneOf(ctx.req.queryParam('report') || 'SALES', ['SALES', 'SALES_DETAIL', 'STOCK', 'DEBTORS', 'CREDITORS', 'EXPENSES', 'ADJUSTMENTS', 'AUDIT'], { field: 'Report' }), 'report');
-    const business = await resolveBusiness(db, ctx);
+    // An export is a read: it covers what the caller reaches and what the request
+    // named. Exporting one business's ledger while the screen above it showed all
+    // of them is how a filed return ends up half-complete.
+    const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const bSql = branch && ctx.req.queryParam('branch_scope') !== 'all' ? 'AND t.branch_id = ?' : '';
@@ -570,9 +588,9 @@ function mount(app, base = '/api') {
                 s.subtotal, s.discount_amount + COALESCE(s.order_discount_amount,0), s.vat_amount, s.delivery_fee, s.total,
                 s.amount_paid, s.balance_due, s.status
               FROM sales s LEFT JOIN branches b ON b.id = s.branch_id LEFT JOIN users u ON u.id = s.salesperson_id
-              WHERE s.is_deleted = 0 AND s.business_id = ? AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
+              WHERE s.is_deleted = 0 ${biz ? 'AND s.business_id = ?' : ''} AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
               ORDER BY s.sold_at DESC`,
-        params: [String(business.id), from, to, ...bParam],
+        params: [...(biz ? [biz] : []), from, to, ...bParam],
       },
       SALES_DETAIL: {
         head: ['Receipt', 'Date (WAT)', 'Branch', 'Product', 'SKU', 'Variant', 'Unit', 'Qty', 'Base qty', 'Unit price', 'Discount', 'VAT', 'Line total', 'Cost', 'Margin'],
@@ -581,9 +599,9 @@ function mount(app, base = '/api') {
                 si.cost_price_snapshot * si.quantity_in_base, si.margin
               FROM sale_items si JOIN sales s ON s.id = si.sale_id
               LEFT JOIN branches b ON b.id = s.branch_id LEFT JOIN product_variants v ON v.id = si.variant_id
-              WHERE si.is_deleted = 0 AND ${COUNTS} AND s.business_id = ? AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
+              WHERE si.is_deleted = 0 AND ${COUNTS} ${biz ? 'AND s.business_id = ?' : ''} AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
               ORDER BY s.sold_at DESC, s.receipt_no`,
-        params: [String(business.id), from, to, ...bParam],
+        params: [...(biz ? [biz] : []), from, to, ...bParam],
       },
       STOCK: {
         head: ['SKU', 'Product', 'Branch', 'Batch', 'Expiry', 'Qty', 'Reserved', 'Available', 'Unit cost', 'Stock value', 'Status'],
@@ -591,9 +609,9 @@ function mount(app, base = '/api') {
                 sb.quantity - sb.quantity_reserved, sb.cost_price_per_unit,
                 sb.quantity * sb.cost_price_per_unit, sb.status
               FROM stock_batches sb JOIN products p ON p.id = sb.product_id LEFT JOIN branches b ON b.id = sb.branch_id
-              WHERE sb.is_deleted = 0 AND sb.business_id = ? ${bSql.replace('t.', 'sb.')}
+              WHERE sb.is_deleted = 0 ${biz ? 'AND sb.business_id = ?' : ''} ${bSql.replace('t.', 'sb.')}
               ORDER BY p.name, sb.batch_no`,
-        params: [String(business.id), ...bParam],
+        params: [...(biz ? [biz] : []), ...bParam],
       },
       DEBTORS: {
         head: ['Customer', 'Phone', 'Class', 'Credit limit', 'Balance', 'Terms (days)', 'Oldest due', 'Open invoices'],
@@ -601,43 +619,43 @@ function mount(app, base = '/api') {
                 (SELECT MIN(s.due_date) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0),
                 (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0)
               FROM customers c LEFT JOIN customer_classes cc ON cc.id = c.customer_class_id
-              WHERE c.is_deleted = 0 AND c.credit_balance <> 0 AND c.business_id = ? ${bSql.replace('t.', 'c.')}
+              WHERE c.is_deleted = 0 AND c.credit_balance <> 0 ${biz ? 'AND c.business_id = ?' : ''} ${bSql.replace('t.', 'c.')}
               ORDER BY c.credit_balance DESC`,
-        params: [String(business.id), ...bParam],
+        params: [...(biz ? [biz] : []), ...bParam],
       },
       CREDITORS: {
         head: ['Supplier', 'Phone', 'TIN', 'Manufacturer', 'Credit limit', 'Balance owed'],
         sql: `SELECT s.name, s.phone, s.tin, CASE s.is_manufacturer WHEN 1 THEN 'Yes' ELSE 'No' END, s.credit_limit,
                 (SELECT COALESCE(SUM(cl.amount),0) FROM creditor_ledger cl WHERE cl.supplier_id = s.id AND cl.is_deleted = 0)
-              FROM suppliers s WHERE s.is_deleted = 0 AND (s.business_id = ? OR s.business_id IS NULL)
+              FROM suppliers s WHERE s.is_deleted = 0 ${biz ? 'AND (s.business_id = ? OR s.business_id IS NULL)' : ''}
               ORDER BY 6 DESC`,
-        params: [String(business.id)],
+        params: biz ? [biz] : [],
       },
       EXPENSES: {
         head: ['Date', 'Branch', 'Category', 'Description', 'Supplier', 'Gross', 'Input VAT', 'WHT code', 'WHT', 'Net', 'Method', 'Status'],
         sql: `SELECT e.expense_date, b.name, e.category, e.description, s.name, e.amount, e.vat_amount, e.wht_code,
                 e.wht_amount, e.net_amount, e.payment_method, e.status
               FROM expenses e LEFT JOIN branches b ON b.id = e.branch_id LEFT JOIN suppliers s ON s.id = e.supplier_id
-              WHERE e.is_deleted = 0 AND e.business_id = ? AND e.expense_date BETWEEN ? AND ? ${bSql.replace('t.', 'e.')}
+              WHERE e.is_deleted = 0 ${biz ? 'AND e.business_id = ?' : ''} AND e.expense_date BETWEEN ? AND ? ${bSql.replace('t.', 'e.')}
               ORDER BY e.expense_date DESC`,
-        params: [String(business.id), from, to, ...bParam],
+        params: [...(biz ? [biz] : []), from, to, ...bParam],
       },
       ADJUSTMENTS: {
         head: ['Date', 'Branch', 'Product', 'Type', 'Qty', 'Unit cost', 'Value', 'Reason', 'By'],
         sql: `SELECT sa.created_at, b.name, p.name, sa.adjustment_type, sa.quantity, sa.unit_cost, sa.total_value, sa.reason, u.full_name
               FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id
               LEFT JOIN branches b ON b.id = sa.branch_id LEFT JOIN users u ON u.id = sa.created_by
-              WHERE sa.is_deleted = 0 AND sa.business_id = ? AND date(sa.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'sa.')}
+              WHERE sa.is_deleted = 0 ${biz ? 'AND sa.business_id = ?' : ''} AND date(sa.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'sa.')}
               ORDER BY sa.created_at DESC`,
-        params: [String(business.id), from, to, ...bParam],
+        params: [...(biz ? [biz] : []), from, to, ...bParam],
       },
       AUDIT: {
         head: ['When (UTC)', 'User', 'Action', 'Entity', 'Entity id', 'Branch', 'IP'],
         sql: `SELECT a.created_at, a.username, a.action, a.entity_type, a.entity_id, b.name, a.ip_address
               FROM audit_log a LEFT JOIN branches b ON b.id = a.branch_id
-              WHERE a.business_id = ? AND date(a.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'a.')}
+              WHERE 1 = 1 ${biz ? 'AND a.business_id = ?' : ''} AND date(a.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'a.')}
               ORDER BY a.created_at DESC LIMIT 5000`,
-        params: [String(business.id), from, to, ...bParam],
+        params: [...(biz ? [biz] : []), from, to, ...bParam],
       },
     };
 

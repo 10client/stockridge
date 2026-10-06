@@ -26,7 +26,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -465,12 +465,12 @@ function mount(app, base = '/api') {
   /** The creditor book: who the business owes, aged. */
   app.get(`${base}/creditors`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const biz = await readBusinessId(db, ctx);
     const asAt = strField(ctx.req.queryParam('as_at'), { field: 'As-at date', maxLength: 10 }) || watToday();
     const suppliers = await db.all(`SELECT s.id, s.name, s.phone, s.tin, s.is_manufacturer, s.credit_limit, s.payment_terms_days,
           (SELECT COALESCE(SUM(cl.amount),0) FROM creditor_ledger cl WHERE cl.supplier_id = s.id AND cl.is_deleted = 0) AS owed
-        FROM suppliers s WHERE s.is_deleted = 0 AND (s.business_id = ? OR s.business_id IS NULL)
-        ORDER BY owed DESC, s.name LIMIT 500`, [String(business.id)]);
+        FROM suppliers s WHERE s.is_deleted = 0 ${biz ? 'AND (s.business_id = ? OR s.business_id IS NULL)' : ''}
+        ORDER BY owed DESC, s.name LIMIT 500`, biz ? [biz] : []);
     const creditors = [];
     for (const sp of suppliers.filter((x) => Number(x.owed) !== 0)) {
       const entries = await db.all('SELECT * FROM creditor_ledger WHERE supplier_id = ? AND is_deleted = 0 ORDER BY created_at, id', [String(sp.id)]);

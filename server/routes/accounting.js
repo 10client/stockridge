@@ -28,7 +28,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -42,15 +42,18 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/accounting/accounts`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    // A read is narrowed by what the request NAMED, or by the caller's scope — never
+    // by a guessed business. `readBusinessFilter` returns `1 = 1` for a caller who
+    // reaches every business, which is the honest answer for a chart of accounts.
+    const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'a', allowNull: true });
     const rows = await db.all(`SELECT a.*,
           (SELECT COUNT(*) FROM gl_journal_lines l WHERE l.account_id = a.id AND l.is_deleted = 0) AS line_count,
           (SELECT COALESCE(SUM(l.debit - l.credit),0) FROM gl_journal_lines l
              JOIN gl_journal_entries e ON e.id = l.journal_entry_id AND e.is_deleted = 0
              WHERE l.account_id = a.id AND l.is_deleted = 0) AS net_movement
         FROM gl_accounts a
-        WHERE a.is_deleted = 0 AND (a.business_id = ? OR a.business_id IS NULL)
-        ORDER BY a.code`, [String(business.id)]);
+        WHERE a.is_deleted = 0 AND ${bf.sql}
+        ORDER BY a.code`, bf.params);
     // Grouped by type so the screen reads like an accountant's list, not a flat
     // table of 51 rows.
     const byType = {};
@@ -102,12 +105,12 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/accounting/journal`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'e', allowNull: true });
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
-    const where = ['e.is_deleted = 0', 'e.entry_date BETWEEN ? AND ?', '(e.business_id = ? OR e.business_id IS NULL)'];
-    const params = [from, to, String(business.id)];
+    const where = ['e.is_deleted = 0', 'e.entry_date BETWEEN ? AND ?', bf.sql];
+    const params = [from, to, ...bf.params];
     if (!scope.allBranches && scope.branchIds) {
       const ids = [...scope.branchIds];
       where.push(`(e.branch_id IS NULL OR e.branch_id IN (${ids.map(() => '?').join(',')}))`);
@@ -343,31 +346,45 @@ function mount(app, base = '/api') {
    */
   app.get(`${base}/accounting/vat`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    // THIS ONE NEEDS THE BUSINESS'S OWN FACTS, NOT JUST A FILTER — whether it is
+    // registered for VAT decides whether an input-VAT credit exists at all. A
+    // caller who named one entity gets that entity's answer; a caller who reaches
+    // several and named none is reporting across all of them, so the credit is
+    // available if ANY of them is registered.
+    const business = await resolveBusiness(db, ctx, null, { required: false });
     const settings = ctx.get('settings');
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const rate = Number(settings.vat_rate_percent) || 7.5;
+    const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 's', allowNull: false });
+    const bf2 = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'e', allowNull: false });
+    let anyRegistered = false;
+    if (!business) {
+      const vb = await readBusinessFilter(db, ctx, { column: 'id', alias: 'bz', allowNull: false });
+      const row = await db.first(`SELECT COUNT(*) AS n FROM businesses bz WHERE bz.is_deleted = 0 AND bz.vat_registered = 1 AND ${vb.sql}`, vb.params);
+      anyRegistered = Number(row && row.n) > 0;
+    }
 
     // Output VAT: from sales, excluding voids. A voided sale's VAT was reversed
     // in the ledger, so including it here would overstate what is owed.
     const output = await db.first(`SELECT COUNT(*) AS sales, COALESCE(SUM(s.vat_amount),0) AS vat,
           COALESCE(SUM(s.total - s.vat_amount),0) AS net_revenue
-        FROM sales s WHERE s.business_id = ? AND s.is_deleted = 0 AND s.status <> 'VOIDED'
-          AND s.vat_enabled = 1 AND date(s.sold_at) BETWEEN ? AND ?`, [String(business.id), from, to]);
+        FROM sales s WHERE ${bf.sql} AND s.is_deleted = 0 AND s.status <> 'VOIDED'
+          AND s.vat_enabled = 1 AND date(s.sold_at) BETWEEN ? AND ?`, [...bf.params, from, to]);
 
     const voided = await db.first(`SELECT COUNT(*) AS sales, COALESCE(SUM(s.vat_amount),0) AS vat
-        FROM sales s WHERE s.business_id = ? AND s.is_deleted = 0 AND s.status = 'VOIDED'
-          AND s.vat_enabled = 1 AND date(s.sold_at) BETWEEN ? AND ?`, [String(business.id), from, to]);
+        FROM sales s WHERE ${bf.sql} AND s.is_deleted = 0 AND s.status = 'VOIDED'
+          AND s.vat_enabled = 1 AND date(s.sold_at) BETWEEN ? AND ?`, [...bf.params, from, to]);
 
     // Input VAT on expenses, where the business is registered and can recover it.
     const input = await db.first(`SELECT COUNT(*) AS entries, COALESCE(SUM(e.vat_amount),0) AS vat
-        FROM expenses e WHERE e.business_id = ? AND e.is_deleted = 0 AND e.status <> 'REJECTED'
-          AND e.expense_date BETWEEN ? AND ?`, [String(business.id), from, to]);
+        FROM expenses e WHERE ${bf2.sql} AND e.is_deleted = 0 AND e.status <> 'REJECTED'
+          AND e.expense_date BETWEEN ? AND ?`, [...bf2.params, from, to]);
 
     const outputVat = round2(Number(output.vat));
     const inputVat = round2(Number(input.vat));
     const net = round2(outputVat - inputVat);
-    const registered = Boolean(Number(business.vat_registered)) && Boolean(Number(settings.vat_enabled));
+    const registered = (business ? Boolean(Number(business.vat_registered)) : anyRegistered)
+      && Boolean(Number(settings.vat_enabled));
 
     ctx.json({
       ok: true, range: { from, to }, ratePercent: rate, registered,
@@ -399,15 +416,15 @@ function mount(app, base = '/api') {
    */
   app.get(`${base}/accounting/wht`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    const bf = await readBusinessFilter(db, ctx, { column: 'business_id', alias: 'w', allowNull: false });
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
     const rows = await db.all(`SELECT w.*, s.name AS supplier_name, b.name AS branch_name, u.full_name AS recorded_by_name
         FROM wht_entries w
         LEFT JOIN suppliers s ON s.id = w.supplier_id
         LEFT JOIN branches b ON b.id = w.branch_id
         LEFT JOIN users u ON u.id = w.recorded_by
-        WHERE w.is_deleted = 0 AND w.business_id = ? AND w.entry_date BETWEEN ? AND ?
-        ORDER BY w.entry_date DESC, w.created_at DESC`, [String(business.id), from, to]);
+        WHERE w.is_deleted = 0 AND ${bf.sql} AND w.entry_date BETWEEN ? AND ?
+        ORDER BY w.entry_date DESC, w.created_at DESC`, [...bf.params, from, to]);
 
     const payable = rows.filter((r) => r.direction === 'PAYABLE');
     const receivable = rows.filter((r) => r.direction === 'RECEIVABLE');

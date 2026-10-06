@@ -1741,3 +1741,120 @@ today or in UTC. Proved to fire, and it reported two false positives on its own 
 - Still outstanding from earlier stages: the live staging offline proof
   (`tools/frontend-offline.js`) and `public/offline.html`. The notifications bell: the
   routes and the producer now exist and no screen shows a bell.
+
+# CHECKPOINT — Stage 11b: A READ IS NOT NARROWED BY A GUESS
+
+Date: 2026-10-06 · Local: `npm run verify` → **330 tests, 330 pass, 0 fail** ·
+New test: `test/integration/read-scope.test.js` **7/7** · Live on all three
+deployments · Staging compliance probe **8/8** after the fix.
+
+## What the live probe found that the tests could not
+
+The compliance screen worked locally and failed on staging, in the worst possible
+way: **the write succeeded and the read did not see it.** A licence was recorded
+from the screen, the server answered 201 with the record's id, and the Register
+tab came back empty. Worse, trying again was refused:
+
+```
+Verification Showroom already has a live CAC record (PROBE-718734).
+Edit that one, or remove it first if this replaces it.
+```
+
+The record existed, could not be listed, and could not be re-entered. Nothing was
+broken; everything was *narrowed* — and the two halves of the request disagreed
+about what business they were talking about:
+
+* the **write** took its business from the branch it was given — a fact;
+* the **read** named nothing, so `resolveBusiness` answered with the deployment's
+  primary business, and when that was unset, with **the oldest live business**.
+
+Staging has two (`Verification Furniture Co`, created 05 Oct 20:24, and
+`Verification electronics-muvifjtk`, created 05 Oct 17:14). The probe recorded
+against the furniture showroom. The guess picked the electronics business — the
+older one — so every unfiltered read came back empty and every write was blocked
+by a guard that was reading the same table the list was hiding.
+
+```
+GET /api/compliance/records                       → 0 rows   ← the guess
+GET /api/compliance/records?branch_id=<showroom>  → 2 rows   ← the fact
+```
+
+## The rule, and where it now lives
+
+**A read is narrowed by what the request NAMED, or by the caller's scope. Never by
+a guess.** `resolveBusiness` grew `{ required: false }` and two helpers:
+
+| | |
+|---|---|
+| `readBusinessFilter(db, ctx, {column, alias, allowNull})` | a SQL clause, ready to splice |
+| `readBusinessId(db, ctx, {branch})` | the id, or `null` meaning NO NARROWING |
+
+`null` is not "no business" — it is "this caller reaches every business and named
+none", which is precisely when narrowing is a lie. Two more rules fell out of it:
+
+* **the pin answers a WRITE, not a READ.** Every OWNER has both `allBusinesses` and
+  a `business_id`, so letting the pin narrow a read hid the other businesses they
+  demonstrably reach. A write still takes the pin (a new row must belong to
+  somebody).
+* **a POST that carries its own payload has named its business.** `resolveBusiness`
+  now reads `business_id` out of the body as `resolveBranch` already read
+  `branch_id`; the client's own sync pull sends `branch_id` in the body for exactly
+  that reason.
+
+## Converted: 21 reads across 7 files
+
+| file | reads |
+|---|---|
+| `accounting.js` | chart of accounts, journal, VAT return, WHT return |
+| `reports.js` | sales, inventory movement, movers, top customers, commission, targets, export (8 queries) |
+| `customers.js` | customer classes |
+| `finance.js` | creditor book |
+| `sync.js` | the pull that seeds a device |
+| `compliance.js` | the register, the checklist |
+
+`catalog.js` already did this correctly — it filters by the query parameter and by
+`scope`, never by a resolved business — and was left alone. `dashboard.js` had
+worked it out for itself (`isOwnerView ? null : await resolveBusiness(...)`) and
+was the only place that had.
+
+**The VAT return needed more than a filter.** It reads `business.vat_registered`
+to decide whether an input-VAT credit exists, so a caller reporting across several
+businesses gets the credit if *any* of them is registered, and the response says
+which rule produced the answer.
+
+## Proved both ways
+
+`test/integration/read-scope.test.js` builds one deployment with two businesses —
+the newer one deliberately furniture, because the guess falls back to the OLDEST —
+and drives real HTTP:
+
+* the chart of accounts, the VAT summary, the sales report, the CSV export, the
+  customer classes, the creditor book and the sync pull each carry **both**
+  businesses;
+* naming one business still narrows, in both directions, on every one of them;
+* the system rows (`business_id IS NULL`) stay visible to a narrowed caller;
+* a branch-pinned manager still reaches their own shop and nothing else.
+
+**Negative control:** restoring the old guess in `resolveBusiness` failed **5 of the
+6** subtests and the compliance regression; the branch-pin test still passed, which
+is the point — the fix did not open anything up. 330/330 with the guess removed.
+
+## Live
+
+All three deployments redeployed (sample / staging / production, `admin`/`1234`).
+On staging, after the fix: the screen probe is **8/8**, the register reads back,
+both strays from the failed runs are cleaned up, and the deployment carries **0
+compliance records, 0 alerts, 0 notifications** — it looks untouched, which is what
+a handover should look like.
+
+Two probe defects fixed on the way: it now **sweeps its own strays** (`PROBE-\d{6}`
+left over from a run that died part-way) before it starts, and it **marks its own
+alerts read** so a demonstration licence never sits in a real bell.
+
+## Still owed
+
+Settings controls (15 of 30 write keys that are not columns) · the remaining
+wire-ups (`user_assignment_history`, `pending_user_transfers`, `delivery_zones`,
+`stock_transfer_serials`, `data_cleanup_log`) · the notifications bell on screen
+(the routes and the producer now exist; no screen shows a bell) ·
+`public/offline.html` and the live staging offline proof.

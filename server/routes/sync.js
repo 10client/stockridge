@@ -38,7 +38,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, pagination, listResponse, strField, boolField } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, pagination, listResponse, strField, boolField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -494,7 +494,11 @@ function mount(app, base = '/api') {
     // sixth of the catalogue. `scope` is what decides visibility below; the
     // branch only NARROWS it.
     const branch = await resolveBranch(db, ctx, { required: false });
-    const business = await resolveBusiness(db, ctx, branch);
+    // `biz` is null when the caller reaches every business and named none: the pull
+    // then covers them all, exactly as the branch does above for an administrator
+    // ("naming one would make a first pull on a fresh install return a sixth of the
+    // catalogue"). A device pinned to a branch still gets that branch.
+    const biz = await readBusinessId(db, ctx, { branch });
     const scope = ctx.get('scope');
     const deviceId = strField(body.device_id || body.deviceId || ctx.req.queryParam('device_id') || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
     const since = strField(body.since || ctx.req.queryParam('since'), { field: 'Since', maxLength: 40 });
@@ -520,7 +524,7 @@ function mount(app, base = '/api') {
       const spec = PULLABLE[table];
       const where = []; const params = [];
       if (spec.softDelete !== false) where.push('is_deleted = 0');
-      if (spec.businessScoped !== false) { where.push('(business_id = ? OR business_id IS NULL)'); params.push(String(business.id)); }
+      if (spec.businessScoped !== false && biz) { where.push('(business_id = ? OR business_id IS NULL)'); params.push(biz); }
       if (spec.branchScoped && !scope.allBranches && scope.branchIds) {
         const ids = [...scope.branchIds];
         where.push(`(branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',')}))`);

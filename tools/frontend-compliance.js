@@ -64,6 +64,19 @@ const isoIn = (days) => new Date(Date.now() + days * 86400000).toISOString().sli
   const notified = [];
   const finish = async () => {
     if (!KEEP) {
+      // SWEEP FIRST. A probe that fails half-way through leaves the record it made
+      // behind — which is exactly what happened on the first live run: the record
+      // existed, the read that was supposed to find it was broken, and three
+      // PROBE- records accumulated in a real deployment while every later run
+      // reported on a database that no longer resembled a clean one. Finding the
+      // strays by their own reference pattern means the next run starts clean even
+      // when the last one died at step 4.
+      const strays = await api('GET', '/api/compliance/records?limit=200');
+      for (const r of ((strays.body && strays.body.data) || [])) {
+        if (/^PROBE-\d{6}$/.test(String(r.record_number)) && !created.includes(String(r.id))) {
+          created.push(String(r.id));
+        }
+      }
       for (const id of created) {
         const r = await api('DELETE', `/api/compliance/records/${encodeURIComponent(id)}`);
         if (r.status !== 200) console.log(`      (cleanup: record ${id.slice(0, 8)} answered ${r.status})`);

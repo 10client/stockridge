@@ -28,7 +28,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -645,12 +645,14 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/customer-classes`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
-    const business = await resolveBusiness(db, ctx);
+    // A read covers what the caller reaches. The system classes (`business_id IS
+    // NULL`) are visible to everyone by design, so they stay `OR ... IS NULL`.
+    const biz = await readBusinessId(db, ctx);
     const rows = await db.all(`SELECT cc.*, (SELECT COUNT(*) FROM customers c WHERE c.customer_class_id = cc.id AND c.is_deleted = 0) AS customer_count,
           pl.name AS price_list_name
         FROM customer_classes cc LEFT JOIN price_lists pl ON pl.id = cc.default_price_list_id
-        WHERE cc.is_deleted = 0 AND (cc.business_id = ? OR cc.business_id IS NULL)
-        ORDER BY cc.is_system DESC, cc.name`, [String(business.id)]);
+        WHERE cc.is_deleted = 0 ${biz ? 'AND (cc.business_id = ? OR cc.business_id IS NULL)' : ''}
+        ORDER BY cc.is_system DESC, cc.name`, biz ? [biz] : []);
     ctx.json({ ok: true, data: rows });
   });
 

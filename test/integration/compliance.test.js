@@ -96,6 +96,23 @@ test('compliance: the register, the checklist and the alerts', async (t) => {
   const ikeja = await setup.first("SELECT * FROM branches WHERE code = 'CP-IKJ'");
   const aba = await setup.first("SELECT * FROM branches WHERE code = 'CP-ABA'");
   assert.ok(ikeja && aba, 'the fixture needs two branches');
+
+  // ---------------------------------------------------------------------
+  // A SECOND BUSINESS, because one business cannot show the defect this
+  // fixture now guards against (see the last subtest). It is provisioned the
+  // way the app provisions one: a `businesses` row, a branch, then the
+  // catalogue and chart of accounts that every business gets.
+  // ---------------------------------------------------------------------
+  const { newId } = require(path.join(ROOT, 'domain/crypto'));
+  const furnitureId = newId();
+  await setup.run(`INSERT INTO businesses (id, name, profile_code, vat_registered, created_at, updated_at)
+                   VALUES (?,?,?,?, datetime('now'), datetime('now'))`,
+  [furnitureId, 'Compliance Furniture Ltd', 'FURNITURE', 1]);
+  const lekkiId = newId();
+  await setup.run(`INSERT INTO branches (id, business_id, name, code, city, state, branch_type, opening_cash, created_at, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
+  [lekkiId, furnitureId, 'Lekki Showroom', 'CP-LEK', 'Lagos', 'Lagos', 'SHOWROOM', 25000]);
+  await provisioning.provisionBusiness(setup, { id: furnitureId, profile_code: 'FURNITURE' });
   await setup.close();
 
   child = spawn(process.execPath, [path.join(ROOT, 'server/app.js'), `--port=${PORT}`, `--db=${DB_FILE}`], {
@@ -407,4 +424,69 @@ test('compliance: the register, the checklist and the alerts', async (t) => {
     assert.ok(Number(notifyAudit) >= 1, 'raising alerts is a state change worth an audit row');
     await db.close();
   });
+  // -------------------------------------------------------------------
+  await t.test('a caller who reaches every business is not shown one of them', async () => {
+    // THE DEFECT THIS EXISTS FOR, found on a live deployment with two businesses.
+    //
+    // An administrator recorded a licence against a branch of the newer business,
+    // and then could not see it. The write took its business from the named branch
+    // — a fact. The read named nothing, so `resolveBusiness` GUESSED: primary
+    // business if one is recorded, otherwise the oldest live business. The guess
+    // picked the other business, the register came back empty, and the
+    // duplicate-record guard refused to let the same licence be recorded again —
+    // so the record existed, could not be seen, and could not be re-entered.
+    //
+    // The rule: a read is narrowed by what the request NAMED and by the caller's
+    // scope, never by a guess. `dashboard.js` had already worked this out for its
+    // own counts; every other read had not.
+    const record = (branchId, type, number) => req('POST', '/api/compliance/records', {
+      token: tokens.owner,
+      body: { branch_id: branchId, record_type: type, record_number: number, expiry_date: isoDaysFromNow(60) },
+    });
+
+    const electronics = await record(ikeja.id, 'CAC', 'RC-ELECTRONICS-1');
+    assert.equal(electronics.status, 201, electronics.text.slice(0, 200));
+    const furniture = await record(lekkiId, 'CAC', 'RC-FURNITURE-1');
+    assert.equal(furniture.status, 201, furniture.text.slice(0, 200));
+
+    // Nothing named: the owner of the deployment sees BOTH businesses' records.
+    const all = await req('GET', '/api/compliance/records?limit=200', { token: tokens.owner });
+    assert.equal(all.status, 200, all.text.slice(0, 200));
+    const numbers = (all.json.data || []).map((r) => r.record_number);
+    assert.ok(numbers.includes('RC-ELECTRONICS-1'),
+      `the older business's record vanished from an unscoped read: got ${JSON.stringify(numbers)}`);
+    assert.ok(numbers.includes('RC-FURNITURE-1'),
+      `the newer business's record vanished from an unscoped read: got ${JSON.stringify(numbers)}`);
+
+    // A business that IS named still narrows, in both directions.
+    const onlyFurniture = await req(`GET`, `/api/compliance/records?limit=200&business_id=${furnitureId}`, { token: tokens.owner });
+    const furnitureNumbers = (onlyFurniture.json.data || []).map((r) => r.record_number);
+    assert.ok(furnitureNumbers.includes('RC-FURNITURE-1'), 'naming a business must still reach it');
+    assert.ok(!furnitureNumbers.includes('RC-ELECTRONICS-1'),
+      'naming one business must not return another business\'s records');
+
+    const onlyElectronics = await req('GET', `/api/compliance/records?limit=200&business_id=${ikeja.business_id}`, { token: tokens.owner });
+    const electronicsNumbers = (onlyElectronics.json.data || []).map((r) => r.record_number);
+    assert.ok(electronicsNumbers.includes('RC-ELECTRONICS-1') && !electronicsNumbers.includes('RC-FURNITURE-1'),
+      `naming the first business must return exactly its own: got ${JSON.stringify(electronicsNumbers)}`);
+
+    // The checklist counts the branches of EVERY business the caller reaches,
+    // which is what "the registrations this deployment holds" means.
+    const checklist = await req('GET', '/api/compliance/checklist', { token: tokens.owner });
+    const branchesSeen = (checklist.json.data || []).map((r) => r.branch_name);
+    assert.ok(branchesSeen.includes('Lekki Showroom'),
+      `the second business's branch is missing from the checklist: got ${JSON.stringify(branchesSeen)}`);
+
+    // AND THE GUESS IS STILL THE RIGHT ANSWER FOR A WRITE. A licence recorded
+    // with no branch and no business named has to land somewhere, and the
+    // deployment's own entity is the sensible answer. This is the behaviour the
+    // read no longer borrows.
+    const unNamed = await req('POST', '/api/compliance/records', {
+      token: tokens.owner,
+      body: { record_type: 'FIRE_CERT', record_number: 'NO-BRANCH-NAMED', expiry_date: isoDaysFromNow(30) },
+    });
+    assert.ok(unNamed.status === 201 || unNamed.status === 400 || unNamed.status === 409,
+      `an unnamed write must not 500: ${unNamed.status} ${unNamed.text.slice(0, 200)}`);
+  });
+
 });

@@ -24,6 +24,7 @@
 // =====================================================================
 
 const { HttpError } = require('./http');
+const { businessFilter } = require('../../domain/access');
 
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 500;
@@ -43,7 +44,10 @@ const MAX_PAGE_SIZE = 500;
  * caller can raise its own, better-targeted error rather than a JSON parse
  * failure from a helper that was only trying to help.
  */
-async function branchIdFromBody(ctx, param) {
+/** Read an id out of a POST body. Named for ids in general, not just branches: a
+ *  POST that carries the business it is about has said so as plainly as one that
+ *  carries a branch, and both are read the same way. */
+async function idFromBody(ctx, param) {
   const method = String(ctx.method || 'GET').toUpperCase();
   if (method === 'GET' || method === 'HEAD') return null;
   try {
@@ -71,7 +75,7 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } =
   // "Choose which branch this applies to" while the answer was sitting in the
   // body they had just written — a screen that was already built and could
   // never work. GET/HEAD have no body, so nothing changes for reads.
-  const requested = ctx.req.queryParam(param) || ctx.req.param(param) || await branchIdFromBody(ctx, param);
+  const requested = ctx.req.queryParam(param) || ctx.req.param(param) || await idFromBody(ctx, param);
   const pinned = scope.pinnedBranchId || null;
 
   // A NAMED BRANCH THAT IS NOT YOURS IS REFUSED, NOT SILENTLY SWAPPED.
@@ -144,9 +148,16 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } =
  * still runs on whatever we land on. A tiered, multi-entity deployment simply
  * gets the primary entity, which is the same thing the UI shows on first load.
  */
-async function resolveBusiness(db, ctx, branch = null) {
+async function resolveBusiness(db, ctx, branch = null, { required = true } = {}) {
   const scope = ctx.get('scope');
-  const requested = ctx.req.queryParam('business_id');
+  // Mirrors resolveBranch: a request that reached here without a scope is not a
+  // server error, it is an unauthenticated one. Without this it was a TypeError.
+  if (!scope) throw new HttpError('Please sign in to continue.', { status: 401, code: 'NO_TOKEN' });
+  // The body counts, for the same reason it does for branches: a POST carries its
+  // own payload, and a client that says `{ business_id }` has answered the
+  // question. (The client's sync pull sends `branch_id` in the body for exactly
+  // this reason.) The scope check below still refuses anything out of reach.
+  const requested = ctx.req.queryParam('business_id') || await idFromBody(ctx, 'business_id');
 
   // PRECEDENCE, strongest first:
   //   1. the business the named branch belongs to — a branch cannot be in two
@@ -175,18 +186,28 @@ async function resolveBusiness(db, ctx, branch = null) {
     }
     if (!businessId) businessId = String(requested);
   }
-  if (!businessId) businessId = scope.pinnedBusinessId || null;
+  // THE PIN ANSWERS A WRITE, NOT A READ.
+  //
+  // `scope.pinnedBusinessId` is the business on the caller's own row. It is the
+  // right target for a write that named nothing — a new product has to belong to
+  // some business, and the caller's own entity is the sensible answer. It is NOT
+  // a statement about what the caller may see: every OWNER has both allBusinesses
+  // and a business_id, so using the pin to narrow a read silently hides the other
+  // businesses they demonstrably reach. (An OWNER is exactly the role that grows a
+  // second business.)
+  if (required && !businessId) businessId = scope.pinnedBusinessId || null;
 
   if (!businessId && scope.businessIds && scope.businessIds.size === 1) {
     // Exactly one business in reach: that is unambiguous, so use it rather than
     // making a single-shop merchant answer a question with one possible answer.
     businessId = [...scope.businessIds][0];
   }
-  if (!businessId && scope.allBusinesses) {
+  if (required && !businessId && scope.allBusinesses) {
+    // (A write with nothing named gets the deployment's recorded primary entity.)
     const settings = await db.first('SELECT primary_business_id FROM client_settings WHERE id = 1');
     businessId = (settings && settings.primary_business_id) || null;
   }
-  if (!businessId) {
+  if (!businessId && required) {
     // Last resort for an unpinned administrator on a deployment whose primary
     // entity was never recorded: the oldest live business is the one that was
     // provisioned first, which is the deployment's own entity.
@@ -196,6 +217,32 @@ async function resolveBusiness(db, ctx, branch = null) {
     }
   }
   if (!businessId) {
+    // A READ MUST NOT BE NARROWED BY A GUESS.
+    //
+    // Steps 5 and 6 above choose a business for a request that did not name one,
+    // and for a WRITE that is necessary: a row needs a business_id, and something
+    // has to be chosen. For a READ it is a lie. `required: false` is what a read
+    // passes, and it means "the business this request named — or nothing at all,
+    // rather than the one I would have picked for you":
+    //
+    //   * a caller who reaches every business and names none sees every business,
+    //     because that is what reaching every business means;
+    //   * a caller granted two businesses and naming none is already narrowed
+    //     correctly by pushScope, and must not be narrowed again to the one the
+    //     platform would have guessed;
+    //   * a caller with exactly one business in reach never gets here — step 4
+    //     answered, and that is not a guess, it is the only answer there is.
+    //
+    // This was found on a live deployment with two businesses. An ADMIN recorded a
+    // licence against a branch of the newer business and then could not see it: the
+    // write took its business from the named branch (a fact), the read guessed the
+    // OLDEST business (a coin toss), and the register came back empty while the
+    // duplicate-record guard cheerfully refused to make a second one. The same
+    // narrowing sat on the chart of accounts, the journal, VAT, WHT, the creditor
+    // book and eight reports. `dashboard.js` had already worked this out for itself
+    // — `isOwnerView ? null : await resolveBusiness(...)` — and every other read had
+    // not.
+    if (!required) return null;
     throw new HttpError('Choose which business this applies to.', { status: 400, code: 'BUSINESS_REQUIRED' });
   }
   const business = await db.first('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0', [String(businessId)]);
@@ -295,6 +342,65 @@ function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'busi
     params.push(...ids);
   }
   return { sql: clauses.length ? clauses.join(' AND ') : '', params };
+}
+
+/**
+ * The business restriction a READ should carry, in one call.
+ *
+ * Reads the business this request NAMED — a branch it points at, an explicit
+ * `?business_id=`, the caller's pinned entity — and otherwise falls back to the
+ * caller's own SCOPE. It never guesses, which is the whole point:
+ *
+ *   named / pinned / only-one-in-reach  →  `x.business_id = ?`
+ *   caller reaches every business       →  `1 = 1`  (no narrowing: they reach all)
+ *   caller granted specific businesses  →  `x.business_id IN (…)`
+ *   no scope at all                     →  `1 = 0`  (fail closed)
+ *
+ * WHY THIS IS ONE FUNCTION. The pattern it replaces was two lines long and
+ * repeated across the chart of accounts, the journal, VAT, WHT, the customer
+ * classes, the creditor book, the catalogue and every report:
+ *
+ *     const business = await resolveBusiness(db, ctx);
+ *     ... WHERE x.is_deleted = 0 AND (x.business_id = ? OR x.business_id IS NULL)
+ *     ..., [String(business.id)]
+ *
+ * which narrowed every read to ONE business — the one `resolveBusiness` would
+ * have picked, which for a caller who reaches several businesses is a guess. On a
+ * live deployment with two businesses an administrator could not see the licence
+ * they had just recorded: the write named a branch (a fact), the read guessed a
+ * different business (a coin toss). See resolveBusiness for the rest of it.
+ *
+ * `allowNull` keeps the schema's meaning for rows that belong to the deployment
+ * rather than to one business — the system chart of accounts, the system customer
+ * classes. NULL is shared, and shared is visible to everyone.
+ */
+async function readBusinessFilter(db, ctx, { branch = null, column = 'business_id', alias = '', allowNull = true } = {}) {
+  const scope = ctx.get('scope');
+  const col = alias ? `${alias}.${column}` : column;
+  // FAIL CLOSED, and before anything else: with no scope there is no business this
+  // read may touch, and `resolveBusiness` would be answering a question about a user
+  // it does not have.
+  if (!scope) return { sql: '1 = 0', params: [] };
+  const business = await resolveBusiness(db, ctx, branch, { required: false });
+  if (business) return { sql: `${col} = ?`, params: [String(business.id)] };
+  return businessFilter(scope, col, { allowNull });
+}
+
+/**
+ * The same rule as `readBusinessFilter`, in the shape this codebase already uses
+ * for branches (`const bId = branch ? String(branch.id) : null`):
+ *
+ *     const biz = await readBusinessId(db, ctx);
+ *     ... `WHERE x.is_deleted = 0 ${biz ? 'AND x.business_id = ?' : ''}`, biz ? [biz] : []
+ *
+ * `null` here does NOT mean "no business" — it means NO NARROWING, because the
+ * caller reaches every business and named none. Both helpers delegate to
+ * `resolveBusiness(db, ctx, branch, { required: false })`; use whichever reads
+ * better at the call site, never a third way.
+ */
+async function readBusinessId(db, ctx, { branch = null } = {}) {
+  const business = await resolveBusiness(db, ctx, branch, { required: false });
+  return business ? String(business.id) : null;
 }
 
 /** Append a scope filter to a WHERE list without producing a dangling AND. */
@@ -438,6 +544,6 @@ function boolField(value, fallback = 0) {
 module.exports = {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
   valid, numField, strField, boolField,
-  resolveBranch, resolveBusiness, inScope, inBranchScope, assertRowAccess,
+  resolveBranch, resolveBusiness, readBusinessFilter, readBusinessId, inScope, inBranchScope, assertRowAccess,
   scopeFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
 };

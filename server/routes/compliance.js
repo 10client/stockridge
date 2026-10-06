@@ -44,6 +44,7 @@ const {
   resolveBranch, resolveBusiness, inBranchScope, scopeFilter, pushScope,
   pagination, listResponse, requireField,
 } = require('../lib/respond');
+const { businessFilter } = require('../../domain/access');
 const { newId } = require('../../domain/crypto');
 const { watToday, addDays } = require('../../domain/time');
 const { COMPLIANCE_FIELDS, resolveProfile, DEFAULT_PROFILE_CODE } = require('../../domain/verticals');
@@ -100,8 +101,20 @@ function mount(app, base = '/api') {
     const params = [];
     const branch = await resolveBranch(db, ctx, { required: false });
     if (branch) { where.push('r.branch_id = ?'); params.push(String(branch.id)); }
-    const business = await resolveBusiness(db, ctx, branch);
-    if (business) { where.push('b.business_id = ?'); params.push(String(business.id)); }
+    // `required: false` — a read is not narrowed by a GUESSED business. A platform
+    // administrator who reaches every business and names none sees every business;
+    // the register must not come back empty for a licence that is sitting in the
+    // database because the guess picked a different business from the one the write
+    // used. See resolveBusiness.
+    // A READ IS NARROWED BY WHAT THE REQUEST NAMED, OR BY THE CALLER'S SCOPE —
+    // NEVER BY A GUESS. Naming a branch or a business narrows; naming nothing
+    // falls back to `businessFilter(scope, ...)`, which answers "which businesses
+    // does this caller reach" and answers `1 = 1` for one who reaches them all.
+    const business = await resolveBusiness(db, ctx, branch, { required: false });
+    const bf = business
+      ? { sql: 'b.business_id = ?', params: [String(business.id)] }
+      : businessFilter(scope, 'b.business_id', { allowNull: false });
+    where.push(bf.sql); params.push(...bf.params);
     // THROUGH THE JOINED BRANCH, because `branch_compliance_records` has no
     // `business_id` of its own — a record reaches its business through the branch
     // it belongs to. Asking the filter for `r.business_id` threw
@@ -247,8 +260,20 @@ function mount(app, base = '/api') {
     const params = [];
     const branch = await resolveBranch(db, ctx, { required: false });
     if (branch) { where.push('b.id = ?'); params.push(String(branch.id)); }
-    const business = await resolveBusiness(db, ctx, branch);
-    if (business) { where.push('b.business_id = ?'); params.push(String(business.id)); }
+    // `required: false` — a read is not narrowed by a GUESSED business. A platform
+    // administrator who reaches every business and names none sees every business;
+    // the register must not come back empty for a licence that is sitting in the
+    // database because the guess picked a different business from the one the write
+    // used. See resolveBusiness.
+    // A READ IS NARROWED BY WHAT THE REQUEST NAMED, OR BY THE CALLER'S SCOPE —
+    // NEVER BY A GUESS. Naming a branch or a business narrows; naming nothing
+    // falls back to `businessFilter(scope, ...)`, which answers "which businesses
+    // does this caller reach" and answers `1 = 1` for one who reaches them all.
+    const business = await resolveBusiness(db, ctx, branch, { required: false });
+    const bf = business
+      ? { sql: 'b.business_id = ?', params: [String(business.id)] }
+      : businessFilter(scope, 'b.business_id', { allowNull: false });
+    where.push(bf.sql); params.push(...bf.params);
     pushScope(where, params, scope, { branchColumn: 'b.id', businessColumn: 'b.business_id' });
 
     const branches = await db.all(`
