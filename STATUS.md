@@ -2866,3 +2866,37 @@ One audit file per stage (`audit.sim-day.js`, `audit.sim-offline.js`, `audit.sim
 fixtures; the `updated_at` second-precision tie in LWW (sub-second timestamps); Stage 11/12
 leftovers (compliance 409 path, `PROBE_DEBUG`, notifications bell); till/bank/POS/mobile-money
 expense methods at route level.
+
+### The PharmaRidge parity analysis — and the G-stages
+
+`docs/pharmaridge-parity.md` (new) is the evidence-based comparison the user asked for: every
+verdict is backed by a grep that finds the capability in StockRidge or proves it absent.
+
+**Measured coverage:** PharmaRidge 45 tables / 70 route shapes; **StockRidge 76 tables / 147 route
+shapes**; 41 of the 45 tables are shared. CSV export of reports — the feature this was expected to
+find missing — **already exists** (`public/js/export.js`, "Download CSV" on the reports screen).
+
+**Genuine gaps found (PharmaRidge has, we do not):**
+
+1. **Data management** — PharmaRidge has scheduled retention (`sync_change_log` 90d, reviewed
+   `sync_conflicts` 180d, `login_attempts` 90d, unreviewed conflicts forever), a status endpoint
+   with a **capacity estimate against the plan limit**, an OWNER-only purge with **five modes and
+   a per-mode confirmation phrase** plus `export_confirmed`/`retention_acknowledged`, an atomic
+   batch, a `data_cleanup_log` row, and a rule that stale offline replays are **quarantined** after
+   a purge. StockRidge has the cron but never prunes the sync log or reviewed conflicts
+   (**unbounded growth**), no status, no purge, and `data_cleanup_log` is itself one of this repo's
+   baselined capability gaps.
+2. **Change owed** — the table is written and read and the expiry setting exists, but there is **no
+   route to pay the customer**. The liability only grows.
+3. **Pending staff transfers** — the table exists, nothing creates a row; a cashier can be moved
+   into a branch without the receiving manager agreeing.
+4. **Dashboard depth** — void audit, unreconciled cash, branches breakdown, licence-expiry alerts.
+
+**Deliberate differences, documented, not defects:** the `_pharmaridge_admin_preserve` table
+(StockRidge's `provisionPlatform` creates exactly one admin by design — the user's requirement);
+`prescriptions`/`nafdac_catalog`/`controlled_substance_register` (pharmacy-specific; the analogs —
+serials, batches with expiry, warranty claims — exist); `manager-permissions` (already covered and
+broader via 19 `FLAG_SETTINGS`).
+
+**Stages G1–G8** are planned in the document with acceptance criteria each. G1 (data management) is
+first, because the user named it.
