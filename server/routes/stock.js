@@ -27,7 +27,7 @@ const { atLeast } = require('../../domain/roles');
 // `valid` was missing from this list while POST /api/stock/adjust called it at
 // the adjustment-type line, so every stock adjustment — the write-off that
 // records a broken TV — answered 500 "valid is not defined".
-const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, requireField, numField, strField, boolField, dateRange, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, requireField, numField, strField, boolField, dateRange, valid, searchTerm } = require('../lib/respond');
 const { toBaseUnits, buildLadder, validateLadder, weightedAverageCost } = require('../../domain/uom');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
@@ -54,7 +54,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const branch = await resolveBranch(db, ctx);
     const { limit, offset } = pagination(ctx);
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     const filter = ctx.req.queryParam('filter'); // low | out | expiring | quarantined | overstock
     const settings = ctx.get('settings');
 

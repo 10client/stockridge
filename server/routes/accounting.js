@@ -28,7 +28,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, readBusinessFilter, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessFilter, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -148,7 +148,7 @@ function mount(app, base = '/api') {
     if (nbf.sql) { where.push(nbf.sql); params.push(...nbf.params); }
     const sourceType = ctx.req.queryParam('source_type');
     if (sourceType) { where.push('e.source_type = ?'); params.push(String(sourceType).toUpperCase()); }
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) { where.push('(e.entry_no LIKE ? OR e.description LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
     const whereSql = where.join(' AND ');
 

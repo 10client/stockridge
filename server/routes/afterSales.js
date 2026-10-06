@@ -28,7 +28,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -634,7 +634,7 @@ function mount(app, base = '/api') {
     if (status) { where.push('w.status = ?'); params.push(String(status).toUpperCase()); }
     else where.push("w.status <> 'CLOSED'");
     if (boolField(ctx.req.queryParam('in_warranty'))) where.push('w.in_warranty = 1');
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) {
       where.push('(w.claim_no LIKE ? OR sn.serial_no LIKE ? OR p.name LIKE ? OR c.name LIKE ?)');
       const l = `%${search}%`; params.push(l, l, l, l);

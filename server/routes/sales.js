@@ -26,7 +26,7 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -426,7 +426,7 @@ function mount(app, base = '/api') {
     const customerId = ctx.req.queryParam('customer_id');
     if (customerId) { where.push('s.customer_id = ?'); params.push(String(customerId)); }
     if (boolField(ctx.req.queryParam('credit_only'))) where.push('s.balance_due > 0');
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) {
       where.push('(s.receipt_no LIKE ? OR s.customer_name LIKE ? OR s.customer_phone LIKE ?)');
       params.push(`%${search}%`, `%${search}%`, `%${search}%`);

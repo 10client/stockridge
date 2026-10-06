@@ -24,7 +24,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, valid, numField, strField, boolField } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, valid, numField, strField, boolField, searchTerm } = require('../lib/respond');
 const { validateLadder } = require('../../domain/uom');
 const { LADDERS, MEASURE_AXES, PROFILE_CODES, getProfile, resolveProfile, describeProfile } = require('../../domain/verticals');
 const { round2 } = require('../../domain/money');
@@ -73,7 +73,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     const businessId = ctx.req.queryParam('business_id');
     const categoryId = ctx.req.queryParam('category_id');
     const activeOnly = ctx.req.queryParam('active') !== '0';
@@ -721,7 +721,7 @@ function mount(app, base = '/api') {
   app.get(`${base}/suppliers`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const { limit, offset } = pagination(ctx);
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     const where = ['s.is_deleted = 0']; const params = [];
     if (search) { where.push('(s.name LIKE ? OR s.phone LIKE ? OR s.city LIKE ?)'); const like = `%${search}%`; params.push(like, like, like); }
     const rows = await db.all(`SELECT s.*,

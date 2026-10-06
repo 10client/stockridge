@@ -549,6 +549,35 @@ function pagination(ctx) {
   return { limit, offset };
 }
 
+/**
+ * THE SEARCH TERM AS THE PLATFORM CAN ACTUALLY RUN IT.
+ *
+ * Every list screen filters with `LIKE ?` on `%<term>%` — and Cloudflare D1 caps a LIKE or
+ * GLOB PATTERN at 50 BYTES, not the 50,000 SQLite itself allows. A term of more than 48
+ * bytes (the two `%` count toward the pattern) answers
+ *   `500 D1_ERROR: LIKE or GLOB pattern too complex: SQLITE_ERROR`
+ * so a pasted string, a barcode scanner that emits a long code, or a customer name typed
+ * with the phone's autocomplete returns "That failed" from a search box — while every LOCAL
+ * run of the same probe passes, because the audit's own SQLite takes the pattern happily.
+ * Nothing found this until T4d ran the probe against the deployment; nine routes read the
+ * term and not one of them clamped it.
+ *
+ * Clamped rather than refused, matching `pagination()` above: a shop that types a long query
+ * wants the closest thing on the shelf, not an error message. The cut is made on a CHARACTER
+ * boundary, so a multi-byte character (₦, é, a Hausa name) is never split into invalid UTF-8
+ * — slicing the string by BYTES would produce a term that cannot match anything and cannot
+ * be sent back to the client intact.
+ */
+const MAX_SEARCH_BYTES = 48;
+const utf8 = new TextEncoder();
+function searchTerm(ctx, param = 'q') {
+  const raw = String(ctx.req.queryParam(param) || '').trim();
+  if (!raw || utf8.encode(raw).length <= MAX_SEARCH_BYTES) return raw;
+  let cut = raw;
+  while (cut.length && utf8.encode(cut).length > MAX_SEARCH_BYTES) cut = cut.slice(0, -1);
+  return cut;
+}
+
 /** Shape every list response identically so the client can page generically. */
 function listResponse(rows, { limit, offset }, total = null) {
   return {
@@ -668,4 +697,5 @@ module.exports = {
   valid, numField, strField, boolField,
   resolveBranch, resolveBusiness, readBusinessFilter, readBusinessId, inScope, inBranchScope, assertRowAccess,
   scopeFilter, branchFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
+  searchTerm, MAX_SEARCH_BYTES,
 };

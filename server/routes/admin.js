@@ -26,7 +26,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit');
 const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId, hashPin, verifyPin, numericCode } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -404,7 +404,7 @@ function mount(app, base = '/api') {
     const active = ctx.req.queryParam('active');
     if (active === '1' || active === 'true') where.push('u.is_active = 1');
     if (active === '0' || active === 'false') where.push('u.is_active = 0');
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) { where.push('(u.full_name LIKE ? OR u.username LIKE ? OR u.phone LIKE ? OR u.email LIKE ?)'); const l = `%${search}%`; params.push(l, l, l, l); }
     const whereSql = where.join(' AND ');
     const rows = await db.all(`SELECT u.id, u.business_id, u.branch_id, u.full_name, u.username, u.role, u.job_title,
@@ -1135,7 +1135,7 @@ function mount(app, base = '/api') {
     if (entityType) { where.push('a.entity_type = ?'); params.push(String(entityType).toUpperCase()); }
     const entityId = ctx.req.queryParam('entity_id');
     if (entityId) { where.push('a.entity_id = ?'); params.push(String(entityId)); }
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) { where.push('(a.username LIKE ? OR a.action LIKE ? OR a.entity_type LIKE ?)'); const l = `%${search}%`; params.push(l, l, l); }
     const whereSql = where.join(' AND ');
 

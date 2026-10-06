@@ -29,7 +29,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, readBusinessId, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -68,7 +68,7 @@ function mount(app, base = '/api') {
     const bf = await branchFilter(db, ctx, { alias: 'c' });
     if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
 
-    const search = (ctx.req.queryParam('q') || '').trim();
+    const search = searchTerm(ctx);
     if (search) {
       where.push('(c.name LIKE ? OR c.company_name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.tin LIKE ?)');
       const like = `%${search}%`;

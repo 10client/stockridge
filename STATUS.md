@@ -2785,3 +2785,46 @@ deployment a client uses).
 **Still owed from T4:** `audit.sync.js` reds (idempotency is wired on `/api/sales` only; the queued
 SALE push returned non-200; harness device-header and `branch_id` fixes), then the D1
 statement/row/`batch()` ceilings.
+
+### Stage T4d — the platform's ceilings, measured instead of assumed
+
+The last sub-stage T4 owed. Its own audit, `test/audit/audit.limits.js` (**16 checks**), green
+locally and on staging. The documented figures come from
+`developers.cloudflare.com/d1/platform/limits` (fetched, last updated 2026-04-21, recorded in
+the audit itself so a platform change fails an assertion instead of being assumed):
+
+| Ceiling | Value | What this product measures |
+| --- | --- | --- |
+| `LIKE`/`GLOB` pattern | **50 bytes** | **was broken — see below**; now clamped in one place |
+| Bound parameters per statement | 100 | widest statement in the tree binds **30** (`catalog.js:359`), 559 statements scanned |
+| Statement length | 100 KB | longest statement is **2,798 bytes** (`afterSales.js:1236`) |
+| String / BLOB / row | 2 MB | a 3 MB note → **400 `TOO_LONG`**; all 197 `strField` calls carry a `maxLength` where the field is free text |
+| Queries per invocation | 1000 (paid) / 50 (free) | **100 mutations applied in one request in 7.9 s live (13 items/s)** |
+| Query duration | 30 s | — |
+
+**The defect this stage existed to find (live-only):**
+
+`GET /api/products?q=<49+ characters>` answered
+`500 D1_ERROR: LIKE or GLOB pattern too complex: SQLITE_ERROR` — and so did every other list
+screen that filters with `LIKE ?`, on every deployment. Reproduced live before anything was
+touched (20-char term → 200, 40 → 200, **60 → 500**, 200 → 500).
+
+A local run could never have caught it: SQLite's own default pattern ceiling is **50,000 bytes**,
+so the identical probe passes in the harness and fails for a real shop. What reaches it in
+practice: a pasted string, a barcode scanner emitting a long code, a customer name typed with the
+phone's autocomplete. Nothing had clamped it, in **nine** places
+(`accounting`, `admin` ×2, `afterSales`, `catalog` ×2, `customers`, `sales`, `stock`).
+
+**Fix:** one helper, `searchTerm()` in `server/lib/respond.js`, beside `pagination()` and in the
+same house style — it **clamps** rather than refusing, and cuts on a **character** boundary so a
+multi-byte term (`₦`, `é`, a Hausa name) is never split into invalid UTF-8. All nine call sites
+now read `searchTerm(ctx)`. `audit.limits.js` asserts that no file outside `respond.js` reads
+`?q=` at all, so a tenth list screen cannot reintroduce it.
+
+**Validated, not merely recorded:** the PWA drains its outbox in batches of 100
+(`public/js/sync.js` — which already carried the comment about not "sitting on one enormous
+request"). The live measurement says a 100-item push costs **7.9 s**, so that choice is safe
+against the real database with room to spare; a 501-item push is refused before anything is
+written (`SYNC_BATCH_TOO_LARGE`).
+
+**Files:** `server/lib/respond.js` (+`searchTerm`, `MAX_SEARCH_BYTES`), `server/routes/{accounting,admin,afterSales,catalog,customers,sales,stock}.js`, `test/audit/audit.limits.js` (new).
