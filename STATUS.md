@@ -2598,3 +2598,81 @@ The plan for T4 is unchanged: two clients writing the same row (LWW with conflic
 the same `Idempotency-Key` replayed, a request retried after a timeout, concurrent tills
 against one product's stock, and the D1 ceilings — statements per request, row size, the
 `batch()` limit — probed against the live deployment rather than assumed.
+
+## Stage T4a — sync, idempotency, and what the offline queue actually gets back (2026-10-06)
+
+The offline-first promise is the product's hardest claim and the one no demo can show. T4a is
+the audit that makes a phone's day testable: queue work, push it, push it again, edit a row
+somebody else has changed, and try to write your way into another branch.
+
+### Two real product defects, both found on the first run
+
+**1. A partial push answered 500 on every deployment with more than one branch.**
+`POST /api/sync/push` records `SYNC_PUSH_PARTIAL` when anything was refused or conflicted, and
+that record read `branch.id` — but `branch` is **null** by design whenever the caller covers
+more than one branch and did not name one (an owner with two shops, a deployment
+administrator). The route's own comments say requiring a branch up front would fail a
+cashier's whole day over one malformed item. So the answer to *"three items in my queue were
+rejected"* was `500 Cannot read properties of null (reading 'id')` — with no per-item detail —
+on exactly the deployments that matter. A 500 is the one answer an offline queue cannot act
+on: it cannot tell a bad item from a bad server, so it retries the batch forever and the queue
+never drains. Fixed by making the record null-safe; the stack was found by attaching the
+original error as `cause` in `toHttpError` (a TypeError turned into a 500 used to lose the line
+that caused it), which is kept.
+
+**2. `Idempotency-Key` was honoured on `POST /api/sales` and nowhere else.**
+The library, the table and the protocol all existed; one endpoint used them. Every other
+money-moving endpoint accepted the header and IGNORED it, so a retried request on a flaky
+network did the thing twice: an expense paid twice, a till float doubled, a layaway deposit
+taken twice, a supplier paid twice. Found by asking `/api/expenses` for the same key twice and
+watching two different records come back (`911cf497…` and `c4a37964…`), then watching the same
+key with a *different* body answer 201 and apply.
+
+**21 further money-moving endpoints are now wrapped in the same protocol** — the till (open,
+close, review), the safe (entries, reconcile), expenses (create, approve), sale void and
+payment, delivery and installation status, supplier payments, purchase-order receipt, stock
+receive and adjust, customer payments, returns, return approval, and deposit and instalment
+payments. Verified by `grep -rc 'idempotent(async (ctx)' server/routes/*.js`: sales 6 · till 7 ·
+afterSales 4 · finance 2 · stock 2 · customers 1.
+
+### What the audit asserts
+
+- **A queued sale lands exactly once.** Pushed, pushed again after a simulated timeout: the
+  branch gains ONE sale, not two. This is the check the whole offline promise rests on — a
+  shop that sells one generator and banks two of them finds out at stocktake, a month later.
+- **Conflicts are captured with both versions.** The device's stale edit loses, the server's
+  version stands, and the losing version is stored in `sync_conflicts` with the text the device
+  tried to write — then a manager resolves it, and resolving it twice is refused.
+- **A device cannot write its way out of its branch**: `branch_id`/`business_id` are refused as
+  `SCOPE_COLUMN_FORBIDDEN`, a table with its own rules (sales) is refused as
+  `TABLE_NOT_SYNCABLE`, a mutation for a row that no longer exists is skipped rather than
+  treated as an insert, and one bad item does not stop the rest of the batch.
+- **A push must name its device** (`DEVICE_ID_REQUIRED`), an empty push is refused
+  (`EMPTY_SYNC`), more than 500 items is refused (`SYNC_BATCH_TOO_LARGE`), and an operation with
+  no idempotency key is refused per-item (`IDEMPOTENCY_KEY_REQUIRED`).
+- **A branch-pinned pull does not carry another branch's customers** — the offline mirror on a
+  phone that leaves the building.
+
+### Two things the audit had to learn about the product, recorded so the next reader does not guess
+
+- **A partial push is HTTP 207** (Multi-Status), with `results.operations` and
+  `results.mutations` nested under `results`, and a per-item `status`/`code`/`message` for
+  every item queued. 207 is the right answer: a device has to be able to tell "the whole queue
+  landed" from "three items need a person".
+- **`updated_at` has SECOND precision** (`datetime('now')`), everywhere. LWW decides "the
+  server changed after this device last saw it" by comparing those strings, so an edit and a
+  push inside the same second are indistinguishable and the device wins the tie. The audit
+  waits past the tick to measure the conflict path rather than the tie-break. **Open for T6:**
+  a same-second concurrent edit is possible (two devices, one office) and the loser is told
+  nothing. The fix is sub-second timestamps on the LWW-comparable columns; the comparison stays
+  correct because the format still sorts lexicographically.
+
+### Proving it
+
+- **Local:** `audit.sync.js` **35 checks passed**; `bash test/run-audits.sh` — **5 audits, every
+  check green**; `node test/audit/suite.js` — 17 checks, 5 audits wired; `npm run verify`
+  **348/348/0**.
+- **Negative control 1:** `idempotent()` removed from `POST /api/sales` (a pass-through with the
+  same signature, route otherwise identical) → **the retry check goes red** — and only it.
+- **Negative control 2:** the null-safe fix reverted in the partial-push record → **8 checks go
+  red**, every path that answers a partial push. Both restored → 35 green.

@@ -20,6 +20,7 @@
 // meaningless the moment somebody sells a single piece.
 // =====================================================================
 
+const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
@@ -183,7 +184,7 @@ function mount(app, base = '/api') {
    * 20,000 sachets is ₦80, and it compounds across a year of receipts. The
    * product's weighted average is rounded for DISPLAY only.
    */
-  app.post(`${base}/stock/receive`, async (ctx) => {
+  app.post(`${base}/stock/receive`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) {
@@ -324,7 +325,7 @@ function mount(app, base = '/api') {
       quantityBase, landedCostPerBase,
       warnings: freight > 0 && quantityBase === 0 ? ['Freight was charged but no quantity was received, so it could not be allocated.'] : [],
     }, 201);
-  });
+  }));
 
   // -------------------------------------------------------------------
   // ADJUSTMENTS
@@ -338,7 +339,7 @@ function mount(app, base = '/api') {
    * counter has to be dealt with by the person holding it. So STAFF get an
    * OWNER-set allowance in units and in value; above it, a manager must act.
    */
-  app.post(`${base}/stock/adjust`, async (ctx) => {
+  app.post(`${base}/stock/adjust`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -454,7 +455,7 @@ function mount(app, base = '/api') {
       message: `${adds ? 'Added' : 'Wrote off'} ${Math.abs(round2(quantityBase))} ${product.base_unit_name} of ${product.name} as ${adjustmentType.replace(/_/g, ' ').toLowerCase()} (₦${totalValue.toLocaleString('en-NG')}).`,
       quantityBase, totalValue,
     }, 201);
-  });
+  }));
 
   app.get(`${base}/adjustments`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;

@@ -68,7 +68,14 @@ function toHttpError(e) {
   if (/NOT NULL constraint failed/i.test(msg)) {
     return new HttpError('A required value is missing.', { status: 400, code: 'MISSING_VALUE' });
   }
-  return new HttpError(msg || 'Unexpected error', { status: 500, code: 'INTERNAL' });
+  const wrapped = new HttpError(msg || 'Unexpected error', { status: 500, code: 'INTERNAL' });
+  // THE ORIGINAL STACK, KEPT AS THE CAUSE. `toHttpError` turns a thrown TypeError into a
+  // 500 and, in doing so, throws away the line that caused it — which is how a bug like
+  // `Cannot read properties of null (reading 'id')` reaches a shopkeeper as a sentence with
+  // no address. Attaching the original costs one property and gives the debug print
+  // something to show. It never reaches the client: the response body is unchanged.
+  if (e && e.stack) wrapped.cause = e;
+  return wrapped;
 }
 
 // ---------------------------------------------------------------------

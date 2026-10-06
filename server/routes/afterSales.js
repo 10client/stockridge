@@ -24,6 +24,7 @@
 // month — then understate the next one when the goods actually leave.
 // =====================================================================
 
+const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
@@ -60,7 +61,7 @@ function mount(app, base = '/api') {
    * a global setting, because a mattress and a phone have different return
    * economics and the difference is a property of the product.
    */
-  app.post(`${base}/returns`, async (ctx) => {
+  app.post(`${base}/returns`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -302,10 +303,10 @@ function mount(app, base = '/api') {
       needsApproval,
       advisories: [ctx.get('defectQuery'), ...plan.filter((p) => p.outsideWindow).map((p) => `${p.item.product_name} returned ${p.daysSince} days after sale, outside its ${p.windowDays}-day window.`)].filter(Boolean),
     }, 201);
-  });
+  }));
 
   /** Approve a pending return. */
-  app.post(`${base}/returns/:id/approve`, async (ctx) => {
+  app.post(`${base}/returns/:id/approve`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can approve a return.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -371,7 +372,7 @@ function mount(app, base = '/api') {
       before: { status: ret.status }, after: { approved, note, refund: Number(ret.refund_amount) },
     });
     ctx.json({ ok: true, message: approved ? `Return ${ret.return_no} approved — ₦${Number(ret.refund_amount).toLocaleString('en-NG')} refunded and the ledger reversed.` : `Return ${ret.return_no} rejected: ${note}` });
-  });
+  }));
 
   app.get(`${base}/returns`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -800,7 +801,7 @@ function mount(app, base = '/api') {
   });
 
   /** Add a further payment to a deposit. */
-  app.post(`${base}/deposits/:id/payments`, async (ctx) => {
+  app.post(`${base}/deposits/:id/payments`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -857,7 +858,7 @@ function mount(app, base = '/api') {
         : `₦${amount.toLocaleString('en-NG')} received on ${deposit.customer_name}'s ${deposit.deposit_type.toLowerCase()}. ₦${newBalance.toLocaleString('en-NG')} still to pay by ${String(deposit.expires_at).slice(0, 10)}.`,
       paidSoFar, balanceDue: newBalance, fullyPaid: newBalance <= 0,
     }, 201);
-  });
+  }));
 
   /**
    * Complete a deposit: turn it into a real sale.
@@ -1224,7 +1225,7 @@ function mount(app, base = '/api') {
   });
 
   /** Take an instalment payment and allocate it across the schedule. */
-  app.post(`${base}/instalments/:id/payments`, async (ctx) => {
+  app.post(`${base}/instalments/:id/payments`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -1319,7 +1320,7 @@ function mount(app, base = '/api') {
       planStatus: status.status || status,
       nextDueDate: nextDue ? nextDue.dueDate : null,
     }, 201);
-  });
+  }));
 
   app.get(`${base}/instalments`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;

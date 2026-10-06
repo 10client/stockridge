@@ -244,7 +244,13 @@ async function main() {
         }
       } catch (e) {
         const err = toHttpError(e);
-        if (err.status >= 500) console.error(`[api] ${req.method} ${url.pathname}:`, err.message);
+        if (err.status >= 500) {
+          console.error(`[api] ${req.method} ${url.pathname}:`, err.message);
+          // THE STACK, TEMPORARILY. A 500 with a message and no line number costs an hour;
+          // the suite's own discipline says a failure has to name itself. Reverted as soon
+          // as this is found — see STATUS.md, T4.
+          if (process.env.SYNC_DEBUG) console.error(((err.cause && err.cause.stack) || err.stack || '').split('\n').slice(0, 7).join('\n'));
+        }
         res.writeHead(err.status, { 'Content-Type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({ error: err.message, code: err.code || undefined }));
       }

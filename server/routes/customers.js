@@ -25,6 +25,7 @@
 //      at all.
 // =====================================================================
 
+const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
@@ -546,7 +547,7 @@ function mount(app, base = '/api') {
    * normal here, and forcing them to allocate it would mean the money sat
    * unrecorded until somebody worked out the allocation.
    */
-  app.post(`${base}/customers/:id/payments`, async (ctx) => {
+  app.post(`${base}/customers/:id/payments`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -652,7 +653,7 @@ function mount(app, base = '/api') {
       chequePending: method === 'CHEQUE',
       warning: method === 'CHEQUE' ? 'A cheque is recorded as pending clearance. It stays on the account until the bank confirms it — do not release goods against an uncleared cheque.' : null,
     }, 201);
-  });
+  }));
 
   // -------------------------------------------------------------------
   // CUSTOMER CLASSES

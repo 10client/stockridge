@@ -450,8 +450,26 @@ function mount(app, base = '/api') {
     });
 
     if (rejected > 0 || conflicts > 0) {
+      // THE BRANCH IS NULL HERE AND THAT IS THE NORMAL CASE FOR A BIGGER SHOP.
+      //
+      // `branch` is only resolved up front when the caller covers exactly one branch: an
+      // owner with two shops, or a deployment administrator, names no branch and the push
+      // proceeds without one (the comments at the top of this route say so, and are right —
+      // requiring one would fail a cashier's whole day over one malformed item).
+      //
+      // `branch.id` therefore threw `TypeError: Cannot read properties of null (reading
+      // 'id')` — on the ONE branch of the code that only runs when something was refused or
+      // conflicted. So the answer to "part of my queue was rejected" was a 500 with no
+      // per-item detail, on every multi-branch deployment, and 500 is the one answer an
+      // offline queue cannot act on: it cannot tell a bad item from a bad server, so it
+      // retries the whole batch forever.
+      //
+      // Found by test/audit/audit.sync.js (Stage T4) — the first thing in the suite to send
+      // a push with a rejected item in it from a deployment that has two branches.
       await recordFromCtx(ctx, {
-        action: 'SYNC_PUSH_PARTIAL', entityType: 'SYNC', entityId: deviceId, branchId: branch.id, businessId: business.id,
+        action: 'SYNC_PUSH_PARTIAL', entityType: 'SYNC', entityId: deviceId,
+        branchId: branch ? String(branch.id) : null,
+        businessId: business ? String(business.id) : null,
         after: { deviceId, appVersion, operations: operations.length, mutations: mutations.length, applied, rejected, conflicts, clockSkewMinutes },
       });
     }

@@ -23,6 +23,7 @@
 // supplier record problem rather than a code problem.
 // =====================================================================
 
+const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
@@ -326,7 +327,7 @@ function mount(app, base = '/api') {
    * of recording both), updates the product's weighted-average cost, and posts
    * the inventory movement to the ledger.
    */
-  app.post(`${base}/purchase-orders/:id/receive`, async (ctx) => {
+  app.post(`${base}/purchase-orders/:id/receive`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can receive goods against a purchase order.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -461,7 +462,7 @@ function mount(app, base = '/api') {
       receivedValue, fullyReceived,
       newStatus: fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED',
     });
-  });
+  }));
 
   // -------------------------------------------------------------------
   // CREDITORS
@@ -503,7 +504,7 @@ function mount(app, base = '/api') {
   });
 
   /** Pay a supplier. */
-  app.post(`${base}/suppliers/:id/payments`, async (ctx) => {
+  app.post(`${base}/suppliers/:id/payments`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can pay a supplier.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -596,7 +597,7 @@ function mount(app, base = '/api') {
       gross, net, whtAmount, balanceAfter,
       advisories: [exemption, ctx.get('manufacturerWarning')].filter(Boolean),
     }, 201);
-  });
+  }));
 
   /** Bank position: what the ledger says is in each account. */
   app.get(`${base}/banking`, async (ctx) => {

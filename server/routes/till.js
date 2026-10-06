@@ -25,6 +25,7 @@
 // stores a chain cannot be edited without the numbers disagreeing.
 // =====================================================================
 
+const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
@@ -193,7 +194,7 @@ function mount(app, base = '/api') {
    * shows up as a surplus, and a permanent "surplus" trains everybody to ignore
    * the variance line.
    */
-  app.post(`${base}/tills/open`, async (ctx) => {
+  app.post(`${base}/tills/open`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const body = await ctx.req.json();
@@ -295,7 +296,7 @@ function mount(app, base = '/api') {
       message: `Till opened at ${branch.name} with a ₦${openingCash.toLocaleString('en-NG')} float${fromSafe ? ' taken from the safe' : ''}.`,
       openingCash, fromSafe, safeBalanceAfter: safeAfter,
     }, 201);
-  });
+  }));
 
   app.get(`${base}/tills/:id`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -365,7 +366,7 @@ function mount(app, base = '/api') {
    * drawer usually means a sale was rung up and not recorded, which is a
    * revenue leak rather than a cash one.
    */
-  app.post(`${base}/tills/:id/close`, async (ctx) => {
+  app.post(`${base}/tills/:id/close`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -489,7 +490,7 @@ function mount(app, base = '/api') {
         ? 'A surplus is not good news: cash appearing in a drawer usually means a sale was taken and not recorded. Treat it as seriously as a shortfall.'
         : null,
     });
-  });
+  }));
 
   /**
    * Manager sign-off on a closed till.
@@ -498,7 +499,7 @@ function mount(app, base = '/api') {
    * accepts the count. Where a manager does both (a small shop), the review still
    * records a second, deliberate act — which is what an auditor looks for.
    */
-  app.post(`${base}/tills/:id/review`, async (ctx) => {
+  app.post(`${base}/tills/:id/review`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can sign off a till.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -528,7 +529,7 @@ function mount(app, base = '/api') {
       after: { accepted, note, reviewedBy: String(user.id) },
     });
     ctx.json({ ok: true, message: accepted ? `Till signed off (variance ₦${Number(till.variance).toLocaleString('en-NG')}).` : `Till rejected: ${note}` });
-  });
+  }));
 
   // -------------------------------------------------------------------
   // BRANCH SAFE
@@ -616,7 +617,7 @@ function mount(app, base = '/api') {
    * note is required: a correction to the books with no reason is exactly the entry
    * a future reader cannot interpret.
    */
-  app.post(`${base}/safe/reconcile`, async (ctx) => {
+  app.post(`${base}/safe/reconcile`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const body = await ctx.req.json();
@@ -680,7 +681,7 @@ function mount(app, base = '/api') {
         ? `The books now say ₦${ledgerAfter.toLocaleString('en-NG')} in the safe, which is what the count says. ${'₦'}${Math.abs(difference).toLocaleString('en-NG')} posted to Cash Over & Short.`
         : `Posted ₦${difference.toLocaleString('en-NG')} to Cash Over & Short. The books say ₦${ledgerAfter.toLocaleString('en-NG')} and the count says ₦${target.toLocaleString('en-NG')} — ₦${stillOut.toLocaleString('en-NG')} apart.`,
     });
-  });
+  }));
 
   /**
    * Move cash into or out of the safe.
@@ -690,7 +691,7 @@ function mount(app, base = '/api') {
    * repeated forty times a month is how a safe empties without anybody deciding
    * it should.
    */
-  app.post(`${base}/safe/entries`, async (ctx) => {
+  app.post(`${base}/safe/entries`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -852,7 +853,7 @@ function mount(app, base = '/api') {
       ok: true, id, balanceAfter,
       message: `${outgoing ? (entryType === 'BANKING' ? 'Banked' : 'Paid out') : 'Deposited'} ₦${amount.toLocaleString('en-NG')} ${outgoing ? `from the safe for ${reasonCode.replace(/_/g, ' ').toLowerCase()}` : 'into the safe'}. The safe now holds ₦${balanceAfter.toLocaleString('en-NG')}.`,
     }, 201);
-  });
+  }));
 
   // -------------------------------------------------------------------
   // EXPENSES
@@ -865,7 +866,7 @@ function mount(app, base = '/api') {
    * withholds and remits by the 21st of the following month, so an expense
    * recorded gross with no WHT line is a liability nobody has booked.
    */
-  app.post(`${base}/expenses`, async (ctx) => {
+  app.post(`${base}/expenses`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -1050,7 +1051,7 @@ function mount(app, base = '/api') {
       },
       netAmount, needsApproval,
     }, 201);
-  });
+  }));
 
   app.get(`${base}/expenses`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -1093,7 +1094,7 @@ function mount(app, base = '/api') {
   });
 
   /** Approve or reject a pending expense. */
-  app.post(`${base}/expenses/:id/approve`, async (ctx) => {
+  app.post(`${base}/expenses/:id/approve`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can approve an expense.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -1129,7 +1130,7 @@ function mount(app, base = '/api') {
       before: { status: expense.status }, after: { approved, note, amount: Number(expense.amount) },
     });
     ctx.json({ ok: true, message: approved ? `Expense of ₦${Number(expense.amount).toLocaleString('en-NG')} approved and posted.` : `Expense rejected: ${note}` });
-  });
+  }));
 }
 
 function requireField2(body, field, fallback) {

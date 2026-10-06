@@ -577,7 +577,7 @@ function mount(app, base = '/api') {
    * count. A void that deleted the row would erase the evidence that the sale
    * ever happened — which is exactly what a dishonest cashier wants.
    */
-  app.post(`${base}/sales/:id/void`, async (ctx) => {
+  app.post(`${base}/sales/:id/void`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const settings = ctx.get('settings');
@@ -634,7 +634,7 @@ function mount(app, base = '/api') {
       message: `Sale ${sale.receipt_no} voided — ₦${Number(sale.total).toLocaleString('en-NG')} reversed and the stock returned to the shelf.${result.latePosting ? ' The till it was counted in has already closed, so the reversal is posted without changing that count.' : ''}`,
       warnings: result.warnings || [],
     });
-  });
+  }));
 
   // -------------------------------------------------------------------
   // SETTLE AN OUTSTANDING CREDIT SALE
@@ -647,7 +647,7 @@ function mount(app, base = '/api') {
    * cash-against-receivable. Recording it as a second sale would double the
    * revenue and double the stock movement.
    */
-  app.post(`${base}/sales/:id/pay`, async (ctx) => {
+  app.post(`${base}/sales/:id/pay`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -777,7 +777,7 @@ function mount(app, base = '/api') {
       message: `₦${applied.toLocaleString('en-NG')} received against ${sale.receipt_no}.${applied >= outstanding ? ' That invoice is now settled.' : ` ₦${round2(outstanding - applied).toLocaleString('en-NG')} still outstanding.`}${excess > 0 ? ` ₦${excess.toLocaleString('en-NG')} was overpaid and is held as a customer credit.` : ''}`,
       applied, excess, balanceDue: round2(outstanding - applied),
     });
-  });
+  }));
 
   // -------------------------------------------------------------------
   // SERIAL LOOKUP — warranty and anti-diversion
@@ -892,7 +892,7 @@ function mount(app, base = '/api') {
    * it arrive?" or "who said so?" — the two questions a disputed delivery turns
    * on.
    */
-  app.post(`${base}/deliveries/:id/status`, async (ctx) => {
+  app.post(`${base}/deliveries/:id/status`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -1005,7 +1005,7 @@ function mount(app, base = '/api') {
       message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${note ? ` Note: ${note}` : ''}`,
       previousStatus, status,
     });
-  });
+  }));
 
   // -------------------------------------------------------------------
   // INSTALLATION
@@ -1019,7 +1019,7 @@ function mount(app, base = '/api') {
    * than when it was installed and commissioned charges the customer for the
    * weeks it sat in a warehouse, and manufacturers reject claims on that basis.
    */
-  app.post(`${base}/deliveries/:id/installation`, async (ctx) => {
+  app.post(`${base}/deliveries/:id/installation`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -1089,10 +1089,10 @@ function mount(app, base = '/api') {
       ok: true, id: jobId, jobNo,
       message: `Installation ${jobNo} booked for ${product.name} at \u20a6${fee.toLocaleString('en-NG')}.`,
     }, 201);
-  });
+  }));
 
   /** Complete an installation — this is where the warranty clock starts. */
-  app.post(`${base}/installations/:id/complete`, async (ctx) => {
+  app.post(`${base}/installations/:id/complete`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
@@ -1146,7 +1146,7 @@ function mount(app, base = '/api') {
       message: `${job.job_no} completed.${warrantyEndsAt ? ` Warranty now runs to ${warrantyEndsAt} (${warrantyMonths} months from commissioning).` : ' No warranty attached to this unit.'}`,
       warrantyStartsAt, warrantyEndsAt,
     });
-  });
+  }));
 }
 
 module.exports = { mount, normaliseLine, normalisePayments };
