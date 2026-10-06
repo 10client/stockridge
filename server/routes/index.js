@@ -44,6 +44,7 @@ const afterSales = require('./afterSales');
 const compliance = require('./compliance');
 const sync = require('./sync');
 const dataManagement = require('./dataManagement');
+const changeOwed = require('./changeOwed');
 
 /**
  * The complete set of endpoints reachable without a token.
@@ -174,6 +175,7 @@ function buildRoutes(app, env = {}) {
   compliance.mount(app, '/api');
   sync.mount(app, '/api');
   dataManagement.mount(app, '/api');
+  changeOwed.mount(app, '/api');
 
   // ---- 404 shape ---------------------------------------------------------
   app.notFound((ctx) => {

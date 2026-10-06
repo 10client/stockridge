@@ -39,15 +39,21 @@
     async function refresh() {
       body.replaceChildren(ui.loading('Reading the position…'));
       let data = null; let offline = false; let error = null;
+      let changeOwed = null;
       try {
         data = await SR.api.get('/api/dashboard', { query: SR.state.query() });
+        // CHANGE OWED IS FETCHED SEPARATELY AND MAY FAIL WITHOUT TAKING THE DASHBOARD
+        // WITH IT. It is the one figure here that is a promise with a date on it, and
+        // its own endpoint keeps the dashboard query — which every seat runs on every
+        // load — from growing a subquery it does not need.
+        try { changeOwed = await SR.api.get('/api/change-owed/summary'); } catch (e) { changeOwed = null; }
       } catch (err) {
         error = err;
         if (err.isOffline) { offline = true; data = await fromMirror(); }
         else throw err;
       }
       if (!data) { body.replaceChildren(ui.errorBlock(error || new Error('No data.'), { retry: { label: 'Try again', run: refresh } })); return; }
-      paint(body, data, { offline });
+      paint(body, data, { offline, changeOwed });
     }
 
     async function fromMirror() {
@@ -87,7 +93,7 @@
       };
     }
 
-    function paint(host, data, { offline }) {
+    function paint(host, data, { offline, changeOwed = null }) {
       host.replaceChildren();
       if (offline) {
         host.appendChild(ui.h('div', { class: 'alert alert-warn' },
@@ -132,6 +138,36 @@
           tone: Number(debtors.overdue) > 0 ? 'bad' : null,
           small: true,
         })));
+
+      // ---- change the shop is holding for customers
+      //
+      // A CARD RATHER THAN A SCREEN, because it changes what somebody does: ₦18,400
+      // owed with ₦7,300 expiring this week is a reason to call four customers, and a
+      // number that only exists on the change-owed screen is a number nobody sees
+      // until a customer is standing at the counter asking for their money.
+      if (changeOwed && Number(changeOwed.outstanding_claims) > 0) {
+        const owedCard = ui.h('div', { class: 'card' });
+        owedCard.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Change owed to customers')));
+        owedCard.appendChild(ui.h('div', { class: 'card-body' },
+          ui.h('div', { class: 'grid grid-3' },
+            ui.kpi({ label: 'Held for customers', value: U.money(changeOwed.outstanding_amount), foot: U.plural(changeOwed.outstanding_claims, 'claim'), small: true }),
+            ui.kpi({
+              label: 'Expiring this week',
+              value: U.money(changeOwed.expiring_soon_amount),
+              tone: Number(changeOwed.expiring_soon_amount) > 0 ? 'warn' : null,
+              small: true,
+            }),
+            ui.kpi({
+              label: 'Past its window',
+              value: U.money(changeOwed.expired_amount),
+              foot: changeOwed.next_expiry ? `next expiry ${U.date(changeOwed.next_expiry)}` : null,
+              tone: Number(changeOwed.expired_amount) > 0 ? 'bad' : null,
+              small: true,
+            })),
+          ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+            ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/change-owed') }, 'Open change owed'))));
+        host.appendChild(owedCard);
+      }
 
       // ---- the till, because a cashier needs this more than the owner does
       const tillCard = ui.h('div', { class: 'card' });

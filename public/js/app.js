@@ -51,6 +51,9 @@
     { path: '/expenses', title: 'Expenses', group: 'Buying', view: 'expenses', icon: 'wallet', roles: ['MANAGER', 'OWNER'] },
 
     { path: '/customers', title: 'Customers', group: 'Customers', view: 'customers', icon: 'users', roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    // The nav has listed 'change-owed' for every role since the navigation was written;
+    // this is the screen it was pointing at.
+    { path: '/change-owed', title: 'Change owed', group: 'Customers', view: 'change-owed', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/returns', title: 'Returns & warranty', group: 'Customers', view: 'returns', icon: 'back', roles: ['STAFF', 'MANAGER', 'OWNER'] },
