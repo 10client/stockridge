@@ -3119,3 +3119,78 @@ one. Re-probe before believing a single odd answer.
 retention on a live deployment, a cleanup engine proved against a fully-used database, a screened
 OWNER-only endpoint with a receipt, and an offline queue that cannot undo a deletion by replaying.
 **Next: G2 — change-owed settlement.**
+
+---
+
+## G2 closed — change owed can be settled, and the money follows
+
+**The gap.** A sale that leaves change owed already wrote a `change_owed` row with a claim code, and
+the sale detail already displayed it. Nothing could ever mark it paid. Every outstanding claim was a
+liability that only grew, and the register showed it for ever. PharmaRidge settles these; the contract
+is in `docs/pharmaridge-parity.md` (l.56–66, acceptance l.158).
+
+**What was built.**
+
+* `server/routes/changeOwed.js` — list, claim-by-code, settle, write-off, summary. Mounted in
+  `server/routes/index.js`.
+* `public/js/views/change-owed.js` — a screen at `/change-owed`, reachable from every nav that already
+  listed `change-owed`, with the claim-by-code box FIRST and focused, because the moment this screen
+  exists for is a customer standing at the counter holding a receipt.
+* A dashboard card reading `/api/change-owed/summary`, because "₦18,400 owed, ₦7,300 of it expiring
+  this week" is a reason to phone four customers, and a figure that only exists on its own screen is a
+  figure nobody sees until somebody is asking for their money.
+* `test/integration/change-owed.test.js` (8/8) and `test/audit/audit.changeOwed.js` (18 checks).
+
+**Settle, in money terms.** Handing the change back posts a branch-safe `WITHDRAWAL` and a GL entry
+DR 2210 Change Owed Liability / CR cash. The status moves OUTSTANDING → REDEEMED once; the second
+attempt gets 409 `CLAIM_ALREADY_SETTLED` **naming the person who paid it and the date**, because a
+double-tap at a busy counter and a second cashier on the same code are the same event to the ledger.
+Part payments are refused (`PART_SETTLEMENT`) rather than leaving two half-claims on one code. An
+expired claim is refused to a cashier and can be authorised by a manager, and the override is recorded
+on the claim.
+
+**Three things this stage found and fixed, all of them money bugs:**
+
+1. **`CHANGE_OWED` is not a journal source type.** The schema's `source_type` list is closed, so the
+   first version of the settle path was rejected outright: `Journal source type "CHANGE_OWED" is not
+   one of the types the schema allows`. The payout is a safe payout — it now posts `sourceType: 'SAFE'`
+   with the claim in the description and as the source id, so the entry stays traceable AND the books
+   speak the language the rest of the ledger uses.
+2. **A bank transfer moved cash out of the drawer.** The settle path wrote a safe `WITHDRAWAL` for
+   every method. A refund sent from the bank never touched the drawer, so the safe came out short by
+   money that was never handed over — a shortfall a cashier would have been asked to explain. Only
+   CASH (and anything else mapped to the safe account) moves the safe now; the GL still follows the
+   money wherever it went.
+3. **Four characters was accepted as a write-off reason.** The endpoint's own sentence promised "a few
+   words" while the check enforced four letters, so `gone` was a complete explanation for keeping a
+   customer's money. `MIN_REASON` is now 12 characters, exported, and the screen stops the typist at
+   the same place. The claim's own state is checked BEFORE the reason, so a second attempt on a closed
+   claim is refused for being closed rather than for the length of a note that was never going to be
+   stored.
+
+Also: the claim lookup is an exact match on the indexed `claim_code` (uppercased in JS, not in SQL —
+`UPPER(col) = UPPER(?)` defeats the unique index and would have been a full scan at the counter).
+
+**Proved locally.** `npm run verify` **382/382/0** (was 373 at `bf165bd`; the +9 is this stage);
+`bash test/run-audits.sh` **10 audits, every check green**, with `audit.changeOwed` at 18 checks —
+including the one that matters most: it rings a REAL sale tendered ₦200 over the bill, takes the claim
+code off the receipt, pays it out of the safe, and then finds the same ₦200 missing from the safe
+ledger, debited off 2210, and nowhere near the drawer on a transfer. The sql-audit's arbitrary-row
+finding is clear: `arbitrary-row : none`.
+
+**Proved on the deployments.** Staging, with `AUDIT_WRITE=1`: **`audit.changeOwed` 18/18 live in
+10.7 s**, on the real tenant, against real branches and a real safe. All three deployments answer the
+new endpoints (401 unauthenticated, 200 authenticated): on sample and production, which have no
+business, `/api/change-owed` answers an **empty list** and `/api/change-owed/summary` answers **zeros**
+— the correct answer for a handover deployment and a better one than an error, since a card that reads
+zero is right and a card that reads an error is a support call.
+
+**Two probe notes, both repeats of a lesson already learned once.** A run of the audit against staging
+BEFORE the deploy failed exactly as it should — `404 There is no GET /api/change-owed endpoint on this
+API` — but it had already created a customer and a sale, leaving two ₦200 claims open on the tenant.
+Both were written off afterwards with a reason that says what they were (an audit fixture left by a run
+against the pre-G2 bundle), so the tenant holds no liability from a probe. And production answered 404
+for the bare list while three other change-owed routes on the same deployment answered correctly: the
+rollout race again, cleared on the first re-probe.
+
+**G2 is closed.** **Next: G3 — pending staff transfers, and assignment history.**
