@@ -2737,3 +2737,51 @@ Sample and production carry migration 0006 and both answer the read-only `audit.
 **Next: T4c** — concurrency on one product's stock from two tills, a request retried after a
 timeout, and the D1 ceilings (statements per request, row size, batch limit) probed against the
 live deployment rather than assumed. Then T5 (the three-month simulation) and T6 (go-live docs).
+
+### Stage T4c — the catalogue could not be written at all
+
+Two real defects, both live on all three deployments, both found by a new audit that builds its
+own goods instead of borrowing the seeder's:
+
+**1. Every product create and edit answered 500 `check.ladder is not iterable`.**
+`validateLadder` (`domain/uom.js:104`) returns its normalised rows under **`levels`**.
+`buildLadder` — the other function in the same module, whose result every *other* caller in the
+codebase reads — returns **`ladder`**. `server/routes/catalog.js` read `check.ladder` at three
+sites (create `:387`, create's barcode `:403`, update `:453`). Every create and every edit failed
+*after* the product row had been inserted, so each failure left behind a product with no unit
+ladder: a row the shop can see, cannot sell, and — because the edit path failed too — could not
+repair. The app's own New Product and Edit Product screens (`public/js/views/products.js:339-340`)
+were dead on every environment.
+
+**2. Every ladder replacement answered 409 `DUPLICATE`.**
+`product_units` carries `UNIQUE (product_id, code)` as a **table constraint**, not an index
+filtered on `is_deleted`, so the row the update route soft-deleted a line earlier still occupied
+the code. Every ladder keeps `PIECE` (level 0 must be exactly 1 base unit), so **no product's
+units could ever be edited**. Fixed with revive-or-insert
+(`ON CONFLICT(product_id, code) DO UPDATE … is_deleted = 0`) — the same shape `server/routes/admin.js`
+already uses for a re-granted business access and `catalog.js` itself uses for price overrides,
+both of which carry a comment saying why. `product_units` was the one place the rule was missed.
+
+**Found by** `test/audit/audit.concurrency.js` (new; 19 checks). Its wide-sale section creates the
+catalogue it sells through `POST /api/products` rather than borrowing the seeder's, so the create
+path was exercised on its first run — after an earlier version of that section had **silently
+skipped** ("the catalogue has 6 priced, untracked products"), which is the hollow coverage a skip
+can hide: the check guarding the live database's parameter limits was not running at all.
+
+**Proof**
+* local: `audit.concurrency` **19 checks passed**;
+* live staging: create → **201** with a `PIECE×1` ladder; edit → **200**, units after →
+  `PIECE×1, CARTON×12`;
+* the two ghost products (0 units) the defect left on staging were swept by SKU prefix —
+  3 rows soft-deleted, 0 remaining; sample and production were checked and had none;
+* `npm run verify` **348/348/0**; `test/audit/suite.js` **6 audit(s) wired, 19 checks passed**;
+* sample + production redeployed with both fixes; both answer the catalogue probe
+  "no business yet — the expected handover state" (one admin account, no business).
+
+**New files:** `test/audit/audit.concurrency.js`, `test/audit/probe-catalog-write.js` (the
+reproduction, kept because it is the only check that runs the write path against a live
+deployment a client uses).
+
+**Still owed from T4:** `audit.sync.js` reds (idempotency is wired on `/api/sales` only; the queued
+SALE push returned non-200; harness device-header and `branch_id` fixes), then the D1
+statement/row/`batch()` ceilings.

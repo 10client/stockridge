@@ -379,12 +379,19 @@ function mount(app, base = '/api') {
     // refuses a product with no ladder rather than guessing one.
     const ladder = Array.isArray(body.units) && body.units.length ? body.units : [{ code: 'PIECE', name: fields.base_unit_name || 'Piece', quantityInBase: 1, isDefaultSell: true }];
     const check = validateLadder(ladder);
+    // `levels`, NOT `ladder`. validateLadder returns the normalised rows under `levels`
+    // while buildLadder — the other function in domain/uom.js, whose result every other
+    // caller in this codebase reads — returns `{ ladder, base, ... }`. Reading the wrong
+    // key here threw "check.ladder is not iterable" on EVERY attempt to create or edit a
+    // product, after the product row had already been inserted: the catalogue could not be
+    // written from the app at all, and each failure left behind a product with no unit
+    // ladder, which can never be sold. Found by T4c.
     if (!check.ok) {
       // Roll the product back rather than leave a row that cannot be sold.
       await db.run('UPDATE products SET is_deleted = 1 WHERE id = ?', [id]);
       throw new HttpError(check.error, { status: 400, code: check.code, fields: { units: check.error } });
     }
-    for (const level of check.ladder) {
+    for (const level of check.levels) {
       await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at)
                     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
       [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, level.isSellable ? 1 : 0, level.isDefaultSell ? 1 : 0]);
@@ -400,7 +407,7 @@ function mount(app, base = '/api') {
       if (bc.ok) {
         await db.run(`INSERT INTO product_barcodes (id, product_id, barcode, unit_code, label, is_primary, created_at, updated_at)
                       VALUES (?,?,?,?,?,1, datetime('now'), datetime('now'))`,
-        [newId(), id, bc.value, check.ladder[0].code, 'Primary barcode']);
+        [newId(), id, bc.value, check.levels[0].code, 'Primary barcode']);
       }
     }
 
@@ -450,9 +457,22 @@ function mount(app, base = '/api') {
       // leaves levels that no longer ascend, which is the exact state
       // validateLadder exists to prevent.
       await db.run('UPDATE product_units SET is_deleted = 1 WHERE product_id = ?', [id]);
-      for (const level of check.ladder) {
-        await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at)
-                      VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
+      for (const level of check.levels) {
+        // REVIVE THE ROW, DO NOT BLIND-INSERT BESIDE IT. `product_units` carries
+        // UNIQUE (product_id, code) as a TABLE constraint — not an index filtered on
+        // is_deleted — so the row soft-deleted a line above still occupies the code.
+        // A blind INSERT here answered 409 DUPLICATE for EVERY ladder replacement,
+        // and every ladder keeps PIECE (the first level must be exactly 1 base unit),
+        // so a product's units could never be edited at all. Found by the catalogue
+        // write probe in T4c, after the same trap was found and fixed in two other
+        // places: the price-override route below and the business-access grant in
+        // admin.js both revive-or-insert for exactly this reason.
+        await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at, is_deleted)
+                      VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'), 0)
+                      ON CONFLICT(product_id, code) DO UPDATE SET
+                        level = excluded.level, name = excluded.name, plural_name = excluded.plural_name,
+                        quantity_in_base = excluded.quantity_in_base, is_sellable = excluded.is_sellable,
+                        is_default_sell = excluded.is_default_sell, updated_at = datetime('now'), is_deleted = 0`,
         [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, level.isSellable ? 1 : 0, level.isDefaultSell ? 1 : 0]);
       }
     }
