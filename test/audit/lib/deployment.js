@@ -115,10 +115,15 @@ class Deployment {
       headers: h,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    const text = await res.text();
+    // THE RAW BYTES ARE KEPT AS WELL AS THE TEXT. Reading a body as text runs it through
+    // the WHATWG decoder, which STRIPS a leading byte-order mark by design — so a test that
+    // checks a CSV's BOM by looking at `text` is testing the decoder, not the export. The
+    // bytes are what a spreadsheet receives and what a BOM check has to look at.
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const text = buffer.toString('utf8');
     let json = null;
     try { json = JSON.parse(text); } catch (e) { json = { _raw: text.slice(0, 400) }; }
-    return { status: res.status, json, text, headers: Object.fromEntries(res.headers.entries()), url: urlPath, method };
+    return { status: res.status, json, text, bytes: buffer, headers: Object.fromEntries(res.headers.entries()), url: urlPath, method };
   }
 
   /** Sign in and keep the seat. Throws on failure — see the harness note about

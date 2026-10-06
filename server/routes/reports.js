@@ -360,9 +360,19 @@ function mount(app, base = '/api') {
              AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${branch ? 'AND sb.branch_id = ?' : ''}) AS on_hand,
           MAX(date(s.sold_at)) AS last_sold
         FROM products p
-        LEFT JOIN sale_items si ON si.product_id = p.id AND si.is_deleted = 0
-        LEFT JOIN sales s ON s.id = si.sale_id AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ?
+        -- THE SALE IS JOINED BEFORE ITS LINES, AND THAT ORDER IS THE WHOLE POINT.
+        --
+        -- With the lines joined first, the filter on the sale (not voided, inside the period)
+        -- applied only to the sales join — and because both joins were LEFT, a voided
+        -- sale's line item stayed in the result with a NULL sale beside it. So
+        -- SUM(si.quantity_in_base) counted units sold on sales that never happened, and lines
+        -- from sales outside the requested period too. Found by the reports audit: it rang
+        -- three sales, voided one, and the fast-mover report said 6 units against 5 — a
+        -- customer's voided purchase still counted as a sale of the product, and a product
+        -- whose only sale was voided would appear as a fast mover.
+        LEFT JOIN sales s ON ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ?
               ${branch ? 'AND s.branch_id = ?' : ''}
+        LEFT JOIN sale_items si ON si.sale_id = s.id AND si.product_id = p.id AND si.is_deleted = 0
         WHERE p.is_deleted = 0 ${biz ? 'AND p.business_id = ?' : ''}
         GROUP BY p.id`,
     // Bind order follows the placeholder order: the on_hand subquery's branch
@@ -581,12 +591,33 @@ function mount(app, base = '/api') {
     const bSql = branch && ctx.req.queryParam('branch_scope') !== 'all' ? 'AND t.branch_id = ?' : '';
     const bParam = branch && ctx.req.queryParam('branch_scope') !== 'all' ? [String(branch.id)] : [];
 
+    // ===================================================================
+    // EVERY EXPORT DECLARES ITS COLUMNS, IN ORDER, BY NAME
+    // ===================================================================
+    // These rows used to be written with `Object.values(row)`. A result row is an
+    // object, so TWO COLUMNS WITH THE SAME NAME COLLAPSE INTO ONE KEY — and every
+    // column after the collapse shifts left by one. Two exports had exactly that:
+    //
+    //   * SALES_DETAIL selected `b.name` (branch) and `v.name` (variant) → 14 values
+    //     against 15 headings, so "Base qty" showed the unit price and "Cost" showed
+    //     the line total.
+    //   * DEBTORS selected `c.name` (customer) and `cc.name` (class) → the customer's
+    //     NAME column came out EMPTY and every figure after it moved one place left.
+    //
+    // An accountant opening that file reads the credit limit as the balance. The
+    // aliases below make the names unique, and `cols` states which key feeds which
+    // heading so the mapping is explicit rather than a matter of key order. A column
+    // that goes missing now fails the download with a sentence instead of writing a
+    // quietly wrong file.
     const QUERIES = {
       SALES: {
         head: ['Receipt', 'Date (WAT)', 'Branch', 'Cashier', 'Customer', 'Type', 'Payment', 'Subtotal', 'Discount', 'VAT', 'Delivery', 'Total', 'Paid', 'Balance', 'Status'],
-        sql: `SELECT s.receipt_no, s.sold_at, b.name, u.full_name, COALESCE(s.customer_name,'Walk-in'), s.sale_type, s.payment_method,
-                s.subtotal, s.discount_amount + COALESCE(s.order_discount_amount,0), s.vat_amount, s.delivery_fee, s.total,
-                s.amount_paid, s.balance_due, s.status
+        cols: ['receipt_no', 'sold_at', 'branch_name', 'cashier_name', 'customer_name', 'sale_type', 'payment_method',
+          'subtotal', 'discount_total', 'vat_amount', 'delivery_fee', 'total', 'amount_paid', 'balance_due', 'status'],
+        sql: `SELECT s.receipt_no, s.sold_at, b.name AS branch_name, u.full_name AS cashier_name,
+                COALESCE(s.customer_name,'Walk-in') AS customer_name, s.sale_type, s.payment_method,
+                s.subtotal, s.discount_amount + COALESCE(s.order_discount_amount,0) AS discount_total, s.vat_amount,
+                s.delivery_fee, s.total, s.amount_paid, s.balance_due, s.status
               FROM sales s LEFT JOIN branches b ON b.id = s.branch_id LEFT JOIN users u ON u.id = s.salesperson_id
               WHERE s.is_deleted = 0 ${biz ? 'AND s.business_id = ?' : ''} AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
               ORDER BY s.sold_at DESC`,
@@ -594,9 +625,11 @@ function mount(app, base = '/api') {
       },
       SALES_DETAIL: {
         head: ['Receipt', 'Date (WAT)', 'Branch', 'Product', 'SKU', 'Variant', 'Unit', 'Qty', 'Base qty', 'Unit price', 'Discount', 'VAT', 'Line total', 'Cost', 'Margin'],
-        sql: `SELECT s.receipt_no, s.sold_at, b.name, si.product_name, si.sku, v.name, si.unit_code, si.quantity,
-                si.quantity_in_base, si.unit_price, si.discount_amount, si.vat_amount, si.line_total,
-                si.cost_price_snapshot * si.quantity_in_base, si.margin
+        cols: ['receipt_no', 'sold_at', 'branch_name', 'product_name', 'sku', 'variant_name', 'unit_code', 'quantity',
+          'quantity_in_base', 'unit_price', 'discount_amount', 'vat_amount', 'line_total', 'cost_total', 'margin'],
+        sql: `SELECT s.receipt_no, s.sold_at, b.name AS branch_name, si.product_name, si.sku, v.name AS variant_name,
+                si.unit_code, si.quantity, si.quantity_in_base, si.unit_price, si.discount_amount, si.vat_amount,
+                si.line_total, si.cost_price_snapshot * si.quantity_in_base AS cost_total, si.margin
               FROM sale_items si JOIN sales s ON s.id = si.sale_id
               LEFT JOIN branches b ON b.id = s.branch_id LEFT JOIN product_variants v ON v.id = si.variant_id
               WHERE si.is_deleted = 0 AND ${COUNTS} ${biz ? 'AND s.business_id = ?' : ''} AND date(s.sold_at) BETWEEN ? AND ? ${bSql.replace('t.', 's.')}
@@ -605,19 +638,23 @@ function mount(app, base = '/api') {
       },
       STOCK: {
         head: ['SKU', 'Product', 'Branch', 'Batch', 'Expiry', 'Qty', 'Reserved', 'Available', 'Unit cost', 'Stock value', 'Status'],
-        sql: `SELECT p.sku, p.name, b.name, sb.batch_no, sb.expiry_date, sb.quantity, sb.quantity_reserved,
-                sb.quantity - sb.quantity_reserved, sb.cost_price_per_unit,
-                sb.quantity * sb.cost_price_per_unit, sb.status
+        cols: ['sku', 'product_name', 'branch_name', 'batch_no', 'expiry_date', 'quantity', 'quantity_reserved',
+          'available', 'cost_price_per_unit', 'stock_value', 'status'],
+        sql: `SELECT p.sku, p.name AS product_name, b.name AS branch_name, sb.batch_no, sb.expiry_date, sb.quantity,
+                sb.quantity_reserved, sb.quantity - sb.quantity_reserved AS available, sb.cost_price_per_unit,
+                sb.quantity * sb.cost_price_per_unit AS stock_value, sb.status
               FROM stock_batches sb JOIN products p ON p.id = sb.product_id LEFT JOIN branches b ON b.id = sb.branch_id
               WHERE sb.is_deleted = 0 ${biz ? 'AND sb.business_id = ?' : ''} ${bSql.replace('t.', 'sb.')}
-              ORDER BY p.name, sb.batch_no`,
+              ORDER BY product_name, sb.batch_no`,
         params: [...(biz ? [biz] : []), ...bParam],
       },
       DEBTORS: {
         head: ['Customer', 'Phone', 'Class', 'Credit limit', 'Balance', 'Terms (days)', 'Oldest due', 'Open invoices'],
-        sql: `SELECT c.name, c.phone, cc.name, c.credit_limit, c.credit_balance, c.payment_terms_days,
-                (SELECT MIN(s.due_date) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0),
-                (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0)
+        cols: ['customer_name', 'phone', 'class_name', 'credit_limit', 'credit_balance', 'payment_terms_days', 'oldest_due', 'open_invoices'],
+        sql: `SELECT c.name AS customer_name, c.phone, cc.name AS class_name, c.credit_limit, c.credit_balance,
+                c.payment_terms_days,
+                (SELECT MIN(s.due_date) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0) AS oldest_due,
+                (SELECT COUNT(*) FROM sales s WHERE s.customer_id = c.id AND s.balance_due > 0 AND s.status <> 'VOIDED' AND s.is_deleted = 0) AS open_invoices
               FROM customers c LEFT JOIN customer_classes cc ON cc.id = c.customer_class_id
               WHERE c.is_deleted = 0 AND c.credit_balance <> 0 ${biz ? 'AND c.business_id = ?' : ''} ${bSql.replace('t.', 'c.')}
               ORDER BY c.credit_balance DESC`,
@@ -625,16 +662,20 @@ function mount(app, base = '/api') {
       },
       CREDITORS: {
         head: ['Supplier', 'Phone', 'TIN', 'Manufacturer', 'Credit limit', 'Balance owed'],
-        sql: `SELECT s.name, s.phone, s.tin, CASE s.is_manufacturer WHEN 1 THEN 'Yes' ELSE 'No' END, s.credit_limit,
-                (SELECT COALESCE(SUM(cl.amount),0) FROM creditor_ledger cl WHERE cl.supplier_id = s.id AND cl.is_deleted = 0)
+        cols: ['supplier_name', 'phone', 'tin', 'manufacturer_label', 'credit_limit', 'balance_owed'],
+        sql: `SELECT s.name AS supplier_name, s.phone, s.tin, CASE s.is_manufacturer WHEN 1 THEN 'Yes' ELSE 'No' END AS manufacturer_label,
+                s.credit_limit,
+                (SELECT COALESCE(SUM(cl.amount),0) FROM creditor_ledger cl WHERE cl.supplier_id = s.id AND cl.is_deleted = 0) AS balance_owed
               FROM suppliers s WHERE s.is_deleted = 0 ${biz ? 'AND (s.business_id = ? OR s.business_id IS NULL)' : ''}
-              ORDER BY 6 DESC`,
+              ORDER BY balance_owed DESC`,
         params: biz ? [biz] : [],
       },
       EXPENSES: {
         head: ['Date', 'Branch', 'Category', 'Description', 'Supplier', 'Gross', 'Input VAT', 'WHT code', 'WHT', 'Net', 'Method', 'Status'],
-        sql: `SELECT e.expense_date, b.name, e.category, e.description, s.name, e.amount, e.vat_amount, e.wht_code,
-                e.wht_amount, e.net_amount, e.payment_method, e.status
+        cols: ['expense_date', 'branch_name', 'category', 'description', 'supplier_name', 'amount', 'vat_amount',
+          'wht_code', 'wht_amount', 'net_amount', 'payment_method', 'status'],
+        sql: `SELECT e.expense_date, b.name AS branch_name, e.category, e.description, s.name AS supplier_name,
+                e.amount, e.vat_amount, e.wht_code, e.wht_amount, e.net_amount, e.payment_method, e.status
               FROM expenses e LEFT JOIN branches b ON b.id = e.branch_id LEFT JOIN suppliers s ON s.id = e.supplier_id
               WHERE e.is_deleted = 0 ${biz ? 'AND e.business_id = ?' : ''} AND e.expense_date BETWEEN ? AND ? ${bSql.replace('t.', 'e.')}
               ORDER BY e.expense_date DESC`,
@@ -642,7 +683,9 @@ function mount(app, base = '/api') {
       },
       ADJUSTMENTS: {
         head: ['Date', 'Branch', 'Product', 'Type', 'Qty', 'Unit cost', 'Value', 'Reason', 'By'],
-        sql: `SELECT sa.created_at, b.name, p.name, sa.adjustment_type, sa.quantity, sa.unit_cost, sa.total_value, sa.reason, u.full_name
+        cols: ['created_at', 'branch_name', 'product_name', 'adjustment_type', 'quantity', 'unit_cost', 'total_value', 'reason', 'by_name'],
+        sql: `SELECT sa.created_at, b.name AS branch_name, p.name AS product_name, sa.adjustment_type, sa.quantity,
+                sa.unit_cost, sa.total_value, sa.reason, u.full_name AS by_name
               FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id
               LEFT JOIN branches b ON b.id = sa.branch_id LEFT JOIN users u ON u.id = sa.created_by
               WHERE sa.is_deleted = 0 ${biz ? 'AND sa.business_id = ?' : ''} AND date(sa.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'sa.')}
@@ -651,7 +694,8 @@ function mount(app, base = '/api') {
       },
       AUDIT: {
         head: ['When (UTC)', 'User', 'Action', 'Entity', 'Entity id', 'Branch', 'IP'],
-        sql: `SELECT a.created_at, a.username, a.action, a.entity_type, a.entity_id, b.name, a.ip_address
+        cols: ['created_at', 'username', 'action', 'entity_type', 'entity_id', 'branch_name', 'ip_address'],
+        sql: `SELECT a.created_at, a.username, a.action, a.entity_type, a.entity_id, b.name AS branch_name, a.ip_address
               FROM audit_log a LEFT JOIN branches b ON b.id = a.branch_id
               WHERE 1 = 1 ${biz ? 'AND a.business_id = ?' : ''} AND date(a.created_at) BETWEEN ? AND ? ${bSql.replace('t.', 'a.')}
               ORDER BY a.created_at DESC LIMIT 5000`,
@@ -661,7 +705,13 @@ function mount(app, base = '/api') {
 
     const q = QUERIES[what];
     const rows = await db.all(q.sql, q.params);
-    const csv = toCsv([q.head, ...rows.map((r) => Object.values(r))]);
+    // THE COLUMN LIST IS CHECKED BEFORE THE FILE IS WRITTEN. A heading with no value
+    // behind it would silently shift the row, so the download refuses instead.
+    const missing = rows.length ? q.cols.filter((c) => !(c in rows[0])) : [];
+    if (missing.length) {
+      throw new HttpError(`This export is misconfigured: the ${what} query does not return ${missing.join(', ')}. Fix the query before downloading it — a file with columns missing is worse than no file, because it is the one that gets filed with FIRS.`, { status: 500, code: 'EXPORT_MISCONFIGURED' });
+    }
+    const csv = toCsv([q.head, ...rows.map((r) => q.cols.map((c) => r[c]))]);
     const filename = `stockridge-${what.toLowerCase()}-${from}-to-${to}.csv`;
     ctx.header('Content-Disposition', `attachment; filename="${filename}"`);
     ctx.text(csv);

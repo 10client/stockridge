@@ -300,3 +300,56 @@ products. Next by size: **reports 8**, then audit 3, notifications 3, suppliers 
 transfers (including `stock_transfer_serials`, which the capability baseline still lists as
 WIRE UP — a serialised unit moved between branches is not yet traceable), and parity **G4
 dashboard depth**.
+
+---
+
+## P7 — REPORTS, 0/8 → 8/8, AND TWO DEFECTS THAT WERE PRODUCING WRONG NUMBERS
+
+Eight routes, the largest flow with no audit, and the one where being wrong is quietest: a report
+does not throw and does not look broken when it is wrong. It answers 200 with a figure and somebody
+orders stock on it. So `audit.reports` (**31 checks**) does not test that the routes answer — it
+tests that they **agree**, with the trade the run can see and with each other.
+
+**FRONT TO BACK** three sales rung (one voided), a damage write-off, an expense, a target set.
+**BACK TO FRONT** every report held against that trade: revenue, cost and margin per product; the
+void excluded from the takings *and* counted separately; units in, units out and units left on the
+shelf reconciling; the write-off on the shrinkage report with its value; the product absent from
+dead stock; the debtor's balance; commission on **net** revenue; the target's attainment against
+what that seat actually sold. **AND EACH OTHER** the download must equal the screen, and the
+commission report's revenue must agree with the sales report's for the same period.
+**AND THE REFUSALS** unknown group-by, mover kind and export name; a staff member setting a target;
+a target that measures nothing; a period ending before it starts. **AND THE SCOPE** a cashier at
+another branch sees none of this branch's takings — in the reports *or in the CSV*.
+
+### Two defects, both of which produced wrong figures for real users
+
+**1. The movers report counted sales that never happened.** Its sale *lines* were joined to the
+product before the sale was, and both joins were `LEFT` — so the filters (not voided, inside the
+period) applied only to the `sales` side, and a voided sale's line stayed in the result with a NULL
+sale beside it. `audit.reports` rang three sales, voided one, and the fast-mover report said **6
+units against 5**. A product whose only sale was voided would have appeared as a *fast mover*, and
+every figure in that report — revenue, cost, margin, days of cover — was inflated by voided sales
+and by sales outside the requested period. Fixed by joining the sale first and its lines second.
+
+**2. Every CSV export could shift its columns.** Rows were written with `Object.values(row)` — and
+a result row is an object, so **two columns with the same name collapse into one key**, dropping a
+column and shifting every heading after it left by one. Two exports did exactly that:
+
+* `SALES_DETAIL` selected `b.name` (branch) and `v.name` (variant): **15 headings, 14 values** —
+  "Base qty" showing the unit price, "Cost" showing the line total, "Margin" showing nothing.
+* `DEBTORS` selected `c.name` (customer) and `cc.name` (class): the **customer's name came out
+  empty** and the credit limit printed under "Balance".
+
+An accountant opening either file reads the wrong numbers out of it, and this is the export that
+gets filed with FIRS. The exports now declare their columns by name, aliases make every name
+unique, and a heading with no value behind it **fails the download** instead of writing a quietly
+wrong file.
+
+Also fixed: the audit harness now returns the response **bytes** as well as the decoded text, so a
+byte-order-mark check tests the file rather than the text decoder (which strips a BOM by standard).
+
+### Counts
+
+`npm run verify` **395/395/0** · `bash test/run-audits.sh` **19 audits green** · coverage
+**197 routes · 149 audited · 32 screen-only · 16 unreached**, with **reports 8/8**, warranty-claims
+3/3 and serials 2/2.
