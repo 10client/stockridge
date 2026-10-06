@@ -30,7 +30,9 @@
     "worker:deploy": "wrangler deploy --config worker/wrangler.toml",
     "deploy": "node tools/deploy-cloudflare.js",
     "deploy:dry": "node tools/deploy-cloudflare.js --dry-run",
-    "deploy:reset-pin": "node tools/deploy-cloudflare.js --reset-pin"
+    "deploy:reset-pin": "node tools/deploy-cloudflare.js --reset-pin",
+    "coverage:flows": "node tools/flow-coverage.js",
+    "coverage:md": "node tools/flow-coverage.js --md"
   },
   "engines": {
     "node": ">=20.11"
