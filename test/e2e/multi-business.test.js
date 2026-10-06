@@ -25,7 +25,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { freshDeployment, ADMIN_PIN } = require('../helpers/deployment');
-const { watToday } = require('../../domain/time');
+const { watToday, watNow } = require('../../domain/time');
 
 /** Provision a business and return the ids the follow-on steps need. */
 async function createBusiness(world, adminToken, { name, profileCode, city }) {
@@ -89,7 +89,7 @@ async function tradeAs(world, adminToken, business, label) {
       branch_id: business.branchId,
       business_id: business.id,
       sale_type: 'RETAIL',
-      sold_at: `${watToday()} 10:00:00`,
+      sold_at: watNow(),
       device_id: `${label}-device`,
       payments: [{ method: 'CASH', amount: price }],
       lines: [{ product_id: product.id, quantity: 1, unit_code: product.unit, unit_price: price }],

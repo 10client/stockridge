@@ -66,6 +66,7 @@
     { path: '/plan', title: 'Subscription', group: 'Business', view: 'plan', icon: 'star', roles: ['OWNER', 'ADMIN'] },
     { path: '/settings', title: 'Settings', group: 'Business', view: 'admin', icon: 'gear', section: 'settings', roles: ['OWNER', 'ADMIN'] },
     { path: '/audit', title: 'Audit trail', group: 'Business', view: 'admin', icon: 'shield', section: 'audit', roles: ['MANAGER', 'OWNER'] },
+    { path: '/compliance', title: 'Compliance & licences', group: 'Business', view: 'compliance', icon: 'shield', roles: ['MANAGER', 'OWNER', 'ADMIN'] },
     { path: '/sync', title: 'Sync & offline', group: 'Business', view: 'sync', icon: 'refresh', roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
     { path: '/account', title: 'My account', group: 'Business', view: 'account', icon: 'user', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
 

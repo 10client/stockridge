@@ -124,15 +124,15 @@ function canChangeRole(actor, target, newRole) {
  * is a support ticket.
  */
 const NAVIGATION_BY_ROLE = Object.freeze({
-  ADMIN: ['admin', 'businesses', 'branches', 'users', 'plan', 'settings', 'data-management', 'sync'],
+  ADMIN: ['admin', 'businesses', 'branches', 'users', 'plan', 'settings', 'data-management', 'sync', 'compliance'],
   OWNER: ['dashboard', 'pos', 'sales', 'products', 'stock', 'customers', 'purchase-orders', 'suppliers',
     'transfers', 'stocktake', 'till', 'safe', 'expenses', 'debtors', 'creditors', 'instalments', 'layaway',
     'warranty', 'deliveries', 'attendance', 'accounting', 'wht', 'reports', 'change-owed', 'recalls',
-    'businesses', 'branches', 'users', 'plan', 'settings', 'sync', 'audit'],
+    'businesses', 'branches', 'users', 'plan', 'settings', 'sync', 'audit', 'compliance'],
   MANAGER: ['dashboard', 'pos', 'sales', 'products', 'stock', 'customers', 'purchase-orders', 'suppliers',
     'transfers', 'stocktake', 'till', 'safe', 'expenses', 'debtors', 'creditors', 'instalments', 'layaway',
     'warranty', 'deliveries', 'attendance', 'accounting', 'wht', 'reports', 'change-owed', 'recalls',
-    'branches', 'users', 'sync', 'audit'],
+    'branches', 'users', 'sync', 'audit', 'compliance'],
   STAFF: ['dashboard', 'pos', 'sales', 'stock', 'customers', 'stocktake', 'till', 'deliveries', 'layaway',
     'warranty', 'change-owed', 'attendance'],
 });

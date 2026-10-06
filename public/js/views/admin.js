@@ -63,6 +63,12 @@
         { key: 'low_stock_alerts', type: 'flag', label: 'Warn when stock falls below the reorder level' },
         { key: 'expiry_alerts', type: 'flag', label: 'Warn about stock nearing expiry' },
         { key: 'expiry_alert_days', type: 'number', label: 'Days of warning before expiry', min: 1, max: 365 },
+        // The compliance window lives here rather than as a flag because the
+        // number is the policy: a bar with a fire certificate and a dealer with a
+        // SONCAP registration do not think about renewals on the same timetable.
+        // 90 is the ceiling the server enforces, because the expiry view the alert
+        // list reads stops at a quarter's notice.
+        { key: 'compliance_alert_days', type: 'number', label: 'Days of warning before a licence expires (90 maximum)', min: 1, max: 90 },
         { key: 'block_negative_stock', type: 'flag', label: 'Refuse to sell stock the branch does not have' },
         { key: 'require_serial_capture', type: 'flag', label: 'Capture serial numbers for products that track them' },
         { key: 'credit_limit_enforced', type: 'flag', label: 'Refuse credit above a customer\'s limit' },

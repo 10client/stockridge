@@ -1598,3 +1598,146 @@ Staging then proved the whole feature across the real Worker and the real databa
 ✓ ticking a business grants it, and the server holds it  Verification Furniture Co · 0 → 1
 ✓ unticking it withdraws the grant on the server         Verification Furniture Co · back to 0
 ```
+
+# CHECKPOINT — Stage 11: THE FIRST BASELINE WIRE-UP, AND FOUR THINGS IT CAUGHT
+
+Date: 2026-10-06 · Local: `npm run verify` → **322 tests, 322 pass, 0 fail** ·
+Screen probe: **8/8** · Smoke: four seats, no problems · Capability audit:
+**0 tables read but never created**, 0 routes served that no screen calls.
+
+## `branch_compliance_records` — the licence register, and the alerts nobody raised
+
+The table has existed since the first migration. Its view, `v_compliance_expiry_alerts`,
+has existed just as long. **Nothing had ever written a row to the one, and nothing had
+ever read the other** — so a shop could not record that its SONCAP dealer registration
+expires in March, and the application could not warn anybody when it did. A Nigerian
+business can be fined, sealed or held at the port over exactly this paperwork.
+
+What now exists:
+
+| | |
+|---|---|
+| `GET /compliance/records` | the register, filtered by branch, type and status |
+| `POST /compliance/records` · `PUT` · `DELETE` | record, correct, remove — MANAGER+, branch-scoped, audited, soft-deleted |
+| `GET /compliance/alerts` | **reads `v_compliance_expiry_alerts`**, windowed by the owner's setting |
+| `GET /compliance/checklist` | what this branch's **vertical** expects it to hold, against what it holds |
+| `POST /compliance/notify` | raises the notifications, idempotently |
+| the **daily cron** | runs the same statement, so an alert reaches a manager who never opens the screen |
+
+`profile.complianceFields` had been documentation since the verticals were written — the
+list that says an electronics dealer is offered SONCAP and NCC type approval, a furniture
+shop forestry and CITES, a building-materials yard a quarry permit. It is now the spine of
+the Checklist tab, which can say a permit is **MISSING** rather than merely absent from an
+empty list.
+
+Nothing here blocks trading. A record of a type the vertical does not list is kept and
+labelled as unrecognised — the schema is explicit that an unusual permit must never stop a
+client going live. The only refusal is bookkeeping that has no reading: two live records of
+one type on one branch.
+
+## Four defects it caught on the way
+
+**1. `resolveBranch` silently swapped a named branch for the caller's own.** A branch-pinned
+manager who posted a licence for another branch had the request quietly rewritten to their
+own branch, and got a 201 naming the substituted shop. That is how stock or cash gets posted
+against the wrong branch by a client that asked for the right one. A named branch that is not
+yours is now refused (`403 BRANCH_SCOPE_VIOLATION`); the pin still answers when nothing is
+named.
+
+**2. `inScope(scope, branchRow)` answered on the wrong question.** It reads `row.branch_id`,
+and a BRANCH identifies itself as `row.id` — so passing a branch skipped the branch check
+entirely and answered on the business alone. It let a manager **edit and delete another
+branch's licence records**. Fixed with a purpose-built `inBranchScope(scope, branch)`, and
+the trap is now documented on `inScope` itself, where the next reader will meet it.
+
+**3. An owner could not see a single notification.** The notifications list filtered
+broadcasts by the caller's raw `user.branch_id`, with the literal string `'__none__'` for
+anybody who has none — which is every owner and every administrator. An owner matched
+neither half of the clause and got an empty list, while a branch manager saw their own shop
+and nothing else. Nobody noticed because **nothing in the application produced a
+notification at all**; the bell was empty for two reasons at once. Stage 11 gave the table
+its first producer, and the first licence alert was invisible to the one person whose job it
+is to renew licences. The list now filters by the caller's resolved SCOPE, and both
+directions are asserted: the owner sees it, and the other branch's manager does not.
+
+**4. One API-call reader became three, and each was wrong in its own way.** The extractor
+that compares frontend calls against the server's route table stopped at the first backtick,
+so a template literal containing another template was read as a truncated path:
+
+```js
+SR.api.get(`/api/compliance/alerts${branchId ? `?branch_id=…` : ''}`)
+    →  '/api/compliance/alerts${branchId '   →  "a route the server does not have"
+```
+
+It was fixed in one copy, and a **second** copy (a different regex, the same mistake) failed
+the next run; then a **third** copy inside `capability-audit.js` listed `GET
+/api/compliance/alerts` as a route no screen calls — a live route reported as dead. There is
+now ONE reader, `tools/lib/api-calls.js`, used by both contract tests and by the audit, and
+it is a scanner rather than a character class: nested templates and ternaries, whole-segment
+holes as `*`, glued holes dropped, `?query` stripped after holes are resolved, `SR.api.del`
+as DELETE. It was proved to fire — a call to a route that does not exist is reported at the
+exact line by BOTH tests — before being trusted to stay silent.
+
+## And a fifth thing, which is the next stage
+
+Building the settings control for the alert window turned up this:
+
+```
+settings controls on the screen : 30
+columns that exist              : 49
+CONTROLS WITH NO COLUMN         : 15
+```
+
+Fifteen controls on the Settings screen write keys that **do not exist in
+`client_settings`** — so they cannot save, and the server ignores them. Four are the right
+capability under the wrong name:
+
+| the screen writes | the column is | 
+|---|---|
+| `low_stock_alerts` | `low_stock_alert_enabled` |
+| `require_serial_capture` | `serial_tracking_enabled` |
+| `receipt_footer` | `receipt_footer_text` |
+| `staff_can_discount` (a flag) | `staff_discount_max_pct` (a percentage — 0 means none) |
+
+The other eleven have no column anywhere: `prices_include_vat`, `expiry_alerts`,
+`block_negative_stock`, `credit_limit_enforced`, `default_credit_limit`,
+`debtor_reminder_days`, `require_till_open`, `till_variance_alert`,
+`require_safe_banking`, `banking_reminder_days`, `receipt_show_vat`. Two of those describe
+behaviour that is **unconditional in the code** — credit limits are always enforced
+(`salesService` checks `canSellOnCredit` against the customer's limit) and a till must
+always be open to sell (`409 TILL_NOT_OPEN`, unless the sale is back-dated) — so a switch
+for them is a lie in the other direction: it promises a choice that does not exist.
+
+**That is Stage 12**: every control on Settings either writes a real column or says out loud
+what is actually true, with a build-failing rule that a settings key not in
+`DEFAULT_SETTINGS` cannot ship. Exactly the `{body:…}` class from Stage 10, one layer up.
+
+## Also fixed, because the suite had become a liar
+
+`npm run test` failed five e2e tests at **05:04** with *"That sale is stamped 296 minutes in
+the future, beyond the 10-minute tolerance for device clock drift"*. Nothing to do with the
+work: six tests stamped sales at a **fixed hour of today** —
+
+```js
+sold_at: `${watToday()} 10:00:00`      // sensible-looking determinism, and a landmine
+```
+
+— which is in the future for any run before 10:00 West Africa Time, and CI runs at whatever
+hour it runs. Two more sent `new Date().toISOString()` (UTC) where the schema stores WAT,
+which is the previous day between 23:00 and midnight UTC. All six now use `watNow()`, and
+`test/unit/test-hygiene.test.js` fails the build if a test stamps a sale at a fixed hour of
+today or in UTC. Proved to fire, and it reported two false positives on its own first run
+(a field after the timestamp, and its own source text), which are fixed.
+
+## Where this leaves the audit
+
+- Tables read but never created: **0**
+- Tables created but never read: 1
+- Tables that exist and nothing creates, not even a seed: **7**
+- Routes no frontend code asks for: 19 (unchanged, now the true number)
+- Wire-ups still owed: `user_assignment_history`, `pending_user_transfers`,
+  `delivery_zones`, `stock_transfer_serials`, `data_cleanup_log`; later
+  `delivery_vehicles`, `product_recalls`.
+- Still outstanding from earlier stages: the live staging offline proof
+  (`tools/frontend-offline.js`) and `public/offline.html`. The notifications bell: the
+  routes and the producer now exist and no screen shows a bell.

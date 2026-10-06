@@ -41,6 +41,7 @@ const reports = require('./reports');
 const dashboard = require('./dashboard');
 const attendance = require('./attendance');
 const afterSales = require('./afterSales');
+const compliance = require('./compliance');
 const sync = require('./sync');
 
 /**
@@ -169,6 +170,7 @@ function buildRoutes(app, env = {}) {
   dashboard.mount(app, '/api');
   attendance.mount(app, '/api');
   afterSales.mount(app, '/api');
+  compliance.mount(app, '/api');
   sync.mount(app, '/api');
 
   // ---- 404 shape ---------------------------------------------------------

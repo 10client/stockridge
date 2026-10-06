@@ -77,50 +77,15 @@ function registeredRoutes() {
  * A template placeholder becomes `*`, which matches exactly one path segment —
  * the same thing the server's `:param` matches.
  */
+// ONE READER FOR BOTH CONTRACT TESTS — see test/helpers/api-calls.js for why, and
+// for the list of shapes it handles (each of which was a false report first).
+const { apiCalls: sharedApiCalls, jsFiles: sharedJsFiles, patternMatches } = require('../../tools/lib/api-calls.js');
+
 function apiCalls() {
-  const calls = [];
-  for (const file of jsFiles(PUBLIC_JS)) {
-    const source = fs.readFileSync(file, 'utf8');
-    const lines = source.split('\n');
-
-    const patterns = [
-      /SR\.api\.(get|post|put|patch|del)\s*\(\s*(`[^`]*`|'[^']*'|"[^"]*")/g,
-      /SR\.api\.request\s*\(\s*'([A-Z]+)'\s*,\s*(`[^`]*`|'[^']*'|"[^"]*")/g,
-    ];
-
-    for (const re of patterns) {
-      let m;
-      while ((m = re.exec(source)) !== null) {
-        const isRequest = re.source.includes('request');
-        // `SR.api.del` is DELETE on the wire. Uppercasing the helper's own name
-        // produced "DEL", which matches no route the server registers — so the
-        // first view to use the helper looked like a call to a route that does not
-        // exist. The helper names and the HTTP verbs are not the same vocabulary.
-        const HELPER_VERB = { get: 'GET', post: 'POST', put: 'PUT', patch: 'PATCH', del: 'DELETE' };
-        const method = isRequest ? String(m[1]).toUpperCase() : (HELPER_VERB[m[1]] || String(m[1]).toUpperCase());
-        const raw = isRequest ? m[2] : m[2];
-        const line = source.slice(0, m.index).split('\n').length;
-        const literal = raw.slice(1, -1);
-        if (!literal.startsWith('/api')) continue;
-        // `${…}` in a template literal is one segment of unknown content.
-        // A QUERY STRING IS NOT PART OF A ROUTE PATH: `/thing?branch_id=7` is the
-        // route `/thing` with a parameter, and comparing the two as strings
-        // reports a route that plainly exists as missing. (It did — for
-        // `/api/products/:id/price-override?branch_id=…`.)
-        const pattern = literal.replace(/\?[^`]*$/, '').replace(/\$\{[^}]*\}/g, '*');
-        calls.push({
-          method,
-          pattern,
-          literal,
-          file: path.relative(ROOT, file),
-          line,
-          source: (lines[line - 1] || '').trim(),
-        });
-      }
-    }
-  }
-  return calls;
+  return sharedApiCalls().map((c) => ({ ...c, pattern: c.pathname, literal: c.raw, source: c.sourceHint }));
 }
+
+function jsFiles(dir, out = []) { return sharedJsFiles(dir, out); }
 
 /** Does a registered pattern match a call pattern, segment for segment? */
 function matches(serverPattern, callPattern) {

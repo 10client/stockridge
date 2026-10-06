@@ -37,7 +37,7 @@ const { openDatabase, migrate } = require('../../server/lib/db');
 const { provisionPlatform } = require('../../server/services/provisioningService');
 const { createHttpApp } = require('../../server/app');
 const { getSettings } = require('../../domain/planLimits');
-const { watToday } = require('../../domain/time');
+const { watToday, watNow } = require('../../domain/time');
 
 let counter = 0;
 const ADMIN_PIN = '90210';
@@ -242,7 +242,7 @@ test('the owner signs in and can trade — a sale posts and the ledger still bal
       token: ownerToken,
       body: {
         branch_id: branchId, business_id: businessId, sale_type: 'RETAIL',
-        sold_at: `${watToday()} 11:00:00`, device_id: 'onboarding-device',
+        sold_at: watNow(), device_id: 'onboarding-device',
         payments: [{ method: 'CASH', amount: price }],
         lines: [{ product_id: product.id, quantity: 1, unit_code: baseUnit, unit_price: price }],
       },
@@ -293,7 +293,7 @@ test('the owner signs in and can trade — a sale posts and the ledger still bal
       branch_id: branchId,
       business_id: businessId,
       sale_type: 'RETAIL',
-      sold_at: `${watToday()} 12:00:00`,
+      sold_at: watNow(),
       device_id: 'onboarding-device',
       payments: [{ method: 'CASH', amount: price }],
       lines: [{ product_id: product.id, variant_id: variantId || undefined, quantity: 1, unit_code: baseUnit, unit_price: price }],

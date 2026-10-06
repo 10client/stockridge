@@ -133,7 +133,25 @@ function usageOf(name, srcs, seedSrcs) {
   return { inserts: inserts + chained, updates, deletes, selects, seeded, chained, files, routes };
 }
 
-/** Every API path the frontend writes, with `${…}` and `:param` normalised away. */
+/**
+ * Every API path the frontend writes, with `${…}` and `:param` normalised away.
+ *
+ * TWO READERS, UNIONED, and that is deliberate:
+ *
+ *   the TEXT SCAN finds an `/api/...` string anywhere in the client — including
+ *   one that is not passed to `SR.api` at all, such as a path stored in an
+ *   offline queue entry.
+ *
+ *   the SHARED READER (tools/lib/api-calls.js) parses the actual calls, so it
+ *   handles what a character-class regex cannot: a nested template literal, a
+ *   `?query` that is really a ternary, `SR.api.del` meaning DELETE.
+ *
+ * The text scan alone listed `GET /api/compliance/alerts` as a route no screen
+ * asks for, because the call that asks for it is
+ *     SR.api.get(`/api/compliance/alerts${branchId ? `?branch_id=…` : ''}`)
+ * and the scan stopped at the inner backtick. An audit that reports a live route
+ * as dead is one people stop reading.
+ */
 function frontendPaths(srcs) {
   const paths = new Set();
   for (const s of srcs) {
@@ -142,6 +160,13 @@ function frontendPaths(srcs) {
       const clean = m[1].split('?')[0].replace(/\$\{[^}]*\}/g, '*').replace(/:[A-Za-z_]\w*/g, '*').replace(/\/$/, '');
       if (clean) paths.add(clean);
     }
+  }
+  try {
+    for (const call of require('./lib/api-calls.js').apiCalls()) {
+      paths.add(call.pathname.replace(/:[A-Za-z_]\w*/g, '*'));
+    }
+  } catch (err) {
+    console.error(`[capability-audit] the API-call reader could not be loaded: ${err && err.message ? err.message : err}`);
   }
   return paths;
 }

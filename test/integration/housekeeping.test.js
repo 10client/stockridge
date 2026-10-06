@@ -139,3 +139,68 @@ test('housekeeping reports its failures instead of throwing', async () => {
   assert.equal(result.sessionsPruned, 0);
   assert.equal(result.idempotencyKeysPruned, 3, 'the statements after a failure must still run');
 });
+
+test('the daily schedule raises a compliance alert, once, for what it should', async () => {
+  // THE PRODUCER THE NOTIFICATIONS TABLE NEVER HAD.
+  //
+  // `notifications` has been read by a screen and a set of routes since the
+  // beginning, and nothing in the application ever wrote a row — so the bell was
+  // permanently empty and every alert list was forever "nothing to report". This
+  // asserts the cron writes one, that it writes exactly one, and that it writes
+  // it about the right record: a licence that has lapsed is CRITICAL, a licence
+  // inside the owner's window is a WARNING, and a licence two years out is
+  // nothing at all.
+  await withDb(async (db) => {
+    await db.run("INSERT INTO businesses (id, name, profile_code, is_active, created_at, updated_at) VALUES ('b1','Test Traders','GENERAL_RETAIL',1, datetime('now'), datetime('now'))");
+    await db.run("INSERT INTO branches (id, business_id, name, code, is_active, created_at, updated_at) VALUES ('br1','b1','Main','MAIN',1, datetime('now'), datetime('now'))");
+    // Dates computed in JavaScript, not spliced in as SQL text. The first version
+    // of this test passed the literal string "date('now','-15 days')" as a BOUND
+    // PARAMETER, so `expiry_date` held that sentence rather than a date, nothing
+    // was ever near expiry, and the test reported that the cron raises no alerts —
+    // which is exactly what it looked like the cron was doing.
+    const iso = (days) => new Date(Date.now() + days * 86400000).toISOString().slice(0, 10);
+    const mk = (id, type, expiry) => db.run(`INSERT INTO branch_compliance_records
+        (id, branch_id, record_type, record_number, expiry_date, created_at, updated_at)
+        VALUES (?,?,?,?,?, datetime('now'), datetime('now'))`, [id, 'br1', type, id, expiry]);
+
+    await db.run("INSERT INTO branch_compliance_records (id, branch_id, record_type, expiry_date, created_at, updated_at) VALUES ('c-none','br1','TIN',NULL, datetime('now'), datetime('now'))");
+    await mk('c-expired', 'FIRE_CERT', iso(-15));
+    await mk('c-soon', 'TRADING_PERMIT', iso(10));
+    await mk('c-far', 'SONCAP_DEALER', iso(700));
+    // A record beyond the view's own 90-day horizon but inside a window an owner
+    // might set: the statement must not invent an alert the view cannot see.
+    await mk('c-beyond', 'VAT_REG', iso(200));
+
+    const first = await runHousekeeping(db, { sessionGraceHours: SESSION_GRACE_HOURS });
+    assert.equal(first.errors.length, 0, `the cron reported: ${first.errors.join('; ')}`);
+    assert.equal(first.complianceAlertsRaised, 2, `expected an alert for the lapsed and the imminent licence, got ${first.complianceAlertsRaised}`);
+
+    const rows = await db.all("SELECT * FROM notifications WHERE type = 'COMPLIANCE_EXPIRY' AND is_deleted = 0 ORDER BY severity");
+    assert.equal(rows.length, 2);
+    const expired = rows.find((r) => r.reference_id === 'c-expired');
+    const soon = rows.find((r) => r.reference_id === 'c-soon');
+    assert.ok(expired && soon, 'the two alerts must be about the two licences that need attention');
+    assert.equal(expired.severity, 'CRITICAL', 'a lapsed certificate is not a warning');
+    assert.equal(soon.severity, 'WARNING');
+    assert.equal(expired.branch_id, 'br1');
+    assert.equal(expired.business_id, 'b1', 'the business comes through the view, not a second query');
+    assert.equal(expired.user_id, null, 'a broadcast, which is what a NULL user_id means on this table');
+    assert.match(expired.title, /expired/i);
+    assert.ok(!rows.some((r) => r.reference_id === 'c-far'), 'a licence two years out is not an alert');
+    assert.ok(!rows.some((r) => r.reference_id === 'c-none'), 'a record with no expiry never alerts — the schema says a NULL expiry does not expire');
+    assert.ok(!rows.some((r) => r.reference_id === 'c-beyond'), 'the view stops at 90 days and the alert list cannot see past it');
+
+    // Idempotent, which is what makes a DAILY schedule survivable: without this a
+    // monthly permit would produce thirty notifications a month.
+    const second = await runHousekeeping(db, { sessionGraceHours: SESSION_GRACE_HOURS });
+    assert.equal(second.complianceAlertsRaised, 0, 'a second run must not duplicate an unread alert');
+    assert.equal(Number(await db.scalar("SELECT COUNT(*) FROM notifications WHERE type = 'COMPLIANCE_EXPIRY'")), 2);
+
+    // Reading it is what allows the next one: the alert for a licence that was
+    // dealt with stops being repeated, and if it lapses again the owner hears
+    // about it again.
+    await db.run("UPDATE notifications SET is_read = 1 WHERE reference_id = 'c-soon'");
+    const third = await runHousekeeping(db, { sessionGraceHours: SESSION_GRACE_HOURS });
+    assert.equal(third.complianceAlertsRaised, 1, 'a read alert is not a reason to stay silent forever');
+  });
+});

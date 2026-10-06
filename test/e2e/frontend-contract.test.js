@@ -50,18 +50,7 @@ function serverRoutes() {
 }
 
 /** Turn `/api/sales/:id/void` into a matcher, treating `:x` and `*` as wildcards. */
-function patternMatches(pattern, pathname) {
-  const p = pattern.split('/');
-  const q = pathname.split('/');
-  for (let i = 0; i < Math.max(p.length, q.length); i += 1) {
-    const seg = p[i];
-    if (seg === undefined) return false;
-    if (seg.startsWith(':')) continue;           // a param matches exactly one segment
-    if (seg === '*') return true;                // a splat matches the rest
-    if (seg !== q[i]) return false;
-  }
-  return true;
-}
+const { patternMatches } = require('../../tools/lib/api-calls.js');
 
 // ---------------------------------------------------------------------
 // 2. What the frontend asks for
@@ -73,46 +62,17 @@ function patternMatches(pattern, pathname) {
  * single-segment wildcard, so `/api/sales/${id}/void` is checked as
  * `/api/sales/:id/void` — the shape the router stores.
  */
+// THE READER IS SHARED, and that is the fix rather than the tidying.
+//
+// This file used to carry its own extractor, and so did frontend-routes.test.js.
+// Both were regexes that stopped at the first backtick, so a template literal
+// containing another template was read as a truncated path and reported as a
+// missing route. The first copy was fixed and this one stayed wrong, which is
+// exactly why there is now one reader for both tests: see test/helpers/api-calls.js.
+const { apiCalls } = require('../../tools/lib/api-calls.js');
+
 function frontendCalls() {
-  const dir = path.join(ROOT, 'public', 'js');
-  const files = [];
-  (function walk(d) {
-    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-      const full = path.join(d, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith('.js')) files.push(full);
-    }
-  }(dir));
-
-  const calls = [];
-  // SR.api.get('…')  |  SR.api.post(`…`)  |  also SR.api.request('POST', '…')
-  const callRe = /SR\.api\.(get|post|put|patch|del|delete|request)\s*\(\s*(['"`])((?:\\.|(?!\2)[\s\S])*?)\2/g;
-  const requestVerbRe = /SR\.api\.request\s*\(\s*(['"`])([A-Z]+)\1/;
-
-  for (const file of files) {
-    const source = fs.readFileSync(file, 'utf8');
-    const lines = source.split('\n');
-    let m;
-    while ((m = callRe.exec(source)) !== null) {
-      const verb = m[1];
-      const raw = m[3];
-      if (!raw.startsWith('/api')) continue;
-      // Line number, for a useful failure message.
-      const line = source.slice(0, m.index).split('\n').length;
-      let method = verb === 'del' || verb === 'delete' ? 'DELETE' : verb.toUpperCase();
-      if (verb === 'request') {
-        const tail = source.slice(m.index, m.index + 400);
-        const v = requestVerbRe.exec(tail);
-        if (v) method = v[2];
-      }
-      const pathname = raw
-        .replace(/\$\{[^}]*\}/g, ':wildcard')   // a template hole is one segment
-        .split('?')[0]
-        .replace(/\/+$/, '') || '/api';
-      calls.push({ file: path.relative(ROOT, file), line, method, pathname, raw: raw.slice(0, 90), sourceHint: lines[line - 1] || '' });
-    }
-  }
-  return calls;
+  return apiCalls().map((c) => ({ ...c, pathname: c.pathname.replace(/\*/g, ':wildcard') }));
 }
 
 test('every endpoint the frontend calls exists on the server, with the right method', () => {

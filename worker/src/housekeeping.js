@@ -20,6 +20,7 @@
 // =====================================================================
 
 const { prune, RETENTION_DAYS } = require('../../server/lib/idempotency');
+const { notifyStatement } = require('../../domain/compliance');
 const { TOKEN_TTL_SECONDS } = require('../../domain/crypto');
 
 /**
@@ -47,6 +48,18 @@ function housekeepingStatements({ sessionGraceHours = SESSION_GRACE_HOURS } = {}
       sql: "DELETE FROM user_sessions WHERE issued_at < datetime('now', ?)",
       params: [`-${hours} hours`],
     },
+    {
+      name: 'compliance expiry alerts',
+      // THE REASON THIS IS IN THE CRON AT ALL. A licence that lapses is a fine, a
+      // sealed shop, or a shipment held at the port, and the person who needs to
+      // know is not necessarily the person who opens this screen. The daily
+      // schedule raises the alert; the screen can also raise it on demand, from
+      // the same statement, which is why the two can never disagree.
+      //
+      // It reads `v_compliance_expiry_alerts` and respects the owner's own
+      // window through the settings subquery inside the statement.
+      ...notifyStatement({ useSettings: true }),
+    },
   ];
 }
 
@@ -56,13 +69,14 @@ function housekeepingStatements({ sessionGraceHours = SESSION_GRACE_HOURS } = {}
  * what happened, including what failed.
  */
 async function runHousekeeping(db, { sessionGraceHours = SESSION_GRACE_HOURS } = {}) {
-  const result = { sessionsPruned: 0, idempotencyKeysPruned: 0, errors: [] };
+  const result = { sessionsPruned: 0, idempotencyKeysPruned: 0, complianceAlertsRaised: 0, errors: [] };
 
   for (const statement of housekeepingStatements({ sessionGraceHours })) {
     try {
       const run = await db.run(statement.sql, statement.params);
       const changes = Number(run && run.changes) || 0;
       if (statement.name === 'expired sessions') result.sessionsPruned = changes;
+      if (statement.name === 'compliance expiry alerts') result.complianceAlertsRaised = changes;
     } catch (err) {
       result.errors.push(`${statement.name}: ${err && err.message ? err.message : err}`);
     }

@@ -37,6 +37,7 @@ const {
   assertSubscriptionActive, activeBusinessCount, activeBranchCount, activeStaffCount,
 } = require('../../domain/planLimits');
 const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
+const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const provisioning = require('../services/provisioningService');
 
 function mount(app, base = '/api') {
@@ -1004,6 +1005,19 @@ function mount(app, base = '/api') {
       if (rate !== 7.5) ctx.set('vatWarning', `The VAT rate is set to ${rate}%. Nigeria's standard rate is 7.5% — if this is not a deliberate exemption or a special rate, check it before the next return is filed.`);
     }
 
+    // The compliance window cannot exceed what the schema can see.
+    //
+    // `compliance_alert_days` is honoured by /api/compliance/alerts, which reads
+    // `v_compliance_expiry_alerts` — and that view stops at 90 days, in SQL. A
+    // number larger than the horizon would be accepted here and then silently
+    // deliver less than it promised, which is worse than refusing it: an operator
+    // who sets 180 days and is shown 90 has no way to tell whether the application
+    // is ignoring them or there is genuinely nothing expiring.
+    const complianceWindow = numField(body.compliance_alert_days ?? before.compliance_alert_days, { field: 'Compliance alert window', min: 1, max: 365, whole: true });
+    if (complianceWindow > ALERT_HORIZON_DAYS) {
+      throw new HttpError(`Expiry alerts can look ${ALERT_HORIZON_DAYS} days ahead at most, and you asked for ${complianceWindow}. The expiry view the alert list reads stops at a quarter's notice.`, { status: 400, code: 'BEYOND_ALERT_HORIZON', fields: { compliance_alert_days: `${ALERT_HORIZON_DAYS} days at most.` } });
+    }
+
     sets.push('updated_at = datetime(\'now\')', 'updated_by = ?');
     params.push(String(user.id), id);
     await db.run(`UPDATE client_settings SET ${sets.join(', ')} WHERE id = ?`, params);
@@ -1168,19 +1182,38 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const { limit, offset } = pagination(ctx);
     const unreadOnly = boolField(ctx.req.queryParam('unread'));
-    // A notification is for its user, or for everybody at their branch, or for
-    // the whole business. Widening beyond that would show one branch's stock
-    // alerts to another.
+    const scope = ctx.get('scope');
+
+    // A notification is for its user, or a broadcast to whoever reaches the branch
+    // or business it is about. WIDENING BEYOND THAT would show one branch's stock
+    // alerts to another, so the broadcast half is filtered by the caller's SCOPE.
+    //
+    // IT USED TO BE FILTERED BY `user.branch_id` INSTEAD, with the literal string
+    // '__none__' standing in for a user who has no branch — which is every OWNER
+    // and every ADMIN. So an owner matched neither the "addressed to me" half nor
+    // the "at my branch" half and saw an EMPTY list, while the branch manager saw
+    // their own shop's alerts and nothing else. Nobody noticed, because nothing in
+    // the application produced a notification: the bell was empty for a second
+    // reason. Stage 11 gave the table a producer, and the first alert raised for a
+    // branch was invisible to the one person whose job it is to renew licences.
+    //
+    // The scope already knows who reaches what — an owner reaches every branch —
+    // so it is the right answer here, as it is everywhere else.
+    const broadcast = scopeFilter(scope, { alias: 'n' });
+    const audience = broadcast.sql
+      ? `(n.user_id = ? OR (n.user_id IS NULL AND (${broadcast.sql})))`
+      : '(n.user_id = ? OR n.user_id IS NULL)';
+    const audienceParams = [String(user.id), ...broadcast.params];
+
     const rows = await db.all(`SELECT n.*, b.name AS branch_name FROM notifications n
         LEFT JOIN branches b ON b.id = n.branch_id
         WHERE n.is_deleted = 0
-          AND (n.user_id = ? OR (n.user_id IS NULL AND (n.branch_id = ? OR n.branch_id IS NULL)))
+          AND ${audience}
           ${unreadOnly ? 'AND n.is_read = 0' : ''}
         ORDER BY n.created_at DESC LIMIT ? OFFSET ?`,
-    [String(user.id), user.branch_id ? String(user.branch_id) : '__none__', limit, offset]);
+    [...audienceParams, limit, offset]);
     const unread = await db.scalar(`SELECT COUNT(*) FROM notifications n WHERE n.is_deleted = 0 AND n.is_read = 0
-        AND (n.user_id = ? OR (n.user_id IS NULL AND (n.branch_id = ? OR n.branch_id IS NULL)))`,
-    [String(user.id), user.branch_id ? String(user.branch_id) : '__none__']);
+        AND ${audience}`, audienceParams);
     ctx.json({ ...listResponse(rows, { limit, offset }), unread: Number(unread) || 0 });
   });
 

@@ -25,7 +25,7 @@ const { openDatabase, migrate } = require('../../server/lib/db');
 const { provisionPlatform } = require('../../server/services/provisioningService');
 const { createHttpApp } = require('../../server/app');
 const { getSettings } = require('../../domain/planLimits');
-const { watToday } = require('../../domain/time');
+const { watToday, watNow } = require('../../domain/time');
 
 let counter = 0;
 
@@ -153,7 +153,7 @@ async function tradingDeployment({ label = 'trade', profileCode = 'ELECTRONICS',
       branch_id: branchId,
       business_id: businessId,
       sale_type: 'RETAIL',
-      sold_at: `${watToday()} 12:00:00`,
+      sold_at: watNow(),
       device_id: `${label}-device`,
       payments: [{ method: 'CASH', amount: price }],
       lines: [{ product_id: product.id, variant_id: variantId || undefined, quantity: 1, unit_code: baseUnit, unit_price: price }],

@@ -30,6 +30,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { watNow } = require('../../domain/time');
 
 const { openDatabase, migrate } = require('../../server/lib/db');
 const { createHttpApp } = require('../../server/app');
@@ -192,7 +193,7 @@ test('a sale whose unit is a NAME is accepted, and is stored as the unit CODE', 
       token,
       body: {
         branch_id: branchId, business_id: businessId, sale_type: 'RETAIL',
-        sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        sold_at: watNow(),
         device_id: 'unit-test-device',
         lines: [{ product_id: product.id, quantity: 1, unit_code: product.base_unit_name }],
         payments: [{ method: 'CASH', amount: Number(product.selling_price) }],
@@ -215,7 +216,7 @@ test('a sale that uses the CODE still works — the old path is not broken', asy
       token,
       body: {
         branch_id: branchId, business_id: businessId, sale_type: 'RETAIL',
-        sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        sold_at: watNow(),
         device_id: 'unit-test-device',
         lines: [{ product_id: product.id, quantity: 2, unit_code: 'PIECE' }],
         payments: [{ method: 'CASH', amount: Number(product.selling_price) * 2 }],
@@ -237,7 +238,7 @@ test('a unit that does not exist is still refused, and the refusal names codes A
       token,
       body: {
         branch_id: branchId, business_id: businessId, sale_type: 'RETAIL',
-        sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+        sold_at: watNow(),
         device_id: 'unit-test-device',
         lines: [{ product_id: product.id, quantity: 1, unit_code: 'HECTARE' }],
         payments: [{ method: 'CASH', amount: Number(product.selling_price) }],

@@ -72,7 +72,25 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id' } =
   // body they had just written — a screen that was already built and could
   // never work. GET/HEAD have no body, so nothing changes for reads.
   const requested = ctx.req.queryParam(param) || ctx.req.param(param) || await branchIdFromBody(ctx, param);
-  let branchId = scope.pinnedBranchId || requested;
+  const pinned = scope.pinnedBranchId || null;
+
+  // A NAMED BRANCH THAT IS NOT YOURS IS REFUSED, NOT SILENTLY SWAPPED.
+  //
+  // `pinned` used to win outright, so a cashier or a branch-pinned manager who
+  // named another branch had the request quietly rewritten to their own: the
+  // write landed on a different shop from the one the caller asked for, and the
+  // success message named the substituted branch — for stock or cash, a
+  // mis-posting nobody would notice until the count. It surfaced through
+  // compliance records, where a manager posting a licence for the other store got
+  // a 201 for their own store instead of a refusal.
+  //
+  // The pin is still the answer when nothing is named, and still wins when it
+  // agrees with what was named. It only stops being a way to answer a question
+  // that was asked about somewhere else.
+  if (pinned && requested && String(requested) !== String(pinned)) {
+    throw new HttpError('That request names a branch outside your access. You can only work in the branch you are assigned to.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+  }
+  let branchId = pinned || requested;
 
   if (!branchId && scope.branchIds && scope.branchIds.size === 1) {
     branchId = [...scope.branchIds][0];
@@ -189,6 +207,17 @@ async function resolveBusiness(db, ctx, branch = null) {
 }
 
 /** May this user see this row? Branch wins; business is the fallback. */
+/**
+ * May this caller see this row?
+ *
+ * IT READS `row.branch_id`, SO IT IS FOR ROWS THAT CARRY ONE — a sale, a batch, a
+ * return, a user. It is NOT for a BRANCH row, which identifies itself as `row.id`:
+ * passing a branch leaves `branchId` null, skips the branch check entirely, and
+ * answers on the business alone, so a manager pinned to one branch is told they
+ * may reach a sibling branch in the same business. That is not a hypothetical —
+ * it let a manager edit another branch's compliance records until `inBranchScope`
+ * below was added for exactly this shape.
+ */
 function inScope(scope, row) {
   if (!scope) return false;
   if (scope.allBusinesses && scope.allBranches) return true;
@@ -210,6 +239,27 @@ function inScope(scope, row) {
  * record to another branch is a transfer with its own audit trail, not something
  * a read path may do quietly.
  */
+/**
+ * May this caller work in this BRANCH?
+ *
+ * The right question for a branch row, whose id is `id`. Kept separate from
+ * `inScope` rather than folded into it, because the two are asked about shapes
+ * that differ in exactly the column that decides the answer — see the note on
+ * `inScope` above for what folding them together cost.
+ */
+function inBranchScope(scope, branch) {
+  if (!scope) return false;
+  if (!branch) return false;
+  if (scope.allBranches && scope.allBusinesses) return true;
+  if (scope.branchIds && scope.branchIds.size) {
+    if (!scope.branchIds.has(String(branch.id))) return false;
+  }
+  if (scope.businessIds && scope.businessIds.size && branch.business_id) {
+    if (!scope.businessIds.has(String(branch.business_id))) return false;
+  }
+  return true;
+}
+
 function assertRowAccess(scope, row, label = 'That record') {
   if (!row) return null;
   if (!inScope(scope, row)) {
@@ -388,6 +438,6 @@ function boolField(value, fallback = 0) {
 module.exports = {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
   valid, numField, strField, boolField,
-  resolveBranch, resolveBusiness, inScope, assertRowAccess,
+  resolveBranch, resolveBusiness, inScope, inBranchScope, assertRowAccess,
   scopeFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
 };

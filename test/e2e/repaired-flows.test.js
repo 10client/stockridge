@@ -26,7 +26,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { tradingDeployment } = require('../helpers/deployment');
-const { watToday, addDays } = require('../../domain/time');
+const { watToday, addDays, watNow } = require('../../domain/time');
 
 test('a return can be raised and approved', async (t) => {
   const world = await tradingDeployment({ label: 'return', quantity: 5 });
@@ -157,7 +157,7 @@ test('a till float can be funded from the safe, and cash can be returned to it o
       branch_id: world.branchId,
       business_id: world.businessId,
       sale_type: 'RETAIL',
-      sold_at: `${watToday()} 14:00:00`,
+      sold_at: watNow(),
       device_id: 'safe-test-device',
       payments: [{ method: 'CASH', amount: world.price }],
       lines: [{ product_id: world.product.id, variant_id: world.variantId || undefined, quantity: 1, unit_code: world.baseUnit, unit_price: world.price }],

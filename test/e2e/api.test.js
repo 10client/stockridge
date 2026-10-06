@@ -24,6 +24,7 @@ const fs = require('node:fs');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const { newId } = require(path.join(ROOT, 'domain/crypto'));
+const { watNow } = require(path.join(ROOT, 'domain/time'));
 const PORT = Number(process.env.E2E_PORT || 8811);
 const BASE = `http://127.0.0.1:${PORT}`;
 const DB_FILE = path.join(ROOT, '.data', 'e2e.db');
@@ -607,7 +608,7 @@ test('the API surface over real HTTP', async (t) => {
             branch_id: RAW_BRANCH,
             business_id: BIZ,
             sale_type: 'RETAIL',
-            sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            sold_at: watNow(),
             device_id: 'e2e-offline-device',
             client_id: 'op_happy_path_1',
             lines: [{ product_id: product.id, quantity: qty, unit_code: product.default_unit_code || 'PIECE' }],
@@ -641,7 +642,7 @@ test('the API surface over real HTTP', async (t) => {
           occurred_at: new Date().toISOString(),
           payload: {
             branch_id: RAW_BRANCH, business_id: BIZ, sale_type: 'RETAIL',
-            sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            sold_at: watNow(),
             device_id: 'e2e-offline-device', client_id: 'op_happy_path_1',
             lines: [{ product_id: product.id, quantity: qty, unit_code: product.default_unit_code || 'PIECE' }],
             payments: [{ method: 'CASH', amount: total }],
