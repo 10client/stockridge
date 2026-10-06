@@ -38,6 +38,7 @@ const {
   getSettings, DEFAULT_SETTINGS, FLAG_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS, planUsage,
   assertCanCreateBusiness, assertCanCreateBranch, assertCanCreateStaff, assertFeatureEnabled,
   assertSubscriptionActive, activeBusinessCount, activeBranchCount, activeStaffCount,
+  PLAN_FIELDS, SUBSCRIPTION_STATUSES, isPlanField, capValue, contactLine,
 } = require('../../domain/planLimits');
 const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
@@ -85,7 +86,12 @@ function mount(app, base = '/api') {
       throw new HttpError('Only the deployment administrator can create a business. Each business is a separate legal entity with its own books.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const body = await ctx.req.json();
-    assertSubscriptionActive(settings);
+    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
+    // the platform ADMIN — "the vendor can never be locked out of their own client's
+    // instance" — and every call site passed only the settings, so `user` was
+    // undefined and the bypass could not fire. A suspended client could not even be
+    // helped by the person they had just called.
+    assertSubscriptionActive(settings, user);
     await assertCanCreateBusiness(db, settings);
 
     const name = strField(requireVal(body, 'name'), { field: 'Business name', maxLength: 160, required: true });
@@ -258,7 +264,12 @@ function mount(app, base = '/api') {
     const body = await ctx.req.json();
     const business = await resolveBusiness(db, ctx);
     if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only an owner can open a branch.', { status: 403, code: 'ROLE_REQUIRED' });
-    assertSubscriptionActive(settings);
+    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
+    // the platform ADMIN — "the vendor can never be locked out of their own client's
+    // instance" — and every call site passed only the settings, so `user` was
+    // undefined and the bypass could not fire. A suspended client could not even be
+    // helped by the person they had just called.
+    assertSubscriptionActive(settings, user);
     if (!boolField(settings.multi_branch_enabled)) {
       throw new HttpError('Multi-branch is not enabled on this deployment. It can be switched on in Settings — it is a plan feature, not a technical limit.', { status: 403, code: 'FEATURE_DISABLED' });
     }
@@ -442,7 +453,12 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const settings = ctx.get('settings');
     const body = await ctx.req.json();
-    assertSubscriptionActive(settings);
+    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
+    // the platform ADMIN — "the vendor can never be locked out of their own client's
+    // instance" — and every call site passed only the settings, so `user` was
+    // undefined and the bypass could not fire. A suspended client could not even be
+    // helped by the person they had just called.
+    assertSubscriptionActive(settings, user);
 
     const role = valid(oneOf(requireVal(body, 'role'), [...ROLE_ORDER], { field: 'Role' }), 'role');
     if (!canManageUser(user, { role })) {
@@ -1039,6 +1055,34 @@ function mount(app, base = '/api') {
     const before = await getSettings(db);
     const id = before.id || 'default';
 
+    // ------------------------------------------------------------------
+    // THE COMMERCIAL SETTINGS ARE NOT THE CLIENTS' TO CHANGE
+    // ------------------------------------------------------------------
+    // `atLeast(user.role, 'OWNER')` above lets an owner through — correct for the VAT
+    // rate, the receipt footer and every staff permission, and wrong for the six
+    // settings that decide what the client has bought. With only that guard, an owner
+    // could raise their own caps, name their own plan, move their own renewal date
+    // and set their own subscription back to ACTIVE after a suspension — with a
+    // queued offline write if they preferred. The screen has always drawn these
+    // read-only ("commercial: set by the deploy tool and by renewal, not by the
+    // client"); hiding a field is not a permission, so the API says no as well.
+    const planKeys = Object.keys(body).filter(isPlanField);
+    // `isRole(x)` answers "is this a known role", NOT "is this the ADMIN role" — reading
+    // it as the latter inverts the guard and lets every owner through, which is the
+    // exact defect this check exists to close.
+    const isPlatformAdmin = String(user.role).toUpperCase() === String(ROLES.ADMIN).toUpperCase();
+    if (planKeys.length && !isPlatformAdmin) {
+      throw new HttpError(
+        `${planKeys.length === 1 ? 'That is a commercial setting' : 'Those are commercial settings'}: ${planKeys.join(', ')}. `
+        + `Your plan is set by ${contactLine(before)}. Nothing was changed.`,
+        {
+          status: 403,
+          code: 'PLATFORM_ADMIN_REQUIRED',
+          fields: planKeys.reduce((acc, k) => { acc[k] = 'Set by the platform administrator.'; return acc; }, {}),
+        },
+      );
+    }
+
     // Which columns may be written. Anything not in DEFAULT_SETTINGS is either
     // computed or belongs to another table, and a mass-assignment of the request
     // body would let a caller set `data_reset_at` or `primary_business_id`.
@@ -1069,7 +1113,42 @@ function mount(app, base = '/api') {
       if (body[col] === undefined) continue;
       const def = DEFAULT_SETTINGS[col];
       let value;
-      if (typeof def === 'number') {
+      if (col === 'subscription_status') {
+        // A TYPO HERE SUSPENDS THE WHOLE CLIENT. The status is compared by the
+        // subscription gate, which blocks everything that is neither ACTIVE nor
+        // TRIAL — so `SUSPENDEDD`, or a lower-case `suspended`, would behave exactly
+        // like a deliberate suspension, with no error and no way to see why. The
+        // four values are the schema's own CHECK constraint.
+        const wanted = String(body[col] === undefined ? before[col] : body[col]).trim().toUpperCase();
+        if (!SUBSCRIPTION_STATUSES.includes(wanted)) {
+          throw new HttpError(
+            `"${body[col]}" is not a subscription status. Use one of: ${SUBSCRIPTION_STATUSES.join(', ')}. Nothing was changed.`,
+            { status: 400, code: 'INVALID_SUBSCRIPTION_STATUS', fields: { subscription_status: SUBSCRIPTION_STATUSES.join(', ') } },
+          );
+        }
+        value = wanted;
+      } else if (col === 'subscription_renewal_date') {
+        // Empty means "no date agreed", which is how the schema stores it — not the
+        // empty string, which would print as a blank where the plan screen shows the
+        // renewal date and would sort after every real date.
+        const raw = body[col] === undefined ? before[col] : body[col];
+        const text = raw === null || raw === undefined ? '' : String(raw).trim();
+        if (text && !/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+          throw new HttpError(
+            `"${text}" is not a date. Renewal dates are stored as YYYY-MM-DD (for example 2026-12-31), or send an empty value for none. Nothing was changed.`,
+            { status: 400, code: 'INVALID_DATE', fields: { subscription_renewal_date: 'YYYY-MM-DD, or empty' } },
+          );
+        }
+        value = text || null;
+      } else if (col === 'subscription_plan') {
+        // The plan name is PRINTED — every cap refusal says "Your <plan> plan
+        // includes…" — so a blank one produces a message with a hole in it.
+        const text = strField(body[col] === undefined ? before[col] : body[col], { field: 'subscription plan', maxLength: 60 });
+        if (!String(text || '').trim()) {
+          throw new HttpError('A plan needs a name. It is printed in the refusal a client sees when they reach a limit. Nothing was changed.', { status: 400, code: 'PLAN_NAME_REQUIRED', fields: { subscription_plan: 'A name, up to 60 characters.' } });
+        }
+        value = text;
+      } else if (typeof def === 'number') {
         // A FLAG IS NAMED, NOT INFERRED FROM ITS DEFAULT.
         //
         // This read `[0, 1].includes(def)` — "the default is zero or one, so it must
@@ -1128,12 +1207,41 @@ function mount(app, base = '/api') {
       throw new HttpError(`Expiry alerts can look ${ALERT_HORIZON_DAYS} days ahead at most, and you asked for ${complianceWindow}. The expiry view the alert list reads stops at a quarter's notice.`, { status: 400, code: 'BEYOND_ALERT_HORIZON', fields: { compliance_alert_days: `${ALERT_HORIZON_DAYS} days at most.` } });
     }
 
+    // A CAP BELOW WHAT IS ALREADY IN USE IS ALLOWED AND SAID OUT LOUD.
+    // Repeating it would be right for a client who has outgrown a plan, and refusing
+    // it would leave the operator stuck between two plans. But setting 2 branches on a
+    // shop that has 4 does not remove any of them — it silently stops the fifth ever
+    // being opened, and the next person to try reads "all 4 are in use" beside a cap
+    // they never chose. So it is done, and it is reported.
+    const capWarnings = [];
+    const planChanges = Object.keys(changes).filter(isPlanField);
+    for (const [key, counted] of [['max_branches', activeBranchCount], ['max_staff', activeStaffCount], ['max_businesses', activeBusinessCount]]) {
+      if (!(key in changes)) continue;
+      const max = capValue({ [key]: changes[key].to }, key);
+      if (max === Infinity) continue;
+      const used = await counted(db);
+      if (used > max) {
+        const noun = { max_branches: 'branch(es)', max_staff: 'staff seat(s)', max_businesses: 'business(es)' }[key];
+        capWarnings.push(`${key.replace(/_/g, ' ')} is now ${max}, and ${used} ${noun} are already in use. Nothing is removed — but no more can be created until one is deactivated or the cap is raised, and the client will be shown "all ${used} are in use" against a limit of ${max}.`);
+      }
+    }
+
     sets.push('updated_at = datetime(\'now\')', 'updated_by = ?');
     params.push(String(user.id), id);
     await db.run(`UPDATE client_settings SET ${sets.join(', ')} WHERE id = ?`, params);
 
+    // PLAN_LIMITS_CHANGED was an allowed audit action that nothing ever recorded —
+    // the write path it was named for did not exist. Now that the plan is editable,
+    // "who lowered this client's staff cap" is a question the trail answers directly
+    // instead of hiding inside a generic SETTINGS_UPDATED.
     await recordFromCtx(ctx, {
-      action: 'SETTINGS_UPDATED', entityType: 'SETTINGS', entityId: id,
+      // NOTE: `recordFromCtx` takes exactly { action, entityType, entityId, before, after,
+      // branchId, businessId } and SILENTLY DROPS anything else — an earlier version of
+      // this call passed `metadata` and it was discarded without a word. The fields that
+      // changed are the keys of before/after; the plan ones are the ones in `after` whose
+      // names are in PLAN_FIELDS, so nothing extra is needed to find them.
+      action: planChanges.length ? 'PLAN_LIMITS_CHANGED' : 'SETTINGS_UPDATED',
+      entityType: 'SETTINGS', entityId: id,
       before: Object.fromEntries(Object.keys(changes).map((k) => [k, changes[k].from])),
       after: Object.fromEntries(Object.keys(changes).map((k) => [k, changes[k].to])),
     });
@@ -1143,7 +1251,7 @@ function mount(app, base = '/api') {
       ok: true, changes,
       settings: await getSettings(db),
       message: described.length ? `${described.length} setting(s) changed — ${described.join('; ')}.` : 'No settings actually changed.',
-      warnings: [ctx.get('vatWarning')].filter(Boolean),
+      warnings: [ctx.get('vatWarning'), ...capWarnings].filter(Boolean),
     });
   });
 

@@ -110,6 +110,54 @@ const FLAG_SETTINGS = Object.freeze(new Set([
 
 // Feature toggle name -> settings column. One mapping so a new module is a
 // one-line change rather than a new bespoke check in each route.
+/**
+ * THE COMMERCIAL SETTINGS — the six keys that decide what the client has bought.
+ *
+ * They live in the same `client_settings` row as the VAT rate and the receipt footer,
+ * and they are written through the same route, but they are not the client's to
+ * change: a cap that its own subject can raise is not a cap, and a subscription
+ * status its own subject can reset is not a status. The screen has always drawn
+ * them read-only; this list is what makes the API say no as well.
+ */
+const PLAN_FIELDS = Object.freeze([
+  'max_businesses', 'max_branches', 'max_staff',
+  'subscription_plan', 'subscription_status', 'subscription_renewal_date',
+]);
+
+/** Subscription statuses, matching the CHECK constraint in the schema. */
+const SUBSCRIPTION_STATUSES = Object.freeze(['TRIAL', 'ACTIVE', 'SUSPENDED', 'EXPIRED']);
+
+function isPlanField(key) {
+  return PLAN_FIELDS.includes(key);
+}
+
+/**
+ * A CAP OF ZERO MEANS UNLIMITED — which is what the plan screen has always said.
+ *
+ * `public/js/views/plan.js` renders `maxBranches === 0` as "Unlimited", and the
+ * enforcement read `Number(settings.max_branches || 0)` and threw `used >= max`,
+ * so 0 blocked everything and the refusal read "includes 0 branches". An operator
+ * who read the screen, decided a client should have unlimited branches and set
+ * zero had locked them out of ever opening another one.
+ *
+ * The screen's reading wins, because it is the one the operator acted on, and
+ * because a fail-open cap is the right direction here: an accidental zero costs a
+ * support call, while an accidental lock-out stops a shop trading.
+ */
+function capValue(settings, key) {
+  const raw = settings ? settings[key] : null;
+  if (raw === null || raw === undefined || raw === '') return Infinity;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return Infinity;
+  return Math.floor(n);
+}
+
+/** "5 branches" / "unlimited branches" — for messages that print a cap. */
+function capLabel(max, one, many) {
+  if (max === Infinity) return `unlimited ${many}`;
+  return `${max} ${max === 1 ? one : many}`;
+}
+
 const FEATURE_COLUMNS = Object.freeze({
   attendance: 'attendance_module_enabled',
   warranty: 'warranty_module_enabled',
@@ -203,14 +251,14 @@ async function activeStaffCount(db) {
 
 async function assertCanCreateBusiness(db, settings) {
   const used = await activeBusinessCount(db);
-  const max = Number(settings.max_businesses || 0);
+  const max = capValue(settings, 'max_businesses');
   if (used >= max) {
     throw planError(
-      `Your ${settings.subscription_plan} plan includes ${max} business${max === 1 ? '' : 'es'} and all ${used} are in use. Contact ${contactLine(settings)} to add another.`,
+      `Your ${settings.subscription_plan} plan includes ${capLabel(max, 'business', 'businesses')} and all ${used} are in use. Contact ${contactLine(settings)} to add another.`,
       'MAX_BUSINESSES_REACHED',
     );
   }
-  return { used, max, remaining: max - used };
+  return { used, max, remaining: max === Infinity ? Infinity : max - used };
 }
 
 async function assertCanCreateBranch(db, settings) {
@@ -221,29 +269,33 @@ async function assertCanCreateBranch(db, settings) {
     );
   }
   const used = await activeBranchCount(db);
-  const max = Number(settings.max_branches || 0);
+  const max = capValue(settings, 'max_branches');
   if (used >= max) {
     throw planError(
-      `Your ${settings.subscription_plan} plan includes ${max} branch${max === 1 ? '' : 'es'} and all ${used} are in use. Contact ${contactLine(settings)} to add another.`,
+      `Your ${settings.subscription_plan} plan includes ${capLabel(max, 'branch', 'branches')} and all ${used} are in use. Contact ${contactLine(settings)} to add another.`,
       'MAX_BRANCHES_REACHED',
     );
   }
-  return { used, max, remaining: max - used };
+  return { used, max, remaining: max === Infinity ? Infinity : max - used };
 }
 
 async function assertCanCreateStaff(db, settings) {
   const used = await activeStaffCount(db);
-  const max = Number(settings.max_staff || 0);
+  const max = capValue(settings, 'max_staff');
   if (used >= max) {
     throw planError(
-      `Your ${settings.subscription_plan} plan includes ${max} staff seat${max === 1 ? '' : 's'} and all ${used} are in use. Deactivate a leaver, or contact ${contactLine(settings)} to add more.`,
+      `Your ${settings.subscription_plan} plan includes ${capLabel(max, 'staff seat', 'staff seats')} and all ${used} are in use. Deactivate a leaver, or contact ${contactLine(settings)} to add more.`,
       'MAX_STAFF_REACHED',
     );
   }
-  return { used, max, remaining: max - used };
+  return { used, max, remaining: max === Infinity ? Infinity : max - used };
 }
 
 /** Usage summary for the OWNER's "My Plan" screen. */
+function remaining(used, max) {
+  return max === Infinity ? null : Math.max(0, max - used);
+}
+
 async function planUsage(db, settings) {
   const [businesses, branches, staff] = await Promise.all([
     activeBusinessCount(db), activeBranchCount(db), activeStaffCount(db),
@@ -252,9 +304,11 @@ async function planUsage(db, settings) {
     plan: settings.subscription_plan,
     status: settings.subscription_status,
     renewalDate: settings.subscription_renewal_date || null,
-    businesses: { used: businesses, allowed: Number(settings.max_businesses) },
-    branches: { used: branches, allowed: Number(settings.max_branches) },
-    staff: { used: staff, allowed: Number(settings.max_staff) },
+    // `allowed: 0` and `unlimited: true` are the same statement; both are sent so a
+    // screen can print "Unlimited" without having to know the convention.
+    businesses: { used: businesses, allowed: Number(settings.max_businesses || 0), unlimited: capValue(settings, 'max_businesses') === Infinity, remaining: remaining(businesses, capValue(settings, 'max_businesses')) },
+    branches: { used: branches, allowed: Number(settings.max_branches || 0), unlimited: capValue(settings, 'max_branches') === Infinity, remaining: remaining(branches, capValue(settings, 'max_branches')) },
+    staff: { used: staff, allowed: Number(settings.max_staff || 0), unlimited: capValue(settings, 'max_staff') === Infinity, remaining: remaining(staff, capValue(settings, 'max_staff')) },
     features: Object.keys(FEATURE_COLUMNS).map((key) => ({
       key,
       label: FEATURE_LABELS[key],
@@ -432,6 +486,7 @@ function canOverrideCreditLimit(settings, user) {
 
 module.exports = {
   DEFAULT_SETTINGS, FLAG_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS,
+  PLAN_FIELDS, SUBSCRIPTION_STATUSES, isPlanField, capValue, capLabel,
   getSettings, contactLine, planError,
   assertSubscriptionActive,
   activeBusinessCount, activeBranchCount, activeStaffCount,

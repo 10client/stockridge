@@ -385,3 +385,51 @@ rest is history the product deliberately keeps, and the expense rows sit on anot
 That makes the `--clean` pass a **real** item rather than a tidy-up: it needs to retire fixture
 ROWS by the marker the fixtures already carry (`audit-*`, `AUD-*`, `rtn-*`, `dep-*`, `ful-*`,
 `stf-*`, `ser-*`, `war-*`, `rpt-*`, `PROBE-`, `AUDIT-`), never touching history a shop created.
+
+---
+
+## P8a — THE ADMINISTRATOR'S POWERS: WHAT THE SERVER WOULD LET A CLIENT DO TO ITSELF
+
+Analysed in `docs/admin-flows-parity.md` (PharmaRidge's admin model read out of the 49,952-line
+reference, this repo read route by route). Two of the findings were defects, not gaps.
+
+**1. A client owner could rewrite their own commercial terms.** `PUT /api/settings` is guarded by
+`atLeast(user.role, 'OWNER')`, and the six settings that decide what the client has bought — the
+three caps, the plan name, the subscription status, the renewal date — were writable through it like
+any other column. An owner could raise their own branch cap, rename their plan, set their status
+back to `ACTIVE` after a suspension, or move their renewal date — with a queued offline write if a
+plain call was too visible. The screen has always drawn these read-only and said why
+(*"commercial: … not by the client"*), so **the UI was stricter than the API**. Hiding a field is not
+a permission: the route now refuses any of the six from a non-`ADMIN` caller with
+`403 PLATFORM_ADMIN_REQUIRED`, naming the fields and the contact line, and changes nothing.
+
+**2. The vendor's bypass was written and never wired.** `assertSubscriptionActive` returns early for
+`ADMIN` — *"the vendor can never be locked out of their own client's instance, including while
+helping that client resolve the very suspension in question"* — and **all three call sites passed
+only `settings`**, so `user` was undefined and the bypass could never fire. A suspended client could
+not even be helped by the person they had just telephoned. The caller now goes in.
+
+**And the meaning of a zero.** `plan.js` has always rendered a cap of 0 as **"Unlimited"**; the
+enforcement read `Number(settings.max_* || 0)` and threw on `used >= max`, so 0 blocked everything
+and the refusal read *"includes 0 branches"*. The screen's reading wins (`capValue`), because an
+accidental lock-out stops a shop trading while an accidental zero costs a support call.
+
+Also in this stage: a cap set **below current usage** is allowed and reported (`warnings[]`, not a
+refusal — nothing is removed, but the next person to try a create reads "all 4 are in use" beside a
+cap nobody chose); `subscription_status` is validated against the schema's four values (a typo
+previously behaved exactly like a deliberate suspension, silently); the renewal date is a date or
+null, never `''`; a blank plan name is refused because the name is printed in every cap refusal the
+client sees; and a plan change now records **`PLAN_LIMITS_CHANGED`** — an allowed audit action that
+nothing had ever recorded — instead of hiding inside `SETTINGS_UPDATED`.
+
+### Verified
+
+`npm run verify` **410/410/0** (395 before — 15 new checks in `test/integration/platform-admin.test.js`)
+· `bash test/run-audits.sh` **19 audits green** · the settings contract test now also asserts that
+the keys the route reserves for the administrator and the keys the screen refuses to draw are the
+same list.
+
+**Still open, in order:** P8b the subscription gate on trading writes (today a suspended shop keeps
+ringing sales — the gate only covers creating businesses, branches and staff); P8c the **Platform**
+screen and the notifications board (the notification engine writes messages no screen can show or
+dismiss); P8d `audit.platformAdmin.js`, two-way, on staging.

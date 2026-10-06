@@ -68,7 +68,7 @@ function stripComments(src) {
   }
   return out;
 }
-const { DEFAULT_SETTINGS, FLAG_SETTINGS } = require(path.join(ROOT, 'domain/planLimits'));
+const { DEFAULT_SETTINGS, FLAG_SETTINGS, PLAN_FIELDS } = require(path.join(ROOT, 'domain/planLimits'));
 
 /**
  * Numbers whose sensible default is 0 or 1, and which are therefore NOT flags even
@@ -146,12 +146,12 @@ const NOT_A_CONTROL = Object.freeze({
   id: 'the table has exactly one row',
   logo_data_url: 'a data URL is uploaded through the branding screen, not typed into a text field',
   primary_business_id: 'decided by provisioning and by the business switcher, never by hand',
-  max_businesses: 'commercial: the plan decides it, and the server enforces it on creation',
-  max_branches: 'commercial: the plan decides it, and the server enforces it on creation',
-  max_staff: 'commercial: the plan decides it, and the server enforces it on creation',
-  subscription_status: 'commercial: set by the deploy tool and by renewal, not by the client',
-  subscription_plan: 'commercial: set by the deploy tool and by renewal, not by the client',
-  subscription_renewal_date: 'commercial: set by the deploy tool and by renewal, not by the client',
+  max_businesses: 'commercial: the plan decides it, the server enforces it on creation, and only the platform administrator may write it (403 PLATFORM_ADMIN_REQUIRED)',
+  max_branches: 'commercial: the plan decides it, the server enforces it on creation, and only the platform administrator may write it (403 PLATFORM_ADMIN_REQUIRED)',
+  max_staff: 'commercial: the plan decides it, the server enforces it on creation, and only the platform administrator may write it (403 PLATFORM_ADMIN_REQUIRED)',
+  subscription_status: 'commercial: the platform administrator sets it; a client that could reset its own status after a suspension would not have one',
+  subscription_plan: 'commercial: the platform administrator names it, and the name is printed in every cap refusal the client sees',
+  subscription_renewal_date: 'commercial: the platform administrator sets it; it is what the subscription gate quotes back at a suspended client',
 });
 
 test('settings: every control is backed by a real column, and every column is reachable', async (t) => {
@@ -193,6 +193,18 @@ test('settings: every control is backed by a real column, and every column is re
     // leave a reason behind for a key nobody has.
     const stale = Object.keys(NOT_A_CONTROL).filter((k) => !(k in DEFAULT_SETTINGS));
     assert.deepEqual(stale, [], 'these exclusions name settings that no longer exist');
+  });
+
+  await t.test('the commercial settings are exactly the ones the platform administrator alone may write', () => {
+    // The screen's exclusion list and the route's authority list are two statements of
+    // one rule, and they are written in two different files. If a key is added to one
+    // and not the other, the screen offers a control the API will refuse, or the API
+    // lets a client change something the screen was hiding on purpose.
+    const commercial = Object.keys(NOT_A_CONTROL)
+      .filter((k) => (k in DEFAULT_SETTINGS) && /^(max_(businesses|branches|staff)|subscription_(status|plan|renewal_date))$/.test(k))
+      .sort();
+    assert.deepEqual([...PLAN_FIELDS].sort(), commercial,
+      'the keys the settings route reserves for the platform administrator and the keys the screen refuses to draw have drifted apart');
   });
 
   await t.test('every column the API can write is in the whitelist', () => {
