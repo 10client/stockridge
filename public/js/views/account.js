@@ -45,6 +45,14 @@
         me = (SR.state.user || null);
         if (!me) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } })); return; }
       }
+      // A MOVE THAT CONCERNS ME. A cashier who has been told "you are going to Minna"
+      // should be able to see from their own account that it is a question and not a
+      // fact — and, if they do not want to go, withdraw it themselves.
+      let transfers = [];
+      try {
+        const t = await SR.api.get('/api/users/transfers/pending/mine');
+        transfers = (t.data || []);
+      } catch (err) { transfers = []; }
       let sessions = [];
       try {
         const s = await SR.api.get('/api/sessions', { query: SR.state.query({}) });
@@ -117,6 +125,39 @@
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sync') }, 'Sync & offline'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => toggleTheme() }, SR.theme.current() === 'dark' ? 'Switch to light' : 'Switch to dark')));
       stack.appendChild(deviceCard);
+
+      // ------------------------------------------------------ a move in progress
+      if (transfers.length) {
+        const rows = transfers.map((t) => ({
+          id: t.id,
+          person: t.full_name || t.username,
+          from: t.from_branch_name || '—',
+          to: t.to_branch_name || '—',
+          asked: t.requested_by_name || '—',
+          mine: String(t.user_id) === String(me.id),
+        }));
+        stack.appendChild(ui.dataCard({
+          title: 'A branch move is being discussed',
+          hint: 'Nothing has changed yet. You keep working where you are until somebody at the branch receiving you agrees to the move.',
+          table: ui.renderTable({
+            columns: [
+              { key: 'person', label: 'Who', render: (r) => (r.mine ? `${r.person} (you)` : r.person) },
+              { key: 'from', label: 'From' },
+              { key: 'to', label: 'To' },
+              { key: 'asked', label: 'Asked by' },
+              { key: 'act', label: '', render: (r) => ui.h('button', { class: 'btn btn-sm', onClick: async (ev) => {
+                ev.currentTarget.disabled = true;
+                try {
+                  const res = await SR.api.post(`/api/users/transfers/${encodeURIComponent(r.id)}/cancel`, {});
+                  ui.ok(res.message || 'Withdrawn.');
+                  load();
+                } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+              } }, 'Withdraw') },
+            ],
+            rows,
+          }),
+        }));
+      }
 
       // ------------------------------------------------------------ sessions
       if (sessions.length) {

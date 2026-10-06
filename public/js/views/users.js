@@ -47,10 +47,11 @@
         ui.h('p', { class: 'sub' }, 'Who works here, where, and what the system lets them do')),
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add someone') : null,
+        SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openCoverage() }, 'Who was here on…') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
 
     const tabs = ui.h('div', { class: 'tabs' });
-    for (const [key, label] of [['team', 'The team'], ['sessions', 'Signed in now']]) {
+    for (const [key, label] of [['team', 'The team'], ['transfers', 'Transfers'], ['sessions', 'Signed in now']]) {
       tabs.appendChild(ui.h('button', {
         class: `tab ${state.tab === key ? 'is-active' : ''}`,
         onClick: (ev) => {
@@ -89,6 +90,7 @@
       host.replaceChildren(ui.skeleton(7));
       try {
         if (state.tab === 'sessions') return renderSessions(await SR.api.get('/api/sessions', { query: SR.state.query({}) }));
+        if (state.tab === 'transfers') return renderTransfers();
         renderTeam(await SR.api.get('/api/users', {
           query: SR.state.query({
             q: state.q || undefined,
@@ -156,6 +158,251 @@
         }) : null,
       }));
       host.replaceChildren(stack);
+    }
+
+    // ----------------------------------------------------------- transfers
+    /**
+     * WHAT IS WAITING FOR A DECISION.
+     *
+     * Two lists, and they answer different questions. The first is what THIS person
+     * has been asked to decide — a manager answers for their own branch, and the person
+     * arriving is the one they will be accountable for. The second is what concerns
+     * them personally: a move they asked for, or a move somebody has asked for them,
+     * which is exactly what a cashier needs to see when a transfer is described to them
+     * as already arranged.
+     *
+     * ACCEPT AND REFUSE ARE BOTH HERE, side by side and plainly labelled, because a
+     * screen that only offers "accept" is a screen that turns a decision into a
+     * notification.
+     */
+    async function renderTransfers() {
+      const stack = ui.h('div', { class: 'stack' });
+      stack.appendChild(ui.h('div', { class: 'alert alert-info' },
+        'A move between branches is a question first: the person keeps working where they are until somebody at the branch receiving them agrees. Nobody can be moved into a shop that has not agreed to take them.'));
+      let waiting = { data: [] };
+      let mine = { data: [] };
+      try {
+        if (SR.state.atLeast('MANAGER')) waiting = await SR.api.get('/api/users/transfers/pending', { query: SR.state.query({ limit: 100 }) });
+        mine = await SR.api.get('/api/users/transfers/pending/mine');
+      } catch (err) {
+        stack.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
+        host.replaceChildren(stack);
+        return;
+      }
+      const rows = waiting.data || [];
+      stack.appendChild(ui.dataCard({
+        title: SR.state.atLeast('MANAGER') ? `${rows.length} waiting for your decision` : 'Waiting for a decision',
+        table: ui.renderTable({
+          columns: [
+            { key: 'full_name', label: 'Who', render: (r) => ui.h('div', {},
+                ui.h('div', {}, r.full_name || r.username),
+                ui.h('div', { class: 'hint' }, [r.username ? `@${r.username}` : null, U.titleCase(r.role)].filter(Boolean).join(' · '))) },
+            { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
+            { key: 'to_branch_name', label: 'To', render: (r) => ui.h('strong', {}, r.to_branch_name) },
+            { key: 'requested_by_name', label: 'Asked by', render: (r) => r.requested_by_name || '—' },
+            { key: 'requested_at', label: 'Asked', render: (r) => U.relTime(r.requested_at) },
+            { key: 'reason', label: 'Why', render: (r) => ui.h('span', { class: 'hint' }, r.reason || '—') },
+            // THE DECISION IS A COLUMN, not a hover menu: these buttons are the whole
+            // point of the screen, and a decision buried behind a row click is one
+            // nobody finds.
+            { key: 'act', label: '', render: (r) => ui.h('div', { class: 'btn-row' },
+                ui.h('button', { class: 'btn btn-sm btn-primary', onClick: (ev) => decide(ev, r, 'accept') }, 'Accept'),
+                ui.h('button', { class: 'btn btn-sm', onClick: (ev) => decide(ev, r, 'reject') }, 'Refuse')) },
+          ],
+          rows,
+          emptyTitle: 'Nothing is waiting',
+          emptyMessage: 'When somebody asks to move a member of staff into your branch, it appears here for you to accept or refuse.',
+        }),
+      }));
+      const mineRows = mine.data || [];
+      if (mineRows.length) {
+        stack.appendChild(ui.dataCard({
+          title: 'Involving you',
+          table: ui.renderTable({
+            columns: [
+              { key: 'full_name', label: 'Person', render: (r) => r.full_name || r.username },
+              { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
+              { key: 'to_branch_name', label: 'To', render: (r) => r.to_branch_name || '—' },
+              { key: 'requested_by_name', label: 'Asked by', render: (r) => r.requested_by_name || '—' },
+              { key: 'status', label: 'State', render: () => ui.badge('waiting', 'badge-warn') },
+              { key: 'act', label: '', render: (r) => ui.h('button', { class: 'btn btn-sm', onClick: () => withdraw(r) }, 'Withdraw') },
+            ],
+            rows: mineRows,
+            emptyTitle: '',
+          }),
+        }));
+      }
+      host.replaceChildren(stack);
+    }
+
+    /** Answer a transfer. A refusal may carry a reason, and the reason is kept. */
+    async function decide(ev, row, what) {
+      const btn = ev && ev.currentTarget ? ev.currentTarget : null;
+      const label = what === 'accept' ? 'Accept' : 'Refuse';
+      if (what === 'accept') {
+        const ok = await ui.confirmDialog({
+          danger: false,
+          title: `Accept ${row.full_name || row.username}?`,
+          // Said in full, because accepting is the moment a person's scope changes.
+          message: `${row.full_name || row.username} will start working at ${row.to_branch_name} and will be able to see its sales, its stock and its cash. Their record of where they have worked keeps the date and your name against this decision.`,
+          confirmLabel: 'Accept the move',
+        });
+        if (!ok) return;
+      }
+      let reason = null;
+      if (what === 'reject') {
+        // READ WITHOUT `required`, AND THAT IS THE DESIGN: refusing a transfer is
+        // allowed to be brief, and the placeholder says what would be useful rather
+        // than what is mandatory. `null` means the dialog was cancelled.
+        reason = await ui.promptDialog({
+          title: `Refuse the move to ${row.to_branch_name}?`,
+          label: `Why is this being refused? (optional — ${row.full_name || row.username} stays at ${row.from_branch_name || 'their branch'})`,
+          placeholder: 'We have no counter free for another cashier this quarter.',
+          hint: 'Kept on the record. It is what the owner reads the next time this is asked.',
+          multiline: true,
+        });
+        if (reason === null) return; // cancelled
+      }
+      // THE PATH IS WRITTEN OUT, one literal per action, so the frontend-contract test
+      // can see which endpoint this calls. Building it as `.../${what}` hid the two real
+      // paths behind a variable and the checker reported a route that does not exist —
+      // which is exactly what it is for, and the fix is to spell them.
+      const url = what === 'accept'
+        ? `/api/users/transfers/${encodeURIComponent(row.id)}/accept`
+        : `/api/users/transfers/${encodeURIComponent(row.id)}/reject`;
+      if (btn) btn.disabled = true;
+      try {
+        const res = await SR.api.post(url, reason ? { reason } : {});
+        ui.ok(res.message || `${label}ed.`);
+        load();
+      } catch (err) {
+        ui.apiError(err);
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    /** Withdraw a question that concerns me. */
+    async function withdraw(row) {
+      const ok = await ui.confirmDialog({
+        title: 'Withdraw this request?',
+        message: `Nobody will be asked to decide, and ${row.full_name || row.username} stays at ${row.from_branch_name || 'their branch'}.`,
+        confirmLabel: 'Withdraw',
+      });
+      if (!ok) return;
+      try {
+        const res = await SR.api.post(`/api/users/transfers/${encodeURIComponent(row.id)}/cancel`, {});
+        ui.ok(res.message || 'Withdrawn.');
+        load();
+      } catch (err) { ui.apiError(err); }
+    }
+
+    // ------------------------------------------------------ move & history
+    /**
+     * ASK FOR A MOVE FROM HERE, so the person who knows the reason is the person who
+     * types it. The screen says plainly that this does not move anybody yet — an owner
+     * who believes they have moved a cashier is worse off than one who knows they have
+     * asked.
+     */
+    function openMove(u) {
+      const branchSel = ui.h('select', {}, SR.state.branches()
+        .filter((b) => String(b.id) !== String(u.branch_id || ''))
+        .map((b) => ui.h('option', { value: b.id }, b.name)));
+      const reason = ui.h('input', { type: 'text', placeholder: 'Why are they moving? (optional, kept on the record)', autocomplete: 'off' });
+      const body = ui.h('div', { class: 'stack' });
+      body.appendChild(ui.h('p', {}, `${u.full_name || u.username} works at ${u.branch_name || 'no branch'} now.`));
+      if (!branchSel.options.length) {
+        body.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'There is no other branch to move them to. Open a branch first.'));
+        const m = ui.openModal({ title: 'Move to another branch', body, size: 'narrow' });
+        body.appendChild(ui.h('div', { class: 'btn-row' }, ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close')));
+        return;
+      }
+      body.appendChild(ui.h('label', { class: 'ctl' }, 'Move to'));
+      body.appendChild(branchSel);
+      body.appendChild(ui.h('label', { class: 'ctl' }, 'Why (optional)'));
+      body.appendChild(reason);
+      const go = ui.h('button', { class: 'btn btn-primary', onClick: async () => {
+        go.disabled = true;
+        try {
+          const res = await SR.api.post(`/api/users/${encodeURIComponent(u.id)}/transfer`, {
+            to_branch_id: branchSel.value,
+            reason: String(reason.value || '').trim() || undefined,
+          });
+          ui.ok(res.message || 'Asked.');
+          m.close();
+          load();
+        } catch (err) {
+          ui.apiError(err);
+          go.disabled = false;
+        }
+      } }, 'Ask for the move');
+      const m = ui.openModal({
+        title: 'Move to another branch',
+        body,
+        footer: [ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'), go],
+        size: 'narrow',
+      });
+    }
+
+    /** "Who could see the Minna till on 14 March?" — asked after something has gone missing. */
+    function openCoverage() {
+      const branchSel = ui.h('select', {}, SR.state.branches().map((b) => ui.h('option', { value: b.id }, b.name)));
+      const date = ui.h('input', { type: 'date', value: new Date().toISOString().slice(0, 10) });
+      const out = ui.h('div', {});
+      const body = ui.h('div', { class: 'stack' },
+        ui.h('p', { class: 'sub' }, 'Read from the assignment history, so a person who has since moved or been deactivated is still listed for the days they were actually here.'),
+        ui.h('div', { class: 'row' }, branchSel, date,
+          ui.h('button', { class: 'btn btn-primary', onClick: async (ev) => {
+            ev.currentTarget.disabled = true;
+            out.replaceChildren(ui.loading('Reading the history…'));
+            try {
+              const res = await SR.api.get('/api/assignment-history', { query: { branch_id: branchSel.value, at: date.value } });
+              const rows = res.data || [];
+              out.replaceChildren(rows.length
+                ? ui.renderTable({
+                    columns: [
+                      { key: 'full_name', label: 'Who', render: (r) => ui.h('div', {},
+                          ui.h('div', {}, r.full_name || r.username),
+                          ui.h('div', { class: 'hint' }, `@${r.username}`)) },
+                      { key: 'role', label: 'Role', render: (r) => U.titleCase(r.role) },
+                      { key: 'is_active', label: 'Now', render: (r) => (Number(r.is_active) ? ui.badge('still here', 'badge-good') : ui.badge('deactivated since', 'badge-mute')) },
+                    ],
+                    rows,
+                  })
+                : ui.empty({ title: 'Nobody', message: `No assignment history places anybody at ${branchSel.options[branchSel.selectedIndex].text} on ${date.value}.` }));
+            } catch (err) {
+              out.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That could not be read.'));
+            } finally { ev.currentTarget.disabled = false; }
+          } }, 'Who was here?')),
+        out);
+      ui.openModal({ title: 'Who could see this branch on that day?', body, size: 'wide' });
+    }
+
+    /** One person's assignments, newest first. */
+    function openHistory(u) {
+      const out = ui.h('div', {}, ui.loading('Reading their history…'));
+      const body = ui.h('div', { class: 'stack' },
+        ui.h('p', { class: 'sub' }, `Every move and the moment the record for ${u.full_name || u.username} was created.`), out);
+      const m = ui.openModal({ title: 'Where they have worked', body, size: 'wide' });
+      SR.api.get(`/api/users/${encodeURIComponent(u.id)}/assignment-history`).then((res) => {
+        const rows = res.data || [];
+        out.replaceChildren(rows.length
+          ? ui.renderTable({
+              columns: [
+                { key: 'changed_at', label: 'When', render: (r) => U.date(r.changed_at) },
+                { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
+                { key: 'to_branch_name', label: 'To', render: (r) => r.to_branch_name || '—' },
+                { key: 'reason', label: 'Why', render: (r) => ui.h('span', { class: 'hint' }, r.reason || '—') },
+                { key: 'changed_by_name', label: 'Decided by', render: (r) => r.changed_by_name || '—' },
+              ],
+              rows,
+            })
+          : ui.empty({ title: 'No history', message: 'This account has no recorded assignment, which should only be true of a user created before this feature existed.' }));
+        if (res.pending) {
+          out.appendChild(ui.h('div', { class: 'alert alert-info', style: { marginTop: '10px' } },
+            `A move to ${res.pending.to_branch_name} is waiting for somebody there to agree to it. Until then they stay where they are.`));
+        }
+      }).catch((err) => { out.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That could not be read.')); });
+      return m;
     }
 
     // ------------------------------------------------------------ sessions
@@ -401,9 +648,16 @@
       if (isAdmin && !self) form.appendChild(accessSection(u));
 
       const pinBtn = ui.h('button', { class: 'btn' }, 'Issue a new PIN');
+      // WHERE THEY HAVE WORKED, and the move itself, sit next to the PIN button because
+      // they are the same kind of action: they change what this person can do, and they
+      // are decisions rather than edits.
+      const historyBtn = ui.h('button', { class: 'btn btn-sm', onClick: () => openHistory(u) }, 'Where they have worked');
+      const moveBtn = !self && SR.state.atLeast('OWNER') && u.branch_id
+        ? ui.h('button', { class: 'btn btn-sm', onClick: () => { m.close(); openMove(u); } }, 'Move to another branch')
+        : null;
       const close = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close');
       const save = ui.h('button', { class: 'btn btn-primary' }, 'Save changes');
-      const m = ui.openModal({ title: u.full_name || u.username, body: form, footer: [pinBtn, ui.h('div', { class: 'spacer' }), close, save], size: 'wide' });
+      const m = ui.openModal({ title: u.full_name || u.username, body: form, footer: [historyBtn, moveBtn, pinBtn, ui.h('div', { class: 'spacer' }), close, save].filter(Boolean), size: 'wide' });
 
       pinBtn.addEventListener('click', async () => {
         const confirmed = await ui.confirmDialog({
