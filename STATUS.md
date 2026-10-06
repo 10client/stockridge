@@ -3357,3 +3357,56 @@ produce, and all three were the audit's faults, not the product's:
 sample and production `awaiting the first business — this is the expected handover
 state`. A read-only probe of `/api/purchase-orders`, `/api/transfers` and
 `/api/stocktakes` answers `401` (present and guarded) on all three hosts.
+
+## P3 — the money-out flows: returns and deposits (2026-10-06)
+
+Two more flows from the 0%-audited list, both written front to back and back to front and
+both run against staging.
+
+### `test/audit/returns.js` — 13/13, and the flow is now 3/3 covered
+
+One sale, one return, one refund, read back at every step. Front to back: a returned
+RESALABLE unit goes back on the shelf and the refund is **pro-rata on what that line
+actually realised**, not the list price. Back to front: a refund cannot exceed the line, the
+same receipt cannot be returned twice over, a STAFF cash refund is `PENDING_APPROVAL` and
+**does not move the shelf** until a manager approves it, and the person who took the refund
+cannot approve it. The return book and its summary agree with the money, and a rejected
+return is kept under `REJECTED` with its reason.
+
+What the flow taught the audit: **a pending return reserves the units it asks for.** While
+one return waited for a manager, the same unit was not returnable again ("only 0 remain
+unreturned on this receipt (2 already returned)"). That is the right rule — two open returns
+of one unit is two refunds of it — and the audit's first sequence was wrong, not the code.
+The refusal is now itself a check: a refused return releases the line, a pending one holds it.
+
+### `test/audit/deposits.js` — 9/9, and the flow is now 5/5 covered
+
+A layaway opened at 40% down, watched the whole way. Front to back: the unit is **reserved,
+not gone** — still on the shelf, no longer sellable, and `available = on_shelf − reserved`
+holds on the deployment's own figures. A sale of everything "available" plus one is refused,
+which is the point of a hold. Back to front: an overpayment is refused with the balance
+untouched, paying it off marks it paid in full **without releasing the goods**, and
+completing it rings a real sale — the shelf drops by exactly the units collected, the
+reservation goes to zero, and the deposit points at the sale that closed it.
+
+### Two production defects in `POST /api/deposits/:id/complete` (both fixed)
+
+The route refused a completion with a balance outstanding and told the user to *"pass
+allow_outstanding to complete the sale with the balance still owed (which becomes a credit
+sale)"*. Neither half of that promise was true:
+
+1. **The override could never work.** The route rang the completion as a `RETAIL` sale
+   carrying only the deposit as payment, and the sale engine refused it: `UNDERPAID — "₦25,500
+   short. Add the remaining payment, or record it as a credit sale if the customer is paying
+   later."` The customer walked in to collect goods they had part-paid for and the shop could
+   not hand them over at all. The balance now rides as a `CREDIT` leg and the sale is a
+   `CREDIT` sale, so money received + money owed equals the price.
+2. **The override's reason was dropped.** With the credit leg in place the engine asked for
+   the reason it always asks for when a cash customer is carried: `CREDIT_OVERRIDE_REASON_REQUIRED
+   — "Record why this was approved so the owner can review it."` The deposit route never
+   accepted that reason, so `allow_outstanding` was still unusable. It is now passed through
+   under either spelling, exactly as `POST /api/sales` takes it.
+
+Neither had any test, and neither is reachable in normal trading until a customer arrives to
+collect goods they have not finished paying for — which is the moment the shop least wants to
+discover it.

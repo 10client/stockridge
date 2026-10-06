@@ -908,6 +908,33 @@ function mount(app, base = '/api') {
       payments.push({ method: String(p.method || 'CASH').toUpperCase(), amount: round2(Number(p.amount) || 0), reference: p.reference || null, cashTendered: p.cash_tendered != null ? Number(p.cash_tendered) : null });
     }
 
+    // THE BALANCE STILL OWED IS A PAYMENT LEG, NOT SILENCE.
+    //
+    // The refusal above tells the user to "pass allow_outstanding to complete the sale with
+    // the balance still owed (which becomes a credit sale)" — and then this route rang a
+    // RETAIL sale with only the deposit applied. The sale engine refuses a retail sale that
+    // does not add up (`UNDERPAID`: "₦25,500 short. Add the remaining payment, or record it
+    // as a credit sale if the customer is paying later"), so the override the route documents
+    // was impossible to use: every attempt failed on the same shortage it had just agreed to
+    // carry. Found by `audit.deposits`.
+    //
+    // On the record, the rest is what the customer owes on account: the sale is a CREDIT
+    // sale (a LAYAWAY/INSTALMENT deposit is already a credit arrangement) and the outstanding
+    // amount rides as a CREDIT leg, so the customer's balance and the ledger agree with the
+    // goods that left the shop.
+    const creditLeg = outstanding > 0 ? round2(outstanding) : 0;
+    if (creditLeg > 0) payments.push({ method: 'CREDIT', amount: creditLeg, reference: `Balance on ${deposit.deposit_type.toLowerCase()} ${id.slice(0, 8)}` });
+
+    // AND WHY THE SHOP DECIDED TO CARRY IT. A customer with no credit limit is a cash
+    // customer as far as the sale engine is concerned, and handing them goods on a promise
+    // is allowed — but only with a reason on the record ("Record why this was approved so
+    // the owner can review it"). The deposit route did not take that reason, so even after
+    // the credit leg above the override still could not be used. It is passed straight
+    // through, and the client can supply it under either spelling, exactly as POST /api/sales
+    // accepts it.
+    const creditOverrideReason = strField(body.credit_override_reason || body.creditOverrideReason,
+      { field: 'Credit override reason', maxLength: 300 });
+
     let result;
     try {
       result = await salesService.complete(db, {
@@ -921,7 +948,10 @@ function mount(app, base = '/api') {
           serialNumbers: serial && serial.serial_no ? [serial.serial_no] : [],
           notes: `${deposit.deposit_type} completed — deposit ${id.slice(0, 8)}`,
         }],
-        saleType: 'RETAIL',
+        // A sale carrying a balance is a credit sale, and the engine holds the two legs to
+        // the total: money received + money owed == the price.
+        saleType: creditLeg > 0 ? 'CREDIT' : 'RETAIL',
+        creditOverrideReason,
         payments,
         notes: `Completed from ${deposit.deposit_type.toLowerCase()} deposit taken ${String(deposit.created_at).slice(0, 10)}`,
         accountIds,
