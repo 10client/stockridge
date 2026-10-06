@@ -379,6 +379,12 @@
     function openReceive() {
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Receiving creates a BATCH. The cost per unit on this form is the cost that will be used for every unit of this batch until it is sold — so freight and clearing charges belong here too, not in expenses.'));
+      const serialsField = ui.field({
+        label: 'Serial numbers', name: 'serials', type: 'textarea', span: true, rows: 4,
+        placeholder: 'One per line — scan or type each label',
+        hint: 'Every unit gets its own number. This is what a warranty claim is proved with two years from now.',
+      });
+      serialsField.hidden = true;
       const grid = ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Product', name: 'product_id', required: true, placeholder: 'Search the catalogue…', span: true }),
         ui.field({ label: 'Batch number', name: 'batch_no', hint: 'The supplier\'s reference. Optional, but it is what you cite in a claim.' }),
@@ -404,6 +410,13 @@
         ui.field({ label: 'Expires', name: 'expiry_date', type: 'date', hint: 'Refused if it is already in the past — receiving dead stock helps nobody.' }),
         ui.field({ label: 'Supplier', name: 'supplier_id', placeholder: 'Optional' }),
         ui.field({ label: 'Warehouse zone', name: 'warehouse_zone', placeholder: 'e.g. Aisle 3, bay 2' }),
+        // THE SERIALS BOX. Hidden for ordinary stock, because a shop that does not
+        // identify units individually should not be asked to. It appears the moment a
+        // serial-tracked product is chosen, and the server will refuse the receipt
+        // without one number per unit — so the form asks for them here, where the
+        // labels are still in the operator's hand, instead of at the counter months
+        // later when the unit cannot be matched to its box.
+        serialsField,
         ui.field({ label: 'Notes', name: 'notes', type: 'textarea', span: true }));
       wrapEl.appendChild(grid);
 
@@ -431,6 +444,7 @@
               picked = p;
               productInput.value = p.name;
               loadUnits(p);
+              showSerials(p);
               suggestions.hidden = true;
             },
           }, ui.h('div', { class: 'grow' },
@@ -440,6 +454,24 @@
         }
         suggestions.hidden = !rows.length;
       }, 260));
+
+      // The serials box is shown for products that identify each unit, and its hint
+      // names how many numbers the receipt will be refused without.
+      function showSerials(p) {
+        const tracked = Boolean(p && Number(p.requires_serial));
+        serialsField.hidden = !tracked;
+        if (tracked) serialsHint();
+      }
+      function serialsHint() {
+        if (serialsField.hidden) return;
+        const qty = Number((wrapEl.querySelector('[name="quantity"]') || {}).value) || 0;
+        const hint = serialsField.querySelector('.hint');
+        if (!hint) return;
+        const base = (picked && picked.base_unit_name) || 'unit';
+        hint.textContent = qty > 0
+          ? `${qty} ${base} — ${Math.ceil(qty)} serial number(s) expected, one per unit. The receipt is refused without them.`
+          : 'Every unit gets its own number. This is what a warranty claim is proved with two years from now.';
+      }
 
       // The catalogue price of a product is per BASE unit. Whatever unit this
       // receipt is counted in, the two figures shown must agree with the unit
@@ -528,7 +560,10 @@
           const m2 = /\((\d[\d,.]*)\s/.exec(label);
           const factor = m2 ? Number(String(m2[1]).replace(/,/g, '')) : 1;
           priceFields(factor > 0 ? factor : 1);
+          serialsHint();
         });
+        const qtyInput = wrapEl.querySelector('[name="quantity"]');
+        if (qtyInput) qtyInput.addEventListener('input', serialsHint);
       }
 
       const m = ui.openModal({
@@ -547,6 +582,15 @@
               if (!productId) { ui.warn('Pick a product from the list.'); return; }
               if (!(quantity > 0)) { ui.warn('Enter how many units arrived.'); return; }
               if (!(cost >= 0)) { ui.warn('Enter the cost per unit.'); return; }
+              // One number per unit, split on lines, commas or spaces: a label scanner
+              // usually emits a newline, and a clerk pasting from a supplier's dispatch
+              // note usually emits anything at all.
+              const serials = String(v.serials || '')
+                .split(/[\n,\t]+/).map((x) => x.trim()).filter(Boolean);
+              if (picked && Number(picked.requires_serial) && serials.length !== Math.ceil(quantity)) {
+                ui.warn(`${picked.name} is serial-tracked: ${Math.ceil(quantity)} serial number(s) are needed for ${U.qty(quantity)} unit(s), ${serials.length} entered. One number per unit.`);
+                return;
+              }
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Recording…';
               try {
@@ -567,6 +611,7 @@
                   supplier_id: v.supplier_id || null,
                   warehouse_zone: v.warehouse_zone || null,
                   notes: v.notes || null,
+                  serials: serials.length ? serials : undefined,
                 }, { queue: false });
                 ui.ok(`Received ${U.qty(quantity)} ${v.unit_code || ''} into stock.`);
                 m.close();

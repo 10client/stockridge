@@ -642,8 +642,12 @@ async function startDeployment({
   const child = spawn(process.execPath, [path.join(ROOT, 'server/app.js'), `--port=${port}`, `--db=${dbFile}`], {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', (d) => { log += d.toString(); });
-  child.stderr.on('data', (d) => { log += d.toString(); });
+  child.stdout.on('data', (d) => { log += d.toString(); if (process.env.AUDIT_SERVER_LOG) process.stderr.write(`[server] ${d.toString()}`); });
+  // SERVER LOGS ON REQUEST. When a check dies on a 500 the child's stderr is where the
+  // failing statement is named; without it a failing audit reports only the message the
+  // error handler produced, which for a constraint is "a required value is missing" and
+  // names no column and no table.
+  child.stderr.on('data', (d) => { log += d.toString(); if (process.env.AUDIT_SERVER_LOG) process.stderr.write(`[server] ${d.toString()}`); });
 
   const deployment = new Deployment({ base, port, dbFile, child, log: () => log });
   deployment.primaryBranchId = firstBranchId;

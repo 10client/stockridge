@@ -84,6 +84,20 @@ function schemaObjects() {
     for (const m of text.matchAll(/CREATE\s+(?:TABLE|VIEW)\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][\w]*)\s*[(AS]/gi)) {
       const name = m[1];
       const isView = /CREATE\s+VIEW/i.test(m[0]);
+      // A TABLE THAT THIS SAME FILE DROPS OR RENAMES IS SCAFFOLDING, NOT A CAPABILITY.
+      //
+      // SQLite cannot alter a CHECK constraint or a column type, so those changes are
+      // made by building a new table, copying into it and renaming the result over the
+      // old name (0006 did it for branch_sync_status, 0007 for warranty_claims). The
+      // intermediate name is written once and gone by the end of the file — but the
+      // scanner read every CREATE TABLE, so each rebuild added a phantom "capability
+      // that exists on paper only" and the honest way to clear it was to write a
+      // baseline entry saying it was not a capability. That is the list quietly
+      // filling with noise, which is exactly what the baseline is designed not to do.
+      // The name is checked against DROP/RENAME in the SAME file, so a real table that
+      // happens to be dropped elsewhere still reports.
+      if (new RegExp(`DROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?${name}\\b`, 'i').test(text)) continue;
+      if (new RegExp(`ALTER\\s+TABLE\\s+${name}\\s+RENAME`, 'i').test(text)) continue;
       // The comment immediately above is the table's stated purpose; keeping it
       // makes the report readable instead of a wall of identifiers.
       const before = text.slice(0, m.index).split('\n').slice(-6);

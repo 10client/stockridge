@@ -119,3 +119,77 @@ staging left with **0 audit-made licences, 0 `AUD-*` leftovers, the branch at GE
 
 Next: **P6 — warranty-claims (0/3)**, then reports 8, audit 3, notifications 3; parity **G4
 dashboard depth** still open.
+
+---
+
+## P6a — THE SERIAL REGISTER HAD NO WRITER, SO NOTHING DOWNSTREAM EXISTED
+
+**The stage set out to audit warranty-claims (0/3) and found that no claim could exist.**
+
+`POST /api/warranty-claims` needs a serial number on file. `serial_numbers` had **no writer
+anywhere in the server** — not goods-received, not a purchase-order receipt, not a transfer
+receipt. The only INSERTs in the whole repository were in an integration test. Consequences, all
+live until this stage:
+
+* **A serial-tracked product could not be sold at all.** The sale engine demands one serial per
+  unit and refuses any number "not in this system", so a freezer or a phone flagged
+  `requires_serial` could be received as anonymous quantity and then never rung up.
+* **`serial_tracking_enabled` — "Capture serial numbers for products that track them" — was
+  shown to every administrator and read by nothing.** Switching it off changed nothing, and
+  switching it on changed nothing either.
+* Everything hanging off a serial was consequently dead: `GET /api/serials/:serialNo`, the
+  hash-chained `serial_events` log (whose only writer was the sale, so a unit's history started
+  at "SOLD" with no record of arriving), warranty claims, replacement serials, and the
+  `stock_transfer_serials` table.
+
+### What was built
+
+* **Serials are captured at goods-received** (`POST /api/stock/receive`), which is the only
+  place a unit enters the system: one number per unit, required when the product is flagged and
+  the feature is on, with the batch, branch and product filed against it. Refusals name the
+  thing that is wrong: `SERIALS_REQUIRED` (with the count expected and given),
+  `DUPLICATE_SERIAL_IN_REQUEST`, `SERIAL_ALREADY_RECEIVED` (409, naming where the unit already
+  is), `SERIALS_NOT_EXPECTED` (serials on a product that does not track them). A serial already
+  on file against a *different* product is a warning, not a refusal — two brands can share a
+  number across a counter, and a copied label is worth knowing about either way.
+* **An IMEI rides along** — plain strings or `{serial_no, imei}`, because for a phone it is the
+  second identity the networks and the police ask for.
+* **The first link of each unit's chain is written** (`serial_events` → `RECEIVED`), hashed with
+  the same `serialEventFields` shape the sale uses and chained off whatever head the serial
+  already has.
+* **The register has a face**: `GET /api/serials` lists units with their batch, expiry, sale,
+  customer, claim and warranty clock, filterable by product, batch, status, sold/unsold,
+  in-warranty and a search of serial, IMEI, product or customer — with the counts a shop asks
+  for after its first receipt with serials (total, unsold, sold, in warranty).
+* **The switch controls both halves.** With `serial_tracking_enabled` off a flagged product is
+  received *and sold* as ordinary stock; with it on, both demand the numbers. Off in one place
+  and on in the other is the trap this was before.
+* **The receiving form grew a serials box** that appears only for a serial-tracked product and
+  says how many numbers the receipt will be refused without.
+
+### Two more real defects, found on the way
+
+* **`GET /api/serials/:serialNo` could only fail.** It joined `businesses biz ON biz.id =
+  sn.business_id`, and `serial_numbers` has no `business_id` column: `500 no such column`, every
+  time, for every serial. Fixed to reach the business through the branch.
+* **An unknown serial was a 500, not a 404.** The route then read `.warranty_ends_at` off
+  `undefined`, so "we have never seen this unit" — the answer a counter most needs, for a
+  parallel import or a mis-typed label — came back as an internal error. It is a 404 with a
+  sentence now.
+
+### Also fixed so the audit can be read
+
+* `tools/capability-audit.js` no longer reports a SQLite table rebuild's scratch name as "a
+  capability that exists on paper only" — a name the same file drops or renames is scaffolding.
+  `branch_sync_status_v2`'s baseline entry is gone with it, so the baseline is a to-do again
+  instead of a place to bury noise.
+* `AUDIT_SERVER_LOG=1` prints the audit child's server log, which is where a failing statement
+  is named; without it a 400 on a constraint says only "a required value is missing".
+
+**Counts:** `npm run verify` **395/395/0** · `bash test/run-audits.sh` **17 audits green**
+(new: `audit.serials`, **24 checks**) · coverage **197 routes · 138 audited · 43 screen-only ·
+16 unreached**, serials 2/2.
+
+Next: the other two intakes (purchase-order receipt, transfer receipt) so a shop that buys on a
+PO is not half-covered, then **the warranty-claims audit** — the flow this stage cleared the way
+for, and the one that will exercise migration `0007` (the resolutions the schema refused).

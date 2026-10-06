@@ -385,7 +385,18 @@ async function prepare(db, {
     // ---- serials
     const requestedSerials = Array.isArray(line.serialNumbers) ? line.serialNumbers.filter(Boolean).map(String) : (line.serialNumber ? [String(line.serialNumber)] : []);
     const serialRows = [];
-    if (Number(product.requires_serial)) {
+    // WHETHER SERIALS ARE DEMANDED IS THE BUSINESS'S SWITCH, NOT THE PRODUCT'S FLAG.
+    //
+    // `serial_tracking_enabled` is on by default and is what the administrator sees
+    // as "Capture serial numbers for products that track them". It used to be read
+    // by nothing, so switching it off changed nothing: a serial-tracked product
+    // still demanded serials, and — before goods-received could capture any — could
+    // not be sold at all. Switched off now, the flag stops biting anywhere; the
+    // serials that ARE supplied are still validated, because a serial somebody
+    // typed is a claim about which unit left the shop.
+    const serialTrackingOn = !settings || Number(settings.serial_tracking_enabled) !== 0;
+    const serialTracked = Number(product.requires_serial) === 1;
+    if (serialTracked && serialTrackingOn) {
       if (requestedSerials.length !== Math.ceil(conversion.baseQuantity)) {
         problems.push({
           line: i, code: 'SERIALS_REQUIRED',
@@ -393,6 +404,8 @@ async function prepare(db, {
         });
         continue;
       }
+    }
+    if (serialTracked && requestedSerials.length) {
       let serialProblem = null;
       for (const sn of requestedSerials) {
         const found = serials.get(sn);
@@ -415,7 +428,7 @@ async function prepare(db, {
         serialRows.push(found);
       }
       if (serialProblem) { problems.push({ line: i, code: 'SERIAL_INVALID', message: `${position}: ${serialProblem}` }); continue; }
-    } else if (requestedSerials.length) {
+    } else if (!serialTracked && requestedSerials.length) {
       warnings.push({ line: i, code: 'SERIALS_IGNORED', severity: 'INFO', message: `${position}: "${product.name}" is not serial-tracked, so the serial(s) entered were recorded as a note but not tracked individually.` });
     }
 
@@ -1468,5 +1481,5 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
 module.exports = {
   SALE_TYPES, PAYMENT_METHODS,
   prepare, complete, voidSale, validatePayments, totalsByMethod, dominantMethod,
-  serialEventFields,
+  serialEventFields, serialHeadHash,
 };

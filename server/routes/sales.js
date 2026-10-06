@@ -780,6 +780,86 @@ function mount(app, base = '/api') {
   }));
 
   // -------------------------------------------------------------------
+  // THE SERIAL REGISTER — every unit the shop has identified
+  // -------------------------------------------------------------------
+  /**
+   * List the serials this deployment holds.
+   *
+   * The lookup below answers a question about ONE number, usually because a
+   * customer is standing at the counter with a unit under their arm. This answers
+   * the register's own questions: what came in this week, what is still on the
+   * shelf un-sold, what has left and when its cover runs out, and which units are
+   * under a live claim. Without it the only way to know what a goods receipt
+   * captured was to remember the numbers.
+   */
+  app.get(`${base}/serials`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const scope = ctx.get('scope');
+    const { limit, offset } = pagination(ctx);
+    const where = ['sn.is_deleted = 0'];
+    const params = [];
+    const f = scopeFilter(scope, { alias: 'sn' });
+    if (f.sql) { where.push(f.sql); params.push(...f.params); }
+    const bf = await branchFilter(db, ctx, { alias: 'sn' });
+    if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
+
+    const productId = ctx.req.queryParam('product_id');
+    if (productId) { where.push('sn.product_id = ?'); params.push(String(productId)); }
+    const batchId = ctx.req.queryParam('batch_id');
+    if (batchId) { where.push('sn.batch_id = ?'); params.push(String(batchId)); }
+    const status = ctx.req.queryParam('status');
+    if (status) { where.push('sn.status = ?'); params.push(String(status).toUpperCase()); }
+    // SOLD / UNSOLD ARE THE TWO QUESTIONS THE SCREEN ACTUALLY ASKS, and they are not
+    // the same as status: a unit that was sold and then returned is UNSOLD and back
+    // on the shelf, while its status is RETURNED, not IN_STOCK.
+    const soldFilter = String(ctx.req.queryParam('sold') || '').toLowerCase();
+    if (['1', 'true', 'yes'].includes(soldFilter)) where.push('sn.sale_id IS NOT NULL');
+    else if (['0', 'false', 'no'].includes(soldFilter)) where.push('sn.sale_id IS NULL');
+    if (boolField(ctx.req.queryParam('in_warranty'))) {
+      where.push('sn.warranty_ends_at IS NOT NULL AND sn.warranty_ends_at >= ?');
+      params.push(watToday());
+    }
+    // `q` is what every other list in this API takes, and `search` is what a client reading
+    // the docs reaches for. Both are honoured rather than one being a silent no-op.
+    const search = searchTerm(ctx) || searchTerm(ctx, 'search');
+    if (search) {
+      where.push('(sn.serial_no LIKE ? OR sn.imei LIKE ? OR p.name LIKE ? OR p.sku LIKE ? OR c.name LIKE ?)');
+      const l = `%${search}%`; params.push(l, l, l, l, l);
+    }
+    const whereSql = where.join(' AND ');
+    const rows = await db.all(`SELECT sn.id, sn.serial_no, sn.imei, sn.status, sn.branch_id, sn.batch_id,
+          sn.warranty_starts_at, sn.warranty_ends_at, sn.sold_at, sn.created_at,
+          p.name AS product_name, p.sku, p.warranty_months,
+          b.name AS branch_name, sb.batch_no, sb.expiry_date,
+          s.receipt_no, s.sold_at AS sale_sold_at, c.name AS customer_name, c.phone AS customer_phone,
+          (SELECT w.claim_no FROM warranty_claims w WHERE w.serial_id = sn.id AND w.is_deleted = 0
+             ORDER BY w.opened_at DESC LIMIT 1) AS latest_claim_no,
+          (SELECT w.status FROM warranty_claims w WHERE w.serial_id = sn.id AND w.is_deleted = 0
+             ORDER BY w.opened_at DESC LIMIT 1) AS latest_claim_status,
+          (SELECT COUNT(*) FROM serial_events se WHERE se.serial_no = sn.serial_no) AS event_count
+        FROM serial_numbers sn
+        LEFT JOIN products p ON p.id = sn.product_id
+        LEFT JOIN branches b ON b.id = sn.branch_id
+        LEFT JOIN stock_batches sb ON sb.id = sn.batch_id
+        LEFT JOIN sales s ON s.id = sn.sale_id
+        LEFT JOIN customers c ON c.id = sn.customer_id
+        WHERE ${whereSql} ORDER BY sn.created_at DESC, sn.serial_no LIMIT ? OFFSET ?`, [...params, limit, offset]);
+    const total = await db.scalar(`SELECT COUNT(*) FROM serial_numbers sn
+        LEFT JOIN products p ON p.id = sn.product_id
+        LEFT JOIN customers c ON c.id = sn.customer_id
+        WHERE ${whereSql}`, params);
+    // The counts answer "how many units have I identified, and how many are still
+    // mine" — the question a shop asks after a first goods receipt with serials.
+    const counts = await db.first(`SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN sn.sale_id IS NULL THEN 1 ELSE 0 END) AS unsold,
+          SUM(CASE WHEN sn.sale_id IS NOT NULL THEN 1 ELSE 0 END) AS sold,
+          SUM(CASE WHEN sn.sale_id IS NOT NULL AND sn.warranty_ends_at IS NOT NULL AND sn.warranty_ends_at >= ? THEN 1 ELSE 0 END) AS in_warranty
+        FROM serial_numbers sn WHERE sn.is_deleted = 0`, [watToday()]);
+    ctx.json({ ...listResponse(rows, { limit, offset }, total), counts, today: watToday() });
+  });
+
+  // -------------------------------------------------------------------
   // SERIAL LOOKUP — warranty and anti-diversion
   // -------------------------------------------------------------------
   /**
@@ -804,13 +884,27 @@ function mount(app, base = '/api') {
         FROM serial_numbers sn
         LEFT JOIN products p ON p.id = sn.product_id
         LEFT JOIN branches b ON b.id = sn.branch_id
-        LEFT JOIN businesses biz ON biz.id = sn.business_id
+        -- THE BUSINESS COMES THROUGH THE BRANCH, NOT OFF THE SERIAL. serial_numbers has
+        -- no business_id column, so this join made the whole lookup answer
+        -- 500 no such column: sn.business_id — every time, for every serial. The route that
+        -- tells a counter whether a unit is still under warranty and which branch sold it
+        -- could not answer at all, and nothing noticed because no audit had ever called it:
+        -- the claims flow was 0/3 and this lookup sat behind it.
+        LEFT JOIN businesses biz ON biz.id = b.business_id
         LEFT JOIN sales s ON s.id = sn.sale_id
         LEFT JOIN customers c ON c.id = sn.customer_id
         WHERE UPPER(sn.serial_no) = ?
         ORDER BY sn.created_at DESC LIMIT 20`, [serialNo]);
 
     const latest = rows[0];
+    // A NUMBER NOBODY HAS SEEN IS A 404, NOT A CRASH. Without this the route read
+    // `.warranty_ends_at` off `undefined` and answered 500 — so "is this still under
+    // warranty?" came back as an internal error for exactly the serials the shop most needs
+    // to ask about (a unit from somewhere else, or a number typed wrongly at the counter),
+    // and the honest answer "we have never seen this unit" was unreachable.
+    if (!latest) {
+      throw new HttpError(`No record of serial ${serialNo} in this system. It was not received or sold from here — check the number on the label, or treat it as a unit from another shop.`, { status: 404, code: 'SERIAL_NOT_FOUND' });
+    }
     ctx.json({
       ok: true, serial: latest, history: rows,
       // Warranty is read off the serial itself, not off a claims table: a unit
