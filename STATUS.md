@@ -209,3 +209,55 @@ and warns when a serial-tracked line arrives with the switch off.
 right branch, each with one link in its chain).
 
 **Counts:** `npm run verify` **395/395/0** · **17 audits green** · serials **27 checks**.
+
+### P6b — WARRANTY CLAIMS, 0/3 → 3/3, AND THE SECOND DEFECT BEHIND THEM
+
+The flow the stage set out to audit. With a writer in the register it is reachable at last, and
+`audit.warranty` (**26 checks**) works it end to end: three appliances sold, one repaired, one
+replaced, one refunded, one with no cover at all.
+
+**FRONT TO BACK** open a claim → it is on the board with the unit, the customer and the receipt;
+the unit's own record carries the claim reference and its status. Repair it → closed with the
+cost and the recovery **kept apart** (`netCost` zero for a claim that costs what it recovers),
+and both posted to the books (5200 up ₦40,000, 1200 up ₦40,000, trial balance still balanced).
+Replace one → the returned unit goes `TRANSFERRED` and the replacement **inherits the remaining
+cover** rather than restarting it. Refund one → the original sale carries the annotation.
+
+**BACK TO FRONT** the closed board, the in-warranty filter, search by claim number and by serial,
+the unit's lookup, the trial balance, the sale.
+
+**AND THE REFUSALS** a serial nobody has seen (`404 SERIAL_NOT_FOUND`, offering a paid repair),
+a fault a supplier cannot act on, an unrecognised resolution, a rejection with no reason, a
+recovery larger than the cost, a recovery with no supplier reference, and a second resolution
+(`409 ALREADY_RESOLVED`).
+
+#### The defect this found
+
+**Migration `0007`** rebuilds `warranty_claims` because the API and the schema spoke *different
+vocabularies*: the route validates `REPAIRED/REPLACED/REFUNDED/REJECTED/SUPPLIER_RETURN/
+PAID_REPAIR` (and the screen offers exactly those), while the table's CHECK permitted
+`REPAIR/REPLACE/REFUND/REJECT/OUT_OF_WARRANTY`. **Not one value was in common**, so every
+resolution the route accepted died inside its own transaction on `CHECK constraint failed` and
+reached the manager as `400 CHECK_FAILED`. The resolution half of warranty — the repair, the
+replacement, the refund, and the supplier recovery that pays for it — had never once run. SQLite
+cannot alter a CHECK, so the table is rebuilt in place, with the old words mapped onto the new
+ones so a row that somehow exists arrives intact rather than aborting the migration.
+
+That is now **three** values-that-exist-nowhere defects in this product (P5's `UNREGISTERED`, the
+claim vocabulary, and the settlement below). Each was a string compared or written in one place
+and recognised in none.
+
+#### And a guard that contradicted its own message
+
+`POST /api/warranty-claims` refused a fault description under **8 characters** — while the
+message beside it said "in at least a sentence. **'Not working' cannot be assessed by a
+supplier**". "Not working" is eleven characters, so the one example the message names as
+unusable passed. The screen was worse (4 characters) and said the same thing. Both now require
+what a supplier actually needs to act: **three words and twelve characters** — what the unit
+does, and when it started.
+
+#### Counts
+
+`npm run verify` **395/395/0** · `bash test/run-audits.sh` **18 audits green** (serials 27,
+warranty 26) · coverage **197 routes · 145 audited · 36 screen-only · 16 unreached**, with
+**warranty-claims 3/3** and **serials 2/2**.

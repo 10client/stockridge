@@ -468,12 +468,20 @@ function mount(app, base = '/api') {
     const effectivelyInWarranty = Boolean(effectiveEnds) && effectiveEnds >= today;
 
     const faultReported = strField(requireVal(body, 'fault_reported'), { field: 'Fault reported', maxLength: 1000, required: true });
-    if (faultReported.length < 8) {
-      throw new HttpError('Describe the fault in the customer\'s own words, in at least a sentence. "Not working" cannot be assessed by a supplier, and a claim sent to a manufacturer with no fault description is rejected on sight.', { status: 400, code: 'FAULT_DESCRIPTION_REQUIRED' });
+    // A CHARACTER COUNT IS NOT A DESCRIPTION. The rule was eight characters and the message
+    // beside it said "in at least a sentence — "Not working" cannot be assessed by a
+    // supplier". "Not working" is eleven characters, so the one example the message names as
+    // unusable passed the check, and a claim reached the manufacturer saying nothing. The
+    // benchmark here is what a supplier needs to act: what the unit does, and when it
+    // started. Three words and twelve characters is the floor; the SCREEN enforces the same
+    // rule (public/js/views/returns.js), which used to accept four characters.
+    const faultWords = faultReported.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+    if (faultReported.length < 12 || faultWords < 3) {
+      throw new HttpError('Describe the fault in the customer\'s own words: what the unit does, and when it started — at least a short sentence. "Not working" cannot be assessed by a supplier, and a claim sent to a manufacturer with no fault description is rejected on sight.', { status: 400, code: 'FAULT_DESCRIPTION_REQUIRED' });
     }
 
     const id = newId();
-    const claimNo = `WC-${Date.now().toString(36).toUpperCase().slice(-6)}-${String(serial.serial_no).slice(-4)}`;
+    const claimNo = `WC-${Date.now().toString(36).toUpperCase().slice(-6)}-${String(serial.serial_no).replace(/[^A-Za-z0-9]/g, '').slice(-4) || String(serial.serial_no).slice(-4)}`;
     const customerId = body.customer_id ? String(body.customer_id) : (serial.customer_id || null);
     const supplierId = body.supplier_id ? String(body.supplier_id) : null;
 

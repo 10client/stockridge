@@ -525,7 +525,12 @@
             class: 'btn btn-primary',
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
-              if (!v.fault_reported || String(v.fault_reported).trim().length < 4) { ui.warn('Describe the fault. “Not working” cannot be sent to a supplier.'); return; }
+              // THE SAME RULE THE SERVER ENFORCES: what the unit does, and when it started.
+              // This used to accept four characters, so the screen let through the one example
+              // its own message named as unusable and the server then refused it.
+              const faultText = String(v.fault_reported || '').trim();
+              const faultWords = faultText.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w)).length;
+              if (faultText.length < 12 || faultWords < 3) { ui.warn('Describe the fault in the customer’s own words — what it does, and when it started. “Not working” cannot be sent to a supplier.'); return; }
               if (!v.serial_no && !v.customer_phone) { ui.warn('Give a serial number or a customer phone — the claim needs to point at a specific unit.'); return; }
               ev.currentTarget.disabled = true;
               try {
