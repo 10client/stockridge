@@ -34,7 +34,9 @@ const money = (n) => `₦${round2(n).toLocaleString('en-NG')}`;
 runAudit('stockchain', async (audit, d) => {
   const owner = d.owner || d.admin;
   const manager = (d.seats && d.seats.manager) || null;
-  if (!manager) throw new Error('the stockchain fixture needs a manager seat — a flow with no non-owner seat cannot show that the roles behave');
+  const senderSeat = (d.seats && d.seats.sender) || null;
+  if (!manager) throw new Error('the stockchain fixture needs a manager at the receiving branch — a flow with no non-owner seat cannot show that the roles behave, and on a live deployment the owner may be pinned to another branch');
+  if (!senderSeat) throw new Error('the stockchain fixture needs a seat at the SENDING branch — the rule that only the receiving branch books goods in needs a branch that is not the receiving one to prove it');
 
   const branches = d.branches || [];
   assert.ok(branches.length >= 2, 'the stockchain fixture needs two branches: goods have to travel between them');
@@ -230,6 +232,15 @@ runAudit('stockchain', async (audit, d) => {
 
   const sentBase = Number(line.quantity_sent_base != null ? line.quantity_sent_base : line.quantity_sent);
 
+  await audit.checkAsync('the branch that SENT the goods cannot book them in', async () => {
+    const res = await senderSeat.post(`/api/transfers/${encodeURIComponent(transfer.id)}/receive`, {
+      items: [{ item_id: line.id, quantity_received_base: sentBase }],
+    });
+    assert.equal(res.status, 403,
+      `a seat at ${from.name} (the sending branch) booked in goods addressed to ${to.name}: ${res.status} ${String(res.text).slice(0, 200)}. A receipt that the receiving branch did not make is a delivery nobody at the shop checked`);
+    assert.equal(res.json.code, 'BRANCH_SCOPE_VIOLATION', `the refusal came back as ${res.json.code}`);
+  });
+
   await audit.checkAsync('receiving more than was sent is refused, not absorbed', async () => {
     // THE OVER-RECEIPT IS EXPRESSED IN THE UNIT THE SERVER COMPARES, which is BASE
     // units, and the figure is READ from the transfer's own line rather than assumed.
@@ -242,7 +253,7 @@ runAudit('stockchain', async (audit, d) => {
     // guess. (An earlier version of this check sent `overrides`, which the endpoint
     // ignores: the receipt went through as a full 5, the guard never fired, and the check
     // reported a missing refusal that had simply never been asked for.)
-    const res = await owner.post(`/api/transfers/${encodeURIComponent(transfer.id)}/receive`, {
+    const res = await manager.post(`/api/transfers/${encodeURIComponent(transfer.id)}/receive`, {
       items: [{ item_id: line.id, quantity_received_base: sentBase + 1 }],
     });
     assert.ok(res.status >= 400 && res.status < 500,
@@ -255,7 +266,7 @@ runAudit('stockchain', async (audit, d) => {
   await audit.checkAsync('receiving it puts the goods on the destination’s shelf, and lands the whole quantity', async () => {
     const hereBefore = await stockAt(from);
     const thereBefore = await stockAt(to);
-    const res = await owner.post(`/api/transfers/${encodeURIComponent(transfer.id)}/receive`, {
+    const res = await manager.post(`/api/transfers/${encodeURIComponent(transfer.id)}/receive`, {
       items: [{ item_id: line.id, quantity_received_base: sentBase }],
     });
     assert.ok(res.status < 400, `receiving the transfer answered ${res.status}: ${String(res.text).slice(0, 240)}`);
@@ -321,9 +332,28 @@ runAudit('stockchain', async (audit, d) => {
       return rows;
     });
 
-    // THE PRODUCT'S LEAF LINE, and only it — every other line is left for the refusal
-    // below to complain about.
-    const target = lines.filter((l) => String(l.product_id) === String(product.id))[0] || lines[0];
+    // THE PRODUCT'S OWN LINE, AND ONLY IT — every other line is left for the refusal below
+    // to complain about. It used to fall back to `lines[0]`, and on staging that fallback
+    // silently picked a line for a product the audit had never touched: the count then read
+    // "0 against a system figure of 0" and the whole section passed without counting
+    // anything. A count that cannot find the line it just stocked is not a count.
+    const mine = lines.filter((l) => String(l.product_id) === String(product.id));
+    audit.note(`${lines.length} line(s) on this count, ${mine.length} for ${product.sku} (system ${mine.map((l) => l.system_qty).join(', ') || '—'})`);
+    assert.ok(mine.length > 0,
+      `the count open at ${to.name} has ${lines.length} line(s) and not one of them is ${product.sku}, which was received at this branch minutes ago. A full count that does not count the stock in front of it is the failure this section exists to catch`);
+    // A COUNT NEEDS A LINE WITH SOMETHING ON IT. On staging this product sat on the shelf in
+    // SIXTEEN batches — one per previous audit run — and the first three were empty: the
+    // count answered 0 against a system figure of 0, the variance was zero, and the section
+    // passed without proving anything. The line chosen is therefore the fullest one, which
+    // is the line a real stocktaker would start with.
+    const withStock = mine.filter((l) => Number(l.system_qty) > 0)
+      .sort((a, b) => Number(b.system_qty) - Number(a.system_qty));
+    assert.ok(withStock.length > 0,
+      `every one of the ${mine.length} line(s) for ${product.sku} at ${to.name} shows no stock, though ${SENT} unit(s) were received at this branch in this run`);
+    const target = withStock[0];
+    if (mine.length > 1) {
+      audit.note(`${mine.length} batches of ${product.sku} on this shelf (${withStock.length} with stock); the count answers the fullest and leaves the rest uncounted`);
+    }
     const uncountedLines = lines.filter((l) => String(l.id) !== String(target.id)).length;
     const expected = Number(target.expected_qty != null ? target.expected_qty : target.system_qty || 0);
     const counted = Math.max(0, expected - 2);
@@ -362,6 +392,12 @@ runAudit('stockchain', async (audit, d) => {
 
     await audit.checkAsync('committing adjusts the shelf to what was counted, and says who adjusted it', async () => {
       const before = await stockAt(to, { required: false });
+      let uncountedHeld = null;
+      if (second) {
+        const pre = await owner.get(`/api/stock?branch_id=${encodeURIComponent(to.id)}&limit=200`);
+        const preRows = ((pre.json.data || pre.json.stock) || []).filter((r) => String(r.product_id || (r.product && r.product.id)) === String(second.id));
+        uncountedHeld = preRows.reduce((sum, r) => sum + Number(r.on_shelf != null ? r.on_shelf : 0), 0);
+      }
       const res = await manager.post(`/api/stocktakes/${encodeURIComponent(session.id)}/commit`, { accept_uncounted: true });
       assert.ok(res.status < 400, `committing answered ${res.status}: ${String(res.text).slice(0, 300)}`);
       const after = await stockAt(to, { required: false });
@@ -380,7 +416,13 @@ runAudit('stockchain', async (audit, d) => {
         const stockRes = await owner.get(`/api/stock?branch_id=${encodeURIComponent(to.id)}&limit=200`);
         const rows = ((stockRes.json.data || stockRes.json.stock) || []).filter((r) => String(r.product_id || (r.product && r.product.id)) === String(second.id));
         const held = rows.reduce((sum, r) => sum + Number(r.on_shelf != null ? r.on_shelf : (r.quantity_in_base != null ? r.quantity_in_base : (r.quantity || 0))), 0);
-        assert.equal(held, 3, `the uncounted product holds ${held} units after a commit, expected 3 — an uncounted line must be left exactly as it was, not adjusted towards anything`);
+        // HELD BEFORE, NOT AN ASSUMED 3. This read `=== 3` and passed against a fresh local
+        // database and failed against staging, where an earlier run of this same audit had
+        // already put its own 3 units there: the shelf held 6, the goods were untouched, and
+        // the check accused the commit of moving them. A shared deployment is not a fresh
+        // one, and an audit that runs twice must not mistake its own last visit for a defect.
+        assert.equal(held, uncountedHeld,
+          `the uncounted product held ${uncountedHeld} unit(s) before the commit and holds ${held} after it. An uncounted line must be left exactly as it was, not adjusted towards anything`);
       }
       const adjustments = await owner.get(`/api/stock/adjustments?branch_id=${encodeURIComponent(to.id)}&limit=50`);
       if (adjustments.status === 200) {
@@ -407,6 +449,13 @@ runAudit('stockchain', async (audit, d) => {
     }],
     seats: [
       { as: 'manager', role: 'MANAGER', username: 'stk-manager', pin: '60417', branchIndex: 1, full_name: 'Stockchain Audit Manager' },
+      // A SEAT AT THE SENDING BRANCH, because the rule that matters here is two-sided and
+      // only a seat can show it: the branch that SENT the goods must not be able to book
+      // them in, and the branch that got them must. The first version of this audit posted
+      // both receipts as the owner, which passed on a local deployment (where the owner
+      // carries no branch) and answered 403 on staging (where the owner is pinned to a
+      // branch) — the same code, two answers, and the live one was right.
+      { as: 'sender', role: 'MANAGER', username: 'stk-sender', pin: '60418', branchIndex: 0, full_name: 'Stockchain Sending Manager' },
     ],
   }),
 });

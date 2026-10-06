@@ -3324,3 +3324,36 @@ exist** and silently answered `0` or `undefined`, which then looked like lost st
 **Rule for the rest of the P-series: a reader that cannot find its field must fail loudly,
 never answer zero.** Each of these was a wrong-key read wearing the costume of a
 production defect, and each one cost a diagnosis cycle.
+
+### P2 live leg — the same 17 checks against staging, and what only a live run could find (2026-10-06)
+
+`AUDIT_WRITE=1 AUDIT_BASE=https://stockridge-staging.stockridge.workers.dev node
+test/audit/audit.stockchain.js` → **17/17 in 12.1 s**, against a deployment that already
+holds two businesses and a shelf stacked with sixteen batches of the same product from
+earlier runs. Three failures appeared on staging that a fresh local database cannot
+produce, and all three were the audit's faults, not the product's:
+
+1. **The owner is pinned to a branch on a live deployment.** The audit posted both
+   receipts as the owner. Locally the owner carries no branch, the route's scope check
+   passes (`resolveBranch` → null), and the receipt succeeds. On staging the owner is
+   pinned to another branch and the product answered, correctly,
+   `403 BRANCH_SCOPE_VIOLATION — "That transfer is addressed to Verification Showroom,
+   not Verify Branch. Only the receiving branch can book it in."` The audit now books
+   receipts as a MANAGER seat pinned to the receiving branch, and a **second seat pinned
+   to the sending branch proves the other half of the rule**: `the branch that SENT the
+   goods cannot book them in` (403). Same code, two answers — the live one was right.
+2. **A shared shelf is not a fresh one.** `assert.equal(held, 3)` on the uncounted
+   product held because the run before it had put its own three units there; the second
+   run saw six and accused a correct commit of moving stock nobody counted. The check now
+   reads the figure before the commit and asserts it is **unchanged**.
+3. **A count that picks an empty batch proves nothing.** The product sat in sixteen
+   batches and the audit took the first, which was empty: "counting EL-AC-001 as 0
+   against a system figure of 0", variance zero, section green, nothing tested. The
+   fallback that caused it (`lines[0]`) is gone; a full count that has no line for stock
+   received minutes earlier now **fails loudly**, and the line chosen is the fullest one.
+   Staging now counts `8 against 10 — a deliberate discrepancy of 2`.
+
+**Redeployed after the two fixes:** staging `readiness: ready` (2 businesses trading),
+sample and production `awaiting the first business — this is the expected handover
+state`. A read-only probe of `/api/purchase-orders`, `/api/transfers` and
+`/api/stocktakes` answers `401` (present and guarded) on all three hosts.
