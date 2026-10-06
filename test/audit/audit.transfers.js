@@ -23,10 +23,15 @@
 const { runAudit, assert } = require('./lib/harness');
 const { startDeployment } = require('./lib/deployment');
 
-// THE SEATS' OWN CREDENTIALS, AS CONSTANTS. The harness keeps the logged-in actor (a
-// token and who they are), not the PIN that produced it — reading `seat.pin` would hand
-// `undefined` to the sign-in below and the failure would look like a broken move.
-const CASHIER = { username: 'trf-cashier', pin: '58319' };
+// THE SEAT'S OWN USERNAME, READ FROM THE SEAT, NOT FROM THE FIXTURE.
+//
+// On a live deployment the harness SUFFIXES every username it creates so two audits
+// cannot collide on a shared tenant (`trf-cashier` becomes `trf-cashier-gad02zc`). A
+// constant here signed in as the name the fixture asked for and got 401 BAD_CREDENTIALS
+// against staging — a failure that looks like a broken transfer and is a broken
+// assumption in the test. The PIN is safe as a constant because it is passed through
+// unchanged. What IS worth stating: the profile row's `full_name` is NOT on the actor,
+// which is why nothing here asserts against a name.
 
 runAudit('transfers', async (audit, d) => {
   const owner = d.owner || d.admin;
@@ -130,7 +135,7 @@ runAudit('transfers', async (audit, d) => {
       `the transfer was accepted and ${mover.username} still resolves to their old branch — an accepted move that does not move the scope is an owner who believes the cashier is somewhere they are not`);
 
     // A FRESH SIGN-IN, because that is what the person actually does next.
-    const back = await d.login({ username: CASHIER.username, pin: CASHIER.pin });
+    const back = await d.login({ username: mover.username, pin: mover.pin });
     assert.ok(back, `the moved cashier cannot sign in at all after the move`);
     const list = await d.request('GET', '/api/branches?limit=100', { token: back.token });
     const rows = ((list.json && (list.json.data || list.json.branches)) || []);
@@ -209,7 +214,7 @@ runAudit('transfers', async (audit, d) => {
     }],
     seats: [
       { as: 'manager', role: 'MANAGER', username: 'trf-manager', pin: '41072', branchIndex: 0, full_name: 'Transfer Audit Manager' },
-      { as: 'mover', role: 'STAFF', username: CASHIER.username, pin: CASHIER.pin, branchIndex: 0, full_name: 'Transfer Audit Cashier' },
+      { as: 'mover', role: 'STAFF', username: 'trf-cashier', pin: '58319', branchIndex: 0, full_name: 'Transfer Audit Cashier' },
     ],
   }),
 });

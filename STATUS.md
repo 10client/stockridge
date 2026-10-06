@@ -3194,3 +3194,80 @@ for the bare list while three other change-owed routes on the same deployment an
 rollout race again, cleared on the first re-probe.
 
 **G2 is closed.** **Next: G3 — pending staff transfers, and assignment history.**
+
+---
+
+## G3 closed — a move between branches is a handover, and the history answers for the past
+
+**The gap, in one sentence.** `users.branch_id` is the only thing that decides what a person can
+see in this product, and until this stage a single `PUT` changed it — with no record of the move
+and with nobody at the branch receiving them involved. `pending_user_transfers` and
+`user_assignment_history` have both been in the schema since the first migration, with a comment
+spelling out the rule ("the receiving manager must accept, so a cashier cannot be silently moved to
+a branch nobody is staffing"), and neither table had a single writer.
+
+**What was built.**
+
+* `server/services/assignmentService.js` — the ONE door a branch change goes through. It writes the
+  history row, keeps the pending row, and refuses the states that have no meaning (a move to the
+  branch they are already at; a second question while one is open — the schema's unique index is a
+  product rule, not a database detail).
+* `server/routes/userTransfers.js` — request, list what is waiting for me to decide, list what
+  concerns me, accept, refuse, withdraw, one person's history, and the coverage question
+  (`GET /api/assignment-history?branch_id=…&at=…`).
+* **Wired into the two doors that already existed.** `PUT /api/users/:id` with a new `branch_id` now
+  creates a question instead of moving anybody (for STAFF/MANAGER; a move to *no* branch and a move
+  by the platform administrator still apply at once, and both record history). `POST /api/users`
+  records the assignment at creation.
+* **Provisioning records history too**, which is the part that makes the coverage question
+  answerable at all: most staff never transfer, so a history that started at the first move could not
+  place them on any past date.
+* `public/js/views/users.js` — a **Transfers** tab (what is waiting, with Accept and Refuse as
+  columns rather than a hover menu), a **Move to another branch** action in the person's modal, a
+  **Where they have worked** view, and **Who was here on…** in the page head. A card on My account
+  shows a move that concerns YOU, with a Withdraw button: a cashier who has been told "you are going
+  to Minna" can see that it is a question, not a fact.
+* `test/integration/user-transfers.test.js` (9/9) and `test/audit/audit.transfers.js` (11 checks).
+
+**The rule, in access terms.** Asking moves nobody. The receiving branch decides, the sending branch
+does not, and the person being moved cannot answer their own transfer. Accepting moves them once,
+writes the from/to and the decider into the history, and the scope really changes — proved by
+signing in afresh and asking which branches they can see. Refusing keeps the person exactly where
+they were AND keeps the reason, because that reason is what the owner reads when the same request
+comes round again.
+
+**Two failures this stage produced, both worth recording:**
+
+1. **`audit.roles` failed, and it was right to.** Two of its 142 checks asserted that an owner's move
+   takes effect immediately — "a move that does not move the scope is an owner who believes the
+   cashier is somewhere they are not". Under G3 the owner is told, in the response, that the move is
+   a question, so the assertion was updated to prove the stronger thing: asking does NOT move them,
+   and the move after the answer IS real. A passing audit edited to match the code would be
+   worthless; this one was edited to test a better contract, and the sentence it failed with is the
+   reason the feature exists.
+2. **A live run failed on a username the fixture asked for.** The harness SUFFIXES usernames it
+   creates on a shared tenant (`trf-cashier` → `trf-cashier-gad02zc`), so a constant in the audit
+   signed in as a user that does not exist and got `401 BAD_CREDENTIALS` — a failure that looks like
+   a broken transfer and was a broken assumption in the test. It now reads the username from the
+   seat.
+
+**Also fixed while probing:** `/api/assignment-history` with no branch named told the caller "you can
+see more than one", which is true for a multi-branch owner and nonsense on a handover deployment
+where the administrator has no business at all — that is where it was read. It now looks the count
+up and says either "choose" or "there is nothing here yet".
+
+**Proved locally.** `npm run verify` **391/391/0**; `bash test/run-audits.sh` **11 audits, every check
+green** (142 role checks, 82 money checks, the new 11 transfer checks). `arbitrary-row : none`. The
+frontend-contract test caught a real thing on the way through: `POST /api/users/transfers/${id}/${what}`
+was an unverifiable path, and the two endpoints are now written out literally so the checker can see
+them. 19 routes still have no frontend caller.
+
+**Proved on the deployments.** Staging with `AUDIT_WRITE=1`: **`audit.transfers` 11/11 live in 7.7 s**
+— a real cashier created through the app, asked about, left exactly where they were, then moved and
+re-signed-in to a new scope. All three deployments serve the new endpoints; on sample and production,
+which have no business, every one of them answers with an empty list or a truthful 400, which is the
+correct answer for a handover deployment. Some reads still race the rollout: a probe immediately after
+a deploy is not evidence, and re-probing is.
+
+**G3 is closed.** **Next: G4 — dashboard depth** (void audit, unreconciled cash, branch breakdown, the
+plan/storage card).

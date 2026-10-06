@@ -307,7 +307,21 @@ function mount(app, base) {
     let branchId = strField(ctx.req.queryParam('branch_id'), { field: 'Branch', maxLength: 64 });
     if (!branchId) branchId = user.branch_id ? String(user.branch_id) : null;
     if (!branchId) {
-      throw new HttpError('Name the branch you are asking about — you can see more than one.', { status: 400, code: 'BRANCH_REQUIRED' });
+      // THE SENTENCE HAS TO BE TRUE ON THE DEPLOYMENT IT IS SAID ON. "You can see more
+      // than one" is right for an owner of a multi-branch business and nonsense on a
+      // handover deployment whose administrator has no business at all — which is
+      // exactly where this was first read. So the branch count is looked up, and the
+      // answer says either "choose" or "there is nothing here yet".
+      const branchCount = scope && scope.businessId
+        ? Number(await db.scalar('SELECT COUNT(*) AS c FROM branches WHERE business_id = ? AND is_deleted = 0', [String(scope.businessId)]) || 0)
+        : 0;
+      throw new HttpError(
+        branchCount > 1
+          ? 'Name the branch you are asking about — you can see more than one.'
+          : (branchCount === 0
+            ? 'There is no branch to report on yet. This is what a deployment looks like before the first business is created.'
+            : 'Name the branch you are asking about.'),
+        { status: 400, code: branchCount === 0 ? 'BUSINESS_REQUIRED' : 'BRANCH_REQUIRED' });
     }
     if (!atLeast(user.role, 'OWNER') && String(user.branch_id || '') !== String(branchId)) {
       throw new HttpError('That is another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
