@@ -2976,3 +2976,61 @@ with `{ required: false }`.
 Proved on both handover deployments: **status 200 · 1.4 MB (sample) and 1.5 MB (production) of
 500 MB · 5 modes · 3 retention rules · the permanence notice present**. An empty deployment reading
 as its own floor is the model's cleanest validation — the measured floor and the live figure agree.
+
+### G1c checkpoint 1 — the cleanup engine, proven against a database that looks used
+
+`server/lib/purge.js` now deletes in an order the SCHEMA agrees with, and
+`test/integration/purge.test.js` proves it against a database that looks like a working shop:
+**9 tests, 9 green** (`npm run verify` → **364/364/0**).
+
+The difficult part was the fixture, and it is worth recording because it changed what the tests can
+claim. The fixture reads `CREATE TABLE` for every table, works out what each column requires, and
+seeds **one row in every one of the 76 tables** in foreign-key order — so "the mode removed what it
+promised and kept what it promised" is asserted against a database with a row everywhere a real one
+has one. Three of its own bugs had to be found before it could be trusted:
+
+1. `SELECT id FROM <table> LIMIT 1` to read back a generated id returns **the first row in the
+   table**. While seeding shop B that is **shop A's row**, so every child row of the second business
+   was attached to the first business's parents — and cleaning up shop A then failed on foreign keys
+   owned by shop B. One line, and it made four cleanup steps look broken. Read back by `rowid`.
+2. A UNIQUE collision while seeding a second business was answered by **reusing the other
+   business's row** — the same cross-business damage by a different route. A table with a
+   `business_id` gets its own row, with free-text columns suffixed; a table with neither a
+   business nor a parent is genuinely deployment-wide (`client_settings` is `CHECK (id = 1)`) and is
+   reused deliberately.
+3. The retry suffixed **CHECK-constrained enum columns**, turning `role = 'ADMIN'` into
+   `'ADMIN-b2'`. Never suffix a column the schema constrains.
+
+What the test then caught in the ENGINE, all of it real and all of it now fixed:
+
+- **Branch-scoped tables were scoped through `branches`, which only a full reset removes** — so
+  `serial_numbers` and `stock_transfer_items` (and anything added later with the same shape) were
+  silently SKIPPED by every other mode. Scoping now reads the live schema: a table with a
+  `business_id` is scoped by it, a table with only a `branch_id` is scoped through its branch, and
+  a table with neither is scoped through its parent.
+- **Six ordering mistakes**: a deposit deleted before the instalment plan pointing at it, a purchase
+  order before the batch that arrived against it, a price list and a customer class before the
+  customer who chose them, a stocktake session before its adjustment, a delivery job before its
+  installation. Every one is a foreign key failure in front of a shop mid-cleanup. There is now a
+  test — `no cleanup plan removes a parent while a row that points at it survives` — that walks the
+  schema's foreign keys for all five modes and fails on any such pair, so this cannot come back.
+- **A NULL-able column in an exception makes the row escape both outcomes.** `NOT (batch_id IN
+  (kept))` is NULL when `batch_id` is NULL, so a serial with no batch was neither kept nor deleted
+  and then blocked the product deletion. The exception now states `batch_id IS NOT NULL AND ...`.
+- `pending_user_transfers` is scoped by **either branch as well as the user**, because its `user_id`
+  is nullable and a row with no user blocked the branch deletion.
+- `branch_devices` belongs to a **branch**, not to whoever registered it (`registered_by` is
+  nullable).
+
+**The keep-stock contract, settled against PharmaRidge's own code rather than guessed:**
+`CLEAR_OPERATIONS_KEEP_ACCOUNTING_AND_STOCK` prunes the CATALOGUE to the products that still have
+stock (`products: id NOT IN (activeProducts)`) and keeps the books, the customers and the suppliers.
+So the mode keeps a batch with `quantity > 0`, the product that batch belongs to, that product's
+unit ladder (a kept batch whose product lost its ladder is stock the till cannot ring up), and the
+serials of kept batches; it removes the empty batches and the catalogue entries they were the last
+stock of.
+
+Still open in G1c: `POST /api/data-management/purge` (OWNER-only, exact mode phrase +
+`export_confirmed` + `retention_acknowledged`, writes `data_cleanup_log`), the screened
+confirmation modal, the offline-replay quarantine hook in `server/routes/sync.js`, and
+`test/audit/audit.purge.js` (8 → 9 audits).
