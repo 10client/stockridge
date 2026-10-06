@@ -58,6 +58,19 @@ runAudit('money', async (audit, d) => {
 
   const settings = await audit.captureAsync('VAT switched on by the owner', async () => {
     if (d.live && !d.writable) return null;
+    // WHAT THE SHOP HAD BEFORE. On a live deployment this setting belongs to a real business:
+    // switching VAT on and walking away would leave the shop charging tax it may not be
+    // registered to collect. The prior values are read first and put back when the run ends
+    // (see `trackRestore` in test/audit/lib/deployment.js — the same discipline the staff
+    // audit uses for a branch's geofence, applied to the tax switch).
+    const was = d.settings || {};
+    d.trackRestore('VAT settings', async () => {
+      const res = await o.put('/api/settings', {
+        vat_enabled: Number(was.vat_enabled) === 1 ? 1 : 0,
+        vat_rate_percent: was.vat_rate_percent == null ? 7.5 : Number(was.vat_rate_percent),
+      });
+      return res.status < 300;
+    });
     const res = await o.put('/api/settings', { vat_enabled: 1, vat_rate_percent: 7.5 });
     if (res.status !== 200) throw new Error(`PUT /api/settings answered ${res.status} ${res.text.slice(0, 200)}`);
     return res.json.settings;

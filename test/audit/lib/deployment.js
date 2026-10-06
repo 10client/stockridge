@@ -294,6 +294,27 @@ class Deployment {
     return id || null;
   }
 
+  /**
+   * Something the audit CHANGED rather than created — a branch's geofence, a setting, a
+   * device's status — together with how to put it back.
+   *
+   * On a local run nothing needs undoing: the database is thrown away. On a LIVE deployment
+   * `branches[0]` is whatever the deployment happens to hold, and on staging that is another
+   * audit's fixture branch, not the one this run owns. `audit.staff` set a 200m fence and
+   * REGISTERED_DEVICE mode on `Roles Second Branch yfo3` and walked away, because the fixture
+   * only creates its own business LOCALLY (see the live branch above) and the branch it used
+   * was not its own. A write-mode audit that leaves a client's branch with somebody else's
+   * attendance settings is worse than no audit at all — the shop would start flagging every
+   * shift at the door. So: anything an audit changes, it registers here, and `close()` runs
+   * the restores in reverse order, reporting how many succeeded.
+   */
+  trackRestore(label, undo) {
+    if (typeof undo !== 'function') return null;
+    this.created.restores = this.created.restores || [];
+    this.created.restores.push({ label, undo });
+    return null;
+  }
+
   /** A user this run created, removed the way the app removes one. There is no
    *  DELETE /api/users — people are deactivated, never deleted, because their
    *  name is attached to sales they took years ago. */
@@ -356,6 +377,19 @@ class Deployment {
       // pretending otherwise in an audit would be its own small lie.
       if (!this.writable) return;
       const undone = { users: 0, businesses: 0, customers: 0, suppliers: 0 };
+
+      // EVERYTHING THE AUDIT CHANGED IS PUT BACK FIRST, newest first, WHILE ITS OWN SEATS ARE
+      // STILL ACTIVE. The restores authenticate as the audit's actors — a licence is removed
+      // by the manager who filed it — and running them after the users were retired meant the
+      // calls went out on a deactivated account and came back refused: the one restore that
+      // mattered silently failed. Fixtures are retired after; settings are restored before.
+      // See trackRestore above for why this matters more on a shared deployment than the
+      // fixtures do.
+      let restored = 0; const failedRestores = [];
+      for (const r of (this.created.restores || []).slice().reverse()) {
+        try { const ok = await r.undo(); if (ok) restored += 1; else failedRestores.push(r.label); }
+        catch (e) { failedRestores.push(`${r.label} (${e.message})`); }
+      }
       for (const actor of this.created.users) {
         try { const r = await this.retireUser(actor); if (r && r.status < 300) undone.users += 1; } catch (e) { /* reported below */ }
       }
@@ -373,7 +407,7 @@ class Deployment {
       for (const s of this.created.suppliers || []) {
         try { const r = await this.admin.put(`/api/suppliers/${encodeURIComponent(s.id)}`, { is_active: false }); if (r && r.status < 300) undone.suppliers += 1; } catch (e) { /* counted below */ }
       }
-      console.log(`  left the live deployment as it was found: ${undone.users} user(s), ${undone.businesses} business(es), ${undone.customers} customer(s) and ${undone.suppliers} supplier(s) retired (never deleted with their history — this product does not do that)`);
+      console.log(`  left the live deployment as it was found: ${undone.users} user(s), ${undone.businesses} business(es), ${undone.customers} customer(s) and ${undone.suppliers} supplier(s) retired, ${restored} setting(s) put back${failedRestores.length ? ` — COULD NOT RESTORE: ${failedRestores.join(', ')}` : ''} (history is never deleted — this product does not do that)`);
       return;
     }
     if (!this.child || this.child.killed) return;

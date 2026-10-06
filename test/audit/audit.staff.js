@@ -41,13 +41,77 @@ runAudit('staff', async (audit, d) => {
   if (!staff || !manager) throw new Error('the staff fixture needs a STAFF and a MANAGER seat — attendance is about people clocking in and somebody else reviewing it');
   const branch = (d.branches || [])[0];
   assert.ok(branch, 'the staff fixture has no branch to work at');
+  if (d.live) {
+    audit.note(`on a live deployment this run works at "${branch.name}", which it did not create — its attendance settings are read first and put back at the end`);
+  }
 
   // THE BRANCH HAS TO BE PLACEABLE BEFORE ANY OF THIS MEANS ANYTHING. A fence around a
   // branch with no coordinates cannot classify a single clock-in, and "no location was
   // supplied" is not a fence doing its job.
+  // THE MACHINE IS UNIQUE TO THIS RUN. A live deployment keeps the devices it has seen: the
+  // previous run of this audit had already approved `audit-staff-phone` at this branch, so the
+  // "unknown machine" it clocked in from was a KNOWN one and the flag correctly never fired —
+  // the check was reading somebody else's history. Same lesson as the per-run usernames and
+  // phone numbers, and the device was the last shared name left.
+  const DEVICE = `audit-phone-${Date.now().toString(36).slice(-5)}`;
   const FENCE = 200;
   const HERE = { lat: 9.0765, lng: 7.3986 };   // Wuse 2, Abuja
   const FAR = { lat: 9.0579, lng: 7.4951 };    // Maitama — a few km away, outside a 200m fence
+
+  // THE BRANCH THIS RUN USES IS RECORDED, AND PUT BACK WHEN IT ENDS.
+  //
+  // Locally the fixture owns its branch. On a LIVE deployment it does not: the harness only
+  // creates the fixture's business locally, so `branches[0]` is whatever the deployment
+  // holds — on staging that was another audit's fixture branch, and this audit was about to
+  // leave it with a 200m fence and REGISTERED_DEVICE mode, which would flag every shift
+  // clocked in at it from then on. Whatever is about to be changed is read first, and the
+  // restore is handed to the harness (`d.trackRestore`), so it happens even if a check fails
+  // halfway through.
+  // THIS AUDIT SWEEPS ITS OWN LEFTOVERS FIRST.
+  //
+  // A live deployment keeps everything a previous run filed. The first version of this audit
+  // used `FIRE_CERT`, `OWNBRANCH-*`, `RENEWED-*` and other loose names, and when a restore
+  // failed the record stayed — where it then made the NEXT run's filing a duplicate and its
+  // "no free licence type" branch unreachable. Everything filed here is now named `AUD-*`,
+  // and a run that finds an `AUD-*` record it did not file this time takes it back off the
+  // register, so the audit heals itself instead of depending on the last run having succeeded.
+  await audit.checkAsync('the register carries no leftovers from an earlier run of this audit', async () => {
+    const res = await owner.get(`/api/compliance/records?branch_id=${encodeURIComponent(branch.id)}&limit=200`);
+    assert.equal(res.status, 200, `the register answered ${res.status}`);
+    const leftovers = (res.json.data || []).filter((r) => String(r.record_number || '').startsWith('AUD-'));
+    for (const r of leftovers) {
+      const del = await owner.del(`/api/compliance/records/${encodeURIComponent(r.id)}`);
+      if (del.status >= 300 && del.status !== 404) {
+        throw new Error(`an earlier run left ${r.record_type} ${r.record_number} on the register and it could not be removed: ${del.status} ${String(del.text).slice(0, 160)}`);
+      }
+    }
+    if (leftovers.length) audit.note(`swept ${leftovers.length} leftover licence(s) from an earlier run: ${leftovers.map((r) => r.record_number).join(', ')}`);
+  });
+
+  const geofenceBefore = await audit.captureAsync('the branch’s attendance settings as they stand now', async () => {
+    const res = await owner.get('/api/branches?limit=100');
+    const row = ((res.json.data || res.json.branches) || []).filter((b) => String(b.id) === String(branch.id))[0];
+    assert.ok(row, 'the branch is not in the branch list, so its settings cannot be read or restored');
+    const before = {
+      mode: row.attendance_mode || 'GEOLOCATION',
+      radius: row.geofence_radius_meters == null ? 150 : Number(row.geofence_radius_meters),
+      lat: row.latitude == null ? null : Number(row.latitude),
+      lng: row.longitude == null ? null : Number(row.longitude),
+    };
+    audit.note(`${branch.name}: ${before.mode}, ${before.radius}m fence — these will be put back`);
+    d.trackRestore(`${branch.name} attendance settings`, async () => {
+      const body = { branch_id: branch.id, geofence_radius_meters: before.radius, attendance_mode: before.mode };
+      // THE ROUTE CANNOT UN-SET COORDINATES (a null keeps whatever is stored, and (0,0) is
+      // refused as an unset GPS) — so a branch that had none cannot have them removed. That
+      // limitation is named in the note rather than hidden, and the mode is restored first
+      // because that is what decides whether a fence is consulted at all.
+      if (before.lat != null && before.lng != null) { body.latitude = before.lat; body.longitude = before.lng; }
+      const res = await (d.admin || owner).put('/api/attendance/geofence', body);
+      return res.status < 400;
+    });
+    return before;
+  });
+
   await audit.checkAsync('the branch is placed, with a fence around it', async () => {
     const res = await manager.put('/api/attendance/geofence', {
       branch_id: branch.id, latitude: HERE.lat, longitude: HERE.lng,
@@ -86,7 +150,7 @@ runAudit('staff', async (audit, d) => {
       branch_id: branch.id,
       latitude: HERE.lat, longitude: HERE.lng, accuracy_meters: 12,
       method: 'GEOLOCATION',
-    }, { device: 'audit-staff-phone' });
+    }, { device: DEVICE });
     assert.ok(res.status === 201 || res.status === 200, `clocking in answered ${res.status}: ${String(res.text).slice(0, 260)}`);
     const id = res.json.id || (res.json.attendance && res.json.attendance.id);
     assert.ok(id, 'the clock-in was recorded and the answer carries no id');
@@ -122,7 +186,7 @@ runAudit('staff', async (audit, d) => {
   await audit.checkAsync('somebody already on shift cannot clock in again', async () => {
     const res = await staff.post('/api/attendance/clock-in', {
       branch_id: branch.id, latitude: HERE.lat, longitude: HERE.lng, method: 'GEOLOCATION',
-    }, { device: 'audit-staff-phone' });
+    }, { device: DEVICE });
     assert.ok(res.status >= 400 && res.status < 500,
       `a second clock-in while still on shift was accepted: ${res.status} ${String(res.text).slice(0, 220)}. Two open shifts for one person is a payroll figure with two answers`);
     assert.ok(/already|on shift|clocked in/i.test(String(res.json.error || '')),
@@ -135,7 +199,16 @@ runAudit('staff', async (audit, d) => {
     const summary = res.json.summary || {};
     assert.ok(Number(summary.clockedIn) >= 1, `today's board says ${summary.clockedIn} clock-in(s) while somebody is on shift`);
     assert.ok(Number(summary.stillIn) >= 1, `today's board says ${summary.stillIn} still in, and nobody has clocked out`);
-    assert.equal(Number(summary.completed), 0, `today's board shows ${summary.completed} completed shift(s) and nobody has clocked out`);
+    // THE BOARD CARRIES THE WHOLE DAY, NOT THIS RUN. On a live deployment other shifts are
+    // already on it — the first version of this check asserted the deployment-wide `completed`
+    // count was zero and reported a defect when earlier runs had closed their own shifts.
+    // What matters is that OUR shift is one of the open ones.
+    const ours = (res.json.records || []).filter((r) => String(r.id) === String(shift.id))[0];
+    assert.ok(ours, "today's board does not carry the shift this run opened");
+    assert.ok(!ours.clock_out_at, "today's board shows the open shift as already closed");
+    assert.ok(Number(summary.completed) >= 0, `the board counts ${summary.completed} completed shift(s)`);
+    assert.equal(Number(summary.clockedIn), (res.json.records || []).length,
+      `the board says ${summary.clockedIn} clock-in(s) and lists ${(res.json.records || []).length}`);
     assert.ok(res.json.date, "today's board does not say which day it is for");
 
     // AND WHO IS MISSING IS THE HALF A MANAGER ACTS ON. The staff seat is on shift, so they
@@ -215,9 +288,13 @@ runAudit('staff', async (audit, d) => {
     const out = await staff.post('/api/attendance/clock-out', { branch_id: branch.id });
     if (out.status === 409) audit.note('there was no shift open to close');
 
+    // A CLOCK-IN NEEDS A CLOSED SHIFT BEHIND IT, and on a live deployment a failed check can
+    // leave one open (the error above is `ALREADY_CLOCKED_IN`, which is the product being
+    // right). Every clock-in below therefore closes first and ignores a 409.
+    await staff.post('/api/attendance/clock-out', { branch_id: branch.id });
     const res = await staff.post('/api/attendance/clock-in', {
       branch_id: branch.id, latitude: HERE.lat, longitude: HERE.lng, accuracy_meters: 10, method: 'GEOLOCATION',
-    }, { device: 'audit-staff-phone' });
+    }, { device: DEVICE });
     assert.ok(res.status < 400, `clocking in under device mode answered ${res.status}: ${String(res.text).slice(0, 240)}`);
     assert.equal(Boolean(res.json.flagged), true,
       'a machine the branch has never approved clocked somebody in and was not flagged. In device mode the till IS the credential, and an unknown one is exactly what this mode exists to catch');
@@ -235,14 +312,14 @@ runAudit('staff', async (audit, d) => {
     const devices = await manager.get(`/api/attendance/devices?branch_id=${encodeURIComponent(branch.id)}`);
     assert.equal(devices.status, 200, `the device list answered ${devices.status} ${String(devices.text).slice(0, 200)}`);
     const list = devices.json.data || [];
-    const mine = list.filter((d) => String(d.device_id) === 'audit-staff-phone')[0];
+    const mine = list.filter((d) => String(d.device_id) === DEVICE)[0];
     assert.ok(mine,
       `the machine that just clocked in is not on the branch's device list (${list.length} device(s)). A machine nobody can see is a machine nobody can approve, and its shifts are flagged for ever`);
     assert.equal(String(mine.status), 'PENDING',
       `a machine that has only just been seen is listed as ${mine.status} — no device is registered until a manager says so`);
     assert.ok(Number(mine.clock_ins) >= 1, `the device list says this machine has clocked in ${mine.clock_ins} time(s)`);
 
-    const res = await manager.post(`/api/attendance/devices/${encodeURIComponent('audit-staff-phone')}/status`, {
+    const res = await manager.post(`/api/attendance/devices/${encodeURIComponent(DEVICE)}/status`, {
       branch_id: branch.id, status: 'APPROVED', label: 'Front counter phone',
     });
     assert.ok(res.status < 400, `approving the device answered ${res.status}: ${String(res.text).slice(0, 240)}`);
@@ -251,7 +328,8 @@ runAudit('staff', async (audit, d) => {
     await staff.post('/api/attendance/clock-out', { branch_id: branch.id });
     const again = await staff.post('/api/attendance/clock-in', {
       branch_id: branch.id, latitude: HERE.lat, longitude: HERE.lng, accuracy_meters: 10, method: 'GEOLOCATION',
-    }, { device: 'audit-staff-phone' });
+    }, { device: DEVICE });
+    if (again.status === 409) audit.note('the shift was already closed before the approving run');
     assert.ok(again.status < 400, `the clock-in from the approved machine answered ${again.status}: ${String(again.text).slice(0, 240)}`);
     assert.equal(Boolean(again.json.flagged), false,
       `a clock-in at the branch, from the machine a manager approved a minute ago, is still flagged: ${JSON.stringify(again.json.flags || [])}. If approving a device changes nothing, the device screen is decoration`);
@@ -261,9 +339,10 @@ runAudit('staff', async (audit, d) => {
   await audit.checkAsync('the fence still catches a clock-in from somewhere else', async () => {
     // THE OTHER HALF, ON THE OTHER AXIS: same person, same approved machine, kilometres away.
     // The machine cannot be what answers this one.
+    await staff.post('/api/attendance/clock-out', { branch_id: branch.id });
     const res = await staff.post('/api/attendance/clock-in', {
       branch_id: branch.id, latitude: FAR.lat, longitude: FAR.lng, accuracy_meters: 10, method: 'GEOLOCATION',
-    }, { device: 'audit-staff-phone' });
+    }, { device: DEVICE });
     assert.ok(res.status < 400, `the away clock-in answered ${res.status}: ${String(res.text).slice(0, 240)}`);
     assert.equal(Boolean(res.json.flagged), true,
       'a clock-in kilometres from the branch, from an approved machine, was NOT flagged. The fence is the half that catches a phone left at home');
@@ -320,10 +399,29 @@ runAudit('staff', async (audit, d) => {
       'the register returned rows for MISSING — a licence the branch does not hold is not a record, and inventing one would put a certificate in the books that nobody has');
   });
 
-  // THE FIRST REQUIRED TYPE, RECORDED PROPERLY, WITH AN EXPIRY INSIDE THE ALERT WINDOW.
+  // A REQUIRED TYPE THIS BRANCH DOES NOT ALREADY HOLD, WITH AN EXPIRY INSIDE THE ALERT WINDOW.
+  //
+  // On a live deployment the register already holds what earlier runs filed: the previous run
+  // of this audit left a live SONCAP_DEALER on the branch, so this run's attempt to file one
+  // was refused as a duplicate — correctly, and it made the check report a defect that was
+  // really a shared shelf. The existing records are read first, and this run files the first
+  // required type that is still free.
+  const alreadyHeld = await audit.captureAsync('which licences this branch already holds', async () => {
+    const res = await owner.get(`/api/compliance/records?branch_id=${encodeURIComponent(branch.id)}&limit=200`);
+    assert.equal(res.status, 200, `the register answered ${res.status}`);
+    const held = (res.json.data || []).map((r) => String(r.record_type));
+    const branchHeld = (res.json.data || []).filter((r) => String(r.record_number || '').startsWith('RENEWED-') || true).length;
+    if (held.length) audit.note(`${branchHeld} licence(s) already on the register: ${held.join(', ')}`);
+    return held;
+  });
+
   const soonType = checklist.expected.map((e) => (typeof e === 'string' ? e : e.type || e.code))
+    .filter((t) => !alreadyHeld.includes(String(t)))
     .find((t) => ['SONCAP_DEALER', 'TRADING_PERMIT', 'FIRE_CERT', 'SCUML', 'NCC_TYPE_APPROVAL'].includes(String(t)))
-    || checklist.expected.map((e) => (typeof e === 'string' ? e : e.type || e.code))[0];
+    || checklist.expected.map((e) => (typeof e === 'string' ? e : e.type || e.code)).filter((t) => !alreadyHeld.includes(String(t)))[0];
+  assert.ok(soonType,
+    `every licence type this business requires is already on the register (${alreadyHeld.join(', ')}). A deployment with a full register has nothing for this audit to file — re-run it against a fresh deployment, or clear the earlier run's records under Compliance`);
+  audit.note(`this run files ${soonType}, which the branch does not yet hold`);
   const SOON = day(20);   // inside the default 30-day warning window
 
   const licence = await audit.captureAsync('a licence recorded against the branch, expiring soon', async () => {
@@ -339,6 +437,14 @@ runAudit('staff', async (audit, d) => {
     assert.ok(res.status === 201 || res.status === 200, `recording the licence answered ${res.status}: ${String(res.text).slice(0, 260)}`);
     const id = res.json.id || (res.json.record && res.json.record.id);
     assert.ok(id, 'the licence was recorded and the answer carries no id');
+    // THE REGISTER IS TAKEN BACK OFF THE SHARED DEPLOYMENT WHEN THIS RUN ENDS, the same way its
+    // users and customers are. A licence left behind is not inert: it was what made the next
+    // run's filing a duplicate, and on a client's deployment it would sit in their compliance
+    // register as a claim about their premises that they never made.
+    d.trackRestore(`licence ${soonType} (${String(id).slice(0, 8)})`, async () => {
+      const res = await manager.del(`/api/compliance/records/${encodeURIComponent(id)}`);
+      return res.status < 300 || res.status === 404;
+    });
     return { id, type: soonType, expiry: SOON };
   });
   audit.note(`${soonType} recorded, expiring ${SOON}`);
@@ -376,7 +482,7 @@ runAudit('staff', async (audit, d) => {
     assert.equal(read.status, 200,
       `a STAFF member cannot read the compliance register at all (${read.status}). The person at the counter is the one who gets asked for the certificate`);
     const write = await staff.post('/api/compliance/records', {
-      branch_id: branch.id, record_type: 'FIRE_CERT', record_number: 'STAFF-TRY', expiry_date: day(200),
+      branch_id: branch.id, record_type: 'FIRE_CERT', record_number: 'AUD-STAFF-TRY', expiry_date: day(200),
     });
     assert.equal(write.status, 403,
       `a STAFF member recorded a licence: ${write.status} ${String(write.text).slice(0, 200)}. A licence is a claim about the business made to a regulator`);
@@ -392,7 +498,7 @@ runAudit('staff', async (audit, d) => {
     assert.ok(other, 'the staff fixture needs a second branch for the manager to reach for');
     const res = await manager.post('/api/compliance/records', {
       branch_id: other.id, record_type: 'FIRE_CERT',
-      record_number: `OTHER-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+      record_number: `AUD-OTHER-${Date.now().toString(36).slice(-4).toUpperCase()}`,
       issued_date: day(-10), expiry_date: day(300),
     });
     assert.ok(res.status >= 400 && res.status < 500,
@@ -407,11 +513,15 @@ runAudit('staff', async (audit, d) => {
     // what makes the screen work for a single-branch manager. (An earlier version of this
     // check called this "a licence with no branch" and expected a refusal — the product was
     // right and the check was wrong.)
-    const marker = `OWNBRANCH-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+    const marker = `AUD-OWNBRANCH-${Date.now().toString(36).slice(-4).toUpperCase()}`;
     const res = await manager.post('/api/compliance/records', {
       record_type: 'SIGNAGE_PERMIT', record_number: marker, issued_date: day(-5), expiry_date: day(500),
     });
     assert.ok(res.status < 400, `recording without naming a branch answered ${res.status}: ${String(res.text).slice(0, 220)}`);
+    d.trackRestore('licence SIGNAGE_PERMIT (own-branch fixture)', async () => {
+      const r = await manager.del(`/api/compliance/records/${encodeURIComponent(res.json.id)}`);
+      return r.status < 300 || r.status === 404;
+    });
     const back = await owner.get(`/api/compliance/records?branch_id=${encodeURIComponent(branch.id)}&limit=100`);
     const row = (back.json.data || []).filter((r) => String(r.record_number) === marker)[0];
     assert.ok(row, 'the licence recorded without a branch name is not on the manager\'s own branch');
@@ -420,7 +530,7 @@ runAudit('staff', async (audit, d) => {
 
   await audit.checkAsync('a licence that expires before it was issued is refused', async () => {
     const backwards = await manager.post('/api/compliance/records', {
-      branch_id: branch.id, record_type: 'FIRE_CERT', record_number: 'BACKWARDS',
+      branch_id: branch.id, record_type: 'FIRE_CERT', record_number: 'AUD-BACKWARDS',
       issued_date: day(-10), expiry_date: day(-40),
     });
     assert.equal(backwards.status, 400,
@@ -431,7 +541,7 @@ runAudit('staff', async (audit, d) => {
   await audit.checkAsync('a second live record of the same type on the same branch is refused, by name', async () => {
     const res = await manager.post('/api/compliance/records', {
       branch_id: branch.id, record_type: licence.type,
-      record_number: 'A-DUPLICATE', issued_date: day(-10), expiry_date: day(400),
+      record_number: 'AUD-DUPLICATE', issued_date: day(-10), expiry_date: day(400),
     });
     assert.equal(res.status, 409,
       `two live ${licence.type} records were allowed on one branch: ${res.status} ${String(res.text).slice(0, 200)}`);
@@ -446,7 +556,7 @@ runAudit('staff', async (audit, d) => {
     // BACK TO FRONT: the same record, pushed out past the window. Renewal is the ordinary
     // event, and every reading has to follow it.
     const res = await manager.put(`/api/compliance/records/${encodeURIComponent(licence.id)}`, {
-      expiry_date: day(400), record_number: `RENEWED-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+      expiry_date: day(400), record_number: `AUD-RENEWED-${Date.now().toString(36).slice(-4).toUpperCase()}`,
       notes: 'Renewed — staff audit.',
     });
     assert.ok(res.status < 400, `renewing the licence answered ${res.status}: ${String(res.text).slice(0, 240)}`);
@@ -472,7 +582,7 @@ runAudit('staff', async (audit, d) => {
     // THE LAST ROUTE IN THE FLOW. A record filed against the wrong type or the wrong date has
     // to be removable, or the register fills up with things that are not true — and a soft
     // delete is what this product does everywhere else, so it must be a soft one here too.
-    const marker = `BYMISTAKE-${Date.now().toString(36).slice(-4).toUpperCase()}`;
+    const marker = `AUD-BYMISTAKE-${Date.now().toString(36).slice(-4).toUpperCase()}`;
     const made = await manager.post('/api/compliance/records', {
       branch_id: branch.id, record_type: 'NCC_TYPE_APPROVAL', record_number: marker,
       issued_date: day(-5), expiry_date: day(365),
@@ -496,11 +606,20 @@ runAudit('staff', async (audit, d) => {
 
   await audit.checkAsync('the expiry notification is raised once, not twice', async () => {
     // A SECOND LICENCE, EXPIRING SOONER, SO THE NOTIFIER HAS SOMETHING TO RAISE.
+    // A TYPE THE BRANCH DOES NOT HOLD EITHER — a live register may already carry a fire
+    // certificate from an earlier run.
+    const freeType = ['TRADING_PERMIT', 'SCUML', 'NCC_TYPE_APPROVAL', 'SONCAP_DEALER', 'CAC', 'TIN', 'VAT_REG']
+      .filter((t) => !alreadyHeld.includes(t))[0];
+    assert.ok(freeType, 'every licence type is already on this branch — there is nothing free to file');
     const opened = await manager.post('/api/compliance/records', {
-      branch_id: branch.id, record_type: 'FIRE_CERT', record_number: `FIRE-${Date.now().toString(36).slice(-4).toUpperCase()}`,
+      branch_id: branch.id, record_type: freeType, record_number: `AUD-${String(freeType).slice(0, 6)}-${Date.now().toString(36).slice(-4).toUpperCase()}`,
       issued_date: day(-400), expiry_date: day(10),
     });
-    assert.ok(opened.status < 400, `recording the fire certificate answered ${opened.status}: ${String(opened.text).slice(0, 220)}`);
+    assert.ok(opened.status < 400, `recording the ${freeType} licence answered ${opened.status}: ${String(opened.text).slice(0, 220)}`);
+    d.trackRestore(`licence ${freeType} (notify fixture)`, async () => {
+      const res = await manager.del(`/api/compliance/records/${encodeURIComponent(opened.json.id)}`);
+      return res.status < 300 || res.status === 404;
+    });
 
     const first = await manager.post('/api/compliance/notify', {});
     assert.ok(first.status < 400, `raising expiry alerts answered ${first.status}: ${String(first.text).slice(0, 240)}`);

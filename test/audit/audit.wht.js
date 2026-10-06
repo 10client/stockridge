@@ -328,12 +328,27 @@ runAudit('wht', async (audit, d) => {
     if (!row) return null;
     if (Number(row.vat_registered)) return row;
     if (d.live && !d.writable) return row;
+    const wasRegistered = Number(row.vat_registered) === 1;
+    d.trackRestore('the business VAT registration flag', async () => {
+      const back = await o.put(`/api/businesses/${row.id}`, { vat_registered: wasRegistered });
+      return back.status < 300;
+    });
     const put = await o.put(`/api/businesses/${row.id}`, { vat_registered: true });
     return put.status === 200 ? put.json.business || { vat_registered: 1 } : row;
   });
 
   const settings = await audit.captureAsync('VAT switched on at 7.5%', async () => {
     if (d.live && !d.writable) return null;
+    // READ THE SHOP'S OWN SETTINGS FIRST — see the note in audit.money.js: a live deployment's
+    // tax switch is the client's, not the audit's, and it goes back as it was.
+    const wasVat = d.settings || {};
+    d.trackRestore('VAT settings', async () => {
+      const res = await o.put('/api/settings', {
+        vat_enabled: Number(wasVat.vat_enabled) === 1 ? 1 : 0,
+        vat_rate_percent: wasVat.vat_rate_percent == null ? 7.5 : Number(wasVat.vat_rate_percent),
+      });
+      return res.status < 300;
+    });
     const res = await o.put('/api/settings', { vat_enabled: 1, vat_rate_percent: 7.5 });
     if (res.status !== 200) throw new Error(`PUT /api/settings answered ${res.status}: ${res.text.slice(0, 240)}`);
     return res.json.settings;
@@ -453,8 +468,13 @@ runAudit('wht', async (audit, d) => {
         assert.equal(Number(back.json.output.sales), Number(before.json.output.sales),
           'the number of VAT-bearing sales rose after a sale that carried no VAT');
       });
-      // Put it back, so a run against a live deployment leaves the setting as it found it.
-      await o.put('/api/settings', { vat_enabled: 1 });
+      // Put it back as it was FOUND, not as the audit left it: on a live deployment the
+      // registered state may have been off (a business that is not VAT-registered), and
+      // switching it on here would have been a quiet change to somebody's tax position.
+      await o.put('/api/settings', {
+        vat_enabled: Number((d.settings || {}).vat_enabled) === 1 ? 1 : 0,
+        vat_rate_percent: (d.settings || {}).vat_rate_percent == null ? 7.5 : Number(d.settings.vat_rate_percent),
+      });
     }
   }
 
