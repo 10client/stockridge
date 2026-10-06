@@ -154,7 +154,10 @@ function mount(app, base = '/api') {
     for (const r of rows) {
       const entries = await db.all('SELECT * FROM debtor_ledger WHERE customer_id = ? AND is_deleted = 0 ORDER BY created_at, id', [String(r.id)]);
       const ageing = ageBalance(entries, { today: asAt });
-      const warn = overdueWarning({ entries, today: asAt });
+      // `settings` belongs here: without it the grace period an owner configured is
+      // ignored on the debtors list and applied only on one customer's own page, so
+      // the same debt is a problem in one view and not in the other.
+      const warn = overdueWarning({ entries, settings: ctx.get('settings'), today: asAt });
       debtors.push({
         ...r,
         credit_balance: round2(Number(r.credit_balance)),
@@ -343,7 +346,7 @@ function mount(app, base = '/api') {
         atLimit: Number(customer.credit_limit) > 0 && Number(customer.credit_balance) >= Number(customer.credit_limit),
         termsDays: terms.days, nextDueDate: terms.dueDate,
         termsCapped: terms.capped, termsMessage: terms.message,
-        warning: overdueWarning({ entries, settings: ctx.get('settings') }),
+        warning: overdueWarning({ entries, settings: ctx.get('settings'), today: watToday() }),
         decision: decision.decision, message: decision.message,
       },
     });

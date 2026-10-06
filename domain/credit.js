@@ -24,7 +24,7 @@
 // =====================================================================
 
 const { round2 } = require('./money');
-const { daysBetween } = require('./time');
+const { daysBetween, watToday } = require('./time');
 
 const AGEING_BUCKETS = Object.freeze([
   { key: 'bucket_0_30', label: 'Current (0-30 days)', minDays: 0, maxDays: 30 },
@@ -194,7 +194,11 @@ function daysOverdue(dueDate, { today = null } = {}) {
  * automatic block, for the same reason as everything else in this file.
  */
 function overdueWarning({ entries, settings = {}, today = null }) {
-  const reference = today || new Date().toISOString().slice(0, 10);
+  // WAT, not UTC. `new Date().toISOString()` is the previous day between 23:00 and
+  // midnight in Lagos, which would make a debt look one day older to every caller
+  // that did not pass a date — and the two callers that exist passed one on one
+  // path and not the other.
+  const reference = today || watToday();
   const graceDays = Number(settings.credit_grace_days) || 0;
   const worst = (entries || [])
     .filter((e) => Number(e.amount) > 0)

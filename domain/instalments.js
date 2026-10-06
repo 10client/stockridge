@@ -35,7 +35,7 @@
 // =====================================================================
 
 const { round2 } = require('./money');
-const { addMonths, addDays, daysBetween } = require('./time');
+const { addMonths, addDays, daysBetween, watToday } = require('./time');
 
 const FREQUENCIES = Object.freeze(['WEEKLY', 'BIWEEKLY', 'MONTHLY']);
 
@@ -287,7 +287,8 @@ function planStatusFromSchedule({ schedule, totalPayable, depositAmount = 0 }) {
  * trigger, not pull it.
  */
 function defaultTrigger({ plan, settings = {}, today = null }) {
-  const reference = today || new Date().toISOString().slice(0, 10);
+  // WAT, for the same reason as overdueWarning.
+  const reference = today || watToday();
   const thresholdDays = Number(settings.instalment_default_after_days) || 60;
   const missedCount = Number(settings.instalment_default_after_missed) || 3;
   const overdue = Number(plan.daysOverdue || 0);

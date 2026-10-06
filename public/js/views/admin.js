@@ -31,59 +31,123 @@
   // Which settings are switches, which are numbers, and how they pair up. The
   // grouping is the point: "staff may void sales" means nothing without the
   // window beside it.
+  // =====================================================================
+  // EVERY CONTROL HERE IS BACKED BY A COLUMN THE SERVER READS.
+  // =====================================================================
+  // This list is data, and it is checked rather than trusted:
+  // `test/unit/settings-controls.test.js` fails the build if a control names a
+  // key that is not in `DEFAULT_SETTINGS`, if two controls claim the same key, if
+  // a writable column has neither a control nor a documented reason for being
+  // hidden, or if a number control's range contradicts its default.
+  //
+  // WHAT WAS WRONG BEFORE. Fifteen of the thirty controls named keys that do not
+  // exist in `client_settings` — `low_stock_alerts` where the column is
+  // `low_stock_alert_enabled`, `receipt_footer` where it is `receipt_footer_text`,
+  // `require_serial_capture` where the flag is the whole module. The renderer
+  // skips a key the deployment does not have (`if (!(item.key in s)) continue`),
+  // so those controls did not sit there failing to save: THEY NEVER DREW. An owner
+  // could not switch on a stock warning, because the switch was not on the page
+  // and nothing said why.
+  //
+  // The other half of the same defect: twenty-nine writable columns had no control
+  // at all. A merchant could not set how long a customer has to pay, what deposit a
+  // layaway needs, how many months an instalment plan may run, whether managers may
+  // void, or whether the shop does deliveries. The columns existed, the server read
+  // them, and the only way to change one was to ask us.
+  //
+  // AND THE SWITCHES THAT LIED. Some settings describe behaviour that has no
+  // alternative — the app always treats quoted prices as VAT-inclusive, always
+  // requires an open till to sell, always refuses credit above a customer's limit.
+  // A switch for those promises a choice that does not exist, and the owner who
+  // turns it off believes something changed. Those are `type: 'fact'` now: the
+  // same place on the screen, the same font size, and they state what the system
+  // does instead of pretending to be a preference.
   const SETTING_GROUPS = [
     {
-      title: 'Sales floor controls',
-      blurb: 'What a member of staff may do without asking a manager.',
+      title: 'Modules',
+      blurb: 'What this deployment does. A module switched off is refused by the server, not merely hidden on the screen.',
+      items: [
+        { key: 'attendance_module_enabled', type: 'flag', label: 'Staff attendance and clock-in' },
+        { key: 'warranty_module_enabled', type: 'flag', label: 'Warranty tracking' },
+        { key: 'instalment_module_enabled', type: 'flag', label: 'Instalment plans (work and pay)' },
+        { key: 'delivery_module_enabled', type: 'flag', label: 'Delivery and installation jobs' },
+        { key: 'serial_tracking_enabled', type: 'flag', label: 'Capture serial numbers for products that track them', hint: 'Serial numbers are what make a warranty claim provable two years later.' },
+        { key: 'offline_sync_enabled', type: 'flag', label: 'Offline sync', hint: 'Sales taken while the network is down are queued and pushed when it returns.' },
+        { key: 'multi_branch_enabled', type: 'flag', label: 'More than one branch' },
+        { key: 'multi_business_enabled', type: 'flag', label: 'More than one business' },
+      ],
+    },
+    {
+      title: 'What staff may do without asking',
+      blurb: 'Each of these is enforced by the server. A cashier who is not allowed to discount is refused, not just shown a hidden button.',
       items: [
         { key: 'staff_can_void_sales', type: 'flag', label: 'Staff may void a sale' },
-        { key: 'staff_void_window_minutes', type: 'number', label: 'Void window (minutes)', min: 0, max: 1440, hint: 'Long enough to fix a mistyped sale, short enough that it is a correction rather than a habit.' },
-        { key: 'staff_can_discount', type: 'flag', label: 'Staff may give a discount' },
-        { key: 'staff_discount_max_pct', type: 'number', label: 'Maximum discount (%)', min: 0, max: 100 },
+        { key: 'staff_void_window_minutes', type: 'number', label: 'Void window (minutes)', min: 0, max: 1440, hint: 'Long enough to fix a mistyped sale, short enough that it is a correction rather than a habit. 0 with the permission on is refused by the server.' },
+        { key: 'staff_discount_max_pct', type: 'number', label: 'Maximum discount a cashier may give (%)', min: 0, max: 100, hint: '0 means cashiers cannot discount at all — which is why there is no separate on/off switch for it.' },
         { key: 'staff_can_sell_on_credit', type: 'flag', label: 'Staff may sell on credit' },
         { key: 'staff_credit_max', type: 'number', label: 'Credit cap per sale (₦)', min: 0, hint: 'A cap of zero with the permission on means staff can never actually do it — the server refuses that combination.' },
         { key: 'staff_can_adjust_stock', type: 'flag', label: 'Staff may adjust stock' },
         { key: 'staff_adjustment_max_units', type: 'number', label: 'Adjustment cap (units)', min: 0, max: 1000000 },
-        { key: 'staff_safe_spend_max', type: 'number', label: 'Staff may spend from the safe up to (₦)', min: 0 },
+        { key: 'staff_can_adjust_stock_value', type: 'number', label: 'Adjustment cap (₦ value)', min: 0, hint: 'Both caps apply: an adjustment larger than either one needs a manager.' },
+        { key: 'staff_can_spend_from_safe', type: 'flag', label: 'Staff may take cash from the safe' },
+        { key: 'staff_safe_spend_max', type: 'number', label: 'Safe withdrawal cap (₦)', min: 0, hint: '0 means no cap. Whether staff may draw at all is the switch above.' },
+      ],
+    },
+    {
+      title: 'What managers may do without asking',
+      blurb: 'A manager is not the owner. Turn these off and the manager is refused on the server and told to ask you.',
+      items: [
+        { key: 'managers_can_void_sales', type: 'flag', label: 'Managers may void a sale' },
+        { key: 'managers_can_approve_expenses', type: 'flag', label: 'Managers may approve an expense' },
+        { key: 'managers_can_edit_prices', type: 'flag', label: 'Managers may change a price' },
+        { key: 'managers_can_override_credit_limit', type: 'flag', label: 'Managers may take a customer over their credit limit' },
       ],
     },
     {
       title: 'Tax',
-      blurb: 'Nigeria: VAT 7.5%, prices quoted VAT-inclusive. Withholding is held as data, not code.',
+      blurb: 'Nigeria: VAT 7.5%. Withholding tax rates are held as data, not code, so a change in the Finance Act is an update rather than a release.',
       items: [
         { key: 'vat_enabled', type: 'flag', label: 'The business is VAT-registered and charges VAT' },
         { key: 'vat_rate_percent', type: 'number', label: 'VAT rate (%)', min: 0, max: 100, hint: '7.5% is the standard Nigerian rate. The server warns if it is set to anything else.' },
-        { key: 'prices_include_vat', type: 'flag', label: 'Prices are quoted VAT-inclusive' },
+        { type: 'fact', label: 'Why there is no VAT-inclusive switch', text: 'Prices in this system are always quoted VAT-inclusive, which is how Nigerian shops price and how the sales table stores a subtotal. The VAT is extracted from the quoted price for the return rather than added at the counter, so a shelf price is the price a customer pays. Setting the rate above is the whole of the control.' },
       ],
     },
     {
-      title: 'Stock and credit discipline',
-      blurb: 'Decisions the system makes on your behalf, and how strict to be.',
+      title: 'Credit, layaway and instalments',
+      blurb: 'How long a customer has, and how much of a commitment you take before goods leave the shop.',
       items: [
-        { key: 'low_stock_alerts', type: 'flag', label: 'Warn when stock falls below the reorder level' },
-        { key: 'expiry_alerts', type: 'flag', label: 'Warn about stock nearing expiry' },
-        { key: 'expiry_alert_days', type: 'number', label: 'Days of warning before expiry', min: 1, max: 365 },
-        // The compliance window lives here rather than as a flag because the
-        // number is the policy: a bar with a fire certificate and a dealer with a
-        // SONCAP registration do not think about renewals on the same timetable.
-        // 90 is the ceiling the server enforces, because the expiry view the alert
-        // list reads stops at a quarter's notice.
+        { key: 'credit_max_days', type: 'number', label: 'Credit must be settled within (days)', min: 1, max: 365 },
+        { key: 'return_window_days_default', type: 'number', label: 'Return window (days)', min: 0, max: 365 },
+        { key: 'change_owed_expiry_days', type: 'number', label: 'Change owed expires after (days)', min: 0, max: 365, hint: 'A customer who underpaid in cash can come back for it inside this window.' },
+        { key: 'layaway_max_days', type: 'number', label: 'A layaway may run for (days)', min: 1, max: 730 },
+        { key: 'layaway_min_deposit_pct', type: 'number', label: 'Layaway deposit (%)', min: 0, max: 100 },
+        { key: 'instalment_max_tenure_months', type: 'number', label: 'Instalment plan, maximum (months)', min: 1, max: 60 },
+        { key: 'instalment_min_deposit_pct', type: 'number', label: 'Instalment deposit (%)', min: 0, max: 100 },
+        { key: 'instalment_max_interest_pct', type: 'number', label: 'Instalment, maximum interest (%)', min: 0, max: 100, hint: 'Flat interest over the whole plan, as it is normally quoted in the market.' },
+        { key: 'instalment_default_after_days', type: 'number', label: 'An instalment plan has failed after (days of arrears)', min: 1, max: 365, hint: 'Surfaced on the plan, never acted on automatically: calling a guarantor or repossessing goods is your decision, not the system\'s.' },
+        { key: 'instalment_default_after_missed', type: 'number', label: '\u2026or after this many missed instalments', min: 1, max: 60 },
+        { key: 'credit_grace_days', type: 'number', label: 'Ignore a debtor being late for (days)', min: 0, max: 90, hint: 'A customer at their credit limit and 90 days overdue is a different risk from one who pays on time. This is the point where the counter starts warning.' },
+        { type: 'fact', label: 'Why there is no credit-limit switch', text: 'A sale above a customer\u2019s credit limit is always refused, and the switch on this page decides whether a MANAGER may override that refusal. There is no way to turn the limit off entirely, because a limit that can be ignored is not a limit.' },
+        { type: 'fact', label: 'Where the default credit limit lives', text: 'Not here. A credit limit belongs to a customer CLASS \u2014 Walk-in, Trade, Wholesale \u2014 and its default is set on the Customer classes screen, because a wholesaler and a walk-in customer should not share one number.' },
+      ],
+    },
+    {
+      title: 'Stock and expiry warnings',
+      blurb: 'What the system tells you before it becomes a problem.',
+      items: [
+        { key: 'low_stock_alert_enabled', type: 'flag', label: 'Warn when stock falls below the reorder level', hint: 'The reorder level itself is set per product.' },
+        { key: 'expiry_alert_days', type: 'number', label: 'Days of warning before stock expires', min: 1, max: 720 },
         { key: 'compliance_alert_days', type: 'number', label: 'Days of warning before a licence expires (90 maximum)', min: 1, max: 90 },
-        { key: 'block_negative_stock', type: 'flag', label: 'Refuse to sell stock the branch does not have' },
-        { key: 'require_serial_capture', type: 'flag', label: 'Capture serial numbers for products that track them' },
-        { key: 'credit_limit_enforced', type: 'flag', label: 'Refuse credit above a customer\'s limit' },
-        { key: 'default_credit_limit', type: 'number', label: 'Default credit limit for new customers (₦)', min: 0 },
-        { key: 'debtor_reminder_days', type: 'number', label: 'Chase a debtor after (days)', min: 1, max: 365 },
+        { type: 'fact', label: 'Why expiry warnings have no on/off switch', text: 'The number above is the policy. Goods that expire are the one stock risk that becomes worthless rather than merely slow, and a shop that has switched the warning off will find the batch after the date has passed. Set the number to what you can act on; the warning stays on.' },
+        { type: 'fact', label: 'Selling stock you do not have', text: 'Always refused. The sale path checks the branch\u2019s available quantity \u2014 on the shelf minus what is reserved \u2014 and will not post a line it cannot fulfil, because a negative stock figure makes every report, valuation and count wrong until somebody fixes it by hand.' },
       ],
     },
     {
       title: 'Cash and banking',
-      blurb: 'How the drawer and the safe are policed.',
+      blurb: 'The drawer, the safe and the bank.',
       items: [
-        { key: 'require_till_open', type: 'flag', label: 'A sale needs an open till' },
-        { key: 'till_variance_alert', type: 'number', label: 'Flag a till variance above (₦)', min: 0 },
-        { key: 'require_safe_banking', type: 'flag', label: 'Require cash to be banked from the safe' },
-        { key: 'banking_reminder_days', type: 'number', label: 'Remind to bank every (days)', min: 1, max: 30 },
+        { type: 'fact', label: 'Why a sale needs an open till', text: 'There is no switch. Cash taken with no till open is cash that cannot be reconciled, and the difference surfaces at the end of the month as a shortage the cashier cannot explain. Every sale is tied to a till session, so the count at close is the check.' },
+        { type: 'fact', label: 'Banking a deposit', text: 'Every withdrawal, banking, expense and till funding has to name the reference it will appear under on the bank statement \u2014 the deposit slip, transfer number or cheque number. Without it the entry cannot be matched to the bank, which is the only proof the money arrived. There is nothing to switch off.' },
       ],
     },
     {
@@ -91,11 +155,12 @@
       blurb: 'Appears on receipts, labels and returns.',
       items: [
         { key: 'business_name', type: 'text', label: 'Trading name' },
-        { key: 'receipt_footer', type: 'text', label: 'Receipt footer' },
-        { key: 'receipt_show_vat', type: 'flag', label: 'Show the VAT breakdown on receipts' },
+        { key: 'receipt_footer_text', type: 'text', label: 'Receipt footer' },
         { key: 'admin_contact_name', type: 'text', label: 'Support contact' },
         { key: 'admin_contact_phone', type: 'text', label: 'Support phone' },
         { key: 'admin_contact_email', type: 'text', label: 'Support email' },
+        { key: 'notes', type: 'text', label: 'Notes for whoever runs this account' },
+        { type: 'fact', label: 'VAT on a receipt', text: 'A printed receipt shows the VAT breakdown whenever the business is VAT-registered. Suppressing it on a tax invoice is not a display preference \u2014 it is a document that cannot be used to claim input VAT.' },
       ],
     },
   ];
@@ -477,7 +542,27 @@
         body.appendChild(ui.h('p', { class: 'sub' }, group.blurb));
         const grid = ui.h('div', { class: 'form-grid' });
         for (const item of group.items) {
-          if (!(item.key in s)) continue;          // a setting this deployment does not have
+          // A FACT has no key and no input — see the note above the list. It sits in
+          // the same grid, at the same size, and says what the system does where a
+          // switch used to promise a choice that was never there.
+          if (item.type === 'fact') {
+            grid.appendChild(ui.h('div', { class: 'span-2' },
+              ui.h('div', { class: 'ctl' }, item.label),
+              ui.h('div', { class: 'hint' }, item.text)));
+            continue;
+          }
+          // A KEY THE DEPLOYMENT DOES NOT HAVE IS NOT SILENTLY DROPPED.
+          //
+          // This line used to read `if (!(item.key in s)) continue;` — so a control
+          // whose key was missing simply did not appear, and nothing anywhere said
+          // so. A test now refuses to let the two lists disagree, and this branch
+          // reports the disagreement on the page if one ever slips through.
+          if (!(item.key in s)) {
+            grid.appendChild(ui.h('div', { class: 'span-2' },
+              ui.h('div', { class: 'ctl' }, item.label),
+              ui.h('div', { class: 'err' }, `This control is not available on this deployment: the server has no "${item.key}" setting. Support has been told by this message; nothing you do here can change it.`)));
+            continue;
+          }
           if (item.type === 'flag') {
             grid.appendChild(ui.field({ label: item.label, name: item.key, type: 'checkbox', value: Number(s[item.key]) ? 1 : 0, disabled: !canEdit, hint: item.hint || null }));
           } else if (item.type === 'number') {
@@ -509,7 +594,16 @@
       if (!Object.keys(body).length) { ui.info('Nothing has changed.'); return; }
       await ui.withBusy(form, async () => {
         try {
-          const res = await SR.api.put('/api/settings', { body });
+          // THE PAYLOAD IS THE SECOND ARGUMENT. `SR.api.put(path, body, opts)`.
+          // This said `{ body }` — an object whose only key is `body` — so the
+          // request carried `{ body: {...} }` and the server saw one key named
+          // "body". Saving from this screen has therefore never worked: the settings
+          // route ignored the unknown key and answered "Nothing to change", and the
+          // owner concluded that the system had quietly disagreed with them. The
+          // Stage-10 sweep for this defect looked for `{ body:` WITH A COLON and
+          // this is the shorthand form, which is why it survived. The contract test
+          // now catches both.
+          const res = await SR.api.put('/api/settings', body);
           ui.ok(res.message || 'Settings saved.');
           await SR.state.load({ force: true });
           load();

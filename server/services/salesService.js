@@ -1048,11 +1048,17 @@ async function complete(db, params) {
       const finalBalance = round2(prior + paymentResult.balanceDue);
 
       if (paymentResult.balanceDue > 0) {
+        // `due_date` travels WITH the charge, computed from the same terms that
+        // produced `sales.due_date` a few lines above. Without it every ageing
+        // reader falls back to `created_at`, so "overdue" silently means "days
+        // since the sale" and the owner's grace setting means something different
+        // for every customer class. See migration 0004.
+        const dueDate = creditDueDate(customer, customerClass, settings);
         tx.queue(`INSERT INTO debtor_ledger (
-            id, branch_id, business_id, customer_id, entry_type, reference_id, amount, balance_after, notes, created_by, created_at, updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+            id, branch_id, business_id, customer_id, entry_type, reference_id, amount, balance_after, due_date, notes, created_by, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
           newId(), String(branch.id), String(business.id), String(customer.id), 'SALE', saleId,
-          totals.total, afterCharge,
+          totals.total, afterCharge, dueDate,
           `Credit sale, receipt ${receiptNo}${creditOverrideReason ? `. Over limit: ${creditOverrideReason}` : ''}`,
           String(user.id),
         ]);

@@ -32,7 +32,7 @@ const { newId, hashPin, verifyPin, numericCode } = require('../../domain/crypto'
 const { watNow, watToday } = require('../../domain/time');
 const { oneOf, pin: pinRule, username: usernameRule, email: emailRule, nigerianPhone, validateNuban } = require('../../domain/validation');
 const {
-  getSettings, DEFAULT_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS, planUsage,
+  getSettings, DEFAULT_SETTINGS, FLAG_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS, planUsage,
   assertCanCreateBusiness, assertCanCreateBranch, assertCanCreateStaff, assertFeatureEnabled,
   assertSubscriptionActive, activeBusinessCount, activeBranchCount, activeStaffCount,
 } = require('../../domain/planLimits');
@@ -962,15 +962,44 @@ function mount(app, base = '/api') {
     // computed or belongs to another table, and a mass-assignment of the request
     // body would let a caller set `data_reset_at` or `primary_business_id`.
     const allowed = Object.keys(DEFAULT_SETTINGS).filter((k) => k !== 'id');
+
+    // A KEY THAT IS NOT A SETTING IS REFUSED, NOT IGNORED.
+    //
+    // The loop below only looks at keys it knows, so `{ receipt_footer: 'x' }` — the
+    // name the Settings screen used for a year while the column was
+    // `receipt_footer_text` — was accepted, reported as saved, and did nothing.
+    // A caller who misspells a key must be told, because the alternative is an
+    // owner who believes they set something. `unknown` is reported in full so the
+    // message can name what was actually sent.
+    const unknown = Object.keys(body).filter((k) => !allowed.includes(k));
+    if (unknown.length) {
+      throw new HttpError(
+        `${unknown.length === 1 ? 'That is not a setting' : 'Those are not settings'}: ${unknown.join(', ')}. Nothing was changed.`,
+        {
+          status: 400,
+          code: 'UNKNOWN_SETTING',
+          fields: unknown.reduce((acc, k) => { acc[k] = 'Not a setting on this deployment.'; return acc; }, {}),
+        },
+      );
+    }
+
     const sets = []; const params = []; const changes = {};
     for (const col of allowed) {
       if (body[col] === undefined) continue;
       const def = DEFAULT_SETTINGS[col];
       let value;
       if (typeof def === 'number') {
-        // A flag stored as 0/1 is validated as a flag, not as a number, so that
-        // `true` works and `7` does not silently become "on".
-        value = [0, 1].includes(def) ? boolField(body[col], def) : numField(body[col], { field: col.replace(/_/g, ' '), min: 0, max: 1000000 });
+        // A FLAG IS NAMED, NOT INFERRED FROM ITS DEFAULT.
+        //
+        // This read `[0, 1].includes(def)` — "the default is zero or one, so it must
+        // be a boolean" — which is true of a flag and false of any number whose
+        // sensible default is zero. `credit_grace_days: 30` and `staff_credit_max:
+        // 25000` are both numbers, both default to 0, and both were therefore handed
+        // to `boolField`, which does not recognise `30` as a boolean, returned the
+        // fallback, and SAVED ZERO with a success message. See FLAG_SETTINGS.
+        value = FLAG_SETTINGS.has(col)
+          ? boolField(body[col], def)
+          : numField(body[col], { field: col.replace(/_/g, ' '), min: 0, max: 1000000 });
       } else {
         value = strField(body[col], { field: col.replace(/_/g, ' '), maxLength: 2000 });
       }

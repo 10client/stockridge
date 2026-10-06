@@ -1858,3 +1858,179 @@ wire-ups (`user_assignment_history`, `pending_user_transfers`, `delivery_zones`,
 `stock_transfer_serials`, `data_cleanup_log`) · the notifications bell on screen
 (the routes and the producer now exist; no screen shows a bell) ·
 `public/offline.html` and the live staging offline proof.
+
+# CHECKPOINT — Stage 12: THE SETTINGS SCREEN, WHICH HAD NEVER SAVED ANYTHING
+
+Date: 2026-10-06 · Local: `npm run verify` → **348 tests, 348 pass, 0 fail** ·
+Live on all three deployments · Settings probe **5/5** on staging · Compliance probe
+**8/8** on staging.
+
+## Fifteen controls that were never on the page
+
+Fifteen of the thirty controls on Settings named keys that do not exist in
+`client_settings` — `low_stock_alerts` where the column is `low_stock_alert_enabled`,
+`receipt_footer` where it is `receipt_footer_text`, `require_serial_capture` where
+the flag is the whole module. The renderer skips a key the deployment does not
+have:
+
+```js
+if (!(item.key in s)) continue;     // "a setting this deployment does not have"
+```
+
+so those controls did not sit there failing to save. **They never drew.** An owner
+who wanted the stock warning switched on was looking at a page that did not have
+the switch on it and said nothing about why.
+
+The other half of the same defect: **twenty-nine writable columns had no control at
+all.** How many days a customer has to pay, what deposit a layaway needs, how long
+an instalment plan may run, whether managers may void a sale, whether the shop does
+deliveries — all settable by us and not by the merchant.
+
+The screen is now **8 groups, 44 controls, 8 stated facts**, and every one of them
+is backed by a column the server reads.
+
+## The switches that lied
+
+Some of the old controls described behaviour that has no alternative. The app
+always treats quoted prices as VAT-inclusive (the sales table's own CHECK enforces
+`subtotal - discount + delivery = total`), always requires an open till to sell,
+always refuses credit above a customer's limit, always assesses the customer class
+and the customer. A switch for those promises a choice that does not exist, and an
+owner who turns it off believes something changed.
+
+They are `type: 'fact'` now — same grid, same size — and they say what the system
+does instead:
+
+> **Why there is no credit-limit switch.** A sale above a customer's credit limit is
+> always refused, and the switch on this page decides whether a MANAGER may override
+> that refusal. There is no way to turn the limit off entirely, because a limit that
+> can be ignored is not a limit.
+
+> **Where the default credit limit lives.** Not here. A credit limit belongs to a
+> customer CLASS — Walk-in, Trade, Wholesale — and its default is set on the
+> Customer classes screen, because a wholesaler and a walk-in customer should not
+> share one number.
+
+## Three settings the code read and nobody could set
+
+```
+domain/credit.js:198       Number(settings.credit_grace_days) || 0
+domain/instalments.js:291  Number(settings.instalment_default_after_days) || 60
+domain/instalments.js:292  Number(settings.instalment_default_after_missed) || 3
+```
+
+Both are handed real settings by their routes (`customers.js:346`,
+`afterSales.js:1380`), and none of the three had a column. The behaviour worked, at
+0 days' grace and 60 days of arrears and 3 missed instalments, and **how many days
+late a customer may be before the counter warns is not a number to guess at for a
+merchant** — it is exactly the judgement one Nigerian trader makes differently from
+the next.
+
+`schema/migrations/0003` adds the three columns, with the defaults the code was
+already falling back on, so applying it changes nothing until somebody chooses.
+
+## And the trap underneath: a flag and a number look identical
+
+The settings route decided a value's type by looking at its default —
+`[0, 1].includes(def)` meant "this is a boolean". True of a flag; **false of any
+number whose sensible default is zero**, and there are two: `credit_grace_days`
+(days) and `staff_credit_max` (naira). So `credit_grace_days: 30` went to
+`boolField`, which does not recognise `30` as a boolean and returned the fallback:
+
+```
+PUT /api/settings {"credit_grace_days": 30}   →  200 "1 setting(s) changed"
+GET /api/settings                              →  credit_grace_days: 0
+```
+
+Saved as zero, reported as success. The flags are now **named** in
+`FLAG_SETTINGS` (`domain/planLimits.js`), and the unit test fails if a setting whose
+default is 0 or 1 is neither a flag nor a documented number.
+
+## The Save button had never worked
+
+The probe that types a value into the page and reads it back over HTTP failed the
+first time it ran, for a reason no API test could have found:
+
+```
+That is not a setting: body. Nothing was changed.
+```
+
+`SR.api.put(path, body, opts)` takes the payload as its **second argument**, and
+the screen sent `{ body }` — an object whose only key is `body`. Saving ANY setting
+on that screen has therefore never worked. The Stage-10 sweep for this exact defect
+looked for `{ body:` **with a colon**, and this is the shorthand form, which is why
+it survived a sweep that was specifically hunting it. Two sites existed: the
+Settings Save, and **editing a user** (`views/users.js:442`). Both fixed, and the
+guard now matches the shorthand.
+
+The screen's own error message is what made this findable in one run. Before this
+stage the server **silently ignored an unknown key** and answered "Nothing to
+change" — so a typo'd payload and a correct one with no changes were
+indistinguishable. A key that is not a setting is now `400 UNKNOWN_SETTING`, naming
+the key, and nothing in that request is applied.
+
+## And the date "overdue" was measured from
+
+Adding `credit_grace_days` exposed the next thing: `debtor_ledger` had no
+`due_date`. Every ageing reader falls back to `created_at` —
+
+```js
+domain/credit.js:overdueWarning   e.due_date || e.created_at
+```
+
+— so "overdue" silently meant "sold more than N days ago" and the grace period meant
+something different for every customer class. `sales.due_date` has been computed
+from the customer's terms since the first migration; the ledger simply never carried
+it across. Migration `0004` adds the column, populates it for existing credit sales
+from the sale each charge names, and the sale path now writes it. Backfilled exactly
+on the demo database: **63 of 63 rows**.
+
+Two more defects on the same read path, both of which made the new setting behave
+differently in different views: the debtors list dropped `settings` entirely (so the
+owner's grace was applied on one customer's page and ignored on the list), and both
+`overdueWarning` and `defaultTrigger` defaulted "today" to a **UTC** date — the
+previous day between 23:00 and midnight in Lagos. Both now use WAT.
+
+## The rule, so it cannot come back
+
+`test/unit/settings-controls.test.js` reads the three lists — the **columns** (from
+the migration SQL), the **whitelist** (`DEFAULT_SETTINGS`) and the **controls** (from
+the screen source) — and fails when they disagree:
+
+* every control writes a column, through a whitelist that contains it
+* no two controls claim one setting
+* a writable setting is either on the screen or excluded with a stated reason
+* every column the API can write is in the whitelist (this caught
+  `receipt_footer_text`, a live column the settings route had never allowed)
+* a number's declared range agrees with its default
+* **no route reads a settings key that does not exist** — comments are stripped
+  first, because a comment explaining why a dead guard was removed is not a read of
+  it
+* a flag is a flag and a number is a number
+
+`test/integration/settings.test.js` then proves the round trip and the *behaviour*:
+a debtor fifteen days past their due date raises the warning at a grace of 0, does
+not at a grace of 30, and the debtors list and the customer page agree. A value that
+is stored and never read is the same lie in a different place.
+
+`tools/frontend-settings.js` proves it through the DOM: it asserts every declared
+control has an input **by name**, that nothing on the page says a control is
+unavailable, that the seven formerly-invisible controls are specifically present,
+and that a value typed into the page reaches the server — then puts it back, so a
+demo deployment's credit policy is not left as the probe's opinion.
+
+## Live
+
+All three deployments redeployed, migrations `0003` and `0004` applied to every D1
+database. Staging: settings probe **5/5** (typed 7, read back 7, restored to 0),
+compliance probe **8/8**, and the deployment left as it was found — 0 compliance
+records, 0 unread notifications, settings at their defaults.
+
+## Still owed
+
+The remaining baseline wire-ups: `user_assignment_history`, `pending_user_transfers`,
+`delivery_zones`, `stock_transfer_serials`, `data_cleanup_log`; then
+`delivery_vehicles`, `product_recalls`. The notifications bell still has routes, a
+producer and no screen. `public/offline.html` and the live staging offline proof.
+A Features screen for the plan usage the audit reports (`planUsage`, `/api/settings`
+returns it) — the module flags are on Settings now, the plan limits are only API.

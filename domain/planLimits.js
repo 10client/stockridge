@@ -55,9 +55,58 @@ const DEFAULT_SETTINGS = Object.freeze({
   instalment_max_interest_pct: 25, instalment_max_tenure_months: 12, instalment_min_deposit_pct: 20,
   credit_max_days: 60, layaway_max_days: 90, layaway_min_deposit_pct: 20,
   change_owed_expiry_days: 30, return_window_days_default: 7,
+  // THE THREE THAT WERE READ BUT COULD NOT BE SET. `domain/credit.js` and
+  // `domain/instalments.js` have read these out of the settings object since the
+  // modulo landed — `Number(settings.credit_grace_days) || 0`,
+  // `Number(settings.instalment_default_after_days) || 60`,
+  // `Number(settings.instalment_default_after_missed) || 3` — and no column
+  // existed, so the fallback always won and an owner had no way to move any of
+  // them. They are real columns now (migration 0003) and real controls on the
+  // Settings screen. The defaults below are the same numbers the code was already
+  // falling back to, so nothing changes until somebody chooses.
+  credit_grace_days: 0,
+  instalment_default_after_days: 60,
+  instalment_default_after_missed: 3,
   low_stock_alert_enabled: 1, expiry_alert_days: 60, compliance_alert_days: 30,
+  // The receipt footer is a real client_settings column that `server/routes/branding.js`
+  // could write and this whitelist could not, so the Settings screen had no way to set
+  // the one string every customer reads. It is settable from both doors now; the
+  // settings route audits it, and an audit trail is the point.
+  receipt_footer_text: null,
   admin_contact_name: null, admin_contact_phone: null, admin_contact_email: null, notes: null,
 });
+
+/**
+ * WHICH SETTINGS ARE FLAGS, NAMED RATHER THAN GUESSED.
+ *
+ * The settings route used to infer this from the DEFAULT: `[0, 1].includes(def)`
+ * meant "this is a boolean". That is true for a flag and false for any NUMBER whose
+ * sensible default is zero — and there are two:
+ *
+ *   credit_grace_days   how many days a debtor may be late before the counter warns
+ *   staff_credit_max    the naira cap a cashier may extend on credit
+ *
+ * So `credit_grace_days: 30` was validated as a flag, `boolField(30, 0)` did not
+ * recognise `30` as a boolean and returned the fallback, and the setting saved as
+ * ZERO with a success message. An owner setting a thirty-day grace period got a
+ * system that warned on the first day late, and nothing said so.
+ *
+ * A flag is a decision about behaviour; a number is a judgement about the business.
+ * They are not distinguishable by their default, so they are listed. The test
+ * `test/unit/settings-controls.test.js` fails if a setting whose default is 0 or 1
+ * is neither a flag here nor a documented number, so a new one cannot slip in.
+ */
+const FLAG_SETTINGS = Object.freeze(new Set([
+  'attendance_module_enabled', 'warranty_module_enabled', 'instalment_module_enabled',
+  'delivery_module_enabled', 'multi_branch_enabled', 'multi_business_enabled',
+  'serial_tracking_enabled', 'offline_sync_enabled',
+  'vat_enabled',
+  'managers_can_void_sales', 'managers_can_approve_expenses', 'managers_can_edit_prices',
+  'managers_can_override_credit_limit',
+  'staff_can_void_sales', 'staff_can_adjust_stock', 'staff_can_sell_on_credit',
+  'staff_can_spend_from_safe',
+  'low_stock_alert_enabled',
+]));
 
 // Feature toggle name -> settings column. One mapping so a new module is a
 // one-line change rather than a new bespoke check in each route.
@@ -382,7 +431,7 @@ function canOverrideCreditLimit(settings, user) {
 }
 
 module.exports = {
-  DEFAULT_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS,
+  DEFAULT_SETTINGS, FLAG_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS,
   getSettings, contactLine, planError,
   assertSubscriptionActive,
   activeBusinessCount, activeBranchCount, activeStaffCount,

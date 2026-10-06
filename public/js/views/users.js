@@ -439,7 +439,12 @@
               body.branch_id = v.branch_id === null ? null : v.branch_id;
               body.is_active = Number(v.is_active) ? true : false;
             }
-            const res = await SR.api.put(`/api/users/${encodeURIComponent(u.id)}`, { body });
+            // THE PAYLOAD IS THE SECOND ARGUMENT, not an object holding it. `{ body }`
+            // sent the JSON `{"body":{...}}`, so editing a user saved nothing: the
+            // route read `body.full_name` and found `undefined`, and the screen
+            // reported success. Same defect as the Settings Save button, written in
+            // the shorthand form the sweep's pattern could not see.
+            const res = await SR.api.put(`/api/users/${encodeURIComponent(u.id)}`, body);
             m.close();
             ui.ok(res.message || 'Saved.');
             load();

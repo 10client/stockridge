@@ -568,9 +568,14 @@ function mount(app, base = '/api') {
     if (!isOwnSale && !atLeast(user.role, 'MANAGER')) {
       throw new HttpError('You can only void your own sale. Ask a manager to void somebody else\'s.', { status: 403, code: 'NOT_YOUR_SALE' });
     }
-    if (!atLeast(user.role, 'MANAGER') && Number(settings.staff_void_requires_manager)) {
-      throw new HttpError('This business requires a manager to void any sale.', { status: 403, code: 'MANAGER_REQUIRED' });
-    }
+    // (A guard stood here reading `settings.staff_void_requires_manager`. No such
+    // setting has ever existed, in a column or in DEFAULT_SETTINGS, so the
+    // expression was `Number(undefined)` — NaN — and the branch never fired. The
+    // real decision is `canVoidSale` in domain/planLimits.js, called by the service
+    // below, which honours `staff_can_void_sales`, `managers_can_void_sales` and the
+    // window. A dead guard is worse than no guard: it reads as enforcement.
+    // test/unit/settings-controls.test.js now refuses to let any route read a
+    // settings key that does not exist.)
 
     // `saleId`, not the row. The service re-reads the sale inside its own
     // transaction and loads its own account codes, and it needs the id to find

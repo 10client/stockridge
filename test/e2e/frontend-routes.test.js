@@ -225,7 +225,15 @@ test('no screen wraps its payload in { body: … }', () => {
       }
       if (splitAt === -1) continue;
       const second = args.slice(splitAt + 1).trim();
-      if (!/^\{\s*body\s*:/.test(second)) continue;
+      // `body` FOLLOWED BY A COLON **OR** A CLOSING BRACE.
+      //
+      // The pattern used to require the colon, so it caught
+      // `{ body: { id: 7 } }` and missed the SHORTHAND `{ body }` — which sends
+      // exactly the same wrong JSON. That is how the Settings screen's Save button
+      // kept the defect through a whole sweep: the payload was a variable called
+      // `body`, written as `SR.api.put('/api/settings', { body })`. Saving any
+      // setting on that screen has never worked.
+      if (!/^\{\s*body\s*[,:}]/.test(second)) continue;
       const line = source.slice(0, m.index).split('\n').length;
       offenders.push(`${path.relative(ROOT, file)}:${line}  ${(lines[line - 1] || '').trim().slice(0, 100)}`);
     }
@@ -290,7 +298,7 @@ test('no tool wraps its payload in { body: … } either', () => {
           else if (ch === ',' && depth2 === 0) last = j + 1;
         }
         const payload = args.slice(last).trim();
-        if (!/^\{\s*body\s*:/.test(payload)) continue;
+        if (!/^\{\s*body\s*[,:}]/.test(payload)) continue;
         const line = source.slice(0, m.index).split('\n').length;
         const text = (source.split('\n')[line - 1] || '').trim().slice(0, 100);
         offenders.push(`${path.relative(ROOT, file)}:${line}  ${name}(…)  ${text}`);

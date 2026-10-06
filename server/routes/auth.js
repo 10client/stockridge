@@ -318,6 +318,11 @@ function publicSettings(settings) {
     'instalment_max_interest_pct', 'instalment_max_tenure_months', 'instalment_min_deposit_pct',
     'credit_max_days', 'layaway_max_days', 'layaway_min_deposit_pct', 'change_owed_expiry_days',
     'return_window_days_default', 'low_stock_alert_enabled', 'expiry_alert_days', 'compliance_alert_days',
+    // The three the credit and instalment modules read, plus the grace the debtors
+    // list warns on. They are here so the CLIENT sees the values the owner chose —
+    // the debtors list on a phone decides for itself whether a debt is a problem,
+    // and it should be deciding with the same numbers the server would.
+    'credit_grace_days', 'instalment_default_after_days', 'instalment_default_after_missed',
     'admin_contact_name', 'admin_contact_phone', 'admin_contact_email',
   ];
   const out = {};
