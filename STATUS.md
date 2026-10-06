@@ -2720,3 +2720,20 @@ T1–T3 line of work.
 - **Negative control:** the heartbeat's conflict target reverted to `branch_id` alone → the
   heartbeat 500s (`ON CONFLICT clause does not match any PRIMARY KEY`) and **3 checks go red**,
   including the two-device check. Restored → 36 green.
+
+### T4 live proof — staging, write mode, after migration 0006
+
+| Audit | Result |
+| --- | --- |
+| `audit.sync` | **36 checks passed** (13.3s) — including the two-device check against real D1 |
+| `audit.money` | **83 checks passed** (25.7s) — the regression check for wrapping 22 endpoints in the idempotency protocol |
+| `audit.roles` | **147 checks passed** (46.3s) |
+| `audit.wht` | **36 checks passed** (11.7s) |
+| `audit.http` | 34 passed, 1 reported |
+
+Sample and production carry migration 0006 and both answer the read-only `audit.http` with
+**26 passed, 2 reported**.
+
+**Next: T4c** — concurrency on one product's stock from two tills, a request retried after a
+timeout, and the D1 ceilings (statements per request, row size, batch limit) probed against the
+live deployment rather than assumed. Then T5 (the three-month simulation) and T6 (go-live docs).
