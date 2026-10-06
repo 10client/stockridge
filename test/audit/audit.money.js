@@ -42,6 +42,11 @@ const money = (n) => `₦${Number(n).toLocaleString('en-NG')}`;
 
 runAudit('money', async (audit, d) => {
   const o = d.owner;
+  // The manager seat, declared once here because two sections use it: the branch-scope
+  // refusals below, and a drawer of its own in the safe-account section. A `const`
+  // further down the file is not visible to code above it, which is how the first
+  // draft of that section failed with "Cannot access 'scopeManager' before initialization".
+  const scopeManager = d.seats && d.seats.manager;
   // The branch this audit trades in — the one its own seat works at, not whichever branch
   // the deployment happened to return first. See Deployment.branchFor().
   const branch = d.branchFor(d.owner || d.admin) || d.branches[0];
@@ -134,6 +139,46 @@ runAudit('money', async (audit, d) => {
   // that funding a drawer does not post a deposit — and on a live deployment the bank
   // account already holds the shop's real banking, so the first live run reported ₦68,500
   // of somebody's actual takings as a defect in its own float. A movement, never a total.
+  // THE TWO CASH ACCOUNTS, READ FROM THE BOOKS BEFORE THE FLOAT. Everything below is a
+  // movement between them; a live deployment's accounts already hold money.
+  const safeLedgerBeforeFloat = await audit.captureAsync('what the books say is in the safe and the till before anything moves', async () => {
+    const res = await o.get('/api/banking');
+    const find = (code) => (res.json.accounts || []).find((a) => a.code === code);
+    const safe = find('1010'); const till = find('1000');
+    return { books: safe ? Number(safe.balance) : 0, tillBooks: till ? Number(till.balance) : 0 };
+  });
+
+  // CASH AT TILL, BEFORE ANYTHING THE AUDIT DOES. Every till check below is a MOVEMENT
+  // from this figure, and reading it in the middle of the audit — which is where it used
+  // to be read, in the sale section — silently swallowed the float: on staging the float
+  // posted ₦50,000 into this account and then the check reported the day's takings as the
+  // whole movement. A "before" figure is only before if it is read before.
+  const tillAccountBefore = Number(safeLedgerBeforeFloat && safeLedgerBeforeFloat.tillBooks) || 0;
+
+  /**
+   * THE MONEY ACCOUNTS AS THE BOOKS SEE THEM, in one call — the three cash accounts
+   * from the banking screen and Cash Over & Short from the trial balance, which is a
+   * different endpoint again. Every assertion in the sections below is a MOVEMENT
+   * between two readings of this, because a live deployment's books already hold money.
+   */
+  const booksNow = async () => {
+    const res = await o.get('/api/banking');
+    const find = (code) => (res.json.accounts || []).find((a) => a.code === code);
+    const tb = await o.get('/api/accounting/trial-balance');
+    const account = (code) => (tb.json.accounts || []).find((a) => a.code === code);
+    const overShort = account('6910');
+    const drawings = account('3200');
+    return {
+      till: Number((find('1000') || {}).balance || 0),
+      safe: Number((find('1010') || {}).balance || 0),
+      bank: Number((find('1020') || {}).balance || 0),
+      // ABSENT MEANS ZERO, and it is absent until something posts to it: the trial
+      // balance only lists accounts with journal lines behind them.
+      overShort: overShort ? Number(overShort.balance) : 0,
+      drawings: drawings ? Number(drawings.balance) : 0,
+    };
+  };
+
   const bankBeforeTheFloat = await audit.captureAsync('the bank balance before the drawer was funded', async () => {
     const res = await o.get('/api/banking');
     const row = (res.json.accounts || []).find((a) => a.code === '1020');
@@ -188,6 +233,10 @@ runAudit('money', async (audit, d) => {
   audit.note(`the safe holds ${money(safeBefore)} before the drawer is funded`);
 
   const till = await audit.captureAsync('a till opened with a float taken from the safe', async () => {
+    // READ THE BOOKS BEFORE THE FIRST ATTEMPT, not after it: a shop whose safe is already
+    // funded opens the drawer on the first call, and a reading taken afterwards would show
+    // the float as having moved nothing at all.
+    let booksBefore = await booksNow();
     let res = await o.post('/api/tills/open', { branch_id: branch.id, opening_cash: float, from_safe: true });
     // AN EMPTY SAFE IS NOT A DEFECT, IT IS A SHOP THAT HAS NOT BANKED YET. On a live
     // deployment the safe may hold nothing at all — the audit's own local fixture funds
@@ -200,11 +249,19 @@ runAudit('money', async (audit, d) => {
       const beforeTopUp = await o.get(`/api/safe?branch_id=${branch.id}`);
       const topUp = await o.post('/api/safe/entries', {
         branch_id: branch.id, entry_type: 'DEPOSIT', amount: round2(float + 1000),
+        // Where the cash came from. Since Stage T2b the books require it — a deposit
+        // with no source is a hole in the accounts where the other side of the entry
+        // should be — and a fixture topping up its own safe is the owner putting money in.
+        source: 'OWNER',
         reason: 'OTHER', note: 'Audit: funding the safe so a drawer can be opened from it',
       });
       if (topUp.status !== 200 && topUp.status !== 201) {
         throw new Error(`could not fund the safe: ${topUp.status} ${topUp.text.slice(0, 200)}`);
       }
+      // The audit may fund the safe itself when the shop's is short, and that top-up is
+      // the AUDIT's money arriving rather than the float under test — so the reading is
+      // taken again after it, and the assertion stays about what opening the drawer moved.
+      booksBefore = await booksNow();
       res = await o.post('/api/tills/open', { branch_id: branch.id, opening_cash: float, from_safe: true });
       if (res.status === 201) {
         res.json.toppedUpTheSafe = true;
@@ -212,7 +269,7 @@ runAudit('money', async (audit, d) => {
       }
     }
     if (res.status !== 201) throw new Error(`POST /api/tills/open answered ${res.status} ${res.text.slice(0, 240)}`);
-    return res.json;
+    return { ...res.json, booksBefore, booksAfter: await booksNow() };
   });
 
   // A DRAWER IS THE SPINE OF EVERYTHING BELOW. If it could not be opened — a target with
@@ -288,8 +345,24 @@ runAudit('money', async (audit, d) => {
     // funding a drawer must not invent a bank deposit. The figure is reported either way.
     const inSafe = (res.json.accounts || []).find((a) => a.code === '1010');
     if (inSafe) {
-      audit.note(`Cash in Safe: books ${money(inSafe.balance)} vs the branch safe ledger ${money(safeBefore - float)} — the two agree only where every naira into the safe arrived through the ledger. See the open item in STATUS.md`);
+      audit.note(`Cash in Safe: books ${money(inSafe.balance)} vs the branch safe ledger ${money(safeBefore - float)}`);
     }
+    // AND THE FLOAT MOVED BOTH CASH ACCOUNTS — the other half of the same rule.
+    //
+    // The check above is about the bank not being invented. This is about the two
+    // accounts the money actually travelled between: Cash in Safe must come DOWN by
+    // the float and Cash at Till must go UP by it, because that is what physically
+    // happened. Until Stage T2b neither moved, and the books drifted away from the
+    // shop a little more on every float and every sweep — on staging, Cash in Safe
+    // reached −₦205,500 while the branch safe held ₦4,000.
+    const tillAcc = (res.json.accounts || []).find((a) => a.code === '1000');
+    assert.ok(tillAcc && inSafe, 'the banking screen no longer lists both cash accounts');
+    const moved = await booksNow();
+    assert.equal(round2(moved.safe - till.booksBefore.safe), round2(-float),
+      `the branch safe paid out a ${money(float)} float and Cash in Safe moved from ${money(till.booksBefore.safe)} to ${money(moved.safe)}. Cash that leaves the safe has to leave the account that represents it, or the ledger's figure for the safe is a number with nothing behind it`);
+    assert.equal(round2(moved.till - till.booksBefore.till), round2(float),
+      `the ${money(float)} float went into a drawer and Cash at Till moved from ${money(till.booksBefore.till)} to ${money(moved.till)}. A drawer holding money the ledger does not know about is how a cashier is blamed for a shortfall that never happened`);
+    void safeLedgerBeforeFloat;
   });
 
   // ===================================================================
@@ -302,12 +375,6 @@ runAudit('money', async (audit, d) => {
   // number — see the note on cashIntoDrawer further down.
   let cashIntoDrawer = 0;
   let salesRung = 0;  // What the till account held before this audit rang anything — see the delta note below.
-  const tillAccountBefore = d.live ? await audit.captureAsync('the till account balance before this audit traded', async () => {
-    const res = await o.get('/api/banking');
-    const row = (res.json.accounts || []).find((a) => a.code === '1000');
-    return row ? Number(row.balance) : 0;
-  }) : 0;
-
   const tendered = round2(unitPrice + 1500);
   const sale = await audit.captureAsync('a cash sale of one unit, tendered over the odds', async () => {
     const res = await o.post('/api/sales', {
@@ -400,8 +467,11 @@ runAudit('money', async (audit, d) => {
     // else's trading as a defect in this one sale. `tillAccountBefore` is read before the
     // audit trades, so what is asserted here is what THIS counter took — including the
     // ₦500 it kept for a customer, which is exactly the money the entry must not call income.
-    assert.equal(round2(Number(tillAccount.balance) - (tillAccountBefore || 0)), round2(cashIntoDrawer),
-      `Cash at Till moved by ${money(Number(tillAccount.balance) - (tillAccountBefore || 0))} while the counter took ${money(cashIntoDrawer)} including the ${money(500)} it kept for a customer. Cash the shop is holding for somebody else still arrives in the drawer — it is the other side of the entry that must not be revenue`);
+    // THE FLOAT IS IN THIS ACCOUNT NOW, and it belongs in the expectation: since Stage
+    // T2b a drawer funded from the safe is a move between the two cash accounts, so Cash
+    // at Till starts the day holding the float rather than being short of it forever.
+    assert.equal(round2(Number(tillAccount.balance) - (tillAccountBefore || 0)), round2(float + cashIntoDrawer),
+      `Cash at Till moved by ${money(Number(tillAccount.balance) - (tillAccountBefore || 0))} — the ${money(float)} float taken from the safe plus the ${money(cashIntoDrawer)} the counter took, including the ${money(500)} it kept for a customer. Cash the shop is holding for somebody else still arrives in the drawer — it is the other side of the entry that must not be revenue`);
     const tb = await o.get('/api/accounting/trial-balance');
     assert.equal(tb.json.ok, true, `the books are out by ${money(tb.json.difference)} after holding a customer's change: ${tb.json.message}`);
   });
@@ -473,8 +543,8 @@ runAudit('money', async (audit, d) => {
     // A DELTA, because a live deployment's ledger already holds money. The first live run
     // asserted the absolute balance and reported ₦306,000 of pre-existing takings as a
     // defect in this one sale.
-    assert.equal(round2(Number(tillAccount.balance) - (tillAccountBefore || 0)), round2(cashIntoDrawer),
-      `Cash at Till reads ${money(tillAccount.balance)} after ${money(cashIntoDrawer)} of cash sales. This account is what the counter has taken; the float it opened with came from the safe and is a move between two cash holdings, so it is deliberately not posted here (see the till-float check above)`);
+    assert.equal(round2(Number(tillAccount.balance) - (tillAccountBefore || 0)), round2(float + cashIntoDrawer),
+      `Cash at Till moved by ${money(Number(tillAccount.balance) - (tillAccountBefore || 0))}: the ${money(float)} float plus ${money(cashIntoDrawer)} of cash sales. The float is posted here now — it is a move from the safe into the drawer, and before Stage T2b neither account moved, so this one was perpetually short by the float`);
   });
 
   // ===================================================================
@@ -544,6 +614,11 @@ runAudit('money', async (audit, d) => {
     const row = (res.json.accounts || []).find((a) => a.code === '1020');
     return row ? Number(row.balance) : 0;
   }) : 0;
+  const tillAtBankingStart = await audit.captureAsync('what Cash at Till holds before the banking', async () => {
+    const res = await o.get('/api/banking');
+    const row = (res.json.accounts || []).find((a) => a.code === '1000');
+    return row ? Number(row.balance) : 0;
+  });
   const bankResult = await audit.captureAsync('the takings are banked from the safe', async () => {
     if (d.live && !d.writable) return null;
     const res = await o.post('/api/safe/entries', {
@@ -570,8 +645,13 @@ runAudit('money', async (audit, d) => {
     assert.equal(round2(Number(bank.balance) - bankBefore), round2(banked),
       `the bank moved from ${money(bankBefore)} to ${money(bank.balance)} and ${money(banked)} was banked from the safe — a live deployment's bank account already held money, so this is a movement, not a total`);
     const tillAccount = (res.json.accounts || []).find((a) => a.code === '1000');
-    assert.equal(round2(Number(tillAccount.balance) - (tillAccountBefore || 0)), round2(cashIntoDrawer),
-      `banking from the SAFE must not touch the till account: it moved by ${money(Number(tillAccount.balance) - (tillAccountBefore || 0))} and the counter took ${money(cashIntoDrawer)}`);
+    // THE MOVEMENT AT THIS STEP, not since the audit started. The drawer was counted and
+    // swept to the safe a section ago, so what it holds now is the float: asserting the
+    // whole day's movement here reported the sweep as a defect. What this check is for is
+    // that BANKING moves nothing at the till, so it compares the account before and after
+    // the banking entry and nothing else.
+    assert.equal(round2(Number(tillAccount.balance) - Number(tillAtBankingStart || 0)), 0,
+      `banking ${money(banked)} out of the SAFE moved Cash at Till by ${money(Number(tillAccount.balance) - Number(tillAtBankingStart || 0))}. Banking takes money out of the safe, not out of a drawer: the two are separate accounts and the till keeps what the count left in it`);
   });
 
   await audit.checkAsync('a banking entry with no slip reference is refused', async () => {
@@ -825,6 +905,230 @@ runAudit('money', async (audit, d) => {
 
 
   // ===================================================================
+  // THE SAFE IS AN ACCOUNT
+  // ===================================================================
+  // The float could not be asserted as a move between two cash accounts in the
+  // section above without first knowing that NOTHING ELSE did it, which is why this
+  // section repeats the pattern twice with a deposit and a payout of its own. What it
+  // is really proving is the rule this stage put in place: cash moving inside the
+  // shop moves BOTH accounts, in opposite directions, by exactly what moved — and a
+  // count that does not match lands in Cash Over & Short instead of quietly
+  // disappearing into the account the money was supposed to be in.
+  audit.section('Cash moving inside the shop moves the books, in both accounts');
+
+  // ONE READING OF THE BOOKS THAT EVERY CHECK IN THIS SECTION MOVES FORWARD, so each
+  // assertion is a movement between the last known figures rather than an absolute a
+  // live deployment's own trading would contradict.
+  let sharedTick = await (async () => {
+    const res = await o.get('/api/banking');
+    const find = (code) => (res.json.accounts || []).find((a) => a.code === code);
+    const tb = await o.get('/api/accounting/trial-balance');
+    const drawings = (tb.json.accounts || []).find((a) => a.code === '3200');
+    return {
+      till: Number((find('1000') || {}).balance || 0),
+      safe: Number((find('1010') || {}).balance || 0),
+      bank: Number((find('1020') || {}).balance || 0),
+      drawings: drawings ? Number(drawings.balance) : 0,
+      // THE SAFE'S OWN LEDGER, read from the endpoint the shop reads it on.
+      safeLedger: 0,
+    };
+  })();
+  sharedTick.safeLedger = Number(((await o.get(`/api/safe?branch_id=${branch.id}`)).json || {}).balance || 0);
+
+  // A DEPOSIT FROM THE BANK: money leaves the bank account and arrives in the safe.
+  const deposit = await audit.captureAsync('the bank sends cash to the safe', async () => {
+    if (d.live && !d.writable) return null;
+    const res = await o.post('/api/safe/entries', {
+      branch_id: branch.id, entry_type: 'DEPOSIT', amount: 25000, source: 'BANK',
+      note: 'Audit: cash withdrawn to fund the safe',
+    });
+    if (res.status !== 200 && res.status !== 201) throw new Error(`a deposit from the bank answered ${res.status}: ${res.text.slice(0, 240)}`);
+    return res.json;
+  });
+
+  await audit.checkAsync('a deposit into the safe moves the bank and the safe, and nothing else', async () => {
+    if (!deposit) { audit.skip('read-only target: nothing could be deposited'); return; }
+    const after = await booksNow();
+    assert.equal(round2(after.safe - sharedTick.safe), 25000,
+      `₦25,000 was paid into the safe and Cash in Safe moved from ${money(sharedTick.safe)} to ${money(after.safe)}`);
+    assert.equal(round2(after.bank - sharedTick.bank), -25000,
+      `₦25,000 came OUT of the bank (${money(sharedTick.bank)} → ${money(after.bank)}) — the other side of the entry, without which the safe fills up out of nowhere`);
+    assert.equal(round2(after.till - sharedTick.till), 0, 'a deposit into the safe must not touch the drawer');
+    // MERGED, not replaced. `booksNow()` knows the three cash accounts; the tick also
+    // carries Drawings and the safe ledger's own balance, and replacing it wholesale made
+    // the next check compare against `undefined` — which reported "3200 read ₦NaN before"
+    // and looked like a product defect in the drawings account.
+    sharedTick = { ...sharedTick, ...after };
+  });
+
+  await audit.refusal('cash into the safe must say where it came from', () => o.post('/api/safe/entries', {
+    branch_id: branch.id, entry_type: 'DEPOSIT', amount: 5000, note: 'Audit: an anonymous deposit',
+  }), { expectStatus: 400, code: /SAFE_SOURCE_REQUIRED/, message: /where|came from|source/i });
+
+  // A PAYOUT TO THE OWNER: drawings, not a cash move. The money leaves the business.
+  const payout = await audit.captureAsync('the owner draws cash out of the safe', async () => {
+    if (d.live && !d.writable) return null;
+    const res = await o.post('/api/safe/entries', {
+      branch_id: branch.id, entry_type: 'WITHDRAWAL', amount: 10000, destination: 'OWNER',
+      reason: 'OTHER', note: 'Audit: owner took cash for a personal errand',
+    });
+    if (res.status !== 200 && res.status !== 201) throw new Error(`an owner payout answered ${res.status}: ${res.text.slice(0, 240)}`);
+    return res.json;
+  });
+
+  await audit.checkAsync('a payout to the owner is drawings, and the safe is relieved of it', async () => {
+    if (!payout) { audit.skip('read-only target: nothing could be paid out'); return; }
+    const after = await booksNow();
+    assert.equal(round2(after.safe - sharedTick.safe), -10000,
+      `the owner took ₦10,000 out of the safe and Cash in Safe moved ${money(sharedTick.safe)} → ${money(after.safe)}`);
+    const tb = await o.get('/api/accounting/trial-balance');
+    const drawings = (tb.json.accounts || []).find((a) => a.code === '3200');
+    assert.ok(drawings, 'the chart no longer carries 3200 Drawings');
+    // Read from the TRIAL BALANCE, a different endpoint from the safe screen that wrote it.
+    assert.ok(round2(Number(drawings.balance) - Number(sharedTick.drawings)) === 10000,
+      `an owner's drawing must reach Drawings: 3200 read ${money(sharedTick.drawings)} before and ${money(drawings.balance)} after`);
+    assert.equal(tb.json.balances, true, `the books are out by ${money(tb.json.difference)} after a payout: ${tb.json.message}`);
+    sharedTick = { ...after, drawings: Number(drawings.balance) };
+  });
+
+  await audit.refusal('cash out of the safe must say where it went', () => o.post('/api/safe/entries', {
+    branch_id: branch.id, entry_type: 'WITHDRAWAL', amount: 5000, reason: 'OTHER', note: 'Audit: an unexplained payout',
+  }), { expectStatus: 400, code: /SAFE_DESTINATION_REQUIRED/, message: /where|went|destination/i });
+
+  await audit.refusal('a made-up destination is refused, with the list', () => o.post('/api/safe/entries', {
+    branch_id: branch.id, entry_type: 'WITHDRAWAL', amount: 5000, destination: 'MY_POCKET', reason: 'OTHER', note: 'Audit: nowhere real',
+  }), { expectStatus: 400, code: /SAFE_DESTINATION_REQUIRED/, message: /OWNER|EXPENSE|OTHER/ });
+
+  // A COUNT THAT DOES NOT MATCH, ON A DRAWER OF ITS OWN.
+  //
+  // This is where a shortage used to vanish. The till row recorded a variance and
+  // nothing posted it, so Cash at Till went on claiming money the drawer did not
+  // hold, one shortfall at a time, for the life of the business. The manager opens a
+  // drawer of their own (the rule is one open till per person per branch, and the
+  // owner's is already open), counts it ₦200 short against a float with no sales, and
+  // every account involved is read back.
+  const shortTill = await audit.captureAsync('a second drawer is opened and counted short', async () => {
+    if (!scopeManager) return null;
+    if (d.live && !d.writable) return null;
+    // READ BEFORE THE DRAWER OPENS. The float moves money INTO Cash at Till, so a
+    // reading taken after the open would miss it and this check would report the drawer
+    // as ₦2,000 short of the money it is holding.
+    const before = await booksNow();
+    const open = await scopeManager.post('/api/tills/open', { branch_id: branch.id, opening_cash: 2000, from_safe: true });
+    if (open.status !== 201) throw new Error(`opening the manager's drawer answered ${open.status}: ${open.text.slice(0, 200)}`);
+    const id = open.json.id || (open.json.till && open.json.till.id);
+    const close = await scopeManager.post(`/api/tills/${id}/close`, {
+      counted_cash: 1800, variance_reason: 'Audit: the drawer was ₦200 short and the count proves it',
+    });
+    if (close.status !== 200) throw new Error(`closing a drawer ₦200 short answered ${close.status}: ${close.text.slice(0, 240)}`);
+    return { id, before, variance: Number(close.json.variance) };
+  });
+
+  await audit.checkAsync('a drawer that does not match moves the money and names the loss', async () => {
+    if (!shortTill) { audit.skip(d.live && !d.writable ? 'read-only target: no drawer could be opened' : 'no manager seat was created, so this drawer could not be run'); return; }
+    assert.equal(round2(shortTill.variance), -200,
+      `counted ₦1,800 against a ₦2,000 float and the close reported a variance of ${money(shortTill.variance)}`);
+    const after = await booksNow();
+    // The float arrived (+2000) and the shortage left (−200): the drawer account ends up
+    // ₦1,800 richer, which is exactly what is physically in it.
+    assert.equal(round2(after.till - shortTill.before.till), 1800,
+      `the drawer took a ₦2,000 float and counted ₦1,800; Cash at Till moved ${money(shortTill.before.till)} → ${money(after.till)}. It must be the money that is actually in the drawer`);
+    assert.equal(round2(after.safe - shortTill.before.safe), -2000,
+      `the float came out of the safe and Cash in Safe should be down ₦2,000: ${money(shortTill.before.safe)} → ${money(after.safe)}`);
+    const after6910 = await booksNow();
+    // THE MOVEMENT, NOT THE BALANCE. Cash Over & Short accumulates every shortage and
+    // overage the business has ever had, and on a live deployment it already carries
+    // history — including the correction the safe reconciliation above posted. What a
+    // ₦200 shortfall has to do is DEBIT this account by ₦200, whatever it held before.
+    assert.equal(round2(after6910.overShort - shortTill.before.overShort), 200,
+      `₦200 went missing from a drawer and 6910 Cash Over & Short moved from ${money(shortTill.before.overShort)} to ${money(after6910.overShort)}. A shortage that reaches no account is a shortage nobody ever reports`);
+    const tb = await o.get('/api/accounting/trial-balance');
+    assert.equal(tb.json.balances, true, `the books are out by ${money(tb.json.difference)} after a shortfall: ${tb.json.message}`);
+  });
+
+  // AN EXPENSE PAID FROM THE SAFE — the last of the four ways cash leaves it, and the
+  // one a shop uses most. It is here because the rule being proved is not about floats
+  // or payouts in particular: EVERY movement of the safe is a movement in the books, and
+  // a single write path that stays silent is enough to put the two records back out of
+  // step for good.
+  const safeExpense = await audit.captureAsync('an expense is paid from the safe', async () => {
+    if (d.live && !d.writable) return null;
+    const before = await booksNow();
+    const res = await o.post('/api/expenses', {
+      branch_id: branch.id, category: 'DIESEL_FUEL', amount: 3000,
+      description: 'Audit: diesel for the generator, paid from the safe',
+      payment_method: 'SAFE', status: 'APPROVED',
+    });
+    if (res.status !== 200 && res.status !== 201) throw new Error(`an expense paid from the safe answered ${res.status}: ${res.text.slice(0, 240)}`);
+    return { before, result: res.json };
+  });
+
+  await audit.checkAsync('an expense paid from the safe leaves the safe and reaches the accounts', async () => {
+    if (!safeExpense) { audit.skip(d.live && !d.writable ? 'read-only target: no expense could be paid' : 'the expense step did not complete'); return; }
+    const after = await booksNow();
+    assert.equal(round2(after.safe - safeExpense.before.safe), -3000,
+      `₦3,000 of diesel was paid out of the safe and Cash in Safe moved ${money(safeExpense.before.safe)} → ${money(after.safe)}`);
+    // AND IT IS A COST, not a mystery: the debit has to reach the expense account the
+    // category maps to, which is what makes the profit and loss true.
+    const tb = await o.get('/api/accounting/trial-balance');
+    const diesel = (tb.json.accounts || []).find((a) => a.code === '6020');
+    assert.ok(diesel, 'the chart no longer carries 6020 Diesel, Fuel & Power');
+    const ledger = await o.get('/api/accounting/journal?limit=50');
+    const entry = (ledger.json.data || []).find((e) => String(e.source_type) === 'EXPENSE' && /diesel/i.test(String(e.description || '')));
+    assert.ok(entry, 'paying an expense must post a journal entry — a payout the books do not see is a cost nobody can account for');
+    assert.equal(tb.json.balances, true, `the books are out by ${money(tb.json.difference)} after an expense: ${tb.json.message}`);
+    audit.note(`diesel: 6020 now ${money(diesel.balance)}; the safe and the books both moved by the same ₦3,000`);
+  });
+
+  // THE TWO RECORDS OF THE SAME MONEY, READ BACK TOGETHER.
+  await audit.checkAsync('the safe screen reports what the books say, beside what the safe says', async () => {
+    const res = await o.get(`/api/safe?branch_id=${branch.id}`);
+    assert.equal(res.status, 200, `the safe screen answered ${res.status}`);
+    assert.ok(res.json.ledgerBalance !== undefined,
+      'the safe screen does not report the ledger figure for Cash in Safe. Two records of the same money that are never compared are two records that can disagree forever — on staging they differed by ₦205,500');
+    if (res.json.inAgreement === false) {
+      audit.note(`the safe ledger says ${money(res.json.balance)} and the books say ${money(res.json.ledgerBalance)} — a difference of ${money(res.json.difference)} carried over from before this stage`);
+      if (d.live && d.writable) {
+        // A REAL RECONCILIATION, AS AN OWNER WOULD DO IT: count the safe, post the
+        // difference, then read the books back from a THIRD endpoint.
+        const rec = await o.post('/api/safe/reconcile', {
+          branch_id: branch.id, counted_balance: Number(res.json.balance),
+          note: 'Audit: bringing the books into line with the safe ledger, which is the record of what physically moved',
+        });
+        if (rec.status !== 200) throw new Error(`reconciling the safe answered ${rec.status}: ${rec.text.slice(0, 240)}`);
+        const after = await o.get(`/api/safe?branch_id=${branch.id}`);
+        assert.equal(after.json.inAgreement, true,
+          `after reconciling, the safe ledger still says ${money(after.json.balance)} and the books ${money(after.json.ledgerBalance)}`);
+        const books = await booksNow();
+        assert.equal(round2(books.safe), round2(Number(after.json.balance)),
+          `the banking screen reads Cash in Safe ${money(books.safe)} and the reconciliation left it at ${money(after.json.balance)}`);
+        // The POSTED figure, not the one the response reports as remaining: the response's
+        // `difference` is what is still adrift after the correction, which on a successful
+        // reconcile is zero. Printing that read as "₦0 posted", which is the opposite of
+        // what happened and exactly the sort of note that wastes somebody's afternoon.
+        const posted = round2(Number(after.json.balance) - Number(res.json.ledgerBalance));
+        audit.note(`${money(posted)} posted to Cash Over & Short — the books were ${money(res.json.difference)} adrift and the safe ledger says the safe holds ${money(after.json.balance)}`);
+      }
+      return;
+    }
+    assert.equal(res.json.inAgreement, true,
+      `the safe ledger says ${money(res.json.balance)} and the books say ${money(res.json.ledgerBalance)} on a database this audit created — every safe movement posts, so they cannot disagree`);
+    // THE TWO RECORDS, SIDE BY SIDE. `GET /api/banking` is a different endpoint and a
+    // different query from the safe screen; when the deployment trades through exactly
+    // one branch they must agree to the kobo, because every movement posts to both.
+    const banking = await o.get('/api/banking');
+    const safeAccount = (banking.json.accounts || []).find((a) => a.code === '1010');
+    if (safeAccount && (d.branches || []).length === 1) {
+      assert.equal(round2(Number(res.json.ledgerBalance)), round2(Number(safeAccount.balance)),
+        `the safe screen's ledger figure (${money(res.json.ledgerBalance)}) and the banking screen's Cash in Safe (${money(safeAccount.balance)}) are two readings of one account and must agree`);
+    }
+  });
+
+  await audit.refusal('reconciling the safe without saying why is refused', () => o.post('/api/safe/reconcile', {
+    branch_id: branch.id, counted_balance: 1000,
+  }), { expectStatus: 400, code: /NOTE_REQUIRED|MISSING_FIELD/, message: /why|note|rely on/i });
+
+  // ===================================================================
   // A LIST ANSWERS FOR THE BRANCH IT NAMES
   // ===================================================================
   // THE SECOND HALF OF THE BRANCH-FILTER DEFECT, and the half that proves the fix.
@@ -964,7 +1268,6 @@ runAudit('money', async (audit, d) => {
   // THE REFUSAL HALF. A branch the caller cannot reach must be refused rather than
   // answered with their own shop's rows — silently, quietly wrong is the defect being
   // replaced here, and an empty list would be the same lie in a softer voice.
-  const scopeManager = d.seats && d.seats.manager;
   audit.check('the deployment gave this audit a manager seat pinned to one branch', () => {
     if (!scopeManager) {
       audit.skip(d.live && !d.writable

@@ -38,6 +38,30 @@ const glService = require('../services/glService');
 
 const PAYOUT_REASONS = ['TRANSPORT', 'FEEDING', 'FUEL', 'CLEANING', 'REPAIRS', 'CASUAL_WORKER', 'BANK_CHARGES', 'SUPPLIES', 'OTHER'];
 
+// ---------------------------------------------------------------------
+// WHERE CASH INTO THE SAFE CAME FROM, AND WHERE CASH OUT OF IT WENT
+// ---------------------------------------------------------------------
+// Both are FIXED LISTS because both become an account in the general ledger, and
+// an account chosen from a free-text box is not a set of books. `from`/`account`
+// are keys and chart codes the ledger already knows — no new accounts, no
+// mapping table to keep in step.
+// `kind: 'CASH'` — the money was already inside the business, so the entry moves
+// it between two cash accounts and the balance-sheet total does not change.
+// `kind: 'ACCOUNT'` — the money entered or left the business, so the other side is
+// equity or an expense account.
+const SAFE_DEPOSIT_SOURCES = Object.freeze([
+  { code: 'BANK', label: 'Withdrawn from the bank', kind: 'CASH', from: 'BANK' },
+  { code: 'OWNER', label: 'Put in by the owner', kind: 'ACCOUNT', account: '3000' },
+  { code: 'TILL', label: 'Taken from the drawer', kind: 'CASH', from: 'TILL' },
+  { code: 'OTHER', label: 'Somewhere else', kind: 'ACCOUNT', account: '6910' },
+]);
+
+const SAFE_WITHDRAWAL_DESTINATIONS = Object.freeze([
+  { code: 'OWNER', label: 'Drawn by the owner', kind: 'ACCOUNT', account: '3200' },
+  { code: 'EXPENSE', label: 'Paid out as an expense', kind: 'EXPENSE', account: null },
+  { code: 'OTHER', label: 'Unclassified', kind: 'ACCOUNT', account: '6910' },
+]);
+
 /**
  * The safe's balance, computed from its ledger rather than read from a column.
  *
@@ -232,34 +256,33 @@ function mount(app, base = '/api') {
           newId(), String(branch.id), String(business.id), 'TILL_FUND', -openingCash, safeAfter,
           'TILL_SESSION', id, id, String(user.id),
         ]);
-        // NO GENERAL-LEDGER ENTRY, AND THAT IS THE FIX.
+        // THE FLOAT MOVES BETWEEN THE TWO CASH ACCOUNTS, AND NOW THE BOOKS SAY SO.
         //
-        // This used to post a BANKING entry — debit Bank Account, credit Cash in Safe —
-        // as though the float had been carried to the bank. It had not: the money went
-        // from the safe into the drawer, which is a move between two tills of cash
-        // inside the same building. The entry invented a bank deposit that never
-        // happened, and it left "Cash at Till" short by the float for the life of the
-        // business, because a CASH sale debits that account and the float never arrived
-        // in it. The banking screen then reported a bank balance the shop did not have
-        // and a negative cash-in-safe figure.
+        // Three versions of this line, and the first two were both wrong in the same
+        // direction — the general ledger did not learn where the money was.
         //
-        // It is also inconsistent with this system's own rule, stated two hundred lines
-        // below and repeated on the safe screen: cash moving between the drawer and the
-        // safe is still cash at the branch, so nothing in the general ledger moves.
-        // Deposits to the safe post nothing; withdrawals post nothing; the till-close
-        // sweep to the safe posts nothing; only BANKING does. A till float is the same
-        // kind of move as the till-close sweep, in the other direction.
+        // 1. It posted a BANKING entry (DR Bank / CR Cash in Safe), inventing a bank
+        //    deposit that never happened: the money went from the safe into a drawer in
+        //    the same building.
+        // 2. It posted NOTHING, on the reasoning that cash moving between the drawer and
+        //    the safe is still cash at the branch. True about the BALANCE SHEET TOTAL,
+        //    and wrong about the ACCOUNTS: with no post at all, the float never arrived
+        //    in Cash at Till and Cash in Safe was never relieved of it. Run against
+        //    staging, that produced **Cash in Safe reading −₦205,500 in the books while
+        //    the branch safe physically held ₦4,000** — the exact defect the audit was
+        //    written to find, still there, one layer down.
         //
-        // Found by test/audit/audit.money.js: after a ₦50,000 float the safe ledger said
-        // ₦50,000 while the ledger reported Cash in Safe as −₦50,000 and Bank Account
-        // ₦50,000 richer. The trial balance was perfectly balanced throughout, which is
-        // why only a per-account assertion could see it.
-        //
-        // The deeper question — should the safe be a real general-ledger account, with
-        // deposits and withdrawals posting to 1010 instead of being invisible — is
-        // recorded as open work in STATUS.md. It changes the composition of the balance
-        // sheet on live books, so it is not a patch to slip into this stage.
-        void accountIds;
+        // 3. It posts the move: DR Cash at Till / CR Cash in Safe. Both legs are real
+        //    accounts, the entry balances, total cash is unchanged, and each cash account
+        //    can be reconciled against the thing it stands for. That is the rule
+        //    everywhere cash moves inside the business now — see
+        //    glService.postCashMoveStatements.
+        for (const st of glService.postCashMoveStatements({
+          businessId: String(business.id), branchId: String(branch.id), amount: openingCash,
+          from: 'SAFE', to: 'TILL', sourceType: 'TILL', sourceId: id,
+          description: `Till float of ₦${openingCash.toLocaleString('en-NG')} from the branch safe`,
+          accountIds, user,
+        })) tx.queue(st.sql, st.params);
       }
     });
 
@@ -416,7 +439,29 @@ function mount(app, base = '/api') {
           // till-fund entry above for why both are needed.
           newId(), String(branch.id), String(business.id), 'TILL_RETURN', toSafe, safeAfter, id, id, String(user.id),
         ]);
+        // AND THE BOOKS FOLLOW IT OUT OF THE DRAWER: DR Cash in Safe / CR Cash at Till.
+        // The other half of the float's entry, in the other direction — without it the
+        // sweep empties the physical drawer and leaves the ledger still saying the money
+        // is at the till.
+        for (const st of glService.postCashMoveStatements({
+          businessId: String(business.id), branchId: String(branch.id), amount: toSafe,
+          from: 'TILL', to: 'SAFE', sourceType: 'TILL', sourceId: id,
+          description: `₦${toSafe.toLocaleString('en-NG')} swept from the drawer to the safe at close`,
+          accountIds, user,
+        })) tx.queue(st.sql, st.params);
       }
+
+      // THE COUNT DID NOT MATCH, SO THE LEDGER MUST BE TOLD.
+      //
+      // `counted_cash` and the expected figure already differ by `variance`, and the till
+      // row records it — but nothing posted it, so Cash at Till went on claiming money the
+      // drawer did not hold, for the life of the business, one shortfall at a time. The
+      // loss lands in 6910 Cash Over & Short where an owner can see the month's total.
+      for (const st of glService.postCashOverShortStatements({
+        businessId: String(business.id), branchId: String(branch.id), variance,
+        accountCode: '1000', sourceType: 'TILL', sourceId: id,
+        reason: reason || null, accountIds, user,
+      })) tx.queue(st.sql, st.params);
       if (bankNow > 0) {
         for (const st of glService.postBankingStatements({
           businessId: String(business.id), branchId: String(branch.id), amount: bankNow,
@@ -514,14 +559,126 @@ function mount(app, base = '/api') {
     // newest row. The derived balance is a SUM and was always right; it was the row it
     // was compared against that was wrong.
     const storedLast = entries.length ? round2(Number(entries[0].balance_after)) : 0;
+
+    // WHAT THE GENERAL LEDGER SAYS THE SAFE HOLDS, read back from the books.
+    //
+    // The safe ledger is the shop's own record of movements; Cash in Safe (1010) is
+    // what the accounts believe. When they disagree, one of them is wrong, and until
+    // this figure was on the screen nobody could tell — the two were never compared
+    // by anything. On staging they disagreed by more than ₦200,000, because cash
+    // moved between the drawer and the safe without the ledger being told.
+    //
+    // Reported, not asserted: an owner looking at a drifted safe wants to see both
+    // numbers and the difference, and then decide. `POST /api/safe/reconcile` is how
+    // they fix it, deliberately, with a note.
+    const business = await resolveBusiness(db, ctx, branch);
+    const books = await glService.trialBalance(db, { businessId: business.id, branchId: branch.id });
+    const ledgerRow = (books.accounts || []).find((a) => a.code === '1010');
+    const ledgerBalance = round2(Number(ledgerRow ? ledgerRow.balance : 0));
+    const difference = round2(balance - ledgerBalance);
+
     ctx.json({
       ...listResponse(entries, { limit, offset }),
       branch: { id: branch.id, name: branch.name },
       balance,
+      ledgerBalance,
+      difference,
+      inAgreement: Math.abs(difference) < 0.01,
+      agreementMessage: Math.abs(difference) < 0.01
+        ? `The books agree with the safe: ${'₦'}${balance.toLocaleString('en-NG')}.`
+        : `The safe ledger says ${'₦'}${balance.toLocaleString('en-NG')} and the general ledger says ${'₦'}${ledgerBalance.toLocaleString('en-NG')} — a difference of ${'₦'}${difference.toLocaleString('en-NG')}. Cash moved inside the shop without the books being told, or a count was corrected in one place only. Reconcile it from this screen once you have counted the safe.`,
       chainConsistent: Math.abs(balance - storedLast) < 0.01,
       chainMessage: Math.abs(balance - storedLast) < 0.01
         ? null
         : `The safe's running balance does not add up: the entries sum to ₦${balance.toLocaleString('en-NG')} but the last row says ₦${storedLast.toLocaleString('en-NG')}. A row has been edited outside this ledger.`,
+    });
+  });
+
+  /**
+   * RECONCILE THE SAFE ACCOUNT — the one correction the two records cannot make
+   * for themselves.
+   *
+   * Every other entry on this screen moves BOTH the safe ledger and the general
+   * ledger, so they stay in step with each other and neither can fix a gap between
+   * them. A gap is real: the safe ledger is a record of movements, and Cash in Safe
+   * is the account an accountant reads. They disagree whenever cash moved between
+   * the drawer and the safe before the books were told (which, until this stage,
+   * was every float and every sweep — staging's safe account was more than
+   * ₦200,000 adrift), or when a migration or a hand-edit touched one side.
+   *
+   * So: the owner counts the safe, and posts the difference to Cash Over & Short.
+   * The SAFE LEDGER IS NOT TOUCHED — it is append-only and it says what physically
+   * happened — so this corrects the figure in the ACCOUNTS to agree with the figure
+   * on the shelf.
+   *
+   * `counted_balance` is what the owner actually counted; send nothing and the
+   * route brings the books into line with the safe ledger instead. Either way the
+   * note is required: a correction to the books with no reason is exactly the entry
+   * a future reader cannot interpret.
+   */
+  app.post(`${base}/safe/reconcile`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const body = await ctx.req.json();
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('Only a manager or above can correct the safe account. It moves money in the books.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const branch = await resolveBranch(db, ctx);
+    const business = await resolveBusiness(db, ctx, branch);
+    const note = strField(body.note || body.reason, { field: 'Note', maxLength: 400, required: true });
+    if (String(note || '').trim().length < 4) {
+      throw new HttpError('Say what was counted and why the books were out. This is the entry the next person reading the accounts will rely on.', { status: 400, code: 'NOTE_REQUIRED' });
+    }
+
+    const safe = await safeBalance(db, branch.id);
+    const books = await glService.trialBalance(db, { businessId: business.id, branchId: branch.id });
+    const ledgerRow = (books.accounts || []).find((a) => a.code === '1010');
+    const ledgerBalance = round2(Number(ledgerRow ? ledgerRow.balance : 0));
+    const countedField = body.counted_balance ?? body.countedBalance ?? body.balance;
+    const target = countedField === undefined || countedField === null || countedField === ''
+      ? safe
+      : numField(countedField, { field: 'Counted balance', min: 0 });
+    const difference = round2(target - ledgerBalance);
+
+    if (Math.abs(difference) < 0.01) {
+      ctx.json({
+        ok: true, reconciled: false, branch: { id: branch.id, name: branch.name },
+        safeBalance: safe, ledgerBalance, difference: 0, target,
+        message: `Nothing to correct: the books already say ₦${ledgerBalance.toLocaleString('en-NG')} in the safe and the count is ₦${target.toLocaleString('en-NG')}.`,
+      });
+      return;
+    }
+
+    // `difference` is what the BOOKS must move by. Positive means the safe holds
+    // more than the books believe, which debits Cash in Safe and credits over &
+    // short — the same shape as an overage at a till count, because it is one.
+    const id = newId();
+    const accountIds = await glService.loadAccountCodes(db, business.id);
+    await db.transaction(async (tx) => {
+      for (const st of glService.postCashOverShortStatements({
+        businessId: String(business.id), branchId: String(branch.id), variance: difference,
+        accountCode: 'SAFE', sourceType: 'SAFE', sourceId: id,
+        reason: `safe reconciled against the count — ${note}`, accountIds, user,
+      })) tx.queue(st.sql, st.params);
+    });
+
+    const after = await glService.trialBalance(db, { businessId: business.id, branchId: branch.id });
+    const afterRow = (after.accounts || []).find((a) => a.code === '1010');
+    const ledgerAfter = round2(Number(afterRow ? afterRow.balance : 0));
+    const stillOut = round2(safe - ledgerAfter);
+
+    await recordFromCtx(ctx, {
+      action: 'SAFE_RECONCILED', entityType: 'GL_ACCOUNT', entityId: '1010',
+      branchId: branch.id, businessId: business.id,
+      before: { ledgerBalance, safeBalance: safe }, after: { ledgerBalance: ledgerAfter, target, difference, note },
+    });
+    ctx.json({
+      ok: true, reconciled: true, id,
+      branch: { id: branch.id, name: branch.name },
+      safeBalance: safe, ledgerBalance: ledgerAfter, difference: stillOut, target,
+      message: stillOut === 0
+        ? `The books now say ₦${ledgerAfter.toLocaleString('en-NG')} in the safe, which is what the count says. ${'₦'}${Math.abs(difference).toLocaleString('en-NG')} posted to Cash Over & Short.`
+        : `Posted ₦${difference.toLocaleString('en-NG')} to Cash Over & Short. The books say ₦${ledgerAfter.toLocaleString('en-NG')} and the count says ₦${target.toLocaleString('en-NG')} — ₦${stillOut.toLocaleString('en-NG')} apart.`,
     });
   });
 
@@ -574,6 +731,39 @@ function mount(app, base = '/api') {
     }
     const balanceAfter = round2(balanceNow + signedAmount);
 
+    // ------------------------------------------------------------------
+    // WHERE THE MONEY CAME FROM, AND WHERE IT WENT.
+    // ------------------------------------------------------------------
+    // A deposit into the safe is not income and not a mystery: the cash came
+    // from somewhere, and that somewhere is a second account in the books. A
+    // withdrawal is the same question in reverse. Until these were asked, the
+    // safe could only ever be debited by money the ledger never saw arrive, which
+    // is precisely how Cash in Safe reached −₦205,500 on staging while the safe
+    // held ₦4,000 — and, separately, how a payout for salaries left the books
+    // with no wage cost in them at all.
+    //
+    // So both are required, from a fixed list. The list is short on purpose: a
+    // free-text answer here is a free-text answer in the general ledger.
+    const counterparty = String(body.source || body.destination || body.counterparty || '').trim().toUpperCase();
+    const isDeposit = entryType === 'DEPOSIT';
+    const isWithdrawal = entryType === 'WITHDRAWAL';
+    if (isDeposit || isWithdrawal) {
+      const allowed = isDeposit ? SAFE_DEPOSIT_SOURCES : SAFE_WITHDRAWAL_DESTINATIONS;
+      if (!counterparty) {
+        throw new HttpError(
+          isDeposit
+            ? `Say where the ₦${amount.toLocaleString('en-NG')} came from. Cash into the safe arrives from the bank, from the owner, from the drawer, or from somewhere else — and the books need the other side of the entry, or the safe's account drifts away from the safe.`
+            : `Say where the ₦${amount.toLocaleString('en-NG')} went. Money leaving the safe is drawn by the owner, paid out as an expense, or unclassified — and each of those is a different line in the accounts.`,
+          { status: 400, code: isDeposit ? 'SAFE_SOURCE_REQUIRED' : 'SAFE_DESTINATION_REQUIRED', fields: { [isDeposit ? 'source' : 'destination']: `One of ${allowed.map((x) => x.code).join(', ')}` } },
+        );
+      }
+      const match = allowed.find((x) => x.code === counterparty);
+      if (!match) {
+        throw new HttpError(`"${counterparty}" is not somewhere cash ${isDeposit ? 'comes from' : 'goes'}. Choose one of: ${allowed.map((x) => `${x.code} (${x.label.toLowerCase()})`).join(', ')}.`,
+          { status: 400, code: isDeposit ? 'SAFE_SOURCE_REQUIRED' : 'SAFE_DESTINATION_REQUIRED' });
+      }
+    }
+
     const reference = strField(body.reference, { field: 'Reference', maxLength: 80, required: entryType === 'BANKING' });
     if (entryType === 'BANKING' && !reference) {
       throw new HttpError('A bank deposit needs its slip number, or it cannot be matched to the statement.', { status: 400, code: 'REFERENCE_REQUIRED' });
@@ -593,15 +783,63 @@ function mount(app, base = '/api') {
         outgoing ? `${reasonCode}${note ? ` — ${note}` : ''}` : (note || reasonCode),
         approvedBy, String(user.id),
       ]);
-      // Only BANKING moves the general ledger. Cash into the safe and cash back
-      // out of it are both still cash at the branch, so neither changes the
-      // business's assets — posting them would inflate the balance sheet with
-      // money that never left the building.
-      if (entryType === 'BANKING') {
-        for (const st of glService.postBankingStatements({
-          businessId: String(business.id), branchId: String(branch.id), amount,
-          from: 'SAFE', reference, accountIds, user,
-        })) tx.queue(st.sql, st.params);
+      // EVERY ENTRY NOW POSTS, AND THE BALANCE SHEET TOTAL IS STILL UNTOUCHED.
+      //
+      // The old rule here was "only BANKING moves the general ledger", on the same
+      // reasoning the till float used: cash inside the building is still cash at the
+      // branch. It is right about the TOTAL and wrong about the ACCOUNTS — money arriving
+      // in the safe has to be debited to 1010 and credited to whatever it came from, or
+      // 1010 is a number nobody can reconcile with the safe, and a payout for salaries
+      // never becomes a cost in the profit and loss at all.
+      const movesToLedger = ['BANKING', 'DEPOSIT', 'WITHDRAWAL', 'ADJUSTMENT'].includes(entryType);
+      if (movesToLedger) {
+        let statements = [];
+        if (entryType === 'BANKING') {
+          statements = glService.postBankingStatements({
+            businessId: String(business.id), branchId: String(branch.id), amount,
+            from: 'SAFE', reference, accountIds, user,
+          });
+        } else if (isDeposit) {
+          const src = SAFE_DEPOSIT_SOURCES.find((x) => x.code === counterparty);
+          const description = `Cash into the safe: ${src.label.toLowerCase()}${note ? ` — ${note}` : ''}`;
+          statements = src.kind === 'CASH'
+            ? glService.postCashMoveStatements({
+              businessId: String(business.id), branchId: String(branch.id), amount,
+              from: src.from, to: 'SAFE', sourceType: 'SAFE', sourceId: id,
+              description, accountIds, user,
+            })
+            : glService.postCashAgainstAccountStatements({
+              businessId: String(business.id), branchId: String(branch.id), amount,
+              cash: 'SAFE', direction: 'IN', accountCode: src.account,
+              sourceType: 'SAFE', sourceId: id, description, accountIds, user,
+            });
+        } else if (isWithdrawal) {
+          const dest = SAFE_WITHDRAWAL_DESTINATIONS.find((x) => x.code === counterparty);
+          // A payout the reason list maps to an expense account is posted to THAT
+          // account — a salary payout is a salary cost, not a mystery, and the
+          // month's wages are then visible in the profit and loss rather than
+          // missing from it. Anything the reason does not map falls through to the
+          // destination's own account: drawings for the owner, over & short for
+          // an unclassified payout (which is exactly what it is).
+          const payoutAccount = dest.code === 'EXPENSE'
+            ? (glService.EXPENSE_CATEGORY_ACCOUNTS[reasonCode] || '6900')
+            : dest.account;
+          statements = glService.postCashPayoutStatements({
+            businessId: String(business.id), branchId: String(branch.id), amount,
+            from: 'SAFE', accountCode: payoutAccount, sourceId: id,
+            description: `Paid out of the safe: ${reasonCode.toLowerCase().replace(/_/g, ' ')}${note ? ` — ${note}` : ''}`,
+            accountIds, user,
+          });
+        } else if (entryType === 'ADJUSTMENT') {
+          // A correction to the safe's balance is cash appearing or disappearing
+          // against the count, so it posts to over & short like a till variance.
+          statements = glService.postCashOverShortStatements({
+            businessId: String(business.id), branchId: String(branch.id),
+            variance: signedAmount, accountCode: 'SAFE', sourceType: 'SAFE', sourceId: id,
+            reason: note || 'Safe balance corrected', accountIds, user,
+          });
+        }
+        for (const st of statements) tx.queue(st.sql, st.params);
       }
     });
 
@@ -695,6 +933,19 @@ function mount(app, base = '/api') {
       id, category, description, amount, vat_amount: vatInput, wht_code: whtResolvedCode,
       wht_percent: whtRate, wht_amount: whtAmount, net_amount: netAmount,
       expense_date: expenseDate, payment_method: paymentMethod, status,
+      // WHICH DRAWER THE MONEY CAME OUT OF. `postExpenseStatements` credits the account
+      // `paid_from` names, and it defaults to the till when it is absent — so an expense
+      // paid from the SAFE wrote its safe-ledger row, took ₦3,000 out of the physical
+      // safe, and posted the credit to Cash at Till. The ledger then said the till was
+      // short and the safe still held money it had paid out; both records drifted, in
+      // opposite directions, on the shop's most ordinary transaction.
+      //
+      // Found by test/audit/audit.money.js in Stage T2b, in the same branch as the two
+      // undefined identifiers above: this code path had never once run to completion, so
+      // it had never been wrong in a way anybody could see. THE COLUMN ON THE TABLE AND
+      // THE FIELD IN THE OBJECT ARE TWO DIFFERENT NAMES FOR ONE FACT, and only one of
+      // them was being written.
+      paid_from: paymentMethod === 'SAFE' ? 'SAFE' : paymentMethod === 'CASH' ? 'TILL' : 'BANK',
     };
 
     const safeBalBefore = paymentMethod === 'SAFE' ? await safeBalance(db, branch.id) : null;
@@ -748,14 +999,33 @@ function mount(app, base = '/api') {
       }
 
       if (paymentMethod === 'SAFE') {
-
-        if (bal < amount) throw new HttpError(`The safe holds ₦${bal.toLocaleString('en-NG')}, which will not cover a ₦${amount.toLocaleString('en-NG')} expense.`, { status: 409, code: 'SAFE_INSUFFICIENT' });
+        // THE SAFE HAD TO COVER IT, AND `bal` WAS NEVER A VARIABLE IN THIS ROUTE.
+        //
+        // So EVERY attempt to pay an expense out of the branch safe answered
+        // `500 {"error":"bal is not defined"}` — the one payment method whose whole
+        // point is a cash drawer that must not go negative, and it could not be used
+        // at all. The balance is now read above, when the payment method is chosen, and
+        // it is read from the safe's own ledger rather than from a variable that reads
+        // like it came from somewhere else.
+        //
+        // Found by test/audit/audit.money.js (Stage T2b) while proving that every way
+        // cash leaves the safe reaches the books. Nothing else in the suite touched this
+        // path: the WHT audit pays expenses from the till, and the unit tests call the
+        // service rather than the route.
+        if (safeBalBefore < amount) {
+          throw new HttpError(`The safe holds ₦${safeBalBefore.toLocaleString('en-NG')}, which will not cover a ₦${amount.toLocaleString('en-NG')} expense. Record it as paid from the till, or put money into the safe first.`, { status: 409, code: 'SAFE_INSUFFICIENT' });
+        }
         tx.queue(`INSERT INTO branch_safe_ledger (
             id, branch_id, business_id, entry_type, amount, balance_after, reference_type, reference_id,
             reason, approved_by, created_by, created_at, updated_at)
           VALUES (?,?,?,?,?, ?, 'EXPENSE', ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
           newId(), String(branch.id), String(business.id), 'EXPENSE', -amount, round2(safeBalBefore - amount),
-          id, `${category}: ${description}`, approvedBy, String(user.id),
+          // `approved_by` is the person who signed the payout off, and this route only
+          // reaches here with a manager or better (the approval gate above). It used to
+          // name a variable called `approvedBy` that does not exist in this file — the
+          // second undefined identifier in the same branch, and the reason the first fix
+          // was not the last one. A cash ledger row is the record of WHO paid money out.
+          id, `${category}: ${description}`, String(user.id), String(user.id),
         ]);
       }
     });

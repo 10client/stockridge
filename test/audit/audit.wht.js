@@ -120,6 +120,18 @@ runAudit('wht', async (audit, d) => {
     return bank ? Number(bank.balance) : null;
   });
 
+  // WHAT WAS ALREADY OWED TO FIRS BEFORE THIS PAYMENT. A live deployment carries
+  // withholdings from its own trading and from earlier audit runs (staging had ₦12,000
+  // outstanding), and the assertion below used to be an ABSOLUTE: "the unremitted total
+  // equals this one withholding". On a fresh local database that is true; on a live one it
+  // reports the shop's real tax debt as a defect in the audit's own ₦8,000. The same
+  // mistake the money audit made with the bank balance, in a different report.
+  const unremittedBeforePayment = await audit.captureAsync('what was already owed to FIRS before this payment', async () => {
+    const res = await o.get('/api/accounting/wht');
+    if (res.status !== 200) return null;
+    return round2(Number(res.json.summary && res.json.summary.unremittedTotal));
+  });
+
   const payment = await audit.captureAsync(`a ${money(gross)} payment with withholding at ${goodsRate}%`, async () => {
     if (!supplier) return null;
     const res = await o.post(`/api/suppliers/${supplier.id}/payments`, {
@@ -181,8 +193,12 @@ runAudit('wht', async (audit, d) => {
       assert.equal(round2(Number(row.net_amount)), expectedNet, `the entry records ${money(row.net_amount)} paid`);
       assert.equal(String(row.rate_code), 'SUPPLY_OF_GOODS', `the entry was recorded under ${row.rate_code}`);
       assert.equal(Number(row.rate_percent), goodsRate, `the entry carries a rate of ${row.rate_percent}%`);
-      assert.equal(round2(Number(after.summary.unremittedTotal)), expectedWht,
-        `the report says ${money(after.summary.unremittedTotal)} is unremitted. The whole point of the report is that this figure is what the business owes FIRS and has not sent`);
+      // THE MOVEMENT, and the entry's own presence. What matters is that withholding
+      // ₦X added exactly ₦X to what the business owes FIRS — a live deployment's report
+      // already holds its own outstanding tax, and that is not this audit's business.
+      const grewBy = round2(Number(after.summary.unremittedTotal) - Number(unremittedBeforePayment || 0));
+      assert.equal(grewBy, expectedWht,
+        `the business owed FIRS ${money(unremittedBeforePayment || 0)} before this payment and ${money(after.summary.unremittedTotal)} after — a movement of ${money(grewBy)} against the ${money(expectedWht)} just withheld. This figure is what the business owes and has not sent; a withholding that does not appear here is tax the shop will never remit`);
       audit.note(`withheld ${money(row.wht_amount)} at ${row.rate_percent}% — ${after.message}`);
     });
 

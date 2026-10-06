@@ -506,11 +506,34 @@ async function provisionDeployment(db, {
 
     // Opening safe entry so the safe balance is a real derivation from row one
     // rather than a number that appears the first time somebody deposits.
+    //
+    // AND IT POSTS TO THE BOOKS, because it is money the business actually holds.
+    // The safe ledger row alone made the safe a real account with nothing on the other
+    // side of it: the shop opened with ₦200,000 in the safe and the general ledger had
+    // never heard of it, so Cash in Safe was ₦200,000 short from the first day and no
+    // entry could ever close the gap. (Found by test/audit/audit.money.js in Stage T2b,
+    // which asserts that the two records agree on a database the audit created itself.)
+    //
+    // DR Cash in Safe / CR Owner's Capital: the owner put the money in. That is what an
+    // opening float IS, and it belongs in equity rather than in the trading accounts —
+    // an opening float posted as income would show a profit on the day a shop opened.
     if (Number(b.opening_cash) > 0) {
       await db.run(`INSERT INTO branch_safe_ledger (
           id, branch_id, business_id, entry_type, amount, balance_after, reason, created_by, created_at, updated_at)
         VALUES (?,?,?, 'OPENING', ?, ?, 'Opening cash float', ?, datetime('now'), datetime('now'))`,
       [newId(), id, businessId, round2(Number(b.opening_cash)), round2(Number(b.opening_cash)), ownerId]);
+
+      const gl = require('./glService');
+      const accountIds = await gl.loadAccountCodes(db, businessId);
+      for (const st of gl.postCashAgainstAccountStatements({
+        businessId, branchId: id, amount: round2(Number(b.opening_cash)),
+        cash: 'SAFE', direction: 'IN', accountCode: '3000',
+        sourceType: 'OPENING_BALANCE', sourceId: `opening-${id}`,
+        description: `Opening cash float for ${b.name}`,
+        accountIds, user: { id: ownerId },
+      })) {
+        await db.run(st.sql, st.params);
+      }
     }
 
     // A branch manager per branch, when the caller asked for one.

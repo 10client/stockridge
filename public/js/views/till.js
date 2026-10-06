@@ -35,6 +35,23 @@
     'TRANSPORT', 'FEEDING', 'FUEL', 'CLEANING', 'REPAIRS', 'CASUAL_WORKER',
     'BANK_CHARGES', 'SUPPLIES', 'OTHER',
   ];
+  // Mirrors SAFE_DEPOSIT_SOURCES / SAFE_WITHDRAWAL_DESTINATIONS on the server.
+  // Cash into the safe came from somewhere and cash out of it went somewhere, and
+  // each of those is a SECOND ACCOUNT in the books — so the question is asked at
+  // the counter rather than guessed in the ledger. The server refuses an entry
+  // without one, in as many words; this is what makes that impossible to hit from
+  // the screen.
+  const SAFE_DEPOSIT_SOURCES = [
+    { value: 'BANK', label: 'Withdrawn from the bank' },
+    { value: 'OWNER', label: 'Put in by the owner' },
+    { value: 'TILL', label: 'Taken from the drawer' },
+    { value: 'OTHER', label: 'Somewhere else (posted to over & short)' },
+  ];
+  const SAFE_WITHDRAWAL_DESTINATIONS = [
+    { value: 'OWNER', label: 'Drawn by the owner' },
+    { value: 'EXPENSE', label: 'Paid out as an expense (by the reason above)' },
+    { value: 'OTHER', label: 'Unclassified (posted to over & short)' },
+  ];
 
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
@@ -58,6 +75,9 @@
 
     const summaryHost = ui.h('div', {});
     wrap.appendChild(summaryHost);
+
+    const safeHost = ui.h('div', {});
+    wrap.appendChild(safeHost);
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
@@ -95,6 +115,8 @@
           if (open.length) renderCurrent({ till: open[0] }, true); else renderNoOpenTill();
         }
       }
+
+      loadSafe();
 
       try {
         data = await SR.api.get('/api/tills', {
@@ -269,6 +291,7 @@
             m.close();
             ui.ok(res.message || 'Till opened.');
             load();
+            loadSafe();
           } catch (err) { ui.apiError(err); }
         });
       });
@@ -329,6 +352,7 @@
             m.close();
             const payload = res && (res.message || res);
             ui.ok(typeof payload === 'string' ? payload : 'Till closed and counted.');
+            loadSafe();
             SR.app.navigate(`/tills/${encodeURIComponent(t.id)}`);
           } catch (err) { ui.apiError(err); }
         });
@@ -338,11 +362,26 @@
     // ----------------------------------------------------------- safe entry
     function openSafeEntry() {
       const form = ui.h('div', {});
+      const typeField = ui.field({ label: 'What happened', name: 'entry_type', options: SAFE_ENTRY_TYPES, required: true });
+      const sourceField = ui.field({
+        label: 'Where did it come from?',
+        name: 'source',
+        options: SAFE_DEPOSIT_SOURCES,
+        hint: 'The other side of the entry in the books.',
+      });
+      const destField = ui.field({
+        label: 'Where did it go?',
+        name: 'destination',
+        options: SAFE_WITHDRAWAL_DESTINATIONS,
+        hint: 'A drawing, an expense, or unclassified. Each is a different line in the accounts.',
+      });
       form.appendChild(ui.h('div', { class: 'form-grid' },
-        ui.field({ label: 'What happened', name: 'entry_type', options: SAFE_ENTRY_TYPES, required: true }),
+        typeField,
         ui.field({ label: 'Amount (₦)', name: 'amount', type: 'number', step: '0.01', min: '0.01', required: true }),
         ui.field({ label: 'Reason', name: 'reason', options: PAYOUT_REASONS.map((r) => ({ value: r, label: U.humanise(r) })) }),
         ui.field({ label: 'Reference', name: 'reference', placeholder: 'slip / teller / voucher number' }),
+        sourceField,
+        destField,
         ui.field({
           label: 'Note',
           name: 'note',
@@ -350,15 +389,34 @@
           type: 'textarea',
           hint: 'Required when money leaves the safe. The safe is an append-only ledger — the note is what the next person reading it will rely on.',
         })));
-      form.appendChild(ui.h('div', { class: 'hint' }, 'The safe balance is a running derivation from its rows, so a mistake is corrected with an ADJUSTMENT entry rather than by editing history.'));
+      form.appendChild(ui.h('div', { class: 'hint' }, 'The safe balance is a running derivation from its rows, so a mistake is corrected with an ADJUSTMENT entry rather than by editing history. Every entry also posts to the accounts, so the safe balance and the books stay in step.'));
+
+      // THE QUESTION CHANGES WITH THE ANSWER ABOVE IT. A deposit came from
+      // somewhere; a withdrawal went somewhere; a banking entry has a slip number;
+      // an adjustment is a correction. Showing all four at once is how a cashier
+      // fills in the wrong one.
+      const typeInput = typeField.querySelector('select');
+      const syncFields = () => {
+        const t = String(typeInput.value);
+        sourceField.style.display = t === 'DEPOSIT' ? '' : 'none';
+        destField.style.display = t === 'WITHDRAWAL' ? '' : 'none';
+      };
+      typeInput.addEventListener('change', syncFields);
+      syncFields();
 
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
       const go = ui.h('button', { class: 'btn btn-primary' }, 'Post the entry');
-      const m = ui.openModal({ title: 'Branch safe', body: form, footer: [cancel, go], size: 'narrow' });
+      const m = ui.openModal({ title: 'Branch safe', body: form, footer: [cancel, go], size: 'wide' });
 
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);
         if (!v.amount) { ui.warn('Enter the amount.'); return; }
+        if (v.entry_type === 'DEPOSIT' && !v.source) {
+          ui.warn('Say where the money came from — the bank, the owner, or the drawer.'); return;
+        }
+        if (v.entry_type === 'WITHDRAWAL' && !v.destination) {
+          ui.warn('Say where the money went — the owner, an expense, or unclassified.'); return;
+        }
         const outgoing = ['WITHDRAWAL', 'EXPENSE', 'BANKING'].includes(String(v.entry_type));
         await ui.withBusy(form, async () => {
           try {
@@ -366,6 +424,8 @@
               entry_type: v.entry_type,
               amount: Number(v.amount),
               outgoing,
+              source: v.entry_type === 'DEPOSIT' ? v.source : undefined,
+              destination: v.entry_type === 'WITHDRAWAL' ? v.destination : undefined,
               reason: v.reason || undefined,
               reference: v.reference || undefined,
               note: v.note || undefined,
@@ -374,9 +434,100 @@
             m.close();
             ui.ok(res.message || `Safe balance is now ${U.money(res.balanceAfter)}.`);
             load();
+            loadSafe();
           } catch (err) { ui.apiError(err); }
         });
       });
+    }
+
+    // ------------------------------------------------- reconcile the safe
+    // The safe's own ledger and Cash in Safe are two records of the same money, and
+    // one of them can be wrong. Every entry moves both, so neither can close a gap
+    // BETWEEN them — this is the one correction that can, and it is deliberately a
+    // separate, named action with a required note rather than something a screen
+    // does quietly. Offered only when the two records actually disagree.
+    function openReconcile(safe) {
+      const form = ui.h('div', {});
+      form.appendChild(ui.h('p', { class: 'hint' },
+        `The safe ledger says ${U.money(safe.balance)}. The accounts say ${U.money(safe.ledgerBalance)} — ${U.money(Math.abs(safe.difference))} ${Number(safe.difference) > 0 ? 'more has been counted than the books believe' : 'more is in the books than the safe holds'}. Count the safe and enter what you found; the difference posts to Cash Over & Short, and the safe ledger itself is never edited.`));
+      form.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'What the safe actually holds (₦)', name: 'counted_balance', type: 'number', step: '0.01', min: '0', value: safe.balance }),
+        ui.field({ label: 'Why were the books out?', name: 'note', span: true, type: 'textarea', required: true, hint: 'Required. This is the entry the next person reading the accounts will rely on.' })));
+      const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
+      const go = ui.h('button', { class: 'btn btn-primary' }, 'Reconcile');
+      const m = ui.openModal({ title: 'Reconcile the safe account', body: form, footer: [cancel, go], size: 'wide' });
+      go.addEventListener('click', async () => {
+        const v = ui.readForm(form);
+        if (!String(v.note || '').trim()) { ui.warn('Say why the books were out — the note is the record.'); return; }
+        await ui.withBusy(form, async () => {
+          try {
+            const res = await SR.api.post('/api/safe/reconcile', {
+              counted_balance: v.counted_balance === null ? undefined : Number(v.counted_balance),
+              note: v.note,
+              branch_id: SR.state.activeBranchId,
+            });
+            m.close();
+            ui.ok(res.message || 'Safe reconciled.');
+            loadSafe();
+            load();
+          } catch (err) { ui.apiError(err); }
+        });
+      });
+    }
+
+    // ----------------------------------------------------------- the safe card
+    // NOBODY COULD SEE THE SAFE. The product had a complete GET /api/safe — the
+    // ledger, the running balance, and a chain check that tells an owner whether a
+    // row was edited outside the ledger — and no screen read it. The only figures
+    // were on the dashboard. So an owner could post a payout and could not look at
+    // what the safe had done all month, which is not a report a shop can be run
+    // from. Found while making the safe a real account (Stage T2b): the endpoint
+    // existed, was tested, and was invisible.
+    async function loadSafe() {
+      safeHost.replaceChildren(ui.skeleton(3));
+      let safe;
+      try {
+        safe = await SR.api.get('/api/safe', { query: SR.state.query({ limit: 8 }) });
+      } catch (err) {
+        if (!err.isOffline) { safeHost.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadSafe } })); return; }
+        safe = null;
+      }
+      safeHost.replaceChildren();
+      if (!safe) return;
+      const card = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }));
+      card.firstElementChild.appendChild(ui.h('div', { class: 'row between wrap' },
+        ui.h('div', {},
+          ui.h('h3', { style: { margin: '0 0 4px' } }, 'Branch safe'),
+          ui.h('p', { class: 'hint', style: { margin: 0 } },
+            `${U.money(safe.balance)} in the safe ledger · ${U.money(safe.ledgerBalance)} in the accounts`)),
+        ui.h('div', { class: 'actions' },
+          SR.state.atLeast('MANAGER') && safe.inAgreement === false
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => openReconcile(safe) }, 'Reconcile')
+            : null)));
+
+      if (safe.inAgreement === false) {
+        card.firstElementChild.appendChild(ui.h('div', { class: 'alert alert-warn' }, safe.agreementMessage
+          || `The safe ledger and the accounts disagree by ${U.money(Math.abs(safe.difference))}.`));
+      } else {
+        card.firstElementChild.appendChild(ui.h('div', { class: 'alert alert-good' }, safe.agreementMessage || 'The safe and the accounts agree.'));
+      }
+      if (safe.chainConsistent === false) {
+        card.firstElementChild.appendChild(ui.h('div', { class: 'alert alert-danger' }, safe.chainMessage || 'The safe ledger does not add up row by row.'));
+      }
+
+      card.firstElementChild.appendChild(ui.renderTable({
+        columns: [
+          { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+          { key: 'entry_type', label: 'What', render: (r) => U.humanise(r.entry_type) },
+          { key: 'amount', label: 'Amount', align: 'right', render: (r) => `${Number(r.amount) < 0 ? '\u2212' : '+'}${U.money(Math.abs(Number(r.amount)))}` },
+          { key: 'reason', label: 'Why' },
+          { key: 'created_by_name', label: 'By' },
+        ],
+        rows: safe.data || [],
+        emptyMessage: 'No cash has moved through this safe yet.',
+        emptyTitle: 'The safe is empty',
+      }));
+      safeHost.appendChild(card);
     }
 
     wrap.appendChild(ui.html('<style>' +

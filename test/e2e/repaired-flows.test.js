@@ -128,7 +128,7 @@ test('a till float can be funded from the safe, and cash can be returned to it o
   // ---- put money in the safe first, or funding a float has nothing to draw on
   const deposit = await world.call('POST', '/api/safe/entries', {
     token: world.ownerToken,
-    body: { branch_id: world.branchId, entry_type: 'DEPOSIT', amount: 50000, note: 'Owner top-up for the float' },
+    body: { branch_id: world.branchId, entry_type: 'DEPOSIT', amount: 50000, source: 'OWNER', note: 'Owner top-up for the float' },
   });
   assert.equal(deposit.status, 201, `safe deposit failed: ${deposit.text.slice(0, 400)}`);
   const afterDeposit = await safeBalance();

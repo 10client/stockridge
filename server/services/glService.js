@@ -108,6 +108,7 @@ const CHART_OF_ACCOUNTS = Object.freeze([
   { code: '6100', name: 'Cleaning & Consumables', type: 'EXPENSE', side: 'DEBIT', control: false },
   { code: '6110', name: 'Depreciation', type: 'EXPENSE', side: 'DEBIT', control: false },
   { code: '6900', name: 'Sundry Expenses', type: 'EXPENSE', side: 'DEBIT', control: false },
+  { code: '6910', name: 'Cash Over & Short', type: 'EXPENSE', side: 'DEBIT', control: true },
 
   { code: '7000', name: 'Intercompany — Due From', type: 'ASSET', side: 'DEBIT', control: true },
   { code: '7010', name: 'Intercompany — Due To', type: 'LIABILITY', side: 'CREDIT', control: true },
@@ -190,6 +191,9 @@ async function loadAccountCodes(db, businessId) {
  * than as a CHECK failure three layers away.
  */
 function buildEntry({ businessId, branchId = null, entryDate = null, sourceType, sourceId = null, description = null, lines, postedBy = null, accountIds }) {
+  if (!SOURCE_TYPES.includes(String(sourceType))) {
+    throw new Error(`Journal source type "${sourceType}" is not one of the types the schema allows (${SOURCE_TYPES.join(', ')}). The source type says where an entry CAME FROM — a float and a sweep are both TILL events, a safe deposit is a SAFE event, and the description says which one.`);
+  }
   const resolved = [];
   let totalDebit = 0;
   let totalCredit = 0;
@@ -552,18 +556,176 @@ function postIntercompanyTransferStatements({ transfer, fromBusiness, toBusiness
   ];
 }
 
-/** Banking cash from the till or safe into the bank. */
-function postBankingStatements({ businessId, branchId, amount, from = 'TILL', reference = null, accountIds, user }) {
+/**
+ * WHERE A JOURNAL ENTRY CAME FROM — the same closed list the `source_type`
+ * CHECK constraint on gl_journal_entries allows.
+ *
+ * Repeated here so a caller that invents a new one finds out immediately, with a
+ * sentence naming the list, instead of at the database as `CHECK constraint
+ * failed: gl_journal_entries`. The first version of the cash-move work used six
+ * source types of its own invention (`CASH_TRANSFER`, `CASH_VARIANCE`,
+ * `SAFE_DEPOSIT`, `SAFE_PAYOUT`, `SAFE_ADJUSTMENT`, `SAFE_RECONCILE`) and every
+ * one of them was rejected — correctly: a taxonomy that grows a word per feature
+ * is not a taxonomy. A float and a sweep are TILL events, a safe entry is a SAFE
+ * event, and the description says which one it was.
+ */
+const SOURCE_TYPES = Object.freeze([
+  'SALE', 'SALE_RETURN', 'PURCHASE', 'EXPENSE', 'STOCK_ADJUSTMENT', 'TRANSFER',
+  'TILL', 'SAFE', 'DEBTOR_PAYMENT', 'CREDITOR_PAYMENT', 'WHT', 'VAT', 'DEPRECIATION',
+  'INSTALMENT', 'WARRANTY', 'DELIVERY', 'PAYROLL', 'MANUAL', 'OPENING_BALANCE', 'INTERCOMPANY',
+]);
+
+/**
+ * The accounts cash actually sits in. Named so a caller says WHERE the money
+ * came from and WHERE it went, in words, rather than in account numbers — a
+ * posting written as `debit: '1000'` four files from the ledger it changes is
+ * how a float ends up crediting the bank.
+ */
+const CASH_ACCOUNTS = Object.freeze({
+  TILL: '1000', SAFE: '1010', BANK: '1020', POS: '1030', MOBILE_MONEY: '1040',
+});
+
+/**
+ * CASH MOVING BETWEEN TWO PLACES THE BUSINESS HOLDS IT.
+ *
+ * Debit where it arrived, credit where it left. Both legs are real accounts, so
+ * the entry balances and total assets do not change — which is the whole point:
+ * a float taken from the safe is not income and not a bank deposit, it is the
+ * same naira in a different drawer, and the books must say so at both ends.
+ *
+ * This exists because they did not. Until it did, ONLY banking touched the
+ * general ledger, so the ledger's Cash at Till never received a float and its
+ * Cash in Safe was never credited when money left it. The result, found by
+ * test/audit/audit.money.js running against staging: **Cash in Safe reading
+ * −₦205,500 in the books while the branch safe physically held ₦4,000.** The
+ * rule stated in the code — "cash moving between the drawer and the safe is
+ * still cash at the branch, so nothing in the ledger moves" — is right about
+ * the BALANCE SHEET TOTAL and wrong about the ACCOUNTS: the two cash lines have
+ * to move against each other, or each of them is a number nobody can reconcile.
+ *
+ * `from`/`to` are keys of CASH_ACCOUNTS. An unknown key throws rather than
+ * posting something plausible, because a silently-wrong cash posting is the
+ * class of bug this function exists to end.
+ */
+function postCashMoveStatements({
+  businessId, branchId, amount, from, to, reference = null,
+  sourceType = 'MANUAL', sourceId = null, description = null, accountIds, user,
+}) {
   const value = round2(Number(amount) || 0);
   if (value <= 0) return [];
-  const fromAccount = String(from).toUpperCase() === 'SAFE' ? '1010' : '1000';
+  const fromAccount = CASH_ACCOUNTS[String(from).toUpperCase()];
+  const toAccount = CASH_ACCOUNTS[String(to).toUpperCase()];
+  if (!fromAccount || !toAccount) {
+    throw new Error(`Cash move from "${from}" to "${to}": both ends must be one of ${Object.keys(CASH_ACCOUNTS).join(', ')}.`);
+  }
+  if (fromAccount === toAccount) return []; // the same account paying itself is not a move
   return buildEntry({
-    businessId, branchId, sourceType: 'SAFE', sourceId: reference,
-    description: `Banked ${String(from).toLowerCase()} cash`, postedBy: user && user.id, accountIds,
+    businessId, branchId, sourceType, sourceId: sourceId || reference,
+    description: description || `Cash moved from ${String(from).toLowerCase()} to ${String(to).toLowerCase()}`,
+    postedBy: user && user.id, accountIds,
     lines: [
-      { accountCode: '1020', debit: value, description: 'Banked' },
-      { accountCode: fromAccount, credit: value, description: 'Cash out of the shop' },
+      { accountCode: toAccount, debit: value, description: `Cash in: ${String(to).toLowerCase()}` },
+      { accountCode: fromAccount, credit: value, description: `Cash out: ${String(from).toLowerCase()}` },
     ],
+  });
+}
+
+/**
+ * A COUNT THAT DID NOT MATCH, POSTED SO THE BOOKS AGREE WITH THE DRAWER.
+ *
+ * A till counted ₦2,000 short is a ₦2,000 fact: the cash account has to come
+ * down, and the loss has to land somewhere a person can look at it, or the
+ * ledger keeps claiming money that is not there and the shortage is only ever
+ * visible in a variance column nobody reconciles. It goes to 6910 Cash Over &
+ * Short — its own account, deliberately, not Sundry Expenses: overages and
+ * shortages are read together, every month, and "how much is this shop short"
+ * is a question that deserves an answer that is one line of a report.
+ *
+ * `variance` is COUNTED MINUS EXPECTED, the same sign the till stores: negative
+ * is short. Negative debits the loss; positive credits it back.
+ */
+function postCashOverShortStatements({
+  businessId, branchId, variance, accountCode = '1000', sourceType = 'TILL',
+  sourceId = null, reference = null, reason = null, accountIds, user,
+}) {
+  const value = round2(Number(variance) || 0);
+  if (value === 0) return [];
+  // `accountCode` takes either a cash KEY ('TILL', 'SAFE') or a chart code
+  // ('1000', '1010'). The count that went wrong can be either drawer, and naming
+  // it the way the rest of this file names cash is less to get wrong.
+  const cashKey = CASH_ACCOUNTS[String(accountCode).toUpperCase()] || String(accountCode);
+  const abs = Math.abs(value);
+  const loss = value < 0;
+  return buildEntry({
+    businessId, branchId, sourceType, sourceId: sourceId || reference,
+    description: loss
+      ? `Cash short at the count${reason ? `: ${reason}` : ''}`
+      : `Cash over at the count${reason ? `: ${reason}` : ''}`,
+    postedBy: user && user.id, accountIds,
+    lines: loss
+      ? [
+        { accountCode: '6910', debit: abs, description: 'Cash over & short' },
+        { accountCode: cashKey, credit: abs, description: 'Cash missing from the drawer' },
+      ]
+      : [
+        { accountCode: cashKey, debit: abs, description: 'Cash found in the drawer' },
+        { accountCode: '6910', credit: abs, description: 'Cash over & short' },
+      ],
+  });
+}
+
+/**
+ * CASH AGAINST A NON-CASH ACCOUNT — money entering or leaving the business
+ * entirely, rather than moving between two places it is held.
+ *
+ * A payout, an owner's drawing, an owner putting capital in, an unclassified
+ * deposit: in each case one side is a cash account and the other is an expense,
+ * an equity or a suspense account. It cannot be expressed as `from`/`to` because
+ * the money stops being cash, which is exactly why it needs this door rather than
+ * the move door — a payout posted as a cash move would credit an account that is
+ * still holding the money.
+ *
+ * `direction` is IN (cash arrives) or OUT (cash leaves). An account is required
+ * on the other side: a payout with no account is how a safe empties and the
+ * profit and loss never notices, which is what the reason list on the safe route
+ * was written to prevent in the first place.
+ */
+function postCashAgainstAccountStatements({
+  businessId, branchId, amount, cash = 'SAFE', accountCode, direction = 'OUT',
+  sourceType = 'SAFE', sourceId = null, reference = null, description = null, accountIds, user,
+}) {
+  const value = round2(Number(amount) || 0);
+  if (value <= 0) return [];
+  const cashAccount = CASH_ACCOUNTS[String(cash).toUpperCase()];
+  if (!cashAccount) throw new Error(`Cash account "${cash}": expected one of ${Object.keys(CASH_ACCOUNTS).join(', ')}.`);
+  if (!accountCode) throw new Error('Cash against an account needs the account — an expense, equity or suspense code, or the books lose the other side of the entry.');
+  const inbound = String(direction).toUpperCase() === 'IN';
+  const other = { accountCode: String(accountCode), description: inbound ? 'Source of the cash' : 'Use of the cash' };
+  const cashLine = { accountCode: cashAccount, description: `${inbound ? 'Cash in' : 'Cash out'}: ${String(cash).toLowerCase()}` };
+  return buildEntry({
+    businessId, branchId, sourceType, sourceId: sourceId || reference,
+    description: description || (inbound ? 'Cash received' : 'Cash paid out'),
+    postedBy: user && user.id, accountIds,
+    lines: inbound
+      ? [{ ...cashLine, debit: value }, { ...other, credit: value }]
+      : [{ ...other, debit: value }, { ...cashLine, credit: value }],
+  });
+}
+
+/** A payout from the safe: cash leaving the business against an expense or equity account. */
+function postCashPayoutStatements(opts) {
+  return postCashAgainstAccountStatements({ ...opts, direction: 'OUT' });
+}
+
+/** Banking cash from the till or the safe into the bank. */
+function postBankingStatements({ businessId, branchId, amount, from = 'TILL', reference = null, accountIds, user }) {
+  // Expressed as a cash move now that one exists: from wherever the cash is,
+  // into the bank. Same entry it always produced — DR 1020 / CR 1000|1010 — with
+  // the destination named the same way every other move names it.
+  return postCashMoveStatements({
+    businessId, branchId, amount, from, to: 'BANK', reference,
+    sourceType: 'SAFE', sourceId: reference,
+    description: `Banked ${String(from).toLowerCase()} cash`, accountIds, user,
   });
 }
 
@@ -782,11 +944,12 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
 }
 
 module.exports = {
-  CHART_OF_ACCOUNTS, ACCOUNT_BY_CODE, EXPENSE_CATEGORY_ACCOUNTS, ADJUSTMENT_ACCOUNTS,
+  CHART_OF_ACCOUNTS, ACCOUNT_BY_CODE, CASH_ACCOUNTS, EXPENSE_CATEGORY_ACCOUNTS, ADJUSTMENT_ACCOUNTS,
   seedChartStatements, loadAccountCodes, buildEntry,
   postSaleStatements, reverseSaleStatements, postPurchaseReceiptStatements,
   postExpenseStatements, postAdjustmentStatements, postTransferStatements,
   postIntercompanyTransferStatements, postBankingStatements,
+  postCashMoveStatements, postCashOverShortStatements, postCashPayoutStatements, postCashAgainstAccountStatements,
   postDebtorPaymentStatements, postCreditorPaymentStatements,
   postWarrantyStatements, postInstalmentInterestStatements,
   trialBalance, profitAndLoss, balanceSheet, revenueByCategory,

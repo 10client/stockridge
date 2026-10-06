@@ -163,6 +163,10 @@ class Deployment {
       const pinned = list.find((b) => String(b.id) === String(actor.branchId));
       if (pinned) return pinned;
     }
+    if (this.primaryBranchId) {
+      const primary = list.find((b) => String(b.id) === String(this.primaryBranchId));
+      if (primary && (!actor || !actor.businessId || String(primary.business_id) === String(actor.businessId))) return primary;
+    }
     if (actor && actor.businessId) {
       const own = list.find((b) => String(b.business_id) === String(actor.businessId));
       if (own) return own;
@@ -459,7 +463,25 @@ async function startDeployment({
     const branchRes = await (deployment.admin || deployment.owner).get('/api/branches?limit=100');
     deployment.branches = (branchRes.json && (branchRes.json.data || branchRes.json.branches)) || [];
 
-    // PUT THE OWNER'S OWN BRANCHES FIRST.
+    // THE FIXTURE'S OWN FIRST BRANCH GOES FIRST — AND SEATS PIN TO IT.
+  //
+  // This has to happen BEFORE the seats below are created, because a seat is pinned
+  // with `deployment.branches[seat.branchIndex]`. With two branches and the API
+  // ordering them alphabetically, a fixture whose intent was "branch 0 and branch 1"
+  // produced a manager pinned to the SECOND shop while the audit traded at the
+  // first — and the audit's own check that a manager cannot read another branch then
+  // answered 200, which looked exactly like a scope leak and was a fixture that had
+  // pinned the wrong person. Recorded by the local runner in deployment.primaryBranchId,
+  // in insertion order, before the database was closed.
+  if (deployment.primaryBranchId) {
+    const primary = deployment.branches.find((b) => String(b.id) === String(deployment.primaryBranchId));
+    if (primary) {
+      deployment.branches = [primary, ...deployment.branches.filter((b) => String(b.id) !== String(primary.id))];
+      console.log(`  the fixture's own first branch "${primary.name}" is branches[0]`);
+    }
+  }
+
+  // PUT THE OWNER'S OWN BRANCHES FIRST.
     //
     // `GET /api/branches` reaches everything the caller can see, and on a deployment with
     // two businesses an OWNER — whose scope is "all branches" — gets both sets back in
@@ -554,6 +576,25 @@ async function startDeployment({
   } else if (withAdmin) {
     await provisioning.provisionPlatform(db, { adminUsername: admin.username, adminPin: admin.pin });
   }
+
+  // WHICH BRANCH THIS FIXTURE MEANT AS ITS MAIN ONE, recorded in INSERTION order
+  // before the database is closed.
+  //
+  // `GET /api/branches` returns branches in its own order — locally that is
+  // alphabetical, so a fixture with `Wuse Shop` and `Kano Depot` reports Kano first.
+  // Until this was recorded, `branchFor()` fell through to "the first branch of the
+  // owner's business" and the audit silently moved from the shop whose safe it had
+  // funded into the other one the moment a second branch was added to the fixture.
+  // Nothing failed; the audit simply traded somewhere else, which is the sort of
+  // thing that makes an audit's green tick hard to trust.
+  let firstBranchId = null;
+  try {
+    const firstBusiness = await db.first('SELECT id FROM businesses WHERE is_deleted = 0 ORDER BY rowid LIMIT 1');
+    if (firstBusiness) {
+      const firstBranch = await db.first('SELECT id FROM branches WHERE business_id = ? AND is_deleted = 0 ORDER BY rowid LIMIT 1', [firstBusiness.id]);
+      firstBranchId = firstBranch ? String(firstBranch.id) : null;
+    }
+  } catch (e) { firstBranchId = null; }
   await db.close();
 
   let log = '';
@@ -564,6 +605,7 @@ async function startDeployment({
   child.stderr.on('data', (d) => { log += d.toString(); });
 
   const deployment = new Deployment({ base, port, dbFile, child, log: () => log });
+  deployment.primaryBranchId = firstBranchId;
   Object.defineProperty(deployment, 'serverLog', { get: () => log });
 
   const deadline = Date.now() + waitMs;
@@ -597,6 +639,19 @@ async function startDeployment({
   const branchesRes = await (deployment.owner || deployment.admin).get('/api/branches?limit=100');
   deployment.branches = (branchesRes.json && (branchesRes.json.data || branchesRes.json.branches)) || [];
   if (seats.length && !deployment.branches.length) throw new Error('seats were asked for but the deployment reports no branches to pin them to');
+
+  // THE FIXTURE'S FIRST BRANCH GOES FIRST HERE TOO, before a seat is pinned to
+  // `branches[branchIndex]`. The live path does this above; this path reloaded the
+  // branches from the API and had lost the ordering, so a local run with two branches
+  // pinned its manager to whichever branch the API listed first and the audit's own
+  // scope refusal then answered 200 — a fixture bug wearing the costume of a scope leak.
+  if (deployment.primaryBranchId) {
+    const primary = deployment.branches.find((b) => String(b.id) === String(deployment.primaryBranchId));
+    if (primary) {
+      deployment.branches = [primary, ...deployment.branches.filter((b) => String(b.id) !== String(primary.id))];
+      console.log(`  the fixture's own first branch \"${primary.name}\" is branches[0]`);
+    }
+  }
 
   // SEATS: real users, made through the real endpoint, so an audit can ask what a
   // manager sees rather than what an administrator sees. See Deployment.seat().

@@ -2403,3 +2403,103 @@ directly: the list for a branch must hold that branch's sale and no other branch
 The two reported checks on the handover environments are the documented stand-downs (no
 manager seat to create on a read-only target, and no non-ASCII fixture on a deployment the
 audit did not provision). Both are named in the output, not silently skipped.
+
+## Stage T2b — the safe is an account (2026-10-06)
+
+Twelve things were true about cash in Stage T2 and one thing was not: the branch safe had a
+ledger, a screen and a physical cash count, but **no ledger account**. Money could go into it
+and the trial balance would not move; it could come out and the books would not notice. T2b
+makes the safe a real account and proves, end to end, that every way cash enters or leaves it
+reaches the journal.
+
+### What shipped
+
+- **`6910 Cash Over & Short`** as a real account, created by `schema/migrations/0005_cash_over_and_short.sql`,
+  which also backfills the account onto existing businesses. A till that counts short now has
+  somewhere to put the difference instead of a silent adjustment.
+- **`CASH_ACCOUNTS`** in `server/services/glService.js`: `TILL 1000`, `SAFE 1010`, `BANK 1020`,
+  `POS 1030`, `MOBILE_MONEY 1040` — one map, so a cash account is named in one place and every
+  route that moves cash asks the same table which account it meant.
+- **Cash-move helpers**: `postCashMoveStatements`, `postCashAgainstAccountStatements`,
+  `postCashPayoutStatements`, `postCashOverShortStatements`. Every one validates its
+  `source_type` against the closed `SOURCE_TYPES` list rather than inventing a type.
+- **Deposits into the safe must declare a `source`** (BANK / OWNER / TILL / OTHER) and
+  withdrawals a `destination` (OWNER / EXPENSE / OTHER); missing → `400 SAFE_SOURCE_REQUIRED` /
+  `SAFE_DESTINATION_REQUIRED`. This is the T2 note-2 gap closed: the old route could take money
+  with no record of where it came from.
+- **`POST /api/safe/reconcile {counted_balance?, note}`** (manager or better): posts the gap to
+  6910 and audits `SAFE_RECONCILED`. `GET /api/safe` now returns `balance`, `ledgerBalance`,
+  `difference`, `inAgreement`, `agreementMessage`, `chainConsistent`, `chainMessage` beside the
+  rows, so the screen can show the two figures side by side instead of one number pretending to
+  be both.
+- **A branch's `opening_cash` posts DR 1010 / CR 3000 (`OPENING_BALANCE`)** in
+  `provisioningService` — a branch that opens with money in the safe has that money on the books
+  from the first minute.
+- **`public/js/views/till.js` complete**: the safe screen, the drawer count, the variance and the
+  reconciliation, with the books and the ledger shown together.
+- **A real product defect repaired** (below).
+
+### The defect: `POST /api/expenses` with `payment_method: 'SAFE'` had never once worked
+
+The new audit check — an expense paid from the safe — came back
+`500 {"error":"bal is not defined"}`. Then, after that fix, `500 {"error":"approvedBy is not defined"}`.
+Then, after that one, it posted and moved **nothing**, because it credited the till while the money
+left the safe. Three defects in one branch, and the reason is visible in hindsight: **this path had
+never completed a single run**, so no later defect in it was reachable to be seen.
+
+| # | Defect | Fix |
+| --- | --- | --- |
+| 1 | The insufficiency guard read `bal`, a variable that does not exist in `server/routes/till.js` | Read `safeBalBefore` from the safe's own ledger when the payment method is chosen; `409 SAFE_INSUFFICIENT` names the balance and both remedies |
+| 2 | The `branch_safe_ledger` INSERT bound `approvedBy`, also never defined in the route | `approved_by` is the acting user — the person who signed the payout off — with a comment saying so |
+| 3 | The GL credit went to **Cash at Till** because `expenseRow` carried no `paid_from`, and `postExpenseStatements` defaults to the till | `paid_from` is now set from the payment method: SAFE → SAFE, CASH → TILL, everything else → BANK |
+
+Defect 3 is the one worth remembering: **the table's column and the object's field are two names
+for one fact, and only one of them was being written.** The safe ledger said money had left the
+safe; the books said the till was short. Both records drifted, in opposite directions, on the
+shop's most ordinary transaction — and the audit's one-line diagnosis was
+`the safe ledger says ₦160,000 and the books say ₦163,000`.
+
+Nothing else in the suite touched this path: the WHT audit pays expenses from the till, and the
+unit tests call `glService` directly rather than the route. **A route-level test for every
+checkout and payout path is now the standard** — a 500 here reads to a shopkeeper as a broken app.
+
+### Audit corrections (the audit's bugs, not the product's)
+
+- `test/audit/audit.wht.js` asserted the unremitted total as an **absolute**: "the report says
+  ₦12,000 is unremitted" was the shop's real tax debt plus the audit's ₦8,000, reported as a
+  failure. It now reads the unremitted figure *before* the payment and asserts the **movement**.
+  Same mistake the money audit made with the bank balance, in a different report — a live target
+  carries history and an absolute can only ever be true on an empty database.
+- (from the earlier part of this stage) `sharedTick` reassignments that dropped keys, a `before`
+  reading taken after the drawer opened, `tillAccountBefore` read after the float, the reconcile
+  note printing the post-correction residual as "posted", and two checks reading account movements
+  that no account had yet.
+
+### Proving it
+
+- **Local:** `npm run verify` **348/348/0**; `bash test/run-audits.sh` — 3 audits, every check green;
+  `test/audit/audit.money.js` **82 checks passed**.
+- **Negative controls** (both restored after): float not posting → **4 checks go red**; variance not
+  posting → **1 goes red**. Restored → green.
+- **Live staging, write mode:** `audit.money` **83/83 (28.6s)** — headline note
+  `Cash in Safe: books ₦47,000 vs the branch safe ledger ₦47,000`, and
+  `diesel: 6020 now ₦2,790.7; the safe and the books both moved by the same ₦3,000` ·
+  `audit.wht` **36/36 (12.5s)** · `audit.http` **34 passed, 1 reported**.
+- **Sample and production (read-only):** `audit.http` **26 passed, 2 reported** each on migration 0005.
+
+### Deployment — all three environments on migration 0005
+
+| Environment | Result |
+| --- | --- |
+| staging | migration 0005 applied; readiness 6 checks, `ready` (2 businesses trading); write audits **money 83 ✅ · wht 36 ✅ · http 34 + 1 reported** |
+| sample | migration 0005 applied; readiness 6 checks, `awaiting_first_business`; read-only http audit **26 passed, 2 reported** |
+| production | migration 0005 applied; readiness 6 checks, `awaiting_first_business`; read-only http audit **26 passed, 2 reported** |
+
+### Open for T3
+
+1. The `--clean` sweep for `http-*`/`audit-*` accounts and `PROBE-`/`AUDIT-` fixtures is still
+   unwritten; staging now carries the residue of several write runs by design.
+2. Stage 11/12 leftovers: the compliance screen's error path (a real 409 closes the modal with no
+   toast), `PROBE_DEBUG` in `tools/frontend-compliance.js`, and the notifications bell.
+3. Every checkout/payout path needs its own route-level check — done for the safe; the till,
+   bank, POS and mobile-money expense methods are asserted only through the service.

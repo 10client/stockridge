@@ -206,5 +206,27 @@ test('a fresh deployment has one business, one branch and no trading history', a
 
   const tb = await world.call('GET', '/api/accounting/trial-balance', { token: world.token });
   assert.equal(tb.json.balances, true, `a fresh ledger must balance: ${tb.json.message}`);
-  assert.equal(Number(tb.json.totalDebit), 0, 'nothing has been posted yet, so both sides are zero');
+
+  // A FRESH DEPLOYMENT HAS POSTED EXACTLY ONE THING, AND IT SHOULD HAVE.
+  //
+  // This asserted `totalDebit === 0` — nothing posted yet — until Stage T2b, when
+  // provisioning started posting the branch's opening cash float. The old assertion was
+  // really "the books contain no trading", and the new one states it properly: the only
+  // entry is the owner's opening float, it sits in Cash in Safe, its other side is
+  // Owner's Capital, and NO revenue account has been touched.
+  //
+  // The distinction matters beyond the test: an opening float posted as income would
+  // show a profit on the day a shop opened, which is the single most common way a small
+  // business's first set of accounts is wrong.
+  const accounts = tb.json.accounts || [];
+  const posted = accounts.filter((a) => Number(a.totalDebit) !== 0 || Number(a.totalCredit) !== 0);
+  const codes = posted.map((a) => a.code).sort();
+  assert.deepEqual(codes, ['1010', '3000'],
+    `a fresh deployment should have exactly two acccounts touched — Cash in Safe and Owner's Capital for the opening float. It has: ${posted.map((a) => `${a.code} ${a.name}`).join(', ') || 'nothing'}`);
+  const equity = posted.find((a) => a.code === '3000');
+  const safe = posted.find((a) => a.code === '1010');
+  assert.equal(Number(safe.balance), Number(equity.balance),
+    'the opening float must be the same figure on both sides of the entry');
+  assert.equal(accounts.filter((a) => a.accountType === 'REVENUE' && (Number(a.totalDebit) !== 0 || Number(a.totalCredit) !== 0)).length, 0,
+    'provisioning must post no revenue. A shop that has sold nothing must show no income');
 });
