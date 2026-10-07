@@ -1519,7 +1519,11 @@ function profileSummary(row) {
   let profile = null;
   try { profile = resolveProfile(code, row.profile_overrides_json ? JSON.parse(row.profile_overrides_json) : null); } catch (e) { profile = getProfileOrDefault(code); }
   return {
-    id: row.id, name: row.name, profile_code: code,
+    // A SYNTHETIC ROW — one built from a profile code alone, as the vertical list builds them —
+    // has no business name, and the profile's own label is the name that list is for. Without
+    // this, `/api/profiles` answered four rows whose `name` was undefined while the label sat
+    // one level down inside `profile`.
+    id: row.id, name: row.name || (profile ? profile.label : code), profile_code: code,
     profile: profile ? { label: profile.label, description: profile.description, features: profile.features } : null,
     is_active: row.is_active,
   };

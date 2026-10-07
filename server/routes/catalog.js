@@ -842,7 +842,13 @@ function mount(app, base = '/api') {
 
 /** The payload a POS scan needs: price, units, variants and stock at this branch. */
 async function productPayload(db, product, branch, scope, scannedUnit = null, barcodeVariantId = null) {
-  const [units, variants, measure, stock, overrides, lists] = await Promise.all([
+  // `measures`, NOT `measure`. This destructured the array as `measure` and then returned
+  // `measures` twenty lines down, so EVERY call to productPayload threw
+  // `ReferenceError: measures is not defined` — and both callers are the barcode scan at the
+  // counter. The cashier's gun answered 500 for any code it recognised, while an UNKNOWN code
+  // answered 404 from the branch above, so the one case that worked was the one that should
+  // not: the scan that found nothing. Found by test/audit/audit.reference.js.
+  const [units, variants, measures, stock, overrides, lists] = await Promise.all([
     db.all('SELECT * FROM product_units WHERE product_id = ? AND is_deleted = 0 ORDER BY quantity_in_base ASC', [product.id]),
     db.all('SELECT * FROM product_variants WHERE product_id = ? AND is_deleted = 0 ORDER BY sort_order, name', [product.id]),
     // ALL of them, not an arbitrary one. A sofa is sold by the piece AND has a

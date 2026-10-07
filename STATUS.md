@@ -1172,3 +1172,53 @@ reading as zero.
 `npm run verify` **479/479/0** · `bash test/run-audits.sh` **26 audits, every check green** ·
 `node tools/flow-coverage.js` → **197 routes · 172 audited · 20 screen-only · 5 unreached**,
 **dashboard 2/2**.
+
+## P18 — THE LISTS A SHOP IS SET UP FROM (2026-10-07)
+
+Nine routes that decide what the product can even talk about — the verticals, the category tree,
+the customer classes, the barcode scan at the counter, the adjustment ledger — every one of them at
+**0%** in the coverage report. Now **audit.reference.js 6/6**; audited **172 → 181**, screen-only
+**20 → 13**, unreached **5 → 3**.
+
+### Two real defects, both found by exercising the route rather than reading it
+
+**THE BARCODE SCAN WAS DEAD FOR EVERY CODE IT RECOGNISED.** `productPayload()` destructured its
+parallel query array as `measure` and then returned `measures` twenty lines further down, so every
+call threw `ReferenceError: measures is not defined` and the counter's gun answered **500**. The
+only path that worked was an UNKNOWN code, which 404s from a branch *above* the crash — the scan
+that should not work was the only one that did. Both callers of the helper are the scan route, and
+`public/js/views/pos.js:198` uses it, so this was the cashier's barcode path in the POS. Renamed to
+`measures` and probed live after a server restart (the demo was serving the pre-fix code): a real
+SKU answers `200 matchedBy=SKU` with the product, its units and its batches; an unknown code answers
+`404 SCAN_NOT_FOUND`; no code answers `400 MISSING_FIELD`; and a cashier scanning the same code with
+no branch parameter answers 200 on their own branch.
+
+**A GUARD THAT COULD NEVER FIRE, AND SILENCE WHERE A REFUSAL BELONGED.** `POST /api/customer-classes`
+refuses a class that cannot buy on credit but carries a credit limit — except it parsed the limit
+only when credit was allowed, so `default_credit_limit: 50000` with `credit_allowed: false` was read
+as `0`, refused by nothing, **stored as 0, and answered 201**. The shop was told it had created a
+class with a ₦50,000 limit and half of it had been quietly dropped. Both the limit and the payment
+terms are now read whether or not credit is allowed, so the contradiction is refused
+(`400 CONTRADICTORY_CLASS`) instead of discarded. Silently ignoring an instruction is worse than
+refusing it: the person believes the instruction is on the record.
+
+### What the audit now proves, in both directions
+
+Front to back: a manager adds a category and it appears in the list with a product count of 0; a
+duplicate code is a 409 `DUPLICATE_CATEGORY`; an owner creates a class with a 7.5% discount, a
+₦250,000 limit and 30-day terms and all four come back **as sent**; an adjustment appears in the
+ledger carrying its product, branch, author and type, and the type filter finds it.
+Back to front: a cashier cannot create a category (403 `ROLE_REQUIRED`); a manager cannot create a
+customer class, because a class sets the terms for everybody in it; an unknown vertical is a
+**404, not a silent fallback** (`getProfile` returning the default made that 404 dead code once);
+and two routes that list the same four verticals (`/api/profiles` and `/api/catalogue/profiles`) now
+answer a **human name in both shapes** — one nested it under `profile.label`, the other answered
+`label`, and a chooser had to know which route it had called. `describeProfile` carries `name`, and
+a synthetic row in the admin list takes the profile's label as its name.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **27 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 181 audited · 13 screen-only · 3 unreached** ·
+live probe on the restarted demo: `200 matchedBy=SKU` / `404 SCAN_NOT_FOUND` / `400 MISSING_FIELD` /
+cashier 200. Next: suppliers (2/5) and stock (4/7), then the last three unreached routes.

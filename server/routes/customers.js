@@ -682,12 +682,21 @@ function mount(app, base = '/api') {
     const dupe = await db.first('SELECT id FROM customer_classes WHERE code = ? AND is_deleted = 0', [code]);
     if (dupe) throw new HttpError(`A class with the code ${code} already exists.`, { status: 409, code: 'DUPLICATE_CODE' });
     const discountPct = numField(body.discount_pct, { field: 'Discount', min: 0, max: 100 });
+    // READ THE TERMS WHETHER OR NOT CREDIT IS ALLOWED, so the refusal below can actually fire.
+    // Written the other way round — parse the limit only when the class allows credit — the
+    // check was dead code: a ₦50,000 limit on a class that refuses credit was parsed as 0 and
+    // then STORED as 0, so the route quietly dropped half of what it was told, answered 201,
+    // and left the shop believing the limit was on the record. Silently discarding an
+    // instruction is worse than refusing it. Found by test/audit/audit.reference.js.
     const creditAllowed = boolField(body.credit_allowed);
-    const defaultLimit = creditAllowed ? numField(body.default_credit_limit, { field: 'Default credit limit', min: 0 }) : 0;
+    const defaultLimit = numField(body.default_credit_limit, { field: 'Default credit limit', min: 0, max: 1000000000 });
     if (!creditAllowed && defaultLimit > 0) {
       throw new HttpError('A class that cannot buy on credit cannot carry a default credit limit. Either allow credit or set the limit to zero.', { status: 400, code: 'CONTRADICTORY_CLASS' });
     }
-    const terms = creditAllowed ? numField(body.payment_terms_days, { field: 'Payment terms', min: 0, max: 365, whole: true }) : 0;
+    const terms = numField(body.payment_terms_days, { field: 'Payment terms', min: 0, max: 365, whole: true });
+    if (!creditAllowed && terms > 0) {
+      throw new HttpError('A class that cannot buy on credit has no payment terms to give: terms are what happens when somebody is allowed to owe. Either allow credit or set the terms to zero.', { status: 400, code: 'CONTRADICTORY_CLASS' });
+    }
     const id = newId();
     await db.run(`INSERT INTO customer_classes (
         id, business_id, code, name, default_price_list_id, discount_pct, credit_allowed,

@@ -700,6 +700,11 @@ function describeProfile(code) {
   return {
     code: p.code,
     label: p.label,
+    // THE SAME STRING UNDER THE NAME EVERY OTHER LIST ROUTE USES. `/api/profiles` and
+    // `/api/catalogue/profiles` both answer these four, and a caller choosing a vertical had to
+    // know which of the two it had called to find a human-readable name — one nested it under
+    // `profile.label` and the other answered `label`. A chooser should not have to.
+    name: p.label,
     blurb: p.blurb,
     baseUnit: p.baseUnit,
     enabledFeatures: FEATURE_FLAGS.filter((f) => p.features[f]),
