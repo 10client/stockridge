@@ -58,10 +58,16 @@
         const s = await SR.api.get('/api/sessions', { query: SR.state.query({}) });
         sessions = (s.data || []).filter((x) => String(x.user_id) === String(me.id));
       } catch (err) { sessions = []; }
-      render(me, sessions);
+      render(me, sessions, transfers);
     }
 
-    function render(me, sessions) {
+    // `transfers` IS PASSED IN. It used to be declared inside `load()` and read here, one
+    // function away — a `let` in another function's scope is not a variable this one can see,
+    // so this screen threw `ReferenceError: transfers is not defined` at the line below and
+    // rendered two-thirds of itself: the person's access, then nothing. Everything after it —
+    // the PIN form, the device details, the build tag — was unreachable on the account screen,
+    // which is the only place a person can change their own PIN.
+    function render(me, sessions, transfers) {
       const device = SR.device.current() || {};
       const prefs = SR.print.prefs ? SR.print.prefs() : { paper: '80' };
       const stack = ui.h('div', { class: 'stack' });
@@ -90,7 +96,7 @@
       const pinCard = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }));
       pinCard.firstElementChild.appendChild(ui.h('h2', {}, 'Change my PIN'));
       pinCard.firstElementChild.appendChild(ui.h('p', { class: 'sub' },
-        'Your PIN is stored hashed — nobody, including the owner, can read it back. Changing it retires every other device you are signed in on, which is exactly what you want if you think somebody has seen it.'));
+        'Your PIN is stored hashed — nobody, including the owner, can read it back. Changing it ends every sign-in that existed before the change and starts a fresh one here, so you stay signed in on this device and anybody else is out. That is exactly what you want if you think somebody has seen it.'));
       const pinForm = ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Current PIN', name: 'currentPin', type: 'password', required: true }),
         ui.field({ label: 'New PIN', name: 'newPin', type: 'password', required: true, hint: 'Digits only, at least four. Avoid 1234 and your year of birth.' }),
@@ -210,6 +216,13 @@
         try {
           const res = await SR.api.post('/api/auth/change-pin', { currentPin: String(v.currentPin), newPin: String(v.newPin) });
           form.querySelectorAll('input').forEach((i) => { i.value = ''; });
+          // THE SERVER REISSUES THIS DEVICE'S SESSION WHEN THE PIN CHANGES — every token that
+          // existed before that moment is dead, because a change of PIN is also how you take a
+          // copied session away from somebody. The new token has to be kept HERE, or the next
+          // request answers 401 and the app bounces the person to the sign-in screen moments
+          // after they changed their own PIN. It used to do exactly that: the backend deleted
+          // the session without issuing a replacement, and this screen never looked.
+          if (res && res.token && SR.api.setToken) SR.api.setToken(res.token);
           ui.ok(res.message || 'PIN changed.');
         } catch (err) { ui.apiError(err); }
       });

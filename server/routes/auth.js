@@ -29,7 +29,7 @@
 // =====================================================================
 
 const { HttpError } = require('../lib/http');
-const { login, authenticate, resolveScope } = require('../middleware/auth');
+const { login, authenticate, resolveScope, startSession } = require('../middleware/auth');
 const { assertLoginAllowed, recordLoginAttempt, clearLoginLock, getLockState, recentAttempts, MAX_FAILED_ATTEMPTS, WINDOW_MINUTES, LOCKOUT_MINUTES } = require('../lib/loginThrottle');
 const { recordFromCtx } = require('../lib/audit');
 const { hashPin, verifyPin } = require('../../domain/crypto');
@@ -213,12 +213,33 @@ function mount(app, base = '/api/auth', makeEnv = null) {
 
     const hashed = await hashPin(String(next));
     await db.run("UPDATE users SET pin_hash = ?, pin_changed_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [hashed.stored, String(user.id)]);
-    // Every other session is retired: if the PIN changed because somebody else
-    // knew it, their session must not survive the change.
-    await db.run('DELETE FROM user_sessions WHERE user_id = ? AND session_id <> ?', [String(user.id), String(ctx.get('token') || '')]);
-    await recordFromCtx(ctx, { action: 'USER_PIN_RESET', entityType: 'USER', entityId: user.id });
 
-    ctx.json({ ok: true, message: 'PIN changed. Sign in again on any other device you were using.' });
+    // END THE SESSION, THEN START A NEW ONE FOR THE PERSON WHO JUST PROVED THE NEW PIN.
+    //
+    // The old line here read `DELETE FROM user_sessions WHERE user_id = ? AND session_id <> ?`
+    // bound to `ctx.get('token')`. That is the BEARER TOKEN, and it is never equal to a
+    // `session_id`, so the condition matched every row — the caller's own session included.
+    // Changing your PIN signed you out of the device in your hand, while the message said
+    // "Sign in again on any other device you were using". The comment above it said "every
+    // other session is retired", which the single-row design cannot even express: there is one
+    // session per user, and another device's sign-in has already superseded this one.
+    //
+    // So: end it (an attacker holding a copied token must not survive the change), then start a
+    // fresh one here, and return the token for it. The app stores it and stays signed in; every
+    // token that existed before this moment is dead.
+    const ended = await db.run('DELETE FROM user_sessions WHERE user_id = ?', [String(user.id)]);
+    const fresh = await startSession(db, user, ctx.env.JWT_SECRET || ctx.env.jwtSecret, {
+      deviceId: ctx.req.header('X-Device-Id') || null,
+      userAgent: ctx.req.header('User-Agent') || null,
+    });
+    await recordFromCtx(ctx, { action: 'USER_PIN_RESET', entityType: 'USER', entityId: user.id, after: { self: true, sessionsEnded: ended.changes, reissued: Boolean(fresh.token) } });
+
+    ctx.json({
+      ok: true,
+      token: fresh.token,
+      sessionId: fresh.sessionId,
+      message: 'PIN changed. Every other device is signed out — you are still signed in here.',
+    });
   });
 
   /**

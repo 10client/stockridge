@@ -89,6 +89,44 @@ async function resolveScope(db, user) {
  * recording, which are kept OUT of here so this function stays testable
  * without a database of login attempts.
  */
+/**
+ * BEGIN A SESSION FOR THIS USER, and return the token that carries it.
+ *
+ * ONE IMPLEMENTATION, TWO CALLERS: signing in, and changing your own PIN. The second one used
+ * to have no implementation at all — it tried to retire "every other session" with
+ * `DELETE ... WHERE session_id <> ?` bound to `ctx.get('token')`, which is THE BEARER TOKEN and
+ * never equals a `session_id`. It therefore deleted the caller's own session, every time, while
+ * the response said "Sign in again on any other device you were using": the honest user was
+ * thrown out of the device in their hand, and the message told them the opposite.
+ *
+ * The single-row design settles what a PIN change can mean. There is ONE session per user, so
+ * there are no other sessions to retire — another device's sign-in has already superseded this
+ * one. What a PIN change must do is end the session that exists (an attacker holding a copied
+ * token must not survive the change) and then start a fresh one for the person who proved the
+ * new PIN. That is exactly what the caller of this function does.
+ */
+async function startSession(db, user, secret, { deviceId = null, userAgent = null } = {}) {
+  const sessionId = newId();
+  const token = await signToken({ sub: user.id, role: user.role, sid: sessionId }, secret, { ttlSeconds: TOKEN_TTL_SECONDS });
+
+  // Single active session per user. INSERT OR REPLACE is atomic and means a
+  // second sign-in silently retires the first; the retired device gets a
+  // clear message on its next request rather than mysteriously failing.
+  await db.run(
+    // THE DEVICE IS RECORDED WITH THE SESSION (migration 0008). The sign-in route has always
+    // received it — the app sends `X-Device-Id` on every request — and the screen has always
+    // shown a Device column. Storing it is what makes both true: a manager can now tell WHICH
+    // phone a session belongs to before cutting it off, instead of signing out a person and
+    // hoping the one in their hand was the right one.
+    `INSERT INTO user_sessions (user_id, session_id, issued_at, updated_at, device_id, user_agent)
+     VALUES (?, ?, datetime('now'), datetime('now'), ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET session_id = excluded.session_id, issued_at = datetime('now'), updated_at = datetime('now'),
+       device_id = excluded.device_id, user_agent = excluded.user_agent`,
+    [String(user.id), sessionId, deviceId ? String(deviceId).slice(0, 120) : null, userAgent ? String(userAgent).slice(0, 300) : null],
+  );
+  return { token, sessionId };
+}
+
 async function login(db, { username, pin, secret, deviceId = null, userAgent = null }) {
   const uname = String(username || '').trim().toLowerCase();
   if (!uname) throw new HttpError('Enter your username.', { status: 400, code: 'USERNAME_REQUIRED' });
@@ -128,24 +166,7 @@ async function login(db, { username, pin, secret, deviceId = null, userAgent = n
   const user = await loadUser(db, row.id);
   if (!user) throw new HttpError('This account could not be loaded. Ask a manager to check it.', { status: 403, code: 'ACCOUNT_UNAVAILABLE' });
 
-  const sessionId = newId();
-  const token = await signToken({ sub: user.id, role: user.role, sid: sessionId }, secret, { ttlSeconds: TOKEN_TTL_SECONDS });
-
-  // Single active session per user. INSERT OR REPLACE is atomic and means a
-  // second sign-in silently retires the first; the retired device gets a
-  // clear message on its next request rather than mysteriously failing.
-  await db.run(
-    // THE DEVICE IS RECORDED WITH THE SESSION (migration 0008). The sign-in route has always
-    // received it — the app sends `X-Device-Id` on every request — and the screen has always
-    // shown a Device column. Storing it is what makes both true: a manager can now tell WHICH
-    // phone a session belongs to before cutting it off, instead of signing out a person and
-    // hoping the one in their hand was the right one.
-    `INSERT INTO user_sessions (user_id, session_id, issued_at, updated_at, device_id, user_agent)
-     VALUES (?, ?, datetime('now'), datetime('now'), ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET session_id = excluded.session_id, issued_at = datetime('now'), updated_at = datetime('now'),
-       device_id = excluded.device_id, user_agent = excluded.user_agent`,
-    [String(user.id), sessionId, deviceId ? String(deviceId).slice(0, 120) : null, userAgent ? String(userAgent).slice(0, 300) : null],
-  );
+  const { token, sessionId } = await startSession(db, user, secret, { deviceId, userAgent });
   await db.run("UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [String(user.id)]);
 
   const scope = await resolveScope(db, user);
@@ -269,6 +290,6 @@ function decorateContext(ctx) {
 module.exports = {
   TOKEN_TTL_SECONDS, USER_SELECT,
   loadUser, accessibleBusinessIds, resolveScope,
-  login, authenticate, extractToken,
+  login, authenticate, extractToken, startSession,
   authRequired, requireRole, managerOnly, ownerOnly, adminOnly, decorateContext,
 };

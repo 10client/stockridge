@@ -476,6 +476,94 @@
       } catch (err) { ui.apiError(err); }
     }
 
+    /**
+     * HOW THIS PERSON SIGNS IN, AND WHAT HAS GONE WRONG DOING IT.
+     *
+     * Two reads and one write, all three of them previously unreachable from the app:
+     * the lock state, the recent attempts, and the override. The override is the one worth
+     * being careful with — it hands an attacker another eight guesses — so it asks for a
+     * REASON, the reason is required by the route, and the whole act lands on the audit trail
+     * with the state it overrode.
+     */
+    function signInSecurity(u) {
+      const card = ui.h('div', { class: 'card' });
+      const body = ui.h('div', { class: 'card-body' });
+      body.appendChild(ui.h('h2', {}, 'Signing in'));
+      body.appendChild(ui.h('p', { class: 'sub' }, 'Failed attempts, lockouts, and the device and address they came from.'));
+      const host = ui.h('div', {});
+      body.appendChild(host);
+      card.appendChild(body);
+
+      async function loadLock() {
+        host.replaceChildren(ui.skeleton(3));
+        let state;
+        try {
+          state = await SR.api.get('/api/auth/lock-state', { query: { username: u.username } });
+        } catch (err) {
+          host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadLock } }));
+          return;
+        }
+        const fails = Number(state.failed_attempts || 0);
+        const stack = ui.h('div', { class: 'stack' });
+        stack.appendChild(ui.h('div', { class: state.is_locked ? 'alert alert-warn' : 'alert alert-info' },
+          state.is_locked
+            ? `Locked out after ${fails} failed attempt(s). The last was ${U.relTime(state.last_failed_at)}. They cannot sign in here — not even with the right PIN — until an owner clears it or the lockout expires on its own.`
+            : `${fails} failed attempt(s) in the last quarter of an hour. A lockout happens after ${8} of them; the counter falls back to zero on a successful sign-in.`));
+
+        // The override: owner only, as the route is, and only when there is something to clear.
+        if (SR.state.atLeast('OWNER') && state.is_locked) {
+          const clear = ui.h('button', { class: 'btn btn-sm btn-primary' }, 'Clear the lockout');
+          clear.addEventListener('click', async () => {
+            const reason = await ui.promptDialog({
+              title: `Clear the lockout for ${u.full_name || u.username}`,
+              label: 'Why is the lockout being cleared?',
+              required: true,
+              hint: 'This is on the audit trail with your name and the state you overrode. An override without a reason is one nobody can defend later.',
+            });
+            if (!reason) return;
+            await ui.withBusy(clear, async () => {
+              try {
+                const res = await SR.api.post('/api/auth/unlock', { username: u.username, reason: String(reason) });
+                ui.ok(res.message || 'Lockout cleared.');
+                loadLock();
+              } catch (err) { ui.apiError(err); }
+            });
+          });
+          stack.appendChild(ui.h('div', { class: 'row' }, clear,
+            ui.h('span', { class: 'hint' }, 'They sign in with their existing PIN — a lockout is not a PIN reset.')));
+        } else if (SR.state.atLeast('OWNER')) {
+          stack.appendChild(ui.h('div', { class: 'hint' }, 'Nothing to clear: this account is not locked out.'));
+        } else {
+          stack.appendChild(ui.h('div', { class: 'hint' }, 'Only the owner can clear a lockout. Ask them, or wait for it to expire.'));
+        }
+
+        // The attempts log is the owner's read, exactly as the route is.
+        if (SR.state.atLeast('OWNER')) {
+          const attempts = await SR.api.get('/api/auth/attempts', { query: { username: u.username, limit: 10 } }).catch(() => null);
+          const rows = (attempts && attempts.data) || [];
+          stack.appendChild(ui.dataCard({
+            title: 'Recent sign-in attempts',
+            table: ui.renderTable({
+              // THE FIELDS THE ROUTE SENDS. `attempted_at`, `succeeded`, `ip_address`, `user_agent`.
+              columns: [
+                { key: 'attempted_at', label: 'When', render: (r) => U.relTime(r.attempted_at) },
+                { key: 'succeeded', label: 'Result', render: (r) => (Number(r.succeeded) ? 'Signed in' : 'Wrong PIN') },
+                { key: 'ip_address', label: 'From', render: (r) => r.ip_address || '—' },
+                { key: 'user_agent', label: 'Device', render: (r) => String(r.user_agent || '—').slice(0, 60) },
+              ],
+              rows,
+              emptyTitle: 'No attempts recorded',
+              emptyMessage: 'Sign-ins and wrong PINs appear here as they happen.',
+            }),
+          }));
+        }
+        host.replaceChildren(stack);
+      }
+
+      loadLock();
+      return card;
+    }
+
     // -------------------------------------------------------------- create
     function openCreate() {
       const form = ui.h('div', {});
@@ -663,6 +751,18 @@
           disabled: self,
           hint: 'Deactivating keeps every sale, till and clock-in they recorded. It only stops them signing in.',
         }) : null));
+
+      // SIGNING IN — the locks, the failures behind them, and the owner's way out.
+      //
+      // `GET /api/auth/lock-state`, `GET /api/auth/attempts` and `POST /api/auth/unlock` were
+      // three complete routes that NO SCREEN CALLED. An owner with a cashier locked out at the
+      // counter — the cashier having mistyped their PIN eight times, which on a busy morning
+      // is not an attack — had no way to clear it from the product; the only route was to wait
+      // fifteen minutes or talk to the vendor. The manager, meanwhile, could not see WHO was
+      // locked out at all. All three are reached from here now, with the same gates the routes
+      // enforce (a manager may look, only an owner may clear) and the same field names they
+      // answer with.
+      if (SR.state.atLeast('MANAGER')) form.appendChild(signInSecurity(u));
 
       // A grant reaches across businesses, so only the deployment administrator
       // sees this. A client's own owner is scoped to every business in THEIR

@@ -1052,3 +1052,72 @@ compared in both directions.
 exactly one control per fact, the logo row and no console errors; **typing a new name and clicking
 `Save branding` moves the public endpoint and the sign-in screen of a device that has never been
 here**, and the same screen puts it back — which is how the demo was left, name restored.
+
+## P16 — THE SIGN-IN FURNITURE (2026-10-07)
+
+Six auth routes nobody had exercised — sign out, change your own PIN, the lockout state, the
+owner's override, the attempts log, and the token check the service worker calls on resume.
+**auth 2/8 → 8/8**, unreached **9 → 5**, audited **164 → 170**.
+
+### Changing your own PIN signed you out of the device in your hand
+
+`POST /api/auth/change-pin` retired "every other session" with
+`DELETE FROM user_sessions WHERE user_id = ? AND session_id <> ?` — and bound `ctx.get('token')`,
+which is the **bearer token**, against a `session_id`. It never matches, so the condition deleted
+every row *including the caller's own*, while the response said "Sign in again on any other device
+you were using". The single-row design cannot express "other sessions" anyway: there is one session
+per user, and another device's sign-in has already superseded it. So a PIN change now **ends the
+session and starts a fresh one for the person who just proved the new PIN**, returning a token for
+it; every token that existed before the change is dead (refused as `SESSION_SUPERSEDED`, with the
+message that says *if that was not you, your PIN may be known to somebody else*). The account
+screen keeps the new token, and its own wording now matches what the route does — it used to
+promise something the code did not do, in both directions.
+
+One implementation of "a session begins" now exists: `startSession()` in the auth middleware, used
+by the sign-in route and by the PIN change. The old code had two ideas about it and one of them was
+a string that never matched.
+
+### The account screen threw away two-thirds of itself
+
+Found by driving it in the browser, not by reading it: `[view:account] ReferenceError: transfers is
+not defined`. `transfers` was a `let` inside `load()` read inside `render()` — one function away, so
+the screen threw at that line and rendered the person's access, then nothing. Everything after it —
+**the PIN form**, the device card, the print test, the build tag — was unreachable on the only
+screen where a person can change their own PIN. Passed in properly now.
+
+### Three routes the owner could not reach
+
+`GET /api/auth/lock-state`, `GET /api/auth/attempts` and `POST /api/auth/unlock` are complete,
+carefully-gated routes — manager-and-owner for the lock state, owner-only for the override, with a
+required reason and the state it overrode on the trail — and **nothing in the app called any of
+them**. A cashier who mistyped their PIN eight times on a busy morning was locked out, the manager
+could not see who was locked out, and the owner had no way to clear it from the product. The staff
+screen's person detail now carries a **Signing in** card: the failure count, whether the account is
+locked, an owner-only **Clear the lockout** button that asks for the reason the route demands, and
+the last ten attempts with the address and device they came from. The gates are the routes': a
+manager may look, only an owner may clear.
+
+### What the audit proves, both ways
+
+**Front to back**: signing out kills the token on the next request and lands on the trail → the PIN
+change's four refusals and its success (old PIN out, new PIN in, one session row, and it is the
+session the route issued) → **eight wrong PINs lock the username, and the CORRECT PIN is refused
+while it is locked** (a lockout that lets a good guess through is a delay, not a lockout) → the
+lockout state, then the attempts log read *before* the unlock deletes the failure rows that feed the
+throttle → the owner clears it with a reason and the correct PIN works again.
+**Back to front**: the lock state is manager-and-owner reading only; clearing is owner-only *with* a
+reason of four characters or more, and a refused unlock clears nothing; a reused PIN is refused
+(`PIN_UNCHANGED`) because it spends the change without changing anything; and
+**`/api/auth/verify` cannot be a way around revocation** — the service worker asks it whether to
+flush the offline queue, so the owner revokes the session behind a token and the answer must turn
+from 200 to `401 SESSION_REVOKED`. The attempts table's four columns are checked against the route's
+own `SELECT`, because three of them were guesses when the screen was written.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **25 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 170 audited · 22 screen-only · 5 unreached**, **auth
+8/8** (was 2/8) · live: the account screen renders its PIN form again and **changing the PIN leaves
+the person signed in** (old PIN 401, new PIN 200, the reissued token works, the screen's wording
+matches), the staff detail shows **Signing in** and **Recent sign-in attempts** with the fields the
+routes send, and the demo was left with its seed PINs (`segun` back to `26480`).
