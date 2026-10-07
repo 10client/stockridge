@@ -1307,3 +1307,33 @@ live jsdom walk of the reported path, end to end.
   all (Dashboard, Staff, Branches, Businesses, Subscription), so a serial walk cannot be driven from
   the platform admin seat on a live deployment. That is a real front-end/back-end alignment question
   for the admin-flows directive and is recorded here rather than worked around.
+
+## DEPLOYMENT — ALL THREE NAMED ENVIRONMENTS LIVE ON `d1fbfdf` (2026-10-07)
+
+Pushed and deployed as asked: staging, sample and production, all three carrying the P19 fixes, and
+**all three verified live** rather than reported from the deploy's own console.
+
+| environment | URL | database | state |
+|---|---|---|---|
+| production | https://stockridge.stockridge.workers.dev | `stockridge` (32aa519c…) | **awaiting_first_business** |
+| staging | https://stockridge-staging.stockridge.workers.dev | `stockridge-staging` (abf164d9…) | ready, 3 businesses trading |
+| sample | https://sample.stockridge.workers.dev | `stockridge-sample` (fd72e95b…) | awaiting_first_business |
+
+**Checked on each live URL, by request rather than by summary:**
+
+* `admin` / `1234` signs in — **200 on all three** (the Stage-6 PIN directive holds across staging,
+  sample and production; no reset was needed, so no PIN was changed to prove it).
+* the service worker and `app.js` carry **one matching cache key per deploy**
+  (`ridge-20261007-1255-d1fbfdf` staging/production, `1256-…` sample) — the stale-bundle failure
+  mode that hid P16 from a browser cannot repeat without a deploy failing
+  `node tools/stamp-build.js --check`.
+* both P19 fixes are **in the deployed bundles**, not only in the repository: `openSerialsFor` in
+  `stock.js` (3 references) and the passed-in `transfers` in `account.js` (2).
+* the **account screen walked as the administrator** on production and staging: renders, no
+  `That failed.`, no `transfers is not defined` — element-level, script/style stripped.
+* **production is in the handover state the reseed directive asks for:** exactly **one user**
+  (`admin`/ADMIN), **zero businesses** — every other row is to be created through the app's own
+  provisioning flows, and the dashboard answers for that administrator without a business.
+
+The deploy stamps both files as it runs, so the stamp the live workers carry is committed
+(`c41759b`) — repository, working tree and all three deployments agree on the build.
