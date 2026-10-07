@@ -392,7 +392,7 @@ function assertRowAccess(scope, row, label = 'That record') {
  * product or a vendor-level setting has no branch and must not vanish from a
  * cashier's product search. That is the same reasoning the audit log uses.
  */
-function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '' } = {}) {
+function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '', businessViaBranches = false } = {}) {
   const b = alias ? `${alias}.${branchColumn}` : branchColumn;
   const s = alias ? `${alias}.${businessColumn}` : businessColumn;
   const clauses = [];
@@ -405,7 +405,19 @@ function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'busi
   }
   if (!scope.allBusinesses && scope.businessIds && scope.businessIds.size) {
     const ids = [...scope.businessIds];
-    clauses.push(`(${s} IS NULL OR ${s} IN (${ids.map(() => '?').join(',')}))`);
+    if (businessViaBranches) {
+      // THE TABLE HAS NO business_id OF ITS OWN — `serial_numbers` is the one that matters, and
+      // the business it belongs to is the business of the branch holding it. Asking for a column
+      // that does not exist is not a refusal, it is a 500: `GET /api/serials` answered
+      // "no such column: sn.business_id" for every manager and every staff member who opened the
+      // warranty register, while an owner (whose scope covers all businesses) saw the list
+      // perfectly. The detail route beside it had already met this and joined `branches` for the
+      // business name; the list had not, and nothing caught it because the two roles that hit it
+      // were the two no audit had ever signed in as.
+      clauses.push(`(${b} IS NULL OR ${b} IN (SELECT id FROM branches WHERE business_id IN (${ids.map(() => '?').join(',')})))`);
+    } else {
+      clauses.push(`(${s} IS NULL OR ${s} IN (${ids.map(() => '?').join(',')}))`);
+    }
     params.push(...ids);
   }
   return { sql: clauses.length ? clauses.join(' AND ') : '', params };

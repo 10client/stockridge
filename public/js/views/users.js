@@ -25,12 +25,18 @@
   const ui = SR.ui;
   const U = SR.util;
 
-  const ROLES = [
+  const ROLE_LABELS = [
     { value: 'STAFF', label: 'Staff — sell, take payment, clock in' },
     { value: 'MANAGER', label: 'Manager — everything at their branch' },
     { value: 'OWNER', label: 'Owner — every branch, the books, the settings' },
     { value: 'ADMIN', label: 'Administrator — the deployment itself' },
   ];
+  // WHAT THIS PERSON MAY HAND OUT, not what exists. `SR.state.canCreateRole` mirrors
+  // `canManageUser(actor, { role })` on the route, so an owner is no longer offered "Owner"
+  // (refused: "You are a Owner and cannot create a Owner"), and a manager is offered Staff only.
+  const ROLES = ROLE_LABELS;
+  /** The roles THIS person may hand out — the create form and the role filter use these. */
+  const creatableRoles = () => ROLE_LABELS.filter((r) => SR.state.canCreateRole(r.value));
 
   async function render(ctx) {
     ctx.setTitle('Staff');
@@ -567,11 +573,24 @@
     // -------------------------------------------------------------- create
     function openCreate() {
       const form = ui.h('div', {});
+      const mine = (SR.state.branches() || []).find((b) => String(b.id) === String(SR.state.activeBranchId));
+      const branchField = ui.field({
+        label: 'Branch', name: 'branch_id', required: true,
+        options: (mine ? [{ value: mine.id, label: `${mine.name} — where you work` }] : [])
+          .concat(SR.state.branches().filter((b) => !mine || String(b.id) !== String(mine.id)).map((b) => ({ value: b.id, label: b.name }))),
+        hint: 'A person only sees the figures for the branch they belong to. Owners and admins see everything.',
+      });
       form.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Full name', name: 'full_name', required: true, placeholder: 'Chidinma Okafor' }),
         ui.field({ label: 'Username', name: 'username', required: true, hint: 'Lower case, no spaces. This is what they type on the sign-in screen.' }),
-        ui.field({ label: 'Role', name: 'role', required: true, options: ROLES }),
-        ui.field({ label: 'Branch', name: 'branch_id', options: [{ value: '', label: 'No branch (owner or admin only)' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.name }))), hint: 'A person only sees the figures for the branch they belong to. Owners and admins see everything.' }),
+        ui.field({ label: 'Role', name: 'role', required: true, options: creatableRoles() }),
+        // THE BRANCH FIELD FOLLOWS THE ROLE, because the ROUTE does: only the deployment
+        // administrator may belong to no branch ("A user with no branch has no scope, so they
+        // would see nothing") — while the blank option used to be labelled "owner or admin
+        // only", so an owner adding a cashier and leaving it blank was refused after filling in
+        // everything else. For every other role the field is required, defaults to the branch the
+        // person creating them works at, and the blank option is not offered at all.
+        branchField,
         ui.field({ label: 'Job title', name: 'job_title', placeholder: 'Sales assistant' }),
         ui.field({ label: 'Phone', name: 'phone', placeholder: '0803 000 0000' }),
         ui.field({ label: 'PIN', name: 'pin', type: 'password', required: true, hint: 'Digits only. They can change it after signing in.' }),
@@ -586,9 +605,39 @@
       const go = ui.h('button', { class: 'btn btn-primary' }, 'Add them');
       const m = ui.openModal({ title: 'Add someone to the team', body: form, footer: [cancel, go], size: 'wide' });
 
+      // THE BRANCH FIELD FOLLOWS THE ROLE AS IT IS CHOSEN — the same rule the route applies, so
+      // the form cannot offer a combination the API will refuse.
+      const roleSel = form.querySelector('[name="role"]');
+      function syncBranchField() {
+        const role = roleSel ? String(roleSel.value || '') : '';
+        const needs = SR.state.roleNeedsBranch(role);
+        const sel = branchField.querySelector('select');
+        if (!sel) return;
+        const hadBlank = [...sel.options].some((o) => o.value === '');
+        if (needs && hadBlank) {
+          for (const o of [...sel.options]) if (o.value === '') o.remove();
+          sel.value = branchField.dataset.defaultBranch || sel.options[0] && sel.options[0].value || '';
+        } else if (!needs && !hadBlank) {
+          const opt = document.createElement('option');
+          opt.value = ''; opt.textContent = 'No branch — administrators are not pinned to one';
+          sel.insertBefore(opt, sel.firstChild);
+          sel.value = '';
+        }
+        const label = branchField.querySelector('.ctl');
+        if (label) label.textContent = needs ? 'Branch' : 'Branch (not needed for an administrator)';
+      }
+      branchField.dataset.defaultBranch = (mine && mine.id) || ((SR.state.branches() || [])[0] || {}).id || '';
+      if (roleSel) { roleSel.addEventListener('change', syncBranchField); syncBranchField(); }
+
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);
         if (!v.pin || String(v.pin) !== String(v.confirm_pin)) { ui.warn('The two PINs must match.'); return; }
+        // REFUSED HERE, IN THE ROUTE'S OWN SENTENCE, rather than after a round trip — and with
+        // the field marked so the person can see what is missing.
+        if (SR.state.roleNeedsBranch(v.role) && !v.branch_id) {
+          ui.warn('Choose the branch they work at. A user with no branch has no scope, so they would see nothing — only the deployment administrator can belong to no branch.');
+          return;
+        }
         await ui.withBusy(form, async () => {
           try {
             const res = await SR.api.post('/api/users', {

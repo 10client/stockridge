@@ -529,12 +529,30 @@
    * else is typed over. The freight box is per line because haulage on a truck of
    * fridges rarely splits evenly across the lines on the order.
    */
+  /**
+   * Make sure a serial box is on screen and the cursor is in it.
+   *
+   * `ui.field` returns the WRAPPER div and appends the control to it, so the element carrying the
+   * name IS the textarea and its parent is the wrapper that gets hidden for an untracked line.
+   * Both had to be opened, and the cursor put in the control — the person is holding a label and
+   * should not have to hunt for the box that was just revealed to them.
+   */
+  function revealSerials(input) {
+    if (!input) return;
+    input.hidden = false;
+    if (input.parentElement) input.parentElement.hidden = false;
+    try { input.focus(); } catch (err) { /* focus is a courtesy, never a failure */ }
+  }
+
   function openReceive(po, outstanding, receipts, done) {
     const plan = new Map();
     for (const i of outstanding) {
       plan.set(String(i.id), {
         item: i,
         quantityBase: round4(Number(i.quantity_in_base) - Number(i.quantity_received)),
+        // ONE NUMBER PER UNIT, kept per line: `acceptSerials` on the route wants them supplied
+        // with the receipt, and this is where the person holding the labels types them.
+        serials: [],
         costPerUnit: Number(i.expected_unit_cost) || 0,
         freightPerUnit: 0,
         sellingPrice: Number(i.selling_price) || null,
@@ -572,6 +590,7 @@
             ui.h('strong', {}, i.product_name || i.name),
             ui.h('div', { class: 'hint' }, `Outstanding ${U.qty(round4(Number(i.quantity_in_base) - Number(i.quantity_received)))} ${i.base_unit_name || 'units'} of ${U.qty(i.quantity_in_base)} ordered`))));
 
+        const serialName = `serials_${i.id}`;
         const grid = ui.h('div', { class: 'form-grid' });
         grid.appendChild(ui.field({
           label: `Quantity received (${i.base_unit_name || 'units'})`, name: `qty_${i.id}`, type: 'number', step: 'any', min: '0',
@@ -584,6 +603,43 @@
         grid.appendChild(ui.field({ label: 'Batch number', name: `batch_${i.id}`, value: entry.batchNo }));
         grid.appendChild(ui.field({ label: 'Expiry date', name: `expiry_${i.id}`, type: 'date' }));
         body.appendChild(grid);
+
+        // ---- SERIAL NUMBERS ----
+        // THE ROUTE REFUSES A DELIVERY OF A SERIAL-TRACKED PRODUCT WITHOUT ONE NUMBER PER UNIT
+        // ("…is serial-tracked, so each unit needs its own serial number: 1 expected for 1
+        // unit(s), 0 given") — and until now this form had no box to type them in, so a phone, a
+        // fridge or a generator bought on a purchase order could not be received AT ALL. The same
+        // dead end that was fixed on the direct goods-received screen, one route over.
+        //
+        // The count is in BASE UNITS — the same unit the quantity box is in — because that is how
+        // the route counts and how the warranty follows the individual unit.
+        const tracked = Boolean(Number(i.requires_serial));
+        const serialBox = ui.field({
+          label: 'Serial numbers', name: serialName, type: 'textarea', span: true, rows: 3,
+          placeholder: 'One per line — scan or type each label',
+          // `ui.field` only renders a hint when one is passed, so the element is created here and
+          // filled by paintSerialHint() — an empty string would leave the box with no line at all.
+          hint: 'One number per unit.',
+        });
+        serialBox.hidden = !tracked;
+        function paintSerialHint() {
+          if (!tracked) return;
+          const hint = serialBox.querySelector('.hint');
+          const need = Math.ceil(Number(entry.quantityBase) || 0);
+          // THE CONTROL IS THE WRAPPER'S DIRECT CHILD, not a `textarea` further down (`ui.field`
+          // returns the wrapper) — asking for a descendant textarea of the textarea itself is how
+          // "N entered" stayed at 0 however many labels had been scanned.
+          const typed = String(((serialBox.querySelector(`[name="${serialName}"]`)) || {}).value || '')
+            .split(/[\n,\t]+/).map((x) => x.trim()).filter(Boolean).length;
+          if (hint) {
+            hint.textContent = need > 0
+              ? `${need} unit(s) — ${need} serial number(s) expected, one per unit; ${typed} entered. This delivery is refused without them, and a number captured later cannot be matched to the unit it came in on.`
+              : 'Nothing is being received on this line, so no numbers are needed.';
+          }
+        }
+        if (tracked) { paintSerialHint(); serialBox.dataset.tracked = '1'; }
+        body.appendChild(serialBox);
+        body._paintSerialHint = paintSerialHint;
 
         const overBox = ui.h('label', { class: 'check' },
           ui.h('input', { type: 'checkbox', name: `over_${i.id}` }),
@@ -606,6 +662,10 @@
         entry.sellingPrice = v[`price_${id}`] == null ? null : Number(v[`price_${id}`]);
         entry.batchNo = v[`batch_${id}`] || null;
         entry.expiryDate = v[`expiry_${id}`] || null;
+        // One number per line, one line per number: a label scanner emits a newline and a clerk
+        // pasting from a dispatch note emits anything at all.
+        entry.serials = String(v[`serials_${id}`] || '')
+          .split(/[\n,\t]+/).map((x) => x.trim()).filter(Boolean);
         entry.allowOver = Boolean(wrapEl.querySelector(`[name="over_${id}"]`) && wrapEl.querySelector(`[name="over_${id}"]`).checked);
       }
       return v;
@@ -628,7 +688,13 @@
       }
     }
     wrapEl.appendChild(totalsBar);
-    wrapEl.addEventListener('input', () => { recompute(); });
+    wrapEl.addEventListener('input', () => {
+      recompute();
+      // The serials hint counts the units being received, so it has to follow the quantity box.
+      for (const card of rowsHost.querySelectorAll('.card-body')) {
+        if (card._paintSerialHint) card._paintSerialHint();
+      }
+    });
     wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Selling price defaults to the product\'s current price. Changing it here changes the price on the new batch only.'));
     paint();
 
@@ -653,11 +719,28 @@
           class: 'btn btn-primary',
           onClick: async (ev) => {
             const v = readRowValues();
+
+            // THE CLIENT REFUSES FIRST, IN THE SERVER'S OWN SENTENCE. A refusal that arrives
+            // without somewhere to type the numbers is a dead end, not a validation — so the box
+            // is opened, focused, and the person is told exactly what is missing before a round
+            // trip tells them in red.
+            for (const e of plan.values()) {
+              if (!Number(e.item.requires_serial) || !(e.quantityBase > 0)) continue;
+              const need = Math.ceil(e.quantityBase);
+              if (e.serials.length === need) continue;
+              revealSerials(wrapEl.querySelector(`[name="serials_${e.item.id}"]`));
+              ui.warn(`${e.item.product_name || e.item.name} is serial-tracked, so each unit needs its own serial number: ${need} expected for ${U.qty(e.quantityBase)} unit(s), ${e.serials.length} given. Scan or type the number off each label — one number per unit, one line each.`);
+              return;
+            }
+
             const receiptsPayload = [...plan.values()]
               .filter((e) => e.quantityBase > 0)
               .map((e) => ({
                 item_id: String(e.item.id),
                 quantity_received: e.quantityBase,
+                // Only for tracked lines: the route refuses numbers on a product that has nowhere
+                // to file them (SERIALS_NOT_EXPECTED).
+                ...(Number(e.item.requires_serial) && e.serials.length ? { serials: e.serials } : {}),
                 cost_per_unit: e.costPerUnit,
                 freight_per_unit: e.freightPerUnit,
                 selling_price: e.sellingPrice,
@@ -676,12 +759,28 @@
                 warehouse_zone: v.warehouse_zone || null,
                 notes: v.notes || null,
               });
-              ui.ok(result.fullyReceived
+              // THE NUMBERS THAT WENT ON FILE ARE NAMED IN THE RECEIPT. A serial is the only
+              // proof of which unit arrived, so the person who scanned it should see it land —
+              // and a warning (a duplicate across the group, say) is passed on rather than
+              // swallowed.
+              const registered = Array.isArray(result.serials) ? result.serials.length : 0;
+              // The route files them under `warnings` (a duplicate across the group, say).
+              const warningList = Array.isArray(result.warnings) ? result.warnings
+                : (Array.isArray(result.serialWarnings) ? result.serialWarnings : []);
+              const warned = warningList.length
+                ? ` ${typeof warningList[0] === 'string' ? warningList[0] : JSON.stringify(warningList[0])}` : '';
+              ui.ok(`${result.fullyReceived
                 ? 'Received in full. The order is complete and the batches are on the shelf.'
-                : 'Delivery recorded. The order remains open for the balance.');
+                : 'Delivery recorded. The order remains open for the balance.'}${registered ? ` ${registered} serial number(s) are on file against the units.` : ''}${warned}`);
               m.close();
               if (done) done(); else load();
             } catch (err) {
+              // A SERIALS REFUSAL FROM THE SERVER STILL LEAVES SOMEWHERE TO TYPE. The route is
+              // the authority on what a delivery needs; if it wants numbers, the boxes are opened
+              // and focused whatever this form believed about the product.
+              if (err && (err.code === 'SERIALS_REQUIRED' || /serial-tracked/i.test(String(err.message || '')))) {
+                for (const input of wrapEl.querySelectorAll('[name^="serials_"]')) revealSerials(input);
+              }
               ui.apiError(err);
               ev.currentTarget.disabled = false;
               ev.currentTarget.textContent = 'Record the delivery';

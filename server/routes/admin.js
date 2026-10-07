@@ -166,11 +166,25 @@ function mount(app, base = '/api') {
       createdBy: String(user.id),
     });
 
+    // THE SERVICE HANDS BACK THE SUMMARY ITSELF. `provisionBusiness` ends `return summary` — the
+    // counts are the value, at `result.categories` / `result.accounts` / `result.products`. The
+    // `{ ok, businessId, … provisioned, seededBy }` wrapper belongs to `provisionDeployment`,
+    // which is where the earlier reading of this came from; both shapes are accepted below so the
+    // sentence stays true whichever way the service is called. Reading `result.summary` (and then
+    // `result.provisioned`) left every count at `|| 0`, and the sentence a platform administrator
+    // reads after creating a business said:
+    //
+    //     "…provisioned: 0 categories, 0 ledger accounts, 0 customer classes, 0 starter products."
+    //
+    // while the database held 13 categories and 52 ledger accounts. The provisioning worked and
+    // the message denied it — the worst kind of wrong, because the next thing an administrator
+    // does is start looking for what went missing. The numbers below are the service's own
+    // summary, and `audit.createFlows.js` asserts they match the rows that actually exist.
+    const summary = (result && (result.provisioned || result.summary)) || result || {};
     await recordFromCtx(ctx, {
       action: 'BUSINESS_CREATED', entityType: 'BUSINESS', entityId: id, businessId: id,
-      after: { name, profileCode, provisioned: result.summary || result },
+      after: { name, profileCode, provisioned: summary },
     });
-    const summary = result.summary || {};
     ctx.json({
       ok: true, id, branchId,
       business: { id, name, profile_code: profileCode },

@@ -118,6 +118,33 @@
     return rank(me.role) > rank(targetRole);
   }
 
+  /**
+   * May this user CREATE somebody at that role?
+   *
+   * THE SERVER DECIDES (`canManageUser(actor, { role })` in `POST /api/users`) AND THIS MIRRORS
+   * IT. The create form offered all four roles to everybody, so an owner picking "Owner" — a
+   * perfectly ordinary thing for an owner to try — was refused with "You are a Owner and cannot
+   * create a Owner. Only somebody above that role can." after filling the whole form. A chooser
+   * should offer what it can deliver.
+   *
+   * The rule, read off the route: the deployment administrator may create anything; nobody
+   * creates an administrator but them; and otherwise only strictly higher ranks can be created.
+   */
+  function canCreateRole(role) {
+    const me = state.user || {};
+    const mine = String(me.role || '').toUpperCase();
+    const wanted = String(role || '').toUpperCase();
+    if (!wanted) return false;
+    if (mine === 'ADMIN') return true;
+    if (wanted === 'ADMIN') return false;
+    return rank(mine) > rank(wanted);
+  }
+
+  /** Does a person at this role need a branch? Only the deployment administrator may have none. */
+  function roleNeedsBranch(role) {
+    return String(role || '').toUpperCase() !== 'ADMIN';
+  }
+
   // -------------------------------------------------------------------
   // feature flags
   // -------------------------------------------------------------------
@@ -346,6 +373,7 @@
   SR.state = Object.assign(state, {
     on, emit, load, loadFromMirror, clear,
     rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager, canManageUser,
+    canCreateRole, roleNeedsBranch,
     canSeeAllBranches, can,
     feature, featureLabel,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,

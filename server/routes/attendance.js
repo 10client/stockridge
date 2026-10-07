@@ -418,7 +418,10 @@ function mount(app, base = '/api') {
     const scope = ctx.get('scope');
     const where = ['d.is_deleted = 0']; const params = [];
     if (branch) { where.push('d.branch_id = ?'); params.push(String(branch.id)); }
-    else { const f = scopeFilter(scope, { alias: 'd' }); if (f.sql) { where.push(f.sql); params.push(...f.params); } }
+    // `branch_devices` carries no `business_id` of its own — the business is the branch's — so a
+    // business clause here is the same 500 the serial register had ("no such column:
+    // d.business_id"), met by a manager looking at the devices registered at their branches.
+    else { const f = scopeFilter(scope, { alias: 'd', businessViaBranches: true }); if (f.sql) { where.push(f.sql); params.push(...f.params); } }
     const rows = await db.all(`SELECT d.*, b.name AS branch_name, r.full_name AS registered_by_name,
           CASE
             WHEN d.revoked_at IS NOT NULL THEN 'BLOCKED'

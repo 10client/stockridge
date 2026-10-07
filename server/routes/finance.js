@@ -269,7 +269,11 @@ function mount(app, base = '/api') {
         WHERE po.id = ? AND po.is_deleted = 0`, [id]);
     if (!po) throw new HttpError('That purchase order does not exist.', { status: 404, code: 'PO_NOT_FOUND' });
     const [items, receipts, ledger] = await Promise.all([
-      db.all(`SELECT i.*, p.name AS product_name, p.sku, p.base_unit_name, v.name AS variant_name
+      // `p.requires_serial` IS IN THE PAYLOAD. The receive screen asks for a serial number per
+      // unit on serial-tracked products — the route refuses the delivery without them — and it
+      // cannot ask for what the line never told it. Without this column the form had no way to
+      // know a line needed numbers, so a phone or an appliance was refused with nowhere to type.
+      db.all(`SELECT i.*, p.name AS product_name, p.sku, p.base_unit_name, p.requires_serial, v.name AS variant_name
           FROM purchase_order_items i
           JOIN products p ON p.id = i.product_id
           LEFT JOIN product_variants v ON v.id = i.variant_id

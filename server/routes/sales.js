@@ -798,7 +798,11 @@ function mount(app, base = '/api') {
     const { limit, offset } = pagination(ctx);
     const where = ['sn.is_deleted = 0'];
     const params = [];
-    const f = scopeFilter(scope, { alias: 'sn' });
+    // THE BUSINESS COMES THROUGH THE BRANCH: `serial_numbers` has no `business_id` column, so
+    // the default scope filter made this list a 500 ("no such column: sn.business_id") for every
+    // manager and staff member — the two roles that actually read the warranty register — while
+    // an owner, whose scope spans every business, never saw the clause at all.
+    const f = scopeFilter(scope, { alias: 'sn', businessViaBranches: true });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
     const bf = await branchFilter(db, ctx, { alias: 'sn' });
     if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }

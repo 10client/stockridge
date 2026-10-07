@@ -1426,3 +1426,68 @@ takes a manager at the receiving branch to reach `BRANCH_SCOPE_VIOLATION`), and 
 shapes** (the create route answers `id` and no status; the received value lives in
 `totals.receivedValue`; the supplier's open orders are `purchaseOrders`, its ledger is
 `balance_owed`).
+
+## P21 — the PO serial box, and the three doors that make a deployment (2026-10-07)
+
+**What the user reported.** "On receiving a purchase order for a product this popped and there is no
+input for serial number, so fix — and also while creating staffs and branch and business it is
+either name required or something; cross check the flow and fully align it from the front to the
+back end."
+
+**What was actually wrong — four separate things, all of them real.**
+
+1. **The receive form had no serial box at all.** `POST /api/purchase-orders/:id/receive` has always
+   demanded one number per unit on a serial-tracked line (`SERIALS_REQUIRED`), and
+   `public/js/views/purchase-orders.js` never sent any — so a fridge, a phone or a generator bought
+   on a purchase order could not be received anywhere in the product. Same dead end that P19 fixed
+   on the direct goods-received screen, one route over.
+2. **The business-create message lied about a working database.** The route read `result.summary`,
+   which does not exist: `provisionBusiness` ends `return summary` — the counts ARE the return value
+   (`categories`, `accounts`, `customerClasses`, `products`, `skipped`). The `{… provisioned, seededBy}`
+   wrapper belongs to `provisionDeployment`. So an administrator was told
+   "provisioned: 0 categories, 0 ledger accounts, 0 customer classes, 0 starter products" while the
+   rows were all there — the worst kind of wrong, because the next thing they do is hunt for what
+   went missing. Now `(result.provisioned || result.summary) || result`, and the audit compares every
+   number in the sentence to the rows that exist.
+3. **The create-person form offered what the route refuses.** The role chooser listed all four roles
+   to everyone, so an owner picking "Owner" filled in the whole form and was refused
+   "You are a Owner and cannot create a Owner." The branch select was labelled "No branch (owner or
+   admin only)" while the route requires a branch of every role but the administrator — so a STAFF
+   create with the blank left in was refused `BRANCH_REQUIRED`. `SR.state.canCreateRole` /
+   `roleNeedsBranch` now mirror the route: an owner is offered Staff and Manager only, the branch
+   field follows the role as it is chosen, defaults to the branch the creator works at, and the blank
+   option appears only for ADMIN.
+4. **`GET /api/serials` was a 500 for every manager and staff member.** `serial_numbers` has no
+   `business_id` column, so the default scope filter produced `no such column: sn.business_id` — an
+   owner (whose scope spans every business) never added the clause and saw the register perfectly.
+   The detail route beside it had already met this and joined `branches` for the business; the list
+   had not. `scopeFilter` now takes the business **through the branch** (`businessViaBranches`), and
+   `GET /api/attendance/devices` had the same fault on `branch_devices` and is fixed with it.
+
+**Front end.** `openReceive` gained a per-line serial textarea (shown only where the product is
+tracked, hidden otherwise), a live hint counting units against numbers entered, a refusal in the
+route's own sentence that OPENS AND FOCUSES the box, `serials` sent only for tracked lines, and a
+receipt that names how many numbers went on file. Two element-lookup bugs were fixed on the way:
+`ui.field` returns the WRAPPER div and appends the control to it, so `wrapper.querySelector('textarea')`
+found nothing — the focus silently failed and the "N entered" counter read 0 however many labels had
+been scanned.
+
+**Verification.**
+- `test/audit/audit.createFlows.js` — NEW, 15 checks. Business create whose message is compared
+  count-by-count to the rows (`categories` / `accounting/accounts` / `customer-classes` / `products`),
+  branch create (name-only, code derived, active), person create who then **signs in** and is read
+  back at the role and branch that were asked for, the refusals (`ROLE_REQUIRED` for an owner
+  creating an owner, `BRANCH_REQUIRED` for staff with no branch, the administrator allowed neither),
+  the serial receipt in both directions (`SERIALS_REQUIRED` "2 expected" → numbers → every number on
+  the register `IN_STOCK` at the branch, tied to a batch, order RECEIVED, `totals.receivedValue`
+  ₦3,000), `SERIALS_NOT_EXPECTED` for numbers on an untracked line, and the plan cap refusing a
+  branch over `max_branches` with `MAX_BRANCHES_REACHED` (then restored).
+- `bash test/run-audits.sh` → **30 audits, every check green** (was 29).
+- `npm run verify` → **479 pass / 0 fail**.
+- `tools/flow-coverage.js` → **198 routes · 187 audited · 8 screen-only · 3 unreached** (was
+  185 / 10 / 3). suppliers now 4/5, purchase-orders 5/5, businesses 3/3, users 12/14.
+- Live walk on the demo: PO for a serial-tracked "Angle Grinder 4.5\"" → "Record the delivery" with
+  nothing typed → the route's sentence, cursor in the serial box → two numbers → "Received in full. …
+  2 serial number(s) are on file against the units."; serial `CF-…` on the register `IN_STOCK` at the
+  branch; branch / business / staff creates all green, staff create with the branch left at its
+  default (the misalignment).
