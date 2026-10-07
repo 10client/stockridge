@@ -1121,3 +1121,54 @@ own `SELECT`, because three of them were guesses when the screen was written.
 the person signed in** (old PIN 401, new PIN 200, the reissued token works, the screen's wording
 matches), the staff detail shows **Signing in** and **Recent sign-in attempts** with the fields the
 routes send, and the demo was left with its seed PINs (`segun` back to `26480`).
+
+## P17 — THE FIRST SCREEN THE OWNER OPENS (2026-10-07)
+
+The dashboard: two routes, no audit, and the numbers an owner actually decides with. **dashboard
+2/2**, audited **170 → 172**, `test/audit/audit.dashboard.js` **13/13**.
+
+It does not ask whether the endpoint answers. It rings sales and then checks the figures against the
+rows that were written, because a wrong number here does not look wrong — it looks like a quiet
+morning, and somebody orders stock against it:
+
+* **a sale moves the takings by exactly its total** (₦68,000.00 in, +₦68,000.00 shown), and the
+  count by one — not approximately, not upward;
+* **the figures agree with each other**: `netRevenue = grossRevenue − vat`,
+  `grossMargin = netRevenue − cogs`, the margin percentage is the ratio of its own two figures, the
+  average sale is the takings over the count, and the cost of goods is not zero after a stocked
+  sale (a zero COGS overstates every margin on the screen by the whole cost);
+* **a void is not a sale**: voiding moves the takings *down* by exactly that sale, the count down
+  one, and adds it to the voided count and value;
+* **the comparison is against yesterday and carries its direction** — including the P12 rule that
+  a day with nothing to compare against answers **null**, not a made-up +100%, so the tile draws no
+  arrow rather than an arrow pointing at nothing (this audit asserted +100% first and was wrong
+  about the product);
+* **the period includes its own day** (`period.grossRevenue ≥ today.gross`), and `today` answers
+  `gross` and `grossRevenue` with the same number, because the screen reads both names;
+* **the scope decides the shape of the answer, not the request**: the cashier's dashboard is their
+  branch, the owner's is the group, and a cashier naming another branch by parameter cannot widen
+  it;
+* the summary and the full dashboard **agree about the same day**.
+
+### Two things the audit found in itself, which are worth recording
+
+The field scan — the screen's reads against the route's live payload — reported **eleven dead reads
+on its first run and every one of them was wrong**: five came out of the file's own header comment,
+which lists the ten names that were fixed in an earlier pass (`today.periodGross`,
+`today.vs_yesterday_pct`, `cash.till`), and six were reads of **other sources** the screen
+legitimately uses — the offline mirror (`SR.store.all('stock_batches')`, whose rows carry the local
+store's field names) and the drawer card, which is empty when nobody has opened a till. The scan now
+strips comments length-preservingly, walks arrays for nested keys, unions the owner's payload with
+the cashier's, and excuses the mirror's five names **by name and with a guard that fails if that
+store read ever leaves the screen**. It ends up checking 37 reads in the screen.
+
+And the audit read `period.gross` where the period block says `grossRevenue`: it got `undefined`,
+reported a ₦0 period totalling less than its own day, and so accused the product of a defect that
+was its own dead field read. The field is asserted by name now, so a rename fails loudly instead of
+reading as zero.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **26 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 172 audited · 20 screen-only · 5 unreached**,
+**dashboard 2/2**.
