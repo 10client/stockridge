@@ -1446,14 +1446,42 @@ function mount(app, base = '/api') {
     ctx.json({ ok: true });
   });
 
+  /**
+   * MARK EVERYTHING THIS USER CAN SEE AS READ — the same set the list shows.
+   *
+   * This used to scope the broadcast half by the caller's OWN `branch_id`, exactly the
+   * defect the list route's comment records: an OWNER and an ADMIN have no branch, so
+   * the predicate matched only rows with `branch_id IS NULL` and **"mark all read"
+   * marked nothing at all for the two seats most likely to press it** — while the list
+   * beside it, which had already been fixed to use the scope, showed them plenty. A
+   * multi-branch manager got the same thing in miniature: read-all marked their own
+   * branch and left the rest unread forever.
+   *
+   * The audience is now IDENTICAL to the list route's, built from the same
+   * `scopeFilter`, because the only thing worse than a "mark all read" that misses rows
+   * is one that disagrees with the screen it is sitting on.
+   */
   app.post(`${base}/notifications/read-all`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
+    const scope = ctx.get('scope');
+    const broadcast = scopeFilter(scope, { alias: 'notifications' });
+    const audience = broadcast.sql
+      ? `(user_id = ? OR (user_id IS NULL AND (${broadcast.sql})))`
+      : '(user_id = ? OR user_id IS NULL)';
     const res = await db.run(`UPDATE notifications SET is_read = 1, read_at = datetime('now'), updated_at = datetime('now')
-        WHERE is_deleted = 0 AND is_read = 0
-          AND (user_id = ? OR (user_id IS NULL AND (branch_id = ? OR branch_id IS NULL)))`,
-    [String(user.id), user.branch_id ? String(user.branch_id) : '__none__']);
-    ctx.json({ ok: true, marked: res.changes });
+        WHERE is_deleted = 0 AND is_read = 0 AND ${audience}`,
+    [String(user.id), ...broadcast.params]);
+    const remaining = await db.scalar(`SELECT COUNT(*) FROM notifications WHERE is_deleted = 0 AND is_read = 0 AND ${audience}`,
+      [String(user.id), ...broadcast.params]);
+    ctx.json({
+      ok: true,
+      marked: res.changes,
+      unread: Number(remaining) || 0,
+      message: res.changes
+        ? `${res.changes} notification(s) marked read.`
+        : 'Nothing was unread.',
+    });
   });
 }
 

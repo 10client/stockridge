@@ -423,12 +423,161 @@
   }
 
   // -------------------------------------------------------------------
+  // ALERTS
+  // -------------------------------------------------------------------
+  //
+  // THE BELL READS THE LIST, NOT A COUNT. `GET /api/notifications` returns the rows the
+  // caller can see plus the unread total, and both come from the SAME scope — which is
+  // the rule this screen depends on, because a badge showing three and a panel showing
+  // two is how a person learns to distrust the badge.
+  //
+  // Nothing is mirrored for offline: an alert about a permit expiring is a fact from the
+  // office, and a stale alert list on a till that has been offline for a week is worse
+  // than saying "you are offline". Reads are never queued in this app, and this is a read.
+  let bellItems = [];
+  let bellPollTimer = null;
+
+  async function updateBell({ refreshPanel = false } = {}) {
+    const btn = document.getElementById('bell-btn');
+    const badge = document.getElementById('bell-count');
+    if (!btn || !badge) return;
+    try {
+      const res = await SR.api.get('/api/notifications', { query: { limit: 25 } });
+      bellItems = (res && (res.data || res.rows)) || [];
+      const unread = Number(res && res.unread) || 0;
+      badge.textContent = unread > 99 ? '99+' : String(unread);
+      badge.hidden = unread === 0;
+      btn.dataset.unread = String(unread);
+      btn.title = unread ? `${unread} unread alert(s)` : 'No unread alerts';
+      const pop = document.getElementById('bell-pop');
+      if (refreshPanel && pop && !pop.hidden) paintBellPanel(bellItems, unread);
+    } catch (err) {
+      // Offline, or the deployment is mid-deploy. The badge keeps whatever it had rather
+      // than claiming there is nothing to see.
+      btn.title = err && err.isOffline ? 'Alerts need a connection' : 'Alerts could not be checked';
+    }
+  }
+
+  function bellMetaFor(n) {
+    const bits = [];
+    if (n.branch_name) bits.push(n.branch_name);
+    else if (n.user_id) bits.push('For you');
+    else bits.push('Whole business');
+    // A branch alert is a shared work item — one `is_read` column, cleared for the shop
+    // by whoever deals with it, and raised again by the daily sweep until the record
+    // itself is renewed. Said out loud so two people do not both go and renew the same
+    // licence, and so nobody is surprised that clearing it cleared it for a colleague.
+    if (!n.user_id && n.branch_name) bits.push('shared with the branch');
+    bits.push(U.dateTime(n.created_at, { zone: 'wat' }));
+    return bits.join(' · ');
+  }
+
+  /** Where an alert's subject lives, so a row can be acted on rather than only read. */
+  const BELL_ROUTES = {
+    COMPLIANCE_EXPIRY: '/compliance',
+    LOW_STOCK: '/stock?filter=low',
+    EXPIRY: '/stock?filter=expiring',
+    CREDIT_OVERDUE: '/customers?tab=debtors',
+    INSTALLMENT_DUE: '/instalments',
+    WARRANTY_EXPIRING: '/returns?tab=warranty',
+    SYNC_CONFLICT: '/sync',
+    STOCKTAKE_VARIANCE: '/stocktake',
+  };
+
+  function paintBellPanel(items, unread) {
+    const list = document.getElementById('bell-list');
+    const sub = document.getElementById('bell-sub');
+    const foot = document.getElementById('bell-foot-note');
+    if (!list) return;
+    if (sub) sub.textContent = unread ? `${unread} unread` : 'nothing unread';
+    if (foot) foot.textContent = 'The daily sweep raises an expiry alert again until the record is renewed.';
+    list.replaceChildren();
+    if (!items.length) {
+      list.appendChild(ui.h('div', { class: 'bell-empty' }, 'Nothing needs your attention.'));
+      return;
+    }
+    for (const n of items) {
+      const read = Number(n.is_read) === 1;
+      const row = ui.h('button', {
+        class: `bell-item ${read ? 'is-read' : ''}`,
+        onClick: () => openAlert(n),
+      });
+      const top = ui.h('div', { class: 'bell-row' },
+        ui.h('span', { class: `bell-dot sev-${String(n.severity || 'INFO').toUpperCase()}` }),
+        ui.h('div', {},
+          ui.h('div', { class: 'bell-title' }, n.title || 'Alert'),
+          n.body ? ui.h('div', { class: 'bell-body' }, n.body) : null));
+      row.appendChild(top);
+      row.appendChild(ui.h('div', { class: 'bell-meta' }, bellMetaFor(n)));
+      list.appendChild(row);
+    }
+  }
+
+  async function openAlert(n) {
+    try {
+      if (!Number(n.is_read)) await SR.api.post(`/api/notifications/${encodeURIComponent(n.id)}/read`, {});
+    } catch (err) { /* the alert is still worth acting on if marking it fails */ }
+    await updateBell({ refreshPanel: true });
+    const target = BELL_ROUTES[String(n.type || '').toUpperCase()];
+    if (target) { closeBell(); navigate(target); }
+  }
+
+  async function markAllRead() {
+    const btn = document.getElementById('bell-read-all');
+    if (btn) { btn.disabled = true; btn.textContent = 'Marking…'; }
+    try {
+      const res = await SR.api.post('/api/notifications/read-all', {});
+      ui.ok((res && res.message) || 'Alerts marked read.');
+    } catch (err) {
+      ui.apiError(err);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Mark all read'; }
+      await updateBell({ refreshPanel: true });
+    }
+  }
+
+  function openBell() {
+    const pop = document.getElementById('bell-pop');
+    const btn = document.getElementById('bell-btn');
+    if (!pop) return;
+    closeUserMenu();
+    paintBellPanel(bellItems, Number(btn && btn.dataset.unread) || 0);
+    pop.hidden = false;
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+  }
+  function closeBell() {
+    const pop = document.getElementById('bell-pop');
+    const btn = document.getElementById('bell-btn');
+    if (pop) pop.hidden = true;
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+  }
+  function toggleBell() {
+    const pop = document.getElementById('bell-pop');
+    if (!pop) return;
+    if (pop.hidden) { openBell(); void updateBell({ refreshPanel: true }); } else closeBell();
+  }
+
+  function startBellPolling() {
+    void updateBell();
+    if (bellPollTimer) clearInterval(bellPollTimer);
+    // Every five minutes: an expiry alert is not a second-by-second fact, and the sweep
+    // that raises them runs daily.
+    bellPollTimer = setInterval(() => { void updateBell({ refreshPanel: true }); }, 5 * 60 * 1000);
+  }
+
+  // -------------------------------------------------------------------
   // AUTH
   // -------------------------------------------------------------------
   function handleAuthFailure() {
     SR.api.setToken(null);
     SR.state.clear();
     SR.sync.stop();
+    // No token, no alerts — and a poll that keeps running after sign-out is a poll that
+    // keeps 401-ing, which the API layer would report as the session having ended again.
+    if (bellPollTimer) { clearInterval(bellPollTimer); bellPollTimer = null; }
+    const badge = document.getElementById('bell-count');
+    if (badge) { badge.hidden = true; badge.textContent = '0'; }
+    closeBell();
     showLogin();
     ui.warn('Your session has ended. Sign in again to continue.');
   }
@@ -518,6 +667,9 @@
   function openUserMenu() {
     const pop = document.getElementById('user-menu-pop');
     const btn = document.getElementById('user-menu');
+    // Two panels anchored to the same corner of the same bar: opening one has to close
+    // the other, or they overlap and the lower one wins on z-index by accident.
+    closeBell();
     pop.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
   }
@@ -626,6 +778,7 @@
     }
     updateQueueChrome();
 
+    startBellPolling();
     SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); });
     SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); });
     SR.api.on('auth', () => handleAuthFailure());
@@ -651,6 +804,8 @@
       else ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another branch.`);
     });
     document.getElementById('queue-chip').addEventListener('click', () => navigate('/sync'));
+    document.getElementById('bell-btn').addEventListener('click', (ev) => { ev.stopPropagation(); toggleBell(); });
+    document.getElementById('bell-read-all').addEventListener('click', (ev) => { ev.stopPropagation(); void markAllRead(); });
     document.getElementById('user-menu').addEventListener('click', (ev) => { ev.stopPropagation(); toggleUserMenu(); });
     document.getElementById('menu-logout').addEventListener('click', doLogout);
     document.getElementById('nav-signout').addEventListener('click', doLogout);
@@ -664,6 +819,8 @@
     document.addEventListener('click', (ev) => {
       const pop = document.getElementById('user-menu-pop');
       if (pop && !pop.hidden && !pop.contains(ev.target) && ev.target.id !== 'user-menu') closeUserMenu();
+      const bellPop = document.getElementById('bell-pop');
+      if (bellPop && !bellPop.hidden && !bellPop.contains(ev.target) && ev.target.id !== 'bell-btn') closeBell();
     });
 
     document.getElementById('login-form').addEventListener('submit', doLogin);
@@ -692,7 +849,7 @@
 
     // Anything the POS queued while the tab was hidden should go out promptly.
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') { updateNetChrome(); updateQueueChrome(); }
+      if (document.visibilityState === 'visible') { updateNetChrome(); updateQueueChrome(); void updateBell({ refreshPanel: true }); }
     });
   }
 
@@ -702,6 +859,7 @@
     ROUTES, ICONS, icon, iconPath,
     boot, render, navigate, matchRoute, allowed,
     showLogin, showShell, paintIdentity, buildNav, setActiveNav, closeNav,
+    updateBell, openBell, closeBell, markAllRead,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
     openModal: ui.openModal,
     get route() { return currentRoute; },

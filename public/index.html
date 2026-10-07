@@ -134,6 +134,14 @@
       <span id="queue-count">0</span> queued
     </button>
 
+    <!-- THE BELL. The engine's only producer today is the daily compliance sweep, and
+         its alerts are the difference between a licence renewed and a shop closed. Until
+         this button existed there was nothing in the product that could show one. -->
+    <button class="icon-btn bell-btn" id="bell-btn" aria-label="Alerts" aria-haspopup="dialog" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M18 16V11a6 6 0 10-12 0v5l-2 3h16zM10 22h4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span class="bell-badge" id="bell-count" hidden>0</span>
+    </button>
+
     <button class="icon-btn" id="theme-toggle" aria-label="Switch theme">
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" class="icon-sun"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" class="icon-moon"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
@@ -172,6 +180,18 @@
 </div>
 
 <!-- Account menu ------------------------------------------------- -->
+<div id="bell-pop" class="menu-pop bell-pop" role="dialog" aria-label="Alerts" hidden>
+  <div class="menu-head bell-head">
+    <strong>Alerts</strong>
+    <span id="bell-sub">—</span>
+  </div>
+  <div class="bell-list" id="bell-list"></div>
+  <div class="bell-foot">
+    <button class="link-btn" id="bell-read-all">Mark all read</button>
+    <span class="hint" id="bell-foot-note"></span>
+  </div>
+</div>
+
 <div id="user-menu-pop" class="menu-pop" role="menu" hidden>
   <div class="menu-head">
     <strong id="menu-name">—</strong>

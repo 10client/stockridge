@@ -593,3 +593,67 @@ engine raises low stock, debt ageing, expiry and plan warnings that nobody can s
 branch-scope misalignment P9's walk found — the owner holds several branches, so **Till & safe** and
 **Stock** render "Choose which branch this applies to" as an error block under an "All branches"
 heading, where the screen should be asking for the branch instead of reporting a failure.
+
+---
+
+## P11 — THE BELL: THE ALERTS THE SYSTEM RAISED AND NOBODY COULD SEE
+
+The notification engine has exactly one producer — the daily compliance sweep, which turns
+every permit or licence about to lapse into a notification. Those rows are the difference between a
+licence being renewed and a shop being closed for trading without one, and **until this stage nothing
+in the product could show one**: `GET /api/notifications`, `POST /:id/read` and `POST /read-all`
+existed, worked, and were reached by no screen at all. The table had a writer and no reader.
+
+### The defect underneath
+
+Both halves of the audience had been scoped by the caller's **own** `branch_id`, with the literal
+string `'__none__'` standing in for "this user has no branch" — which is every OWNER and every
+ADMIN:
+
+* the **list** had already been fixed (scope-based) in an earlier stage, which is why the comment
+  there records the history;
+* **"Mark all read" still had the old predicate.** So the two seats most likely to press it marked
+  **nothing at all**, while the list beside the button showed them a screenful — and a multi-branch
+  manager marked their own branch and left the rest unread forever. `read-all` now builds its
+  audience from the same `scopeFilter` as the list, and answers with what it marked and what is
+  left, because the only thing worse than a button that misses rows is one that disagrees with the
+  screen it sits on.
+
+### The bell
+
+A bell in the top-bar with an unread badge, opening a panel that lists what the caller can see: a
+severity dot, the title, the body, **which branch it is about**, and — for a branch alert — that it
+is *shared with the branch*. Clicking one marks it read and takes the person to the screen that fixes
+it (`COMPLIANCE_EXPIRY → Compliance`, low stock → Stock, overdue credit → Customers, and so on). It
+refreshes on sign-in, on tab focus, every five minutes, and after any read. Nothing is mirrored for
+offline use: an alert list that has been stale for a week is worse than saying "you are offline",
+and reads are never queued in this app.
+
+**The semantics are written down rather than discovered.** A notification *addressed to a person* is
+theirs alone. A **branch alert is one shared work item** — there is one `is_read` column, so whoever
+deals with the licence clears it for the shop, and the panel says so out loud. What makes that safe
+is the producer, not the flag: **the sweep only skips a record that still has an UNREAD alert**, so
+clearing the bell without renewing the licence raises it again the next morning. Both halves are now
+pinned by tests, because "mark read" silently discharging an obligation is exactly the kind of
+assumption that turns into a closed shop.
+
+### Verified
+
+`npm run verify` **435/435/0** · `bash test/run-audits.sh` **20 audits, every check green** ·
+`test/integration/notifications.test.js` **13 checks** · `test/audit/audit.notifications.js`
+**12 checks** · `tools/frontend-alerts.js` **20 checks in a real DOM against a live server** — it
+records a licence, runs the real sweep, watches the badge count it, opens the panel, clicks the alert
+(taking the person to Compliance, which renders), clears the board, then **puts the fixture licence
+back as it was found**.
+
+`node tools/flow-coverage.js` → **197 routes · 151 audited · 32 screen-only · 14 unreached**, with
+**notifications 3/3** (was 1/3, and the two routes had been *reached by no screen at all*).
+
+### Reconfirmed on the way
+
+The owner seat has **no active branch**, which is exactly the misalignment P9's walk found: the app
+offers "All branches" and then a branch-needing action answers *"Choose which branch this applies
+to"* as a failure. `tools/frontend-alerts.js` works around it by picking the first branch the way the
+branch picker would, and the screens still need the same treatment — that is the next UI/UX item,
+with the administrator's audit-trail/anchor screen and the remaining 0% flows (branding 0/5,
+audit 0/3, sessions 0/2, profiles 0/2, catalogue/categories/customer-classes/settings/dashboard).
