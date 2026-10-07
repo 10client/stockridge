@@ -1290,3 +1290,20 @@ screen on the desk, indefinitely.
 `npm run verify` **479/479/0** · `bash test/run-audits.sh` **27 audits, every check green** ·
 `node tools/flow-coverage.js` → **197 routes · 181 audited · 13 screen-only · 3 unreached** ·
 live jsdom walk of the reported path, end to end.
+
+### P19 — live state at this checkpoint
+
+* **Staging deployed and verified:** `https://stockridge-staging.stockridge.workers.dev` — readiness
+  **ready**, three businesses trading, service worker served, cache key
+  `ridge-20261007-1239-02d96a9` in **both** `sw.js` and `app.js` on the live URL (so every browser
+  that has already visited throws the old bundle away on its next load).
+* **The account screen was walked on the live URL as `admin`:** renders, no `That failed.`, no
+  `transfers is not defined`, session row present — the reported error is gone from the deployment,
+  not only from the working tree.
+* **The serial flow was proven locally, on the same bytes staging serves** (`/js/views/stock.js` is
+  byte-identical: 47,063 bytes, `openSerialsFor` present): a typed serial-tracked product opens the
+  box with focus in it, counts its units, and two numbers land on the register as `IN_STOCK`.
+* **A note for the next stage:** the platform administrator's navigation has no **Stock** screen at
+  all (Dashboard, Staff, Branches, Businesses, Subscription), so a serial walk cannot be driven from
+  the platform admin seat on a live deployment. That is a real front-end/back-end alignment question
+  for the admin-flows directive and is recorded here rather than worked around.
