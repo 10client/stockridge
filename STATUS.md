@@ -1337,3 +1337,92 @@ Pushed and deployed as asked: staging, sample and production, all three carrying
 
 The deploy stamps both files as it runs, so the stamp the live workers carry is committed
 (`c41759b`) — repository, working tree and all three deployments agree on the build.
+
+## P20 — THE TRANSFER NOBODY COULD RECEIVE, AND THE PURCHASE ORDER THAT WAS NEVER CANCELLED (2026-10-07)
+
+Reported: *"fix the transfer full flow … no way to handle the way to receive transfer no receive
+button … and also check full purchase order flow from the back end to front end make all fully
+aligned."*
+
+### The bug: two halves of the product disagreeing about five words
+
+The receiving branch's screen had **no Book-in button anywhere** — not on the list, not on the
+transfer itself. It was not a missing feature. The table's vocabulary and the screen's had drifted
+apart:
+
+| | |
+|---|---|
+| the table (`CHECK (status IN …)`) | `INITIATED · IN_TRANSIT · PARTIALLY_RECEIVED · RECEIVED · CANCELLED` |
+| the screen | `DRAFT · SENT · RECEIVED · CANCELLED` — **`SENT` has never existed** |
+
+Every comparison on that screen was against `'SENT'`: the "waiting to be booked in" card was
+therefore always empty, the status filter's "In transit" option matched nothing (the route matched
+it literally, so it answered an empty list), and `canReceive` was false for **everyone**. Reproduced
+live before changing anything: an `IN_TRANSIT` transfer addressed to the manager's own branch, page
+showing "In Transit", buttons `["Print"]`.
+
+**The fix removes the second copy of the vocabulary rather than correcting it.** The route now
+declares `TRANSFER_STATUSES` (quoting the table's own CHECK), *answers it* in both the list and the
+detail (`statuses`, `receivable`), refuses an unknown filter with `400 UNKNOWN_STATUS` naming the
+real ones instead of returning an empty list, and the screen **learns it from the answer** — so a
+deep link, a bookmarked transfer and a stale cache all speak the same five words as the database.
+
+### What the flow could not do before
+
+* **A delivery that arrived short could never close.** The route wrote `RECEIVED` even when lines
+  were short, and only `IN_TRANSIT` was bookable — so a two-load delivery was unclosable. Now the
+  first booking leaves `PARTIALLY_RECEIVED` and the balance can be booked when it turns up; the
+  status only becomes `RECEIVED` when every line is closed.
+* **Booking in counted against the manifest, not the balance.** A second booking defaulted to the
+  whole sent quantity, which would have booked the first load in again and invented stock. Both
+  sides now count the **outstanding** balance, and the route refuses more than is outstanding
+  (`OVER_RECEIPT`, naming what was already booked in). The screen shows the line as
+  **Sent · Already in · Arrived now**.
+* **`CANCELLED` existed in the schema and nothing could write it.** The list offered it as a filter
+  and a transfer that never arrived sat `IN_TRANSIT` for ever, its stock deducted from the sending
+  branch and countable nowhere. `POST /api/transfers/:id/cancel` now returns the outstanding
+  quantity to the sending branch as its own batch (sellable again), refuses the receiving branch
+  (`BRANCH_SCOPE_VIOLATION`, naming whose transfer it is), refuses a fully received one, and writes
+  `TRANSFER_CANCELLED` — a name that was sitting in the audit vocabulary's *reserved* list, i.e.
+  recorded as "an event this product does not distinguish yet". It is written now: **97 actions
+  written, 30 reserved**.
+* The list rows carry **how much has arrived** (`units_sent`/`units_received` + the same progress
+  bar the purchase-order list draws), so a 12-of-20 does not need a click.
+
+### Purchase orders — the flow was sound; the last unreached route in the product was not
+
+`POST /api/purchase-orders/*/cancel` was the **only route left with no audit anywhere** (coverage
+had been reporting it for weeks): the path that *undoes a commitment* was the one path nobody had
+walked. `audit.purchaseOrders.js` (6/6) now covers the whole order life — created and on the
+supplier's page → part delivery `PARTIALLY_RECEIVED` with the stock on the shelf → the balance
+closes it, two receipts on its history → over-receipt refused → **an order that has taken delivery
+cannot be cancelled** (`PO_PARTLY_RECEIVED`: the goods exist and the debt is real) → a cancellation
+needs a reason a supplier could be shown (absent → `MISSING_FIELD`, two letters →
+`REASON_REQUIRED`) → a cashier has no standing → the cancelled order leaves the supplier's open
+list, comes off the ledger balance, cannot be received against, and records `PO_CANCELLED`.
+
+**One real front-end/back-end misalignment found and fixed there:** the detail screen offered
+**Cancel order** on a partly-received order, which the route always refuses — a person confirmed a
+dialog and typed a reason only to be refused. The button is now gated on *nothing received*, which
+is the route's actual rule. Verified on screen: *nothing received* → `["Receive goods","Cancel
+order"]`; *part received* → `["Receive goods"]`; and cancelling through the dialog + reason leaves
+the order `CANCELLED`.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **29 audits, every check green** (two
+new) · `node tools/flow-coverage.js` → **198 routes · 185 audited · 10 screen-only · 3 unreached** ·
+**`transfers` 5/5 and `purchase-orders` 5/5** (both were 4/5) · live jsdom walk of the reported
+path: "Book in" on the list, "Book in what arrived" on the transfer, booking 1 of 2 leaves
+`Partially Received` with "Book in the rest", the second booking defaults to **1** (the balance),
+and the transfer closes `RECEIVED` with the two units on the receiving branch's shelf.
+
+Both new audits caught their own errors first — worth recording, because each was a wrong
+assumption that looked exactly like a working product: **the wrong id** (booking a receipt against
+the *transfer* id instead of the *line* id silently matched no line, fell back to the full sent
+quantity, and reported a "one of three" delivery as `RECEIVED` with all three on the shelf), **the
+wrong actor** (a *staff* was refused `ROLE_REQUIRED` before the branch rule could be tested — it
+takes a manager at the receiving branch to reach `BRANCH_SCOPE_VIOLATION`), and **guessed response
+shapes** (the create route answers `id` and no status; the received value lives in
+`totals.receivedValue`; the supplier's open orders are `purchaseOrders`, its ledger is
+`balance_owed`).

@@ -395,6 +395,13 @@
       const items = data.items || po.items || [];
       const receipts = data.receipts || [];
       const openForReceiving = po.status !== 'RECEIVED' && po.status !== 'CANCELLED';
+      // AN ORDER THAT HAS TAKEN DELIVERY CANNOT BE CANCELLED — the route refuses it
+      // (PO_PARTLY_RECEIVED: "the goods exist and the debt is real"), and this screen used to
+      // offer the button anyway. The person confirmed a dialog, typed a reason, and was refused:
+      // a control the server will always reject is not a control, it is a trap. The honest test
+      // is whether anything has been RECEIVED, not which word the status carries.
+      const nothingReceived = !items.some((i) => Number(i.quantity_received || 0) > 0);
+      const canCancelOrder = openForReceiving && nothingReceived && SR.state.atLeast('MANAGER');
       const outstanding = items.filter((i) => round4(Number(i.quantity_in_base) - Number(i.quantity_received)) > 0);
 
       host.appendChild(ui.h('div', { class: 'page-head' },
@@ -405,7 +412,7 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/purchase-orders') }, 'Back'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => printOrder(po, items) }, 'Print'),
           openForReceiving && SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openReceive(po, outstanding, receipts, load) }, 'Receive goods') : null,
-          openForReceiving && SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => cancel(po, load) }, 'Cancel order') : null)));
+          canCancelOrder ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => cancel(po, load) }, 'Cancel order') : null)));
 
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 

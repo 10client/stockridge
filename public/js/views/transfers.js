@@ -27,6 +27,38 @@
   const ui = SR.ui;
   const U = SR.util;
 
+  // =====================================================================
+  // THE STATUS VOCABULARY OF A STOCK TRANSFER
+  // =====================================================================
+  // ONE COPY, AT THE SCOPE BOTH SCREENS SHARE. The list and the detail are SIBLING functions
+  // here, so a `let` declared inside either one is invisible to the other — a vocabulary
+  // declared inside the list screen produced `statuses is not defined` the moment the detail
+  // screen or a deep link read it, which is the same class of mistake that once put "That
+  // failed. transfers is not defined" in front of a shop owner.
+  //
+  // The values are the SERVER's. They used to be typed into the list screen as
+  // DRAFT/SENT/RECEIVED/CANCELLED — a vocabulary the API has never used, so the "In transit"
+  // filter matched nothing and every status comparison on this screen (INCLUDING the one that
+  // decided whether to draw the Book-in button) tested a word the database cannot contain. The
+  // defaults below are the transfer table's own five, used only until the server answers.
+  const STATUS_WORDS = ['INITIATED', 'IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
+  const STATUS_LABELS = { INITIATED: 'Prepared', IN_TRANSIT: 'In transit', PARTIALLY_RECEIVED: 'Part received', RECEIVED: 'Received', CANCELLED: 'Cancelled' };
+  let statuses = STATUS_WORDS.slice();
+  /** The statuses a branch may still book in — sent, or part of it already booked. */
+  let receivable = ['IN_TRANSIT', 'PARTIALLY_RECEIVED'];
+  /** Take the vocabulary from an answer, whichever route it came from. True if it changed. */
+  function learnStatuses(data) {
+    if (!data) return false;
+    let changed = false;
+    if (Array.isArray(data.statuses) && data.statuses.length && data.statuses.join(',') !== statuses.join(',')) {
+      statuses = data.statuses.slice(); changed = true;
+    }
+    if (Array.isArray(data.receivable) && data.receivable.length) receivable = data.receivable.slice();
+    return changed;
+  }
+  /** Can the receiving branch still book this transfer in? Sent, or part of it already booked. */
+  function isReceivable(t) { return receivable.includes(String(t && t.status)); }
+
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx, ctx.params.id);
     return renderList(ctx);
@@ -49,9 +81,16 @@
 
     const statusSelect = ui.h('select', { onChange: () => { state.status = statusSelect.value; state.page = 0; load(); } },
       ui.h('option', { value: '' }, 'Any status'),
-      ...[['DRAFT', 'Draft'], ['SENT', 'In transit'], ['RECEIVED', 'Received'], ['CANCELLED', 'Cancelled']]
-        .map(([v, l]) => ui.h('option', { value: v }, l)));
+      ...statuses.map((v) => ui.h('option', { value: v }, STATUS_LABELS[v] || U.humanise(v))));
     statusSelect.value = state.status;
+    function fillStatuses() {
+      const chosen = state.status;
+      statusSelect.replaceChildren(
+        ui.h('option', { value: '' }, 'Any status'),
+        ...statuses.map((v) => ui.h('option', { value: v }, STATUS_LABELS[v] || U.humanise(v))));
+      statusSelect.value = statuses.includes(chosen) ? chosen : '';
+    }
+    fillStatuses();
 
     const host = ui.h('div', {});
     wrap.appendChild(host);
@@ -70,19 +109,27 @@
       }
       const rows = data.data || [];
       const paging = data.paging || {};
+      // THE SERVER OWNS THE VOCABULARY — see learnStatuses() above.
+      if (learnStatuses(data)) fillStatuses();
 
       // A transfer is only actionable at one end: you can receive what was sent
       // TO you, never what you sent. Splitting the list this way means the person
       // at the receiving branch sees a short, obvious list of things to book in
       // rather than a wall of history.
-      const incoming = rows.filter((tr) => tr.status === 'SENT' && String(tr.to_branch_id) === String(SR.state.activeBranchId));
-      const outgoing = rows.filter((tr) => tr.status === 'SENT' && String(tr.from_branch_id) === String(SR.state.activeBranchId));
-      const rest = rows.filter((tr) => tr.status !== 'SENT');
+      // "WAITING TO BE BOOKED IN" IS A SET OF STATUSES, NOT ONE WORD: a delivery that arrived
+      // short is PARTIALLY_RECEIVED and the balance is still coming, so it stays in this list
+      // until every line is closed. A single literal here is exactly what hid the Book-in
+      // button from every receiving branch in the product.
+      const incoming = rows.filter((tr) => isReceivable(tr) && String(tr.to_branch_id) === String(SR.state.activeBranchId));
+      const outgoing = rows.filter((tr) => isReceivable(tr) && String(tr.from_branch_id) === String(SR.state.activeBranchId));
+      const rest = rows.filter((tr) => !isReceivable(tr));
 
       host.replaceChildren();
       if (incoming.length) {
         host.appendChild(ui.dataCard({
           title: `Waiting to be booked in at ${SR.state.activeBranchName() || 'this branch'}`,
+          subtitle: incoming.some((t) => String(t.status) === 'PARTIALLY_RECEIVED')
+            ? 'One or more of these arrived short — the balance on each line is what is still to come.' : null,
           table: transferTable(incoming, { highlight: true }),
         }));
       }
@@ -113,6 +160,19 @@
               ? ui.h('div', { class: 'hint' }, `across businesses: ${t.from_business_name} → ${t.to_business_name}`) : null) },
           { key: 'status', label: 'Status', render: (t) => ui.statusBadge(t.status) },
           { key: 'item_count', label: 'Lines', align: 'right', render: (t) => Number(t.item_count || 0).toLocaleString('en-NG') },
+          { key: 'progress', label: 'Arrived', align: 'right', render: (t) => {
+            // WHAT IS STILL COMING, on the row — the same bar the purchase-order list draws,
+            // down to the colours: two screens answering "how much of it has arrived" should
+            // not look like two different products.
+            const sent = Number(t.units_sent) || 0;
+            const got = Number(t.units_received) || 0;
+            if (!sent) return ui.h('span', { class: 'hint' }, '—');
+            if (String(t.status) === 'RECEIVED') return ui.h('span', { class: 'hint' }, `${U.qty(got)} of ${U.qty(sent)}`);
+            const pct = U.clamp((got / sent) * 100, 0, 100);
+            const bar = ui.h('div', { style: { width: '70px', height: '8px', borderRadius: '4px', background: 'var(--slate-200)', display: 'inline-block', verticalAlign: 'middle', marginRight: '6px' } },
+              ui.h('div', { style: { width: `${pct}%`, height: '100%', borderRadius: '4px', background: got >= sent ? 'var(--green-600)' : 'var(--teal-600)' } }));
+            return ui.h('span', {}, bar, ui.h('span', { class: 'hint' }, `${U.qty(got)}/${U.qty(sent)}`));
+          } },
           { key: 'initiated_at', label: 'Sent', render: (t) => U.relTime(t.initiated_at) },
           { key: 'initiated_by_name', label: 'By', render: (t) => t.initiated_by_name || '—' },
           { key: 'received_at', label: 'Received', render: (t) => (t.received_at ? U.relTime(t.received_at) : '—') },
@@ -121,7 +181,9 @@
             cell.appendChild(ui.h('button', {
               class: `btn btn-sm${highlight ? ' btn-primary' : ''}`,
               onClick: (ev) => { ev.stopPropagation(); SR.app.navigate(`/transfers/${t.id}`); },
-            }, t.status === 'SENT' && String(t.to_branch_id) === String(SR.state.activeBranchId) ? 'Book in' : 'Open'));
+            }, isReceivable(t) && String(t.to_branch_id) === String(SR.state.activeBranchId)
+              ? (String(t.status) === 'PARTIALLY_RECEIVED' ? 'Book in the rest' : 'Book in')
+              : 'Open'));
             return cell;
           } },
         ],
@@ -293,6 +355,7 @@
         host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
         return;
       }
+      learnStatuses(res);
       const t = res.transfer || {};
       const items = res.items || [];
       const summary = res.summary || {};
@@ -302,16 +365,32 @@
       // `can(min)` takes a ROLE, not a permission key — asking it about
       // 'receiveTransfer' would rank nothing and quietly return false, hiding
       // the button from everybody. Booking in is ordinary branch work.
-      const canReceive = t.status === 'SENT' && iAmReceiving && SR.state.atLeast('STAFF');
+      //
+      // AND IT IS NOT ONE STATUS. IN_TRANSIT says the goods left; PARTIALLY_RECEIVED says some
+      // of them arrived and the rest is coming. Both are bookable — the single literal 'SENT'
+      // that used to be here is a word the API has never written, which is why every receiving
+      // branch in the product was looking at a transfer with no way to book it in.
+      const isOpen = isReceivable(t);
+      const isPartial = String(t.status) === 'PARTIALLY_RECEIVED';
+      const canReceive = isOpen && iAmReceiving && SR.state.atLeast('STAFF');
       const canManage = SR.state.atLeast('MANAGER');
+      // THE SENDING END CAN CALL IT BACK (the route decides this too; this only decides whether
+      // to offer the button). An owner may cancel anything.
+      const iAmSending = String(t.from_branch_id) === String(SR.state.activeBranchId);
+      const canCancel = isOpen && canManage && (iAmSending || SR.state.isOwner());
 
       // Received-so-far is typed, not assumed. The default is "everything
       // arrived", because that is the common case, but the box is editable
       // precisely so that a shortfall is recorded rather than discovered later.
+      // THE DEFAULT IS WHAT IS STILL OUTSTANDING, NOT WHAT WAS SENT. On a first delivery those
+      // are the same number; on the second — the balance of a short delivery — the sent
+      // quantity is what the line HELD, and defaulting to it would book the first load in twice
+      // and invent stock that never arrived. The route counts the same way and refuses the rest.
+      const outstandingOf = (it) => U.round2(Math.max(0, Number(it.quantity_sent_base || 0) - Number(it.quantity_received || 0)));
       const received = new Map();
       const notes = new Map();
       for (const it of items) {
-        received.set(String(it.id), String(Number(it.quantity_sent_base)));
+        received.set(String(it.id), String(outstandingOf(it)));
       }
 
       host.replaceChildren();
@@ -321,21 +400,29 @@
           ui.h('h1', {}, t.reference || 'Transfer'),
           ui.h('p', { class: 'sub' }, `${t.from_branch_name || '—'} → ${t.to_branch_name || '—'} · sent ${U.dateTime(t.initiated_at)}${t.initiated_by_name ? ` by ${t.initiated_by_name}` : ''}`)),
         ui.h('div', { class: 'actions' },
-          ui.badge(U.humanise(t.status), t.status === 'RECEIVED' ? 'badge-good' : t.status === 'SENT' ? 'badge-warn' : 'badge-mute'),
+          ui.badge(U.humanise(t.status), t.status === 'RECEIVED' ? 'badge-good' : isOpen ? 'badge-warn' : 'badge-mute'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => window.print() }, 'Print'),
-          canReceive ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => bookIn() }, 'Book in what arrived') : null)));
+          canCancel ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => cancelTransfer() }, 'Cancel transfer') : null,
+          canReceive ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => bookIn() }, isPartial ? 'Book in the rest' : 'Book in what arrived') : null)));
 
       host.appendChild(ui.h('div', { class: 'kpi-grid' },
         ui.kpi({ label: 'Lines', value: Number(summary.lines || items.length).toLocaleString('en-NG') }),
         ui.kpi({ label: 'Units sent', value: U.qty(summary.unitsSent || 0) }),
-        ui.kpi({ label: 'Units received', value: U.qty(summary.unitsReceived || 0), foot: t.status === 'SENT' ? 'nothing has been booked in yet' : null }),
+        ui.kpi({
+          label: 'Units received', value: U.qty(summary.unitsReceived || 0),
+          foot: isOpen
+            ? (Number(summary.unitsReceived || 0) > 0
+              ? `${U.qty(U.round2(Number(summary.unitsSent || 0) - Number(summary.unitsReceived || 0)))} still to arrive`
+              : 'nothing has been booked in yet')
+            : null,
+        }),
         ui.kpi({
           label: 'Shortfall', value: U.qty(summary.shortfall || 0),
           tone: Number(summary.shortfall || 0) > 0 ? 'bad' : null,
           foot: Number(summary.disclosed || 0) ? `${summary.disclosed} line(s) arrived short` : 'every line accounted for',
         })));
 
-      if (t.status === 'SENT') {
+      if (isOpen) {
         host.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
           ui.h('p', {}, t.from_business_name && t.to_business_name && t.from_business_name !== t.to_business_name
             ? `This stock is moving between two businesses (${t.from_business_name} → ${t.to_business_name}). It is still counted as ${t.from_business_name}'s until ${t.to_branch_name} books it in.`
@@ -371,23 +458,52 @@
       }
 
       // -------------------------------------------------------------
+      // CANCEL — the goods are not coming
+      // -------------------------------------------------------------
+      // A transfer that never arrives had no ending at all: IN TRANSIT for ever, the sending
+      // branch's stock deducted, and neither branch able to count the difference. The table has
+      // always allowed CANCELLED and nothing could write it.
+      async function cancelTransfer() {
+        const outstanding = U.round2(Number(summary.unitsSent || 0) - Number(summary.unitsReceived || 0));
+        const reason = await ui.promptDialog({
+          title: `Cancel ${t.reference || 'this transfer'}`,
+          label: 'Why is it being cancelled?',
+          hint: `${U.qty(outstanding)} unit(s) go back to ${t.from_branch_name || 'the sending branch'} and are sellable there again. The reason is recorded against the transfer and on the audit trail.`,
+          placeholder: 'e.g. the truck broke down and the goods went back to the warehouse',
+          multiline: true,
+          required: true,
+        });
+        if (reason == null) return;
+        try {
+          const out = await SR.api.post(`/api/transfers/${encodeURIComponent(id)}/cancel`, { reason });
+          ui.ok(out.message || 'Transfer cancelled.');
+          await load();
+        } catch (err) { ui.apiError(err); }
+      }
+
+      // -------------------------------------------------------------
       // BOOK IN
       // -------------------------------------------------------------
       function bookIn() {
         const form = ui.h('div', { class: 'stack' });
-        form.appendChild(ui.h('p', {}, `Count what actually arrived. Every line defaults to "all of it" — change the ones that arrived short, because the difference is recorded against the line and cannot be added later.`));
+        form.appendChild(ui.h('p', {}, isPartial
+          ? 'This transfer arrived in part. Every line defaults to what is STILL OUTSTANDING — the balance between what was sent and what has already been booked in. Book in what arrived this time; the transfer closes when every line is complete.'
+          : 'Count what actually arrived. Every line defaults to "all of it" — change the ones that arrived short, because the difference is recorded against the line and cannot be added later.'));
 
         const table = ui.h('div', { class: 'table-wrap' });
         const tbl = ui.h('table', { class: 'data' });
         const thead = ui.h('thead', {}, ui.h('tr', {},
           ui.h('th', {}, 'Product'), ui.h('th', { style: { textAlign: 'right' } }, 'Sent'),
-          ui.h('th', { style: { textAlign: 'right' } }, 'Arrived'), ui.h('th', {}, 'If short, what happened')));
+          ui.h('th', { style: { textAlign: 'right' } }, 'Already in'),
+          ui.h('th', { style: { textAlign: 'right' } }, 'Arrived now'), ui.h('th', {}, 'If short, what happened')));
         tbl.appendChild(thead);
         const tbody = ui.h('tbody', {});
 
         for (const it of items) {
+          const alreadyOn = Number(it.quantity_received || 0);
+          const due = outstandingOf(it);
           const qtyInput = ui.h('input', {
-            type: 'number', step: '0.0001', min: '0',
+            type: 'number', step: '0.0001', min: '0', max: String(due),
             value: received.get(String(it.id)),
             style: { width: '110px', textAlign: 'right' },
           });
@@ -398,16 +514,17 @@
           noteInput.addEventListener('input', () => { notes.set(String(it.id), noteInput.value.trim()); });
           qtyInput.addEventListener('input', () => {
             received.set(String(it.id), qtyInput.value);
-            const short = Number(qtyInput.value) < Number(it.quantity_sent_base);
+            const short = Number(qtyInput.value) < outstandingOf(it);
             noteInput.disabled = !short;
             if (!short) notes.delete(String(it.id));
             paintTotals();
           });
-          noteInput.disabled = Number(received.get(String(it.id))) >= Number(it.quantity_sent_base);
+          noteInput.disabled = Number(received.get(String(it.id))) >= outstandingOf(it);
 
           tbody.appendChild(ui.h('tr', {},
             ui.h('td', {}, ui.h('div', { style: { fontWeight: '600' } }, it.product_name || '—'), ui.h('div', { class: 'hint' }, it.batch_no ? `batch ${it.batch_no}` : '')),
             ui.h('td', { style: { textAlign: 'right' } }, U.qty(it.quantity_sent_base)),
+            ui.h('td', { style: { textAlign: 'right' } }, alreadyOn ? U.qty(alreadyOn) : ui.h('span', { class: 'hint' }, '—')),
             ui.h('td', { style: { textAlign: 'right' } }, qtyInput),
             ui.h('td', {}, noteInput)));
         }
@@ -417,17 +534,18 @@
 
         const totals = ui.h('div', { class: 'kpi-grid' });
         function paintTotals() {
-          let sent = 0; let got = 0; let shortLines = 0;
+          let due = 0; let got = 0; let shortLines = 0;
           for (const it of items) {
-            sent += Number(it.quantity_sent_base || 0);
+            const line = outstandingOf(it);
+            due += line;
             const r = Number(received.get(String(it.id)));
             got += Number.isFinite(r) ? r : 0;
-            if (Number.isFinite(r) && r < Number(it.quantity_sent_base)) shortLines += 1;
+            if (Number.isFinite(r) && r < line) shortLines += 1;
           }
           totals.replaceChildren(
-            ui.kpi({ label: 'Sent', value: U.qty(sent) }),
-            ui.kpi({ label: 'Arrived', value: U.qty(got) }),
-            ui.kpi({ label: 'Missing', value: U.qty(U.round2(sent - got)), tone: shortLines ? 'bad' : null, foot: shortLines ? `${shortLines} line(s) short` : 'nothing missing' }));
+            ui.kpi({ label: isPartial ? 'Outstanding' : 'Sent', value: U.qty(due) }),
+            ui.kpi({ label: 'Arrived now', value: U.qty(got) }),
+            ui.kpi({ label: 'Still short', value: U.qty(U.round2(due - got)), tone: shortLines ? 'bad' : null, foot: shortLines ? `${shortLines} line(s) short` : 'nothing missing' }));
         }
         paintTotals();
         form.appendChild(totals);
@@ -446,16 +564,22 @@
                   const raw = received.get(String(it.id));
                   const qty = Number(raw);
                   if (!Number.isFinite(qty) || qty < 0) { ui.warn(`"${raw}" is not a quantity.`); return; }
-                  if (qty > Number(it.quantity_sent_base)) {
-                    ui.warn(`${it.product_name}: you cannot receive more than was sent. Extra goods belong on a separate transfer so the difference is visible.`);
+                  const due = outstandingOf(it);
+                  if (qty > due) {
+                    ui.warn(`${it.product_name}: ${U.qty(qty)} cannot be booked in — only ${U.qty(due)} is still outstanding on that line${Number(it.quantity_received || 0) ? ` (${U.qty(it.quantity_received)} of the ${U.qty(it.quantity_sent_base)} was booked in earlier)` : ''}. Extra goods belong on a separate transfer so the difference is visible.`);
                     return;
                   }
-                  payload.push({ item_id: it.id, quantity_received_base: qty, note: qty < Number(it.quantity_sent_base) ? (notes.get(String(it.id)) || null) : null });
+                  payload.push({ item_id: it.id, quantity_received_base: qty, note: qty < due ? (notes.get(String(it.id)) || null) : null });
                 }
                 try {
                   const out = await SR.api.post(`/api/transfers/${encodeURIComponent(id)}/receive`, { items: payload });
                   modal.close();
-                  ui.ok(out.message || 'Transfer received.');
+                  // THE ANSWER SAYS WHICH STATE THE TRANSFER IS IN NOW, and the screen uses it
+                  // rather than assuming: a short booking leaves it open for the balance, and
+                  // saying "received" over a transfer that is still coming would be wrong in the
+                  // one place it matters most — the message the person at the gate reads.
+                  if (out.status === 'PARTIALLY_RECEIVED') ui.warn(out.message || 'Part of the transfer is booked in; the balance is still outstanding.');
+                  else ui.ok(out.message || 'Transfer received.');
                   await load();
                 } catch (err) { ui.apiError(err); }
               }),

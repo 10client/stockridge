@@ -29,7 +29,7 @@ const { atLeast } = require('../../domain/roles');
 // records a broken TV — answered 500 "valid is not defined".
 const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, requireField, numField, strField, boolField, dateRange, valid, searchTerm } = require('../lib/respond');
 const { toBaseUnits, buildLadder, validateLadder, weightedAverageCost } = require('../../domain/uom');
-const { round2 } = require('../../domain/money');
+const { round2, roundTo } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays, watToUtc } = require('../../domain/time');
 const { canAdjustStock } = require('../../domain/planLimits');
@@ -565,6 +565,23 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // TRANSFERS
   // -------------------------------------------------------------------
+  // THE STATUS VOCABULARY OF A STOCK TRANSFER, taken from the table's own CHECK constraint in
+  // `schema/migrations/0001_initial_schema.sql`:
+  //
+  //     status TEXT NOT NULL CHECK (status IN ('INITIATED','IN_TRANSIT','PARTIALLY_RECEIVED',
+  //                                             'RECEIVED','CANCELLED'))
+  //
+  // It is declared here ONCE and answered to the client in the list envelope, because the screen
+  // and the server disagreeing about these five words is not a cosmetic problem: the screen
+  // compared every transfer against `'SENT'`, a status nothing has ever written, so its
+  // "waiting to be booked in" card was always empty, its status filter offered a status that
+  // cannot exist, and the Book-in button was hidden from every receiving branch in the product.
+  // That is the bug this constant exists to make impossible — the client's only copy of the
+  // vocabulary is the one the server sends it.
+  const TRANSFER_STATUSES = ['INITIATED', 'IN_TRANSIT', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
+  /** Statuses a branch may still book in: sent, or part of it already booked. */
+  const TRANSFER_RECEIVABLE = ['IN_TRANSIT', 'PARTIALLY_RECEIVED'];
+
   app.get(`${base}/transfers`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
@@ -583,11 +600,26 @@ function mount(app, base = '/api') {
     // "this branch's transfer", which is the same rule the scope clause above uses.
     const nbf = await branchFilter(db, ctx, { alias: 't', column: 'from_branch_id', also: ['to_branch_id'], nullMeansEveryBranch: false });
     if (nbf.sql) { where.push(nbf.sql); params.push(...nbf.params); }
-    if (status) { where.push('t.status = ?'); params.push(String(status).toUpperCase()); }
+    // AN UNKNOWN STATUS IS REFUSED, NOT ANSWERED WITH AN EMPTY LIST. A filter that silently
+    // matches nothing reads as "there are none", which is the opposite of "you asked for
+    // something that does not exist" — and that is how a screen ends up telling a shop it has
+    // no transfers in transit when it has eleven.
+    if (status) {
+      const asked = String(status).toUpperCase();
+      if (!TRANSFER_STATUSES.includes(asked)) {
+        throw new HttpError(`“${status}” is not a transfer status. This system has: ${TRANSFER_STATUSES.join(', ')}.`, { status: 400, code: 'UNKNOWN_STATUS', fields: { status: `One of ${TRANSFER_STATUSES.join(', ')}.` } });
+      }
+      where.push('t.status = ?'); params.push(asked);
+    }
     const rows = await db.all(`SELECT t.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
           fbm.name AS from_business_name, tbm.name AS to_business_name,
           u.full_name AS initiated_by_name,
-          (SELECT COUNT(*) FROM stock_transfer_items i WHERE i.transfer_id = t.id AND i.is_deleted = 0) AS item_count
+          (SELECT COUNT(*) FROM stock_transfer_items i WHERE i.transfer_id = t.id AND i.is_deleted = 0) AS item_count,
+          -- HOW MUCH IS STILL COMING. The receiving branch books in part of a delivery and needs
+          -- to see what is left without opening every transfer one at a time; these two are the
+          -- same figures the detail screen shows, computed the same way.
+          (SELECT COALESCE(SUM(i.quantity_sent_base),0) FROM stock_transfer_items i WHERE i.transfer_id = t.id AND i.is_deleted = 0) AS units_sent,
+          (SELECT COALESCE(SUM(i.quantity_received),0) FROM stock_transfer_items i WHERE i.transfer_id = t.id AND i.is_deleted = 0) AS units_received
         FROM stock_transfers t
         JOIN branches fb ON fb.id = t.from_branch_id
         JOIN branches tb ON tb.id = t.to_branch_id
@@ -595,7 +627,7 @@ function mount(app, base = '/api') {
         LEFT JOIN businesses tbm ON tbm.id = t.to_business_id
         LEFT JOIN users u ON u.id = t.initiated_by
         WHERE ${where.join(' AND ')} ORDER BY t.initiated_at DESC LIMIT ? OFFSET ?`, [...params, limit, offset]);
-    ctx.json(listResponse(rows, { limit, offset }));
+    ctx.json({ ...listResponse(rows, { limit, offset }), statuses: TRANSFER_STATUSES, receivable: TRANSFER_RECEIVABLE });
   });
 
   /**
@@ -655,6 +687,11 @@ function mount(app, base = '/api') {
     const received = round2(items.reduce((a, i) => a + Number(i.quantity_received || 0), 0));
     ctx.json({
       ok: true, transfer, items,
+      // The same vocabulary the list answers: a deep link (a bookmarked transfer, a link in a
+      // message) renders without ever calling the list route, and it must not fall back to a
+      // vocabulary this file guessed.
+      statuses: TRANSFER_STATUSES,
+      receivable: TRANSFER_RECEIVABLE,
       summary: {
         lines: items.length,
         unitsSent: sent,
@@ -798,7 +835,15 @@ function mount(app, base = '/api') {
     const id = String(ctx.req.param('id'));
     const transfer = await db.first('SELECT * FROM stock_transfers WHERE id = ? AND is_deleted = 0', [id]);
     if (!transfer) throw new HttpError('That transfer does not exist.', { status: 404, code: 'TRANSFER_NOT_FOUND' });
-    if (transfer.status === 'RECEIVED') throw new HttpError('That transfer has already been received.', { status: 409, code: 'ALREADY_RECEIVED' });
+    if (transfer.status === 'RECEIVED') throw new HttpError('That transfer has already been received in full.', { status: 409, code: 'ALREADY_RECEIVED' });
+    if (transfer.status === 'CANCELLED') throw new HttpError('That transfer was cancelled — the stock went back to the sending branch. It cannot be booked in now.', { status: 409, code: 'TRANSFER_CANCELLED' });
+    // A TRANSFER ARRIVES IN LOADS. Being strict about `IN_TRANSIT` alone meant a delivery that
+    // came in two trips could never be closed: the first booking left the transfer PARTIALLY
+    // RECEIVED and the second was refused. Both statuses are bookable, and the balance per line
+    // is what the second booking carries.
+    if (!TRANSFER_RECEIVABLE.includes(String(transfer.status))) {
+      throw new HttpError(`Transfer ${transfer.reference} is ${String(transfer.status).toLowerCase().replace(/_/g, ' ')}, which cannot be booked in. Only a transfer that is in transit or partly received can be.`, { status: 409, code: 'NOT_RECEIVABLE' });
+    }
 
     const to = await db.first('SELECT * FROM branches WHERE id = ?', [transfer.to_branch_id]);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -823,22 +868,39 @@ function mount(app, base = '/api') {
 
     let receivedValue = 0;
     let discrepancies = 0;
+    // `discrepancies` counts lines that arrived short THIS time (what the receipt message talks
+    // about); `shortfallRemaining` counts lines that are STILL short once this booking is
+    // written, which is what decides whether the transfer is RECEIVED or PARTIALLY_RECEIVED.
+    let shortfallRemaining = 0;
+    // WHAT THE TRANSFER IS WORTH NOW: every line's booked-in quantity (including anything booked
+    // on an earlier delivery) at its transfer price.
+    let receivedValueTotal = 0;
     await db.transaction(async (tx) => {
       for (const item of items) {
         const override = received ? received.find((r) => String(r.item_id || r.id) === String(item.id)) : null;
-        const qtyBase = override ? numField(override.quantity_received_base != null ? override.quantity_received_base : override.quantity_received, { field: 'Received quantity', min: 0, places: 4 }) : Number(item.quantity_sent_base);
-        if (qtyBase > Number(item.quantity_sent_base)) {
-          throw new HttpError(`You cannot receive more than was sent (${qtyBase} against ${item.quantity_sent_base}). If extra goods arrived, they belong on a separate transfer so the discrepancy is visible.`, { status: 400, code: 'OVER_RECEIPT' });
+        // WHAT IS STILL OUTSTANDING ON THIS LINE. `quantity_received` holds what has ALREADY been
+        // booked in — 0 on the first delivery, part of the line after a short one. The default is
+        // therefore the REMAINDER, not the whole sent quantity: defaulting to the sent quantity
+        // would count the first delivery twice and invent stock that never arrived.
+        const alreadyOn = Number(item.quantity_received) || 0;
+        const outstanding = Math.max(0, roundTo(Number(item.quantity_sent_base) - alreadyOn, 4));
+        const qtyBase = override ? numField(override.quantity_received_base != null ? override.quantity_received_base : override.quantity_received, { field: 'Received quantity', min: 0, places: 4 }) : outstanding;
+        if (qtyBase > outstanding) {
+          throw new HttpError(`You cannot book in more than is still outstanding on this line: ${qtyBase} given${alreadyOn ? `, and ${alreadyOn} of the ${item.quantity_sent_base} already booked in` : ''}, leaving ${outstanding}. If extra goods arrived, they belong on a separate transfer so the discrepancy is visible.`, { status: 400, code: 'OVER_RECEIPT' });
         }
         const product = productById.get(String(item.product_id)) || null;
         const unitTransferPrice = Number(item.unit_transfer_price) || Number(item.unit_cost) || 0;
+        const lineTotal = roundTo(alreadyOn + qtyBase, 4);
         receivedValue = round2(receivedValue + qtyBase * unitTransferPrice);
-        if (qtyBase < Number(item.quantity_sent_base)) discrepancies += 1;
+        receivedValueTotal = round2(receivedValueTotal + lineTotal * unitTransferPrice);
+        const stillShort = lineTotal < Number(item.quantity_sent_base);
+        if (stillShort) discrepancies += 1;
+        if (stillShort) shortfallRemaining += 1;
 
         tx.queue(`UPDATE stock_transfer_items SET quantity_received = ?, received_at = datetime('now'), received_by = ?,
             discrepancy_note = ?, updated_at = datetime('now') WHERE id = ?`, [
-          qtyBase, String(user.id),
-          qtyBase < Number(item.quantity_sent_base) ? (override && override.note ? String(override.note).slice(0, 500) : `Received ${qtyBase} of ${item.quantity_sent_base}`) : null,
+          lineTotal, String(user.id),
+          stillShort ? (override && override.note ? String(override.note).slice(0, 500) : `Received ${lineTotal} of ${item.quantity_sent_base}`) : null,
           String(item.id),
         ]);
 
@@ -859,9 +921,18 @@ function mount(app, base = '/api') {
         ]);
         tx.queue('UPDATE stock_transfer_items SET to_batch_id = ? WHERE id = ?', [toBatchId, String(item.id)]);
       }
-      tx.queue(`UPDATE stock_transfers SET status = 'RECEIVED', received_by = ?, received_at = datetime('now'),
+      // PARTIALLY_RECEIVED IS A REAL STATE, NOT A TYPO IN THE SCHEMA. The first booking of a
+      // delivery that arrived short leaves the transfer open so the rest can be booked when it
+      // turns up; only a booking that closes every line marks it RECEIVED. Writing RECEIVED on a
+      // short delivery made the shortfall invisible in every list and filter in the product.
+      // `transfer_price` HOLDS THE VALUE THAT ACTUALLY MOVED, so a second booking REPLACES it
+      // with the cumulative figure rather than adding to it or leaving the dispatched total in
+      // place: a delivery that arrived half full did not move the value of the whole manifest.
+      // `received_at` is stamped on every booking (that is what "last movement" means), and the
+      // status is what tells a reader whether the transfer is closed.
+      tx.queue(`UPDATE stock_transfers SET status = ?, received_by = ?, received_at = datetime('now'),
           transfer_price = ?, updated_at = datetime('now') WHERE id = ?`,
-      [String(user.id), receivedValue, id]);
+      [shortfallRemaining ? 'PARTIALLY_RECEIVED' : 'RECEIVED', String(user.id), receivedValueTotal, id]);
     });
 
     await recordFromCtx(ctx, {
@@ -869,11 +940,109 @@ function mount(app, base = '/api') {
       after: { reference: transfer.reference, receivedValue, discrepancies },
     });
     void accountIds;
+    const status = shortfallRemaining ? 'PARTIALLY_RECEIVED' : 'RECEIVED';
     ctx.json({
-      ok: true, message: `Transfer ${transfer.reference} received at ${to.name}.${discrepancies ? ` ${discrepancies} line(s) arrived short — the discrepancy is recorded against them.` : ''}`,
+      ok: true,
+      status,
+      message: shortfallRemaining
+        ? `Part of transfer ${transfer.reference} booked in at ${to.name}: ${shortfallRemaining} line(s) are still outstanding. Book the rest in here when it arrives — the balance on each line is what is left, not what was sent.`
+        : `Transfer ${transfer.reference} is now fully received at ${to.name}.${discrepancies ? ` ${discrepancies} line(s) arrived short — the discrepancy is recorded against them.` : ''}`,
       discrepancies, receivedValue,
     });
   });
+
+  /**
+   * Cancel a transfer that is not going to be received.
+   *
+   * THE SCHEMA HAS ALWAYS ALLOWED `CANCELLED` and nothing could ever write it: the list screen
+   * offered it as a filter, and a transfer that never arrived had no ending — it sat IN TRANSIT
+   * for ever, with the sending branch's stock deducted and neither branch able to count it. That
+   * is a stock hole with no way to close it.
+   *
+   * Cancelling GIVES THE STOCK BACK to the branch it left: the goods are on a truck that turned
+   * round, or a manifest that was never fulfilled. It returns only what has NOT been booked in
+   * (a partly received transfer returns the outstanding balance, because the rest really is at the
+   * receiving branch and cancelling it would invent stock on the sending side).
+   *
+   * Authority: the SENDING branch may cancel its own dispatch (MANAGER+), and an owner may cancel
+   * anything — the receiving branch cannot, because a receiver's answer to "it never came" is to
+   * leave it outstanding, not to rewrite the sender's records.
+   */
+  app.post(`${base}/transfers/:id/cancel`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can cancel a transfer.', { status: 403, code: 'ROLE_REQUIRED' });
+    const body = await ctx.req.json().catch(() => ({}));
+    const reason = strField(body.reason, { field: 'Reason', maxLength: 300 });
+    const id = String(ctx.req.param('id'));
+    const transfer = await db.first('SELECT * FROM stock_transfers WHERE id = ? AND is_deleted = 0', [id]);
+    if (!transfer) throw new HttpError('That transfer does not exist.', { status: 404, code: 'TRANSFER_NOT_FOUND' });
+    if (transfer.status === 'RECEIVED') {
+      throw new HttpError(`Transfer ${transfer.reference} has already been received in full — there is nothing left to cancel. Cancel it before it arrives, or record a return at the receiving branch.`, { status: 409, code: 'ALREADY_RECEIVED' });
+    }
+    if (transfer.status === 'CANCELLED') throw new HttpError(`Transfer ${transfer.reference} was already cancelled.`, { status: 409, code: 'ALREADY_CANCELLED' });
+
+    // ONLY THE SENDING END (or an owner) CAN CALL IT BACK.
+    const scope = ctx.get('scope');
+    const fromBranchId = String(transfer.from_branch_id);
+    const mayCancel = atLeast(user.role, 'OWNER') || String(user.branch_id || '') === fromBranchId
+      || (scope && scope.branchIds && [...scope.branchIds].some((b) => String(b) === fromBranchId));
+    if (!mayCancel) {
+      const from = await db.first('SELECT name FROM branches WHERE id = ?', [fromBranchId]);
+      throw new HttpError(`Only ${(from && from.name) || 'the sending branch'} can cancel this transfer — the stock left there and it is theirs until ${transfer.reference} is booked in. If it never arrived, ask them to cancel it.`, { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+    }
+
+    const items = await db.all('SELECT * FROM stock_transfer_items WHERE transfer_id = ? AND is_deleted = 0 ORDER BY product_id', [id]);
+    const productById = new Map();
+    for (const it of items) {
+      if (!productById.has(String(it.product_id))) {
+        productById.set(String(it.product_id), await db.first('SELECT * FROM products WHERE id = ?', [String(it.product_id)]));
+      }
+    }
+    const from = await db.first('SELECT * FROM branches WHERE id = ?', [fromBranchId]);
+    let returnedUnits = 0;
+    let returnedValue = 0;
+    await db.transaction(async (tx) => {
+      for (const item of items) {
+        const alreadyOn = Number(item.quantity_received) || 0;
+        const comingBack = Math.max(0, roundTo(Number(item.quantity_sent_base) - alreadyOn, 4));
+        if (!(comingBack > 0)) continue;
+        const product = productById.get(String(item.product_id)) || null;
+        const unitTransferPrice = Number(item.unit_transfer_price) || Number(item.unit_cost) || 0;
+        returnedUnits = roundTo(returnedUnits + comingBack, 4);
+        returnedValue = round2(returnedValue + comingBack * unitTransferPrice);
+        // BACK AS ITS OWN BATCH, exactly as the receiving branch does: the sending branch's cost
+        // history stays readable, and the goods are sellable again from the moment this commits.
+        const backBatchId = newId();
+        tx.queue(`INSERT INTO stock_batches (
+            id, branch_id, business_id, product_id, variant_id, batch_no, cost_price_per_unit, selling_price_per_unit,
+            quantity, quantity_reserved, initial_quantity, received_at, received_by, status, warehouse_zone, notes,
+            created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,0,?, datetime('now'), ?, 'ACTIVE', 'Returned from transfer', ?, datetime('now'), datetime('now'))`, [
+          backBatchId, String(from.id), String(transfer.from_business_id), item.product_id, item.variant_id,
+          transfer.reference, unitTransferPrice,
+          product ? Number(product.selling_price) : round2(unitTransferPrice * 1.3),
+          comingBack, comingBack, String(user.id),
+          `Cancelled transfer ${transfer.reference}${reason ? ` — ${reason}` : ''}; stock returned to ${from.name}`,
+        ]);
+        tx.queue(`UPDATE stock_transfer_items SET from_batch_id = ?, discrepancy_note = ?, updated_at = datetime('now') WHERE id = ?`,
+          [backBatchId, `Cancelled: ${comingBack} of ${item.quantity_sent_base} returned to ${from.name}${reason ? ` — ${reason}` : ''}`, String(item.id)]);
+      }
+      tx.queue(`UPDATE stock_transfers SET status = 'CANCELLED', notes = COALESCE(?, notes), updated_at = datetime('now') WHERE id = ?`,
+        [reason ? `Cancelled by ${user.full_name || user.username}: ${reason}` : null, id]);
+    });
+
+    await recordFromCtx(ctx, {
+      action: 'TRANSFER_CANCELLED', entityType: 'STOCK_TRANSFER', entityId: id, branchId: from.id, businessId: transfer.from_business_id,
+      after: { reference: transfer.reference, reason: reason || null, returnedUnits, returnedValue, wasStatus: transfer.status },
+    });
+    ctx.json({
+      ok: true,
+      status: 'CANCELLED',
+      returnedUnits, returnedValue,
+      message: `${transfer.reference} cancelled. ${returnedUnits} unit(s) worth ₦${returnedValue.toLocaleString('en-NG')} are back on the shelf at ${from.name} and sellable again.`,
+    });
+  }));
 
   // -------------------------------------------------------------------
   // STOCKTAKES
