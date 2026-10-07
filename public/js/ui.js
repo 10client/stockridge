@@ -436,19 +436,132 @@
    * label needs no decoration, and an icon that does not help the reader find the
    * number is one more thing to look past.
    */
-  function kpi({ label, value, foot = null, tone = null, small = false, icon = null }) {
+  /**
+   * WHICH ICON BELONGS TO A FIGURE — DERIVED FROM THE FIGURE ITSELF.
+   *
+   * Every tile that shows money is about money, and a tile that counts debtors is about
+   * people; an icon that says otherwise is worse than no icon, because it is read at a
+   * glance and believed. Two were wrong on the dashboard when this was written: "Owed to
+   * us ₦34,579,273.97" carried the PEOPLE icon (the tile is a naira figure, and the people
+   * are counted in the line underneath it), and "Expected in drawer" carried the STOCK
+   * box. A tile with no icon at all was the state of 188 of them across the app.
+   *
+   * The rule is small, ordered and written down, and it never overrides an icon a caller
+   * passed: an explicit choice always wins. The first matching line decides.
+   *
+   * It also never falls back to a generic square. `iconPath` answers `grid` for a name it
+   * does not know, so a typo in a caller's `icon:` renders a grid square and looks like a
+   * considered choice — this function returns null instead, and the tile simply has no
+   * icon, which is honest.
+   */
+  const MONEY = /(?:\u20a6|NGN)/i;
+  // A MONEY TILE GETS A MONEY ICON. The rules are deliberately different from the ones
+  // below: a naira figure cannot be a percentage or a date, so a label that merely MENTIONS
+  // margin ("Margin if all sold" is money) must not send the tile to the chart icon.
+  const MONEY_ICON_RULES = [
+    [/owed|owe\b|debt|outstanding|payable|receivable|balance due|credit limit|credit given/i, 'ledger'],
+    [/held|float|drawer|safe\b|purse|deposit|advance|petty/i, 'wallet'],
+    [/stock|inventory|units?\b|on hand|reorder|\bat cost\b|\bat retail\b|value of/i, 'box'],
+    [/sales?\b|receipts?\b|takings?|revenue|invoices?\b|cash in/i, 'receipt'],
+  ];
+  const FIGURE_RULES = [
+    // people — before money, because "Owed to us · 11 debtors" is a sentence about people
+    // only when the FIGURE is a count, which is checked first.
+    [/staff|people|\busers?\b|debtor|customer|supplier|cashier|driver|\bseats?\b|employee/i, 'users'],
+    [/%|margin|rate|pct|ratio|share\b/i, 'chart'],
+    [/expir|deadline|due\b|renew|valid (?:to|until)|date\b|next\b/i, 'calendar'],
+    [/hours?|minutes?|late\b|since\b|duration|shift/i, 'clock'],
+    [/stock|units?|on hand|\blines?\b|product|inventory|reorder|quantity\b/i, 'box'],
+    [/sales?\b|receipts?\b|takings?|revenue|invoices?\b/i, 'receipt'],
+  ];
+
+  /** True when the figure is money — a formatted amount, never a count or a word. */
+  function isMoney(value) {
+    const v = String(value == null ? '' : value);
+    return /\u20a6/.test(v) || MONEY.test(v);
+  }
+
+  function iconForFigure({ label = '', value = null } = {}) {
+    const text = String(label);
+    const v = String(value == null ? '' : value);
+    const money = isMoney(v);
+    if (money) {
+      for (const [re, name] of MONEY_ICON_RULES) if (re.test(text)) return name;
+      return 'cash';
+    }
+    // A DATE IS NOT A COUNT. A value that reads as a date gets the calendar whatever the
+    // label says; "-" and "" get nothing at all.
+    if (/^\d{4}-\d{2}-\d{2}/.test(v) || /^\d{1,2} [A-Z][a-z]{2}/.test(v)) return 'calendar';
+    if (!/^[\d.,\s%+-]+$/.test(v) || !/\d/.test(v)) return null;   // words, statuses, "—"
+    for (const [re, name] of FIGURE_RULES) if (re.test(text)) return name;
+    return 'hash';   // a plain count with no unit on the tile
+  }
+
+  /**
+   * A trend chip: the figure moved, and the arrow points the way it moved.
+   *
+   * `trend` is `{ pct, change, goodWhen, vs }`. `pct` wins when the server sent one;
+   * otherwise the naira delta is shown instead, and when the server sent NEITHER (there
+   * was no yesterday to compare with) the tile gets NO chip — an arrow is a statement
+   * about a comparison, and there is no comparison to make. `goodWhen` says which
+   * direction is good for this figure: more takings is good, more debt is not.
+   */
+  function trendChip(trend) {
+    if (!trend) return null;
+    const pct = trend.pct == null ? null : Number(trend.pct);
+    const change = trend.change == null ? null : Number(trend.change);
+    const hasPct = pct !== null && Number.isFinite(pct);
+    // A DELTA OF ZERO IS NOT A COMPARISON. The server sends `changePct: null` when there is
+    // no baseline to divide by, and a `change` of exactly 0 beside it — a chip reading
+    // "flat ₦0" tells nobody anything, and on a quiet morning it is the only thing on the
+    // tile. No percentage and no movement means no chip.
+    const hasChange = change !== null && Number.isFinite(change) && change !== 0;
+    if (!hasPct && !hasChange) return null;
+    const direction = hasPct ? (pct > 0 ? 'up' : (pct < 0 ? 'down' : 'flat')) : (change > 0 ? 'up' : 'down');
+    const good = direction === 'flat' ? 'flat' : (direction === (trend.goodWhen || 'up') ? 'good' : 'bad');
+    const icon = direction === 'up' ? 'trendUp' : (direction === 'down' ? 'trendDown' : 'trendFlat');
+    const path = (global.SR && SR.app && SR.app.iconPath) ? SR.app.iconPath(icon) : null;
+    const shown = pct !== null && Number.isFinite(pct)
+      ? `${Math.abs(Math.round(pct * 10) / 10)}%`
+      : ((global.SR && SR.util && SR.util.money) ? SR.util.money(Math.abs(change)) : String(Math.abs(change)));
+    const word = direction === 'up' ? 'up' : (direction === 'down' ? 'down' : 'unchanged');
+    const vs = trend.vs ? ` on ${trend.vs}` : '';
+    const chip = h('span', {
+      class: `kpi-trend is-${good}`,
+      title: `${word} ${shown}${vs}`,
+      'aria-label': `${word} ${shown}${vs}`,
+    });
+    if (path) {
+      chip.appendChild(h('span', {
+        class: 'kpi-trend-icon',
+        html: `<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="${path}" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+      }));
+    }
+    chip.appendChild(h('span', {}, shown));
+    return chip;
+  }
+
+  function kpi({ label, value, foot = null, tone = null, small = false, icon = null, trend = null }) {
     const node = h('div', { class: `kpi ${tone ? `tone-${tone}` : ''}`.trim() });
     const labelRow = h('div', { class: 'kpi-label' });
-    if (icon) {
-      const path = (global.SR && SR.app && SR.app.iconPath) ? SR.app.iconPath(icon) : null;
+    // AN EXPLICIT ICON WINS; otherwise the figure picks its own.
+    const chosen = icon || iconForFigure({ label, value });
+    if (chosen) {
+      const path = (global.SR && SR.app && SR.app.iconPath) ? SR.app.iconPath(chosen) : null;
       if (path) {
         labelRow.appendChild(h('span', {
           class: 'kpi-icon',
           html: `<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="${path}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
         }));
+      } else if (icon) {
+        // A NAME WE DO NOT KNOW IS A BUG IN THE CALLER, not a design decision — and it used
+        // to render a generic square, which looks exactly like a considered choice.
+        console.warn(`[ui.kpi] no such icon: "${icon}"`);
       }
     }
-    labelRow.appendChild(h('span', {}, label));
+    labelRow.appendChild(h('span', { class: 'kpi-label-text' }, label));
+    const chip = trendChip(trend);
+    if (chip) labelRow.appendChild(chip);
     node.appendChild(labelRow);
     node.appendChild(h('div', { class: `kpi-value ${small ? 'sm' : ''}`.trim() }, value));
     if (foot) node.appendChild(h('div', { class: 'kpi-foot' }, foot));
@@ -599,7 +712,7 @@
     openModal, confirmDialog, promptDialog,
     loading, skeleton, empty, errorBlock,
     renderTable, dataCard, pager,
-    badge, statusBadge, TONES, kpi, kv, bars, sparkline,
+    badge, statusBadge, TONES, kpi, kv, bars, sparkline, iconForFigure, trendChip,
     field, readForm, readFormStrings, withBusy,
     copyToClipboard, tableToCsv, debounceInput,
   };

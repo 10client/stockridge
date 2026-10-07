@@ -112,6 +112,14 @@
     shield: 'M12 3l8 3v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10V6zM9 12l2 2 4-4',
     refresh: 'M20 11A8 8 0 005.6 6.6L4 8M4 13a8 8 0 0014.4 4.4L20 16M4 4v4h4M20 20v-4h-4',
     user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21v-1a6 6 0 016-6h4a6 6 0 016 6v1',
+    // ARROWS FOR A FIGURE THAT MOVED. A trend is a fact about a number, and the number it
+    // is a fact about is usually one line up: the arrow has to be the one the figure
+    // actually went, or it is decoration that lies at a glance.
+    trendUp: 'M12 19V6M5 12l7-6 7 6',
+    trendDown: 'M12 5v13M19 12l-7 6-7-6',
+    trendFlat: 'M5 12h14',
+    // A COUNT WITH NO UNIT: transactions, lines, seats, claims.
+    hash: 'M5 9h14M5 15h14M10 4l-2 16M16 4l-2 16',
   };
 
   function iconPath(name) { return ICONS[name] || ICONS.grid; }

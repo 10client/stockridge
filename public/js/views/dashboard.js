@@ -172,17 +172,20 @@
       const until = today.vsYesterday || null;
       // "up 12% on yesterday" — the number the server sends is `changePct`, inside
       // `vsYesterday`. It sends null rather than 0 when there is no yesterday to
-      // compare with, which is not the same statement as "no change".
-      const change = until && until.changePct != null
-        ? ` · ${until.changePct >= 0 ? 'up' : 'down'} ${Math.abs(until.changePct)}% on yesterday`
-        : (until ? ` · ₦${U.amount(Math.abs(until.change))} ${until.change >= 0 ? 'up' : 'down'} on yesterday` : '');
+      // compare with, which is not the same statement as "no change" — and that is why
+      // the comparison is now an ARROW rather than a sentence: the arrow is drawn from
+      // the sign of the figure the server sent, and when the server sent neither a
+      // percentage nor a delta there is no arrow at all, because there is nothing to
+      // compare against.
+      const trend = until ? { pct: until.changePct, change: until.change, goodWhen: 'up', vs: 'yesterday' } : null;
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({
           label: 'Takings today',
           value: U.money(today.gross),
-          foot: `${U.plural(today.count || 0, 'sale')}${change}`,
+          foot: `${U.plural(today.count || 0, 'sale')}${until ? ' · vs yesterday' : ''}`,
           tone: 'good',
           icon: 'cash',
+          trend,
         }),
         ui.kpi({
           // THE DATE RANGE IS THE TITLE, because "Sales this period" beside "Takings
@@ -191,7 +194,9 @@
           label: period.from ? `Sales ${U.date(period.from)} → ${U.date(period.to)}` : 'Sales this period',
           value: U.money(period.grossRevenue),
           foot: period.sales != null ? `${U.plural(period.sales, 'sale')} · ${U.money(period.netRevenue)} after VAT` : null,
-          icon: 'chart',
+          // MONEY IN ACROSS A WINDOW IS A SUM OF RECEIPTS, not a bar chart. The tile is read
+          // for the figure; the icon has to name the thing the figure is.
+          icon: 'receipt',
         }),
         ui.kpi({
           label: 'Stock at cost',
@@ -216,7 +221,10 @@
             + (Number(debtors.likelyBad) ? ` · ${U.money(debtors.likelyBad)} over 90 days` : ''),
           tone: Number(debtors.likelyBad) > 0 ? 'bad' : (Number(debtors.overdueInvoices) > 0 ? 'warn' : null),
           small: true,
-          icon: 'users',
+          // THE FIGURE IS NAIRA, NOT PEOPLE. This carried the users icon — "Owed to us
+          // ₦34,579,273.97" is a receivable, and the people are the 11 debtors counted on the
+          // line beneath it. The debtor LEDGER is what the money is.
+          icon: 'ledger',
         })));
 
       // ---- change the shop is holding for customers
@@ -264,7 +272,8 @@
         tillBody.appendChild(ui.h('div', { class: 'grid grid-4' },
           ui.kpi({ label: 'Opening float', value: U.money(myTill.openingCash), small: true, icon: 'wallet' }),
           ui.kpi({ label: 'Cash sales', value: U.money(myTill.cashSales), small: true, icon: 'cash' }),
-          ui.kpi({ label: 'Expected in drawer', value: U.money(myTill.expectedCash), tone: 'info', small: true, icon: 'box' }),
+          // CASH IN THE DRAWER, not stock. This carried the box.
+          ui.kpi({ label: 'Expected in drawer', value: U.money(myTill.expectedCash), tone: 'info', small: true, icon: 'cash' }),
           ui.kpi({ label: 'Transactions', value: String(myTill.saleCount || 0), foot: `since ${U.time(myTill.openedAt)}`, small: true, icon: 'receipt' })));
         if (cash.safeBalance != null) {
           tillBody.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '10px' } }, `Branch safe: ${U.money(cash.safeBalance)}`));

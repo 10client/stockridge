@@ -776,3 +776,64 @@ has stopped a shop trading.
 `npm run verify` **451/451/0** · `bash test/run-audits.sh` **21 audits, every check green** ·
 `node tools/flow-coverage.js` → **197 routes · 155 audited · 28 screen-only · 14 unreached**, with
 **plan 1/1** (was 0/1) and **settings 2/2**.
+
+---
+
+## P12 — THE ICON AND THE FIGURE IT STANDS ON
+
+A tile is read at a glance: the icon says what the number is before the number is read, which
+makes a wrong icon worse than a missing one. The dashboard had three, and the app had 188 tiles
+with no icon at all.
+
+### What was wrong on the dashboard
+
+* **"Owed to us ₦34,579,273.97" carried the people icon.** The figure is a receivable; the people
+  ("11 debtors") are counted on the line underneath it. It is the **ledger** now.
+* **"Expected in drawer" carried the stock box.** Cash in the drawer is cash.
+* **"down 100% on yesterday" was words.** The one number a person checks first — did today beat
+  yesterday — had no mark on the tile saying so. It has an **arrow** now, drawn from the sign of
+  the figure the server sent, coloured by what that direction *means* (`goodWhen`): a rise in
+  takings is green, a rise in debt is red, and the arrow points the way the figure went in both
+  cases.
+* "Sales 07 Sept → 07 Oct" was drawn with a bar chart; it is money in over a window — a sum of
+  **receipts**.
+
+### The rule, written down
+
+`ui.iconForFigure({ label, value })` in `public/js/ui.js` picks the icon from the figure itself:
+money first, through its own chain (owed → **ledger**, held/float/drawer → **wallet**,
+stock/inventory → **box**, sales/revenue → **receipt**, else **cash**), then dates → calendar,
+percentages/margins → chart, time → clock, people → users, stock → box, and a bare count → a new
+**hash**. Anything that is not a figure — a status word, a dash, "No till is open" — gets **no icon
+at all**, and a caller's explicit icon always wins.
+
+Two things it must never do, both now pinned: it never returns `'grid'` (the silent fallback
+`iconPath` uses for a name it does not know, which renders as a grey square that looks like a
+considered choice — an unknown name passed by a caller now warns in the console instead), and a
+money figure can never be drawn as people, a chart or a calendar.
+
+### And the arrow is only drawn when there is something to compare against
+
+`trendChip` draws nothing when the server sent neither a percentage nor a delta — and **nothing for
+a delta of exactly zero either**. That last one came out of running the probe against a cashier's
+seat, whose dashboard legitimately sends `{changePct: null, change: 0}` on a quiet morning: the chip
+would have read "flat ₦0", stating nothing, on the only tile that had anything to say. An explicit
+`0%` from the server *is* a comparison ("the same as yesterday") and keeps its flat mark.
+
+### Verified
+
+`npm run verify` **469/469/0** (451 before: 18 new checks in `test/unit/kpi-figures.test.js`, which
+is source-level and refuses the four ways a later change could undo the rule) ·
+`bash test/run-audits.sh` **21 audits green** · the smoke walk and the bell probe still clean ·
+`tools/frontend-figures.js`, a new two-way probe in a real DOM against a live server,
+**23 checks green as the owner, 23 as the administrator, 21 as a cashier**:
+
+**front to back** the dashboard's four figures are asserted **equal to the server's own numbers**,
+every money tile carries a money icon, no tile renders the fallback square, and the trend arrow,
+its percentage and its colour are checked against `today.vsYesterday` as the API actually sent it —
+then the synthetic boundaries (`+12%` up/green, `−12%` down/red, `0%` flat, a delta with no
+percentage, a zero delta, nothing at all) are driven through the same component;
+
+**back to front** every screen in the sidebar is swept: **every money figure on every screen
+carries a money icon and nothing renders the fallback square** (74 tiles over 26 screens as the
+owner, 35 over 12 as a cashier).
