@@ -26,8 +26,16 @@ const { requireField } = require('../lib/respond');
 
 /** The public face of the deployment. Safe to call with no token. */
 async function publicBranding(db) {
-  const row = await db.first('SELECT business_name, logo_data_url, receipt_footer_text FROM client_settings WHERE id = 1').catch(() => null);
-  const primary = row ? await db.first('SELECT name FROM businesses WHERE id = ?', [row.primary_business_id]).catch(() => null) : null;
+  // THE FALLBACK READ THE COLUMN IT FALLS BACK TO. This query selected three fields and the
+  // next line used a fourth — `row.primary_business_id` — which was therefore always
+  // `undefined`. The lookup it feeds returned nothing, so a deployment that had not yet typed
+  // a trading name showed the VENDOR'S name at the front door: `name` fell through to the
+  // literal 'StockRidge' while `businesses` held "Ridge Electronics Ltd". The one screen that
+  // exists to carry the client's brand carried somebody else's, and only in the state where it
+  // matters most — a fresh deployment, the day it is handed over. Proven by blanking
+  // `business_name` on a copy of the database and reading the endpoint.
+  const row = await db.first('SELECT business_name, logo_data_url, receipt_footer_text, primary_business_id FROM client_settings WHERE id = 1').catch(() => null);
+  const primary = row && row.primary_business_id ? await db.first('SELECT name FROM businesses WHERE id = ?', [row.primary_business_id]).catch(() => null) : null;
   return {
     name: (row && row.business_name) || (primary && primary.name) || 'StockRidge',
     logoDataUrl: (row && row.logo_data_url) || null,
@@ -76,7 +84,11 @@ function mountGuarded(app, base = '/api/branding') {
     const updates = [];
     const params = [];
     const allow = {
-      business_name: (v) => { const s = String(v).trim(); if (!s) throw new HttpError('The trading name cannot be blank.', { status: 400, code: 'MISSING_FIELD' }); if (s.length > 120) throw new HttpError('Keep the trading name under 120 characters — it has to fit a receipt header.', { status: 400, code: 'TOO_LONG' }); return s; },
+      // `String(null)` IS THE STRING "null", and this line used to store it. A client that sent
+      // `business_name: null` — which is how a JSON body says "no name" — renamed the shop to
+      // the word "null" on every receipt and on the sign-in screen. An absent value is refused
+      // like a blank one now, and neither can become a name.
+      business_name: (v) => { const s = v == null ? '' : String(v).trim(); if (!s) throw new HttpError('The trading name cannot be blank.', { status: 400, code: 'MISSING_FIELD' }); if (s.length > 120) throw new HttpError('Keep the trading name under 120 characters — it has to fit a receipt header.', { status: 400, code: 'TOO_LONG' }); return s; },
       receipt_footer_text: (v) => (v == null || String(v).trim() === '' ? null : String(v).trim().slice(0, 500)),
       admin_contact_name: (v) => (v == null || String(v).trim() === '' ? null : String(v).trim().slice(0, 120)),
       admin_contact_phone: (v) => (v == null || String(v).trim() === '' ? null : String(v).trim().slice(0, 40)),

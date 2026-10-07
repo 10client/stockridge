@@ -993,3 +993,62 @@ the "signed out of every device" variant and their own token dies with it.
 `1234` is the staging/sample/production PIN the Stage-6 directive set, so a probe against the demo
 must use the former. Staging was down on the free-tier D1 daily row-read limit and is still
 awaiting its re-probe.
+
+## P15 — THE SHOP'S OWN NAME ON THE FRONT DOOR (2026-10-07)
+
+Branding. Five routes in `server/routes/branding.js`, a careful design written in its own header
+comment — *"a cashier at Ridge Furniture Palace should see their shop's name, not the vendor's"* —
+and **all five read "not reached by any screen"** in the coverage report. A complete backend with
+no way to use it, which is what the standing admin-flows directive calls a feature that does not
+exist. Branding is now **5/5 audited**, unreached **14 → 9**, and `test/audit/audit.branding.js`
+holds it at **7/7 — 8 checks**, both directions.
+
+### What was actually broken
+
+* **The sign-in screen showed the VENDOR'S name.** `#login-brand-name` was the literal string
+  "StockRidge" and nothing ever called the public endpoint that exists to prevent exactly that.
+  On a white-label product the front door is the one place the client's brand has to be, and it
+  was the one place it was not. `SR.app.paintLoginBrand()` now reads `GET /api/branding` — cached
+  first so a cold start on a dead line still shows the client's name, which matters in a product
+  that runs offline — and the screen carries the client's logo when there is one, falling back to
+  the wordmark.
+* **The public endpoint's own fallback was dead code.** `publicBranding` selected three columns
+  and read a fourth: `row.primary_business_id`, which the query never selected, so it was always
+  `undefined`, the primary-business lookup never ran, and a deployment that had not yet typed a
+  trading name fell through to the vendor's name — **while its first business had a perfectly
+  good one**. That is the state a fresh handover is in, the one where it matters most. Proven by
+  blanking `business_name` on a copy of the database and reading the endpoint: `StockRidge` before,
+  `Ridge Electronics Ltd` after. Four dead field reads were fixed in P13/P14 on three screens; this
+  is the fifth, and the first one the *server* was doing.
+* **`business_name: null` used to become the word "null".** `String(null)` is truthy, so a JSON
+  body saying "no name" renamed the shop to `null` on every receipt and on the sign-in screen. An
+  absent name is refused like a blank one now, and the audit asserts both.
+* **Two writable controls for one fact.** The Settings screen's "Business identity" group already
+  carried `business_name`, `receipt_footer_text` and the three contact keys — real settings columns
+  that `PUT /api/settings` will write — and the new branding card writes the same five through
+  `PUT /api/branding`. Two controls, one fact, one screen: the later save silently undoes the
+  earlier one. The branding card owns them (it also carries the logo and records `BRANDING_UPDATED`),
+  the five moved out of the switches, and `test/unit/settings-controls.test.js` grew the reasons
+  while `audit.branding.js` refuses to let the two lists overlap again.
+
+### What the audit proves, both ways
+
+**Front to back** the owner renames the shop, sets a footer and contact details and uploads a logo
+→ the **public** endpoint (no token — the one the sign-in screen reads) answers the new name and
+the new logo → each change is on the trail **as `BRANDING_UPDATED` with the previous value**, and
+the logo is recorded as a byte count rather than stored inside the audit row.
+**Back to front** a manager may read the full record but cannot write it; a staff member cannot even
+read it; the unauthenticated endpoint answers exactly `{ok, name, logoDataUrl, receiptFooter,
+poweredBy}` and leaks no contact details; an **SVG carrying a script is refused by its magic bytes**
+whatever the request claims it is (this value is injected into an `<img src>` on the sign-in screen);
+and the two field lists — the route's `allow` object and the screen's `BRANDING_FIELDS` — are
+compared in both directions.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **24 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 164 audited · 24 screen-only · 9 unreached**,
+**branding 5/5** (was 0/5) · live in the browser harness: the Settings screen renders the card with
+exactly one control per fact, the logo row and no console errors; **typing a new name and clicking
+`Save branding` moves the public endpoint and the sign-in screen of a device that has never been
+here**, and the same screen puts it back — which is how the demo was left, name restored.

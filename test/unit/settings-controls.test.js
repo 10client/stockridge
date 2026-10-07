@@ -145,6 +145,16 @@ const SYSTEM_MAINTAINED = Object.freeze({
 const NOT_A_CONTROL = Object.freeze({
   id: 'the table has exactly one row',
   logo_data_url: 'a data URL is uploaded through the branding screen, not typed into a text field',
+  // THE FIVE BRANDING FIELDS ARE ON THE SCREEN — in the branding card at the top of it, which
+  // writes them through `PUT /api/branding` so the change is recorded as `BRANDING_UPDATED`
+  // in the same act as the logo. They are excluded from THIS list because a second writable
+  // control for one fact, on one screen, lets the later save silently undo the earlier one.
+  // `test/audit/audit.branding.js` refuses to let them reappear here.
+  business_name: 'offered by the branding card on the same screen, which writes it through PUT /api/branding and records BRANDING_UPDATED',
+  receipt_footer_text: 'offered by the branding card on the same screen, which writes it through PUT /api/branding and records BRANDING_UPDATED',
+  admin_contact_name: 'offered by the branding card on the same screen, which writes it through PUT /api/branding and records BRANDING_UPDATED',
+  admin_contact_phone: 'offered by the branding card on the same screen, which writes it through PUT /api/branding and records BRANDING_UPDATED',
+  admin_contact_email: 'offered by the branding card on the same screen, which writes it through PUT /api/branding and records BRANDING_UPDATED',
   primary_business_id: 'decided by provisioning and by the business switcher, never by hand',
   max_businesses: 'commercial: the plan decides it, the server enforces it on creation, and only the platform administrator may write it (403 PLATFORM_ADMIN_REQUIRED)',
   max_branches: 'commercial: the plan decides it, the server enforces it on creation, and only the platform administrator may write it (403 PLATFORM_ADMIN_REQUIRED)',
@@ -161,7 +171,17 @@ test('settings: every control is backed by a real column, and every column is re
   const facts = groups.flatMap((g) => g.items.filter((i) => i.fact));
 
   await t.test('the screen has controls and says some things outright', () => {
-    assert.ok(controls.length >= 40, `only ${controls.length} controls on the Settings screen`);
+    // THE BRANDING CARD COUNTS TOO. The floor exists to notice a screen that has been emptied
+    // out, and five of the settings it carries — the trading name, the receipt footer and the
+    // three contact details — are now typed into the branding card rather than into a switch
+    // group, because the card writes them alongside the logo. Counting only `SETTING_GROUPS`
+    // would read that move as a deletion.
+    const viewSrc = fs.readFileSync(path.join(ROOT, 'public', 'js', 'views', 'admin.js'), 'utf8');
+    const branding = ((viewSrc.match(/const BRANDING_FIELDS = \[([^\]]*)\]/) || [])[1] || '')
+      .split(',').filter((x) => x.trim()).length;
+    assert.ok(branding >= 5, `the branding card declares ${branding} field(s) — it should declare the five the route accepts`);
+    assert.ok(controls.length + branding >= 40,
+      `only ${controls.length} switch(es) and ${branding} branding field(s) on the Settings screen`);
     assert.ok(facts.length >= 5,
       `only ${facts.length} stated facts — the controls that used to promise a choice the system does not offer should say what it does instead`);
   });

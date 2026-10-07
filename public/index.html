@@ -56,7 +56,11 @@
 <main id="login-screen" hidden class="login-screen">
   <div class="login-card">
     <div class="login-brand">
-      <svg viewBox="0 0 48 48" width="40" height="40" aria-hidden="true">
+      <!-- THE CLIENT'S OWN LOGO, when the deployment has one. `GET /api/branding` is public
+           precisely so this screen can carry it before anybody signs in; the wordmark below is
+           the fallback, and the vendor mark stays out of the way. -->
+      <img id="login-brand-logo" alt="" hidden>
+      <svg id="login-brand-mark" viewBox="0 0 48 48" width="40" height="40" aria-hidden="true">
         <rect x="4" y="4" width="40" height="40" rx="11" fill="none" stroke="currentColor" stroke-width="2.5"/>
         <path d="M13 33V22l11-7 11 7v11" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
         <path d="M19 33v-6h10v6" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/>

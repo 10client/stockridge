@@ -139,7 +139,12 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .login-brand { display: flex; gap: 12px; align-items: center; margin-bottom: 22px; color: var(--green-700); }
 [data-theme="dark"] .login-brand { color: var(--green-500); }
 .login-brand h1 { margin: 0; font-size: 1.28rem; color: var(--ink-900); }
+/* The client's own logo, when the deployment has one. Sized to the wordmark it replaces so
+   the sign-in card does not move by a pixel when a logo is uploaded or removed. */
+#login-brand-logo { width: 40px; height: 40px; object-fit: contain; }
 .login-brand p { margin: 2px 0 0; font-size: .82rem; color: var(--ink-500); }
+.brand-logo-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 6px; }
+.brand-logo-preview { max-width: 132px; max-height: 64px; object-fit: contain; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 4px; }
 .field { display: block; position: relative; margin-bottom: 16px; }
 .field-label { display: block; font-size: .8rem; font-weight: 600; color: var(--ink-500); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
 .field input, .field select, .field textarea {

@@ -153,12 +153,13 @@
     {
       title: 'Business identity',
       blurb: 'Appears on receipts, labels and returns.',
+      // THE TRADING NAME, THE RECEIPT FOOTER AND THE SUPPORT CONTACT ARE NOT HERE. They are
+      // real settings keys and this route can write them — which is exactly why they must not
+      // be here: the branding card above owns them, and two writable controls for one fact in
+      // one screen means the second save silently undoes the first. The card writes them
+      // through the branding route, which is the one that also carries the logo and records
+      // the change as BRANDING_UPDATED. A test refuses to let the two lists overlap again.
       items: [
-        { key: 'business_name', type: 'text', label: 'Trading name' },
-        { key: 'receipt_footer_text', type: 'text', label: 'Receipt footer' },
-        { key: 'admin_contact_name', type: 'text', label: 'Support contact' },
-        { key: 'admin_contact_phone', type: 'text', label: 'Support phone' },
-        { key: 'admin_contact_email', type: 'text', label: 'Support email' },
         { key: 'notes', type: 'text', label: 'Notes for whoever runs this account' },
         { type: 'fact', label: 'VAT on a receipt', text: 'A printed receipt shows the VAT breakdown whenever the business is VAT-registered. Suppressing it on a tax invoice is not a display preference \u2014 it is a document that cannot be used to claim input VAT.' },
       ],
@@ -501,6 +502,16 @@
     return wrap;
   }
 
+  /**
+   * THE FIELDS THIS SCREEN SENDS TO `PUT /api/branding`, and the whole list of them.
+   *
+   * It is the route's own allow-list (`server/routes/branding.js`, the `allow` object), written
+   * here so the form, the dirty-check and a reader all agree on one list. The audit compares
+   * the two lists in BOTH directions: a field the form offers that the route ignores is a form
+   * that lies, and a field the route accepts that no form sends is a control nobody can reach.
+   */
+  const BRANDING_FIELDS = ['business_name', 'receipt_footer_text', 'admin_contact_name', 'admin_contact_phone', 'admin_contact_email'];
+
   // =====================================================================
   // SETTINGS
   // =====================================================================
@@ -575,7 +586,122 @@
         card.appendChild(body);
         form.appendChild(card);
       }
+      // THE BRANDING CARD GOES FIRST — before the feature switches — because it is the one
+      // thing here that changes what a customer sees. It is loaded separately from
+      // `GET /api/branding/full`: the settings payload does not carry the logo (hundreds of
+      // KB) and reading it through the settings endpoint would put it in every boot.
+      form.insertBefore(renderBrandingCard(), form.firstChild);
       host.replaceChildren(form);
+    }
+
+    /**
+     * THE SIGN-IN SCREEN, THE RECEIPTS AND THE HEADER, IN ONE CARD.
+     *
+     * `server/routes/branding.js` has five routes and a careful set of rules — GET is public
+     * so the sign-in screen can be branded, PUT and the logo are OWNER-only because renaming
+     * the shop renames it for every branch and every receipt, the logo is validated by magic
+     * bytes rather than the claimed MIME type — and NO SCREEN CALLED ANY OF THEM. Every one of
+     * the five read "not reached by any screen" in the coverage report: a complete backend
+     * with no way to use it. This is that way.
+     *
+     * The fields are the fields the route accepts, no more and no fewer: `business_name`,
+     * `receipt_footer_text`, `admin_contact_name`, `admin_contact_phone`, `admin_contact_email`
+     * go to PUT, and the logo goes to POST/DELETE `/api/branding/logo`. The audit checks that
+     * agreement in both directions, because a form field the server ignores is a form that
+     * lies, and a server field no form sends is a feature nobody can reach.
+     */
+    function renderBrandingCard() {
+      const card = ui.h('div', { class: 'card' });
+      const body = ui.h('div', { class: 'card-body' });
+      body.appendChild(ui.h('h2', {}, 'Branding — the shop’s name, logo and receipts'));
+      body.appendChild(ui.h('p', { class: 'sub' }, 'What your customers see: the sign-in screen, the header, and the foot of every receipt.'));
+      const host = ui.h('div', {});
+      body.appendChild(host);
+      card.appendChild(body);
+
+      async function loadBranding() {
+        host.replaceChildren(ui.skeleton(4));
+        let b;
+        try {
+          b = await SR.api.get('/api/branding/full');
+        } catch (err) {
+          host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadBranding } }));
+          return;
+        }
+        const admin = b.admin || {};
+        const grid = ui.h('div', { class: 'form-grid' },
+          ui.field({ label: 'Trading name', name: 'business_name', value: b.name || '', disabled: !canEdit, hint: 'Appears on the sign-in screen, the header and every receipt. Leave it unset and the name of your first business is used.' }),
+          ui.field({ label: 'Receipt footer', name: 'receipt_footer_text', value: (admin.receiptFooter || b.receiptFooter || ''), disabled: !canEdit, hint: 'A thank-you, a returns policy, a phone number. Up to 500 characters.' }),
+          ui.field({ label: 'Contact name', name: 'admin_contact_name', value: admin.contactName || '', disabled: !canEdit, hint: 'Who a customer or an auditor should ask for.' }),
+          ui.field({ label: 'Contact phone', name: 'admin_contact_phone', value: admin.contactPhone || '', disabled: !canEdit }),
+          ui.field({ label: 'Contact email', name: 'admin_contact_email', value: admin.contactEmail || '', disabled: !canEdit }));
+
+        // THE LOGO IS ITS OWN CONTROL, because it is its own route and its own decision:
+        // uploading a file and saving a name are not the same edit, and the logo posts bytes.
+        const logoBox = ui.h('div', { class: 'ctl' }, 'Logo');
+        const preview = ui.h('img', { alt: 'The current logo', class: 'brand-logo-preview' });
+        if (b.logoDataUrl) { preview.src = b.logoDataUrl; } else { preview.hidden = true; }
+        const file = ui.h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', disabled: !canEdit, class: 'brand-logo-input' });
+        const remove = ui.h('button', { class: 'btn btn-sm', disabled: !canEdit, onClick: async () => {
+          if (!(await ui.confirmDialog({ title: 'Remove the logo', message: 'The wordmark will be used instead.', confirmLabel: 'Remove', danger: true }))) return;
+          try { const res = await SR.api.del('/api/branding/logo'); ui.ok(res.message || 'Logo removed.'); loadBranding(); }
+          catch (err) { ui.apiError(err); }
+        } }, 'Remove logo');
+        file.addEventListener('change', async () => {
+          const f = file.files && file.files[0];
+          if (!f) return;
+          // The server sniffs the magic bytes; this check exists to give a person a sentence
+          // instead of a 400, and it is deliberately permissive — the server is the authority.
+          if (f.size > 512 * 1024) { ui.warn('That image is larger than 512 KB. Use a smaller one — it is loaded on the sign-in screen.'); file.value = ''; return; }
+          try {
+            const dataUrl = await new Promise((resolve, reject) => {
+              const r = new FileReader();
+              r.onload = () => resolve(String(r.result));
+              r.onerror = () => reject(new Error('That file could not be read.'));
+              r.readAsDataURL(f);
+            });
+            const res = await SR.api.post('/api/branding/logo', { logoDataUrl: dataUrl });
+            ui.ok(res.message || 'Logo updated.');
+            loadBranding();
+          } catch (err) { ui.apiError(err); } finally { file.value = ''; }
+        });
+        logoBox.appendChild(ui.h('div', { class: 'brand-logo-row' }, preview, ui.h('div', { class: 'stack' }, file, ui.h('div', { class: 'hint' }, 'PNG, JPEG, WebP or GIF. SVG is refused on purpose: it can carry a script, and this image is shown on the sign-in screen.'), remove)));
+
+        // ONLY WHAT CHANGED IS SENT. The route audits every field it receives, and a trail full
+        // of unchanged rows is a trail nobody reads — the same rule the feature switches above
+        // follow. `before` is built from the fields `GET /api/branding/full` actually answers.
+        const before = {
+          business_name: b.name || '',
+          receipt_footer_text: admin.receiptFooter || b.receiptFooter || '',
+          admin_contact_name: admin.contactName || '',
+          admin_contact_phone: admin.contactPhone || '',
+          admin_contact_email: admin.contactEmail || '',
+        };
+        const saveBtn = ui.h('button', { class: 'btn btn-sm btn-primary', disabled: !canEdit, onClick: async () => {
+          const values = ui.readForm(grid);
+          const sent = {};
+          for (const k of BRANDING_FIELDS) {
+            if (String(values[k] == null ? '' : values[k]) !== String(before[k] == null ? '' : before[k])) sent[k] = values[k];
+          }
+          if (!Object.keys(sent).length) { ui.info('Nothing has changed.'); return; }
+          await ui.withBusy(saveBtn, async () => {
+            try {
+              const res = await SR.api.put('/api/branding', sent);
+              ui.ok(res.message || 'Branding updated.');
+              await SR.state.load({ force: true });   // the header and the chrome repaint
+              if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
+              loadBranding();
+            } catch (err) { ui.apiError(err); }
+          });
+        } }, 'Save branding');
+
+        host.replaceChildren(ui.h('div', { class: 'stack' }, grid, ui.h('div', { class: 'span-2' }, logoBox),
+          ui.h('div', { class: 'card-foot' }, saveBtn,
+            ui.h('span', { class: 'hint' }, 'Every change here is audited with the previous value.'))));
+      }
+
+      loadBranding();
+      return card;
     }
 
     async function save() {

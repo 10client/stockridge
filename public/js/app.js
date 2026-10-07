@@ -280,6 +280,47 @@
     line.after(retry);
   }
 
+  /**
+   * THE SHOP'S NAME AT THE FRONT DOOR, BEFORE ANYBODY HAS SIGNED IN.
+   *
+   * `GET /api/branding` is public for exactly this, and nothing called it: the sign-in screen
+   * showed the hardcoded vendor name "StockRidge" while the router's own comment promised
+   * "a cashier at Ridge Furniture Palace should see their shop's name, not the vendor's".
+   * A white-label product that shows someone else's brand at the front door is not
+   * white-labelled.
+   *
+   * TWO SOURCES, IN THIS ORDER: the last branding this device saw (cached, so a cold start on
+   * a dead line still shows the client's name — this is an offline-first product), then the
+   * server. A failure changes nothing: the shell's markup is the fallback.
+   */
+  async function paintLoginBrand() {
+    const apply = (b) => {
+      if (!b || !b.name) return;
+      setText('login-brand-name', b.name);
+      setText('login-brand-sub', b.receiptFooter || 'Multi-branch stock, sales and accounting');
+      document.title = b.name;
+      const img = document.getElementById('login-brand-logo');
+      const mark = document.getElementById('login-brand-mark');
+      if (img && mark) {
+        const hasLogo = Boolean(b.logoDataUrl);
+        img.hidden = !hasLogo;
+        mark.hidden = hasLogo;
+        if (hasLogo) img.src = b.logoDataUrl;
+      }
+    };
+    try {
+      const cached = JSON.parse(localStorage.getItem('sr.brand') || 'null');
+      if (cached) apply(cached);
+    } catch (err) { /* a corrupt cache is not a reason to show nothing */ }
+    try {
+      const fresh = await SR.api.get('/api/branding');
+      if (fresh && fresh.name) {
+        apply(fresh);
+        try { localStorage.setItem('sr.brand', JSON.stringify(fresh)); } catch (err) { /* full or blocked storage */ }
+      }
+    } catch (err) { /* offline, or the deployment has no settings row yet: the shell's markup stands */ }
+  }
+
   function showLogin() {
     showBoot(false);
     document.getElementById('shell').hidden = true;
@@ -864,6 +905,9 @@
     // 5. draw
     setBootLine('Ready.', 100);
     wireChrome();
+    // Before the login screen is shown, so the client's name is painted rather than replaced
+    // a moment later in front of somebody typing their PIN.
+    await paintLoginBrand().catch(() => {});
     if (SR.state.user) {
       showShell();
       await render();
@@ -959,7 +1003,7 @@
   SR.app = {
     ROUTES, ICONS, icon, iconPath,
     boot, render, navigate, matchRoute, allowed,
-    showLogin, showShell, paintIdentity, buildNav, setActiveNav, closeNav,
+    showLogin, showShell, paintIdentity, paintLoginBrand, buildNav, setActiveNav, closeNav,
     updateBell, openBell, closeBell, markAllRead,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
     updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,
