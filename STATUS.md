@@ -1522,3 +1522,51 @@ the edge held, which cost one round of false "not deployed" readings):
 Git: `451cbc2` (the fixes + the new audit) → `ddf80bd` (branch business field) → `5aac5e9` (stamps).
 Ends P21. Open next: the remaining coverage gaps (stock 4/7, suppliers 4/5, users 12/14), the
 `stock_transfer_serials` work, and G4/G8 of the PharmaRidge parity plan.
+
+## P22 — the fix that shipped but never arrived: stamped asset URLs (2026-10-08)
+
+**Reported from staging.** "i tried to receive a purchase order of an iphone then this was the
+message 'iPhone 13 128GB (UK Used)' is serial-tracked, so each unit needs its own serial number:
+10 expected for 10 unit(s), 0 given … why is this i dont see a place for inputing the serial
+numbers."
+
+**Staging was correct. The screen was not.** Checked live, by request: `PO-MAIN-5XKER` on staging
+carries `requires_serial: 1` on its iPhone line, and the deployed `/js/views/purchase-orders.js`
+contains the serial box (`revealSerials`, `Serial numbers`). What the browser was showing was the
+PREVIOUS file. The service worker serves `/js` **stale-while-revalidate under the bare path**
+(`/js/views/purchase-orders.js`): the cached copy goes out immediately and the new file only lands
+in the cache for the load after that. So the first load after any deploy runs the old build — and on
+a till that is never reloaded twice, that first load is the only load anyone sees. Same shape as the
+P19 "stale account" report, but the stamp inside two files was not enough to prevent it.
+
+**The cure — the stamp goes on every asset URL.**
+
+- `tools/stamp-build.js` now writes `?v=<stamp>` onto every `/js/…` and `/css/…` URL in
+  `public/index.html` **and** onto every entry of the service worker's precache list, so the page and
+  the offline shell name the same URLs. Idempotent: an existing stamp is replaced, never doubled.
+- Why it works: navigations are network-first, so the fresh HTML names fresh URLs; those URLs cannot
+  be answered from a cache keyed by the old ones, so the new files arrive on the **same load** —
+  even while an older worker is still in control. No "reload twice" ritual, no tab closing.
+- `--check` now also fails when any asset URL in the page or the precache list is unstamped, and it
+  is wired into `npm run verify` as `stamp:check`.
+- **A running screen is told.** `app.js` asks `/sw.js` (the one file that carries the stamp and is
+  never served from the app's own cache) at boot, every ten minutes, on `online`, and whenever the
+  tab wakes, and offers "A newer version of StockRidge is on the server … Reload to use it — your
+  queued work is safe." It offers; it does not reload a cashier mid-sale.
+- **Every deploy now proves it.** The deploy smoke test fetches `/`, reads the stamp out of the
+  script URL the page names, fetches that exact URL and asserts the file behind it says the same
+  build, and HEADs every script the page names. A deploy that ships files no browser will load now
+  fails as loudly as a deploy that breaks the API.
+
+**Guards.** `test/unit/build-stamp.test.js` (6 new tests, on a throwaway copy of the tree): every
+asset URL stamped, page and precache agree, page/worker/app carry one stamp, stamping twice is
+idempotent, `--check` refuses an unstamped page (proved by stripping the stamps), and the app still
+asks for the live build and offers the reload. `audit.http.js` now REQUIRES the stamp on the served
+shell's script tag and on every asset URL it names (35 checks).
+
+**Verification.** `npm run verify` → **485 pass / 0 fail** (was 479) · audits **30 green** ·
+`stamp:check` green.
+
+**Note for anyone who reported the serial box missing:** the very next page load after this deploy
+brings the current build, because the page is fetched network-first and its assets are now
+unreachable from the old cache. One reload is all it takes; no clearing of site data.

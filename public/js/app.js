@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261007-1413-ddf80bd';
+  SR.BUILD = 'ridge-20261007-1436-80f98b2';
 
   // -------------------------------------------------------------------
   // ROUTES
@@ -994,8 +994,60 @@
 
     // Anything the POS queued while the tab was hidden should go out promptly.
     document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') { updateNetChrome(); updateQueueChrome(); void updateBell({ refreshPanel: true }); }
+      if (document.visibilityState === 'visible') {
+        updateNetChrome(); updateQueueChrome(); void updateBell({ refreshPanel: true });
+        void offerNewBuild();
+      }
     });
+
+    // ---- AND THE TAB IS TOLD WHEN A NEW BUILD IS DEPLOYED.
+    //
+    // Every asset URL carries the deploy's stamp, so the NEXT load is always the new build — but a
+    // till that is never closed never loads. That is how a fixed screen came back reported as
+    // broken twice: the fix was on the server, the browser kept its copy, and the person reporting
+    // the bug was looking at the old file with no way to know. So the app asks what is deployed,
+    // a few times an hour and whenever the tab wakes up, and offers the reload itself.
+    offerNewBuild();
+    setInterval(() => { void offerNewBuild(); }, 10 * 60 * 1000);
+    global.addEventListener('online', () => { void offerNewBuild(); });
+  }
+
+  let askingForBuild = false;
+  /**
+   * Is the server serving a different build from the one running here? If so, say so — once, with a
+   * button — rather than reloading a cashier mid-sale.
+   *
+   * `/sw.js` is asked for because it is the one file that carries the deploy's stamp and is never
+   * served from the app's own cache (`cache: 'no-store'`, and it is not an asset path the service
+   * worker caches). An offline device gets `null` and is told nothing, because there is nothing true
+   * to tell it.
+   */
+  async function liveBuild() {
+    try {
+      const res = await fetch('/sw.js', { cache: 'no-store' });
+      if (!res.ok) return null;
+      const body = await res.text();
+      const m = /const BUILD = '([^']+)';/.exec(body);
+      return m ? m[1] : null;
+    } catch (err) {
+      return null; // offline, or the file is unreachable: no claim either way
+    }
+  }
+
+  async function offerNewBuild() {
+    if (askingForBuild || !SR.BUILD) return;
+    askingForBuild = true;
+    try {
+      const live = await liveBuild();
+      if (!live || live === SR.BUILD) return;
+      if (document.getElementById('build-refresh-toast')) return;
+      const node = ui.toast(`A newer version of StockRidge is on the server (${live}). Reload to use it — your queued work is safe.`, {
+        type: 'warn', ms: 0, action: { label: 'Reload now', run: () => { global.location.reload(); } },
+      });
+      if (node) node.id = 'build-refresh-toast';
+    } finally {
+      askingForBuild = false;
+    }
   }
 
   // -------------------------------------------------------------------
@@ -1007,6 +1059,7 @@
     updateBell, openBell, closeBell, markAllRead,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
     updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,
+    liveBuild, offerNewBuild,
     openModal: ui.openModal,
     get route() { return currentRoute; },
     get params() { return currentParams; },

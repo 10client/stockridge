@@ -411,7 +411,7 @@ function deployWorker() {
   return url;
 }
 
-async function smokeTest(baseUrl, { pinEffective = null } = {}) {
+async function smokeTest(baseUrl, { pinEffective = null, stampValue = null } = {}) {
   log('7/7', 'Smoke-testing the deployment');
   if (!baseUrl) { warn('no URL to test'); return { ok: false }; }
   const problems = [];
@@ -484,6 +484,38 @@ async function smokeTest(baseUrl, { pinEffective = null } = {}) {
   const html = await app.text();
   if (app.status !== 200 || !/StockRidge/i.test(html)) problems.push(`the PWA did not load (${app.status})`);
   else ok('the PWA is served from the same deployment');
+
+  // ---- THE SCREEN THE BROWSER WILL ACTUALLY LOAD IS THIS BUILD.
+  //
+  // A deploy that ships the new files while a browser keeps serving itself the old ones is the
+  // failure this project has now been reported twice for (the account screen, and the serial box
+  // on the purchase-order receive form that "no input" appeared for on staging while the deployed
+  // worker was correct). The HTML names its assets with this deploy's stamp, so the check is
+  // simply: does the page ask for THIS build, and does the file behind that URL admit to being it?
+  if (stampValue) {
+    const named = (html.match(/js\/app\.js\?v=([^"']+)/) || [])[1] || null;
+    if (named !== stampValue) {
+      problems.push(`the page asks for js/app.js?v=${named} while this deploy stamped ${stampValue} — a browser would load a different build from the one deployed`);
+    } else {
+      const script = await fetch(`${baseUrl}/js/app.js?v=${encodeURIComponent(stampValue)}`);
+      const body = await script.text();
+      const says = (body.match(/SR\.BUILD = '([^']+)'/) || [])[1] || null;
+      if (script.status !== 200 || says !== stampValue) {
+        problems.push(`/js/app.js?v=${stampValue} answered ${script.status} carrying ${says} — the asset and the page disagree`);
+      } else {
+        ok(`the page's scripts are this build (${stampValue})`);
+      }
+    }
+    // ...and every one of the page's own scripts must answer, or the screen half-loads.
+    const asked = [...new Set((html.match(/\/js\/[^"']+?\.js\?v=[^"']+/g) || []))];
+    const missing = [];
+    for (const path of asked) {
+      const res = await fetch(`${baseUrl}${path}`, { method: 'HEAD' });
+      if (res.status !== 200) missing.push(`${path} → ${res.status}`);
+    }
+    if (missing.length) problems.push(`${missing.length} script(s) named by the page did not answer: ${missing.slice(0, 3).join(', ')}`);
+    else ok(`all ${asked.length} scripts the page names are served`);
+  }
 
   const sw = await fetch(`${baseUrl}/sw.js`);
   if (sw.status !== 200) problems.push(`/sw.js → ${sw.status} (the service worker will not register)`);
@@ -580,7 +612,7 @@ async function main() {
   const url = deployWorker();
 
   let smoke = { ok: false, problems: ['not run'] };
-  if (url) smoke = await smokeTest(url, { pinEffective: seeding.pinEffective });
+  if (url) smoke = await smokeTest(url, { pinEffective: seeding.pinEffective, stampValue: stamped.stampValue });
 
   console.log('\n──────────────────────────────────────────────────────────');
   console.log('Deployment summary');
