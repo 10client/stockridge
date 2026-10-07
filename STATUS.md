@@ -1506,3 +1506,19 @@ it belongs to and that it cannot be moved. Live: choosing "Ridge Building Suppli
 with that `business_id` and that the branch names its business.
 
 `audit.createFlows.js` 15 checks · suite 30 green · verify 479/0 · coverage 198 · 187 · 8 · 3.
+
+### P21 — deployment state (checkpoint)
+
+All three environments rebuilt after the second pass and verified by request, not by assumption
+(`/js/*` read with a cache-busting query — a plain read of a Cloudflare asset can hand back the copy
+the edge held, which cost one round of false "not deployed" readings):
+
+| environment | URL | build stamp | admin/1234 | P21 assets |
+| --- | --- | --- | --- | --- |
+| production | stockridge.stockridge.workers.dev | ridge-20261007-1412-ddf80bd | 200 | serial box ✓ role mirror ✓ branch business field ✓ |
+| staging | stockridge-staging.stockridge.workers.dev | ridge-20261007-1411-ddf80bd | 200 | ✓ ✓ ✓ |
+| sample | sample.stockridge.workers.dev | ridge-20261007-1413-ddf80bd | 200 | ✓ ✓ ✓ |
+
+Git: `451cbc2` (the fixes + the new audit) → `ddf80bd` (branch business field) → `5aac5e9` (stamps).
+Ends P21. Open next: the remaining coverage gaps (stock 4/7, suppliers 4/5, users 12/14), the
+`stock_transfer_serials` work, and G4/G8 of the PharmaRidge parity plan.
