@@ -246,9 +246,12 @@
       const features = data.features || {};
       const contact = usage.contact || {};
 
-      const limitBar = (label, used, allowed) => {
-        const pct = Number(allowed) > 0 ? (Number(used) / Number(allowed)) * 100 : 0;
-        const full = Number(allowed) > 0 && Number(used) >= Number(allowed);
+      // `unlimited` comes from the server (`capValue`, where 0 means unlimited) rather
+      // than being re-derived here: the screen and the enforcement must agree about what
+      // a zero means, and the way to guarantee that is for one of them to ask the other.
+      const limitBar = (label, used, allowed, unlimited = false) => {
+        const pct = unlimited || !(Number(allowed) > 0) ? 0 : (Number(used) / Number(allowed)) * 100;
+        const full = !unlimited && Number(allowed) > 0 && Number(used) >= Number(allowed);
         const bar = ui.h('div', { class: 'progress' });
         bar.appendChild(ui.h('div', {
           class: `progress-fill ${full ? 'is-full' : (pct >= 80 ? 'is-warn' : '')}`,
@@ -257,7 +260,7 @@
         return ui.h('div', { class: 'limit-row' },
           ui.h('div', { class: 'row' },
             ui.h('div', { class: 'grow' }, ui.h('div', {}, label)),
-            ui.h('div', { class: 'hint' }, allowed === 0 ? 'unlimited' : `${U.qty(used)} of ${U.qty(allowed)}`)),
+            ui.h('div', { class: 'hint' }, (unlimited || Number(allowed) === 0) ? `${U.qty(used)} in use · unlimited` : `${U.qty(used)} of ${U.qty(allowed)}`)),
           bar,
           full ? ui.h('div', { class: 'hint', style: { color: 'var(--warn,#a15c00)' } }, `The ${label.toLowerCase()} limit is reached. Raise the limit or deactivate something you no longer use.`) : null);
       };
@@ -332,6 +335,21 @@
           ui.h('p', { class: 'sub' }, 'Ask a manager or the owner how much room this deployment has left. Capacity and retention are shown to managers and above.'))));
       }
 
+      // ---- THE PLATFORM CONTROLS, FOR THE PLATFORM ADMINISTRATOR --------
+      //
+      // `PUT /api/settings` reserves the six commercial settings for the ADMIN role
+      // (403 PLATFORM_ADMIN_REQUIRED for anyone else) — and until this card existed
+      // **there was no way to change a client's plan from the product at all**: the
+      // client's own screen hid the fields on purpose, and the vendor's only route to
+      // them was a hand-made HTTP call. PharmaRidge's portal has led with exactly these
+      // four inputs, for exactly this reason: the plan is the vendor's to set, and a
+      // power that needs curl is not a power anybody uses.
+      //
+      // The card is drawn by ROLE, not by trust: an owner never sees inputs that would
+      // be refused, and the server refuses them whether or not this card is here.
+      const platform = platformCard(data, load);
+      if (platform) stack.appendChild(platform);
+
       // THE CLEANUPS THEMSELVES, under the card that says how full the database is:
       // "there is no room left" and "here is how you make room" are the two halves of
       // one answer, and the second half is destructive enough to deserve its own card.
@@ -341,9 +359,17 @@
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'What is in use'),
         ui.h('p', { class: 'sub' }, 'Counted live, and only counting rows that are active. A deactivated member of staff does not consume a seat — otherwise a limit would punish a shop twice for somebody leaving.'),
-        limitBar('Businesses', counts.businesses || 0, Number(s.maxBusinesses) || 0),
-        limitBar('Branches', counts.branches || 0, Number(s.maxBranches) || 0),
-        limitBar('Staff', counts.staff || 0, Number(s.maxStaff) || 0))));
+        // WHERE THE PLAN COMES FROM, said on the screen the client actually opens.
+        // The controls are the administrator's, so a client reading these numbers has to
+        // be told that — otherwise the first instinct is to ring support asking for a
+        // field that is deliberately absent. It lives HERE rather than in the "Who to
+        // call" card because that card is only drawn when contact details have been
+        // filled in, and an explanation that disappears is worse than none.
+        SR.state.atLeast('ADMIN') ? null : ui.h('p', { class: 'sub' },
+          'These limits are set for you. Nobody at the shop can change them — not even the owner — because a limit its own subject can raise is not a limit. Ask your account contact to change one.'),
+        limitBar('Businesses', counts.businesses || 0, Number(s.maxBusinesses) || 0, Boolean(usage.businesses && usage.businesses.unlimited)),
+        limitBar('Branches', counts.branches || 0, Number(s.maxBranches) || 0, Boolean(usage.branches && usage.branches.unlimited)),
+        limitBar('Staff', counts.staff || 0, Number(s.maxStaff) || 0, Boolean(usage.staff && usage.staff.unlimited)))));
 
       const featureRows = Object.entries(features).map(([key, f]) => ({ key, label: f.label || U.humanise(key), enabled: f.enabled }));
       stack.appendChild(ui.dataCard({
@@ -372,7 +398,7 @@
             ['Phone', contact.phone],
             ['Email', contact.email],
           ]),
-          ui.h('p', { class: 'sub' }, 'Raising a limit, turning a feature on or getting help with a return — this is the number to use.'))));
+          ui.h('p', { class: 'sub' }, 'Raising a limit, turning a feature on or getting help with a return — this is the number to use. Your plan itself is set for you; nobody at the shop can change it, including the owner.'))));
       }
 
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
@@ -380,6 +406,118 @@
         ui.h('p', { class: 'sub' }, 'At the moment of creation, with a message that names the limit. A branch that cannot be opened tells you it is the branch limit and what to do about it — it does not fail later, somewhere else, with a stack trace. No existing data is ever hidden or locked when a plan changes; nothing you have already recorded disappears.'))));
 
       host.replaceChildren(stack);
+    }
+
+    /**
+     * THE PLAN, EDITABLE — for the platform administrator only.
+     *
+     * Sends ONLY what changed: the server audits every field it receives, and a plan
+     * change recorded as six fields when one moved is a trail that hides the one that
+     * mattered. `PUT /api/settings` answers with `warnings[]` when a cap lands below the
+     * usage already on the books — the consequence is real and stays on screen rather
+     * than flashing past in a toast, because the next create will be refused and the
+     * person who set the cap should be the one who knows why.
+     */
+    function platformCard(data, reload) {
+      if (!SR.state.atLeast('ADMIN')) return null;
+      const s = data.settings || {};
+      const usage = data.usage || {};
+      const cap = (name, key) => {
+        const u = usage[key] || {};
+        return ui.field({
+          label: name,
+          name: key,
+          type: 'number',
+          min: '0',
+          step: '1',
+          value: s[key] == null ? '' : String(s[key]),
+          hint: '0 means unlimited.',
+        });
+      };
+      const grid = ui.h('div', { class: 'form-grid' },
+        cap('Max businesses', 'maxBusinesses'),
+        cap('Max branches', 'maxBranches'),
+        cap('Max staff accounts', 'maxStaff'),
+        ui.field({ label: 'Subscription plan', name: 'subscription_plan', value: s.plan || '', hint: 'Printed in every refusal a client sees when they reach a limit.' }),
+        ui.field({
+          label: 'Subscription status',
+          name: 'subscription_status',
+          value: s.status || 'ACTIVE',
+          options: ['TRIAL', 'ACTIVE', 'SUSPENDED', 'EXPIRED'].map((v) => ({ value: v, label: U.humanise(v) })),
+          hint: 'Suspended and expired stop new transactions; reading and exporting keep working.',
+        }),
+        ui.field({ label: 'Renewal date', name: 'subscription_renewal_date', type: 'date', value: s.renewalDate || '', hint: 'Optional. Quoted back to a suspended client.' }));
+
+      const outcomes = ui.h('div', { class: 'stack' });
+      const form = ui.h('div', { class: 'card' },
+        ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Platform controls'),
+          ui.h('p', { class: 'sub' }, 'What this deployment has bought. Only the platform administrator can change these — the server refuses them from every other role, including the owner.'),
+          grid,
+          outcomes,
+          ui.h('div', { class: 'btn-row', style: { marginTop: '12px' } },
+            ui.h('button', {
+              class: 'btn btn-primary',
+              onClick: () => savePlatform(form, s, outcomes, reload),
+            }, 'Apply to this client'))));
+
+      // The administrator's own identity is not assumed: if the seat is not ADMIN the
+      // card is not drawn at all, and if it somehow gets here the server answers 403
+      // and the message is shown rather than swallowed.
+      return form;
+    }
+
+    async function savePlatform(form, before, outcomes, reload) {
+      const values = ui.readForm(form);
+      const body = {};
+      // The payload keys are the COLUMN names; the form carries the same names for the
+      // four that are one word, and the display names for the three caps, so the map is
+      // explicit rather than derived.
+      const map = {
+        maxBusinesses: 'max_businesses',
+        maxBranches: 'max_branches',
+        maxStaff: 'max_staff',
+        subscription_plan: 'subscription_plan',
+        subscription_status: 'subscription_status',
+        subscription_renewal_date: 'subscription_renewal_date',
+      };
+      const beforeValues = {
+        max_businesses: before.maxBusinesses,
+        max_branches: before.maxBranches,
+        max_staff: before.maxStaff,
+        subscription_plan: before.plan,
+        subscription_status: before.status,
+        subscription_renewal_date: before.renewalDate || '',
+      };
+      for (const [field, column] of Object.entries(map)) {
+        if (!(field in values)) continue;
+        const next = values[field];
+        const was = beforeValues[column];
+        if (next === null && (was === null || was === undefined || was === '')) continue;
+        if (String(next == null ? '' : next) === String(was == null ? '' : was)) continue;
+        body[column] = next === null ? '' : next;
+      }
+      if (!Object.keys(body).length) { ui.info('Nothing has changed.'); return; }
+      outcomes.replaceChildren();
+      await ui.withBusy(form, async () => {
+        try {
+          const res = await SR.api.put('/api/settings', body);
+          const warnings = (res && res.warnings) || [];
+          outcomes.replaceChildren(ui.h('div', { class: 'alert alert-ok' }, res.message || 'The plan was updated.'));
+          for (const w of warnings) outcomes.appendChild(ui.h('div', { class: 'alert alert-warn' }, w));
+          await SR.state.load({ force: true });
+          reload();
+        } catch (err) {
+          // A refusal has to say WHAT was refused and by whom — `fields` names the keys
+          // the server rejected, and a 403 here means this seat is not the platform
+          // administrator, which is a fact about the account and not a bug to retry.
+          const named = err && err.fields ? Object.keys(err.fields) : [];
+          outcomes.replaceChildren(ui.h('div', { class: `alert ${err && err.status === 403 ? 'alert-warn' : 'alert-danger'}` },
+            err && err.message ? err.message : 'That did not work.',
+            named.length ? ui.h('div', { class: 'hint' }, `Refused: ${named.join(', ')}`) : null));
+          ui.apiError(err);
+        }
+      });
     }
 
     function whereFeature(key) {

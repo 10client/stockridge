@@ -76,6 +76,30 @@ const SCREENS = [
     // Names that are the view's own locals, not fields of the response.
     locals: new Set(['data', 'period']),
   },
+  {
+    name: 'plan',
+    file: 'public/js/views/plan.js',
+    route: '/api/plan',
+    aliases: {
+      data: '',
+      s: 'settings',
+      usage: 'usage',
+      counts: 'counts',
+      features: 'features',
+      contact: 'usage.contact',
+    },
+    locals: new Set(['data', 'usage']),
+    // The screen assigns these onto the response object from OTHER requests. They are
+    // declared rather than ignored, so `data.dataCleanups` is a statement about where it
+    // came from and not a hole in the check.
+    merged: new Set(['dataManagement', 'dataCleanups', 'dataManagementRefused']),
+    // And the blocks themselves are checked against the route that actually serves
+    // them, which is stricter than skipping them — the capacity card's field names are
+    // exactly as capable of drifting as any other.
+    extraSources: [
+      { alias: 'dm', route: '/api/data-management/status' },
+    ],
+  },
 ];
 
 /** Strip comments and string literals, so a field named in prose is not read as a read. */
@@ -106,6 +130,21 @@ function withoutCommentsAndStrings(src) {
   return out;
 }
 
+/**
+ * Members of a DOM node, not of a response.
+ *
+ * `plan.js` names a DOM container `counts` inside its cleanup modal and the response's
+ * usage block `counts` inside `render` — two different things with one name in one file,
+ * which is exactly the kind of collision a source-level check has to be told about
+ * rather than guess at. These names are skipped whatever the alias, because no response
+ * body has ever had a `replaceChildren`.
+ */
+const DOM_MEMBERS = new Set([
+  'replaceChildren', 'appendChild', 'append', 'remove', 'setAttribute', 'getAttribute',
+  'addEventListener', 'classList', 'style', 'textContent', 'innerHTML', 'value', 'focus',
+  'querySelector', 'querySelectorAll', 'children', 'firstChild', 'length', 'map', 'filter',
+]);
+
 /** Every `<alias>.<key>` read in the view, for the aliases the screen declares. */
 function readsFrom(src, aliases) {
   const clean = withoutCommentsAndStrings(src);
@@ -113,6 +152,7 @@ function readsFrom(src, aliases) {
   for (const alias of Object.keys(aliases)) {
     const re = new RegExp(`(?<![\\w.$'"\`])${alias}\\.([a-z][A-Za-z0-9_]*)\\b`, 'g');
     for (const m of clean.matchAll(re)) {
+      if (DOM_MEMBERS.has(m[1])) continue;
       const full = `${alias}.${m[1]}`;
       reads.set(full, (reads.get(full) || 0) + 1);
     }
@@ -142,20 +182,40 @@ test('every field a screen reads from a response is a field the server sends', a
   try {
     for (const screen of SCREENS) {
       const src = fs.readFileSync(path.join(ROOT, screen.file), 'utf8');
-      const reads = readsFrom(src, screen.aliases);
+      const reads = readsFrom(src, Object.assign({}, screen.aliases, ...(screen.extraSources || []).map((x) => ({ [x.alias]: '' }))));
       assert.ok(reads.size >= 20, `only ${reads.size} reads found in ${screen.file} — the extractor or the view has changed shape`);
+
+      const extraAliases = new Set((screen.extraSources || []).map((x) => x.alias));
+
+      // One response per source, cached: the same route is not called twice.
+      const responses = new Map();
+      const load = async (route) => {
+        if (responses.has(route)) return responses.get(route);
+        const res = await world.call('GET', `${route}${route.includes('?') ? '&' : '?'}branch_id=${encodeURIComponent(world.branchId)}`, { token: world.ownerToken });
+        assert.equal(res.status, 200, `${route} answered ${res.status}: ${res.text.slice(0, 200)}`);
+        responses.set(route, res.json);
+        return res.json;
+      };
 
       // The OWNER's response, which is the widest: an owner gets the plan block, the
       // group rollups and the full action list.
-      const res = await world.call('GET', `${screen.route}${screen.route.includes('?') ? '&' : '?'}branch_id=${encodeURIComponent(world.branchId)}`, { token: world.ownerToken });
-      assert.equal(res.status, 200, `${screen.route} answered ${res.status}: ${res.text.slice(0, 200)}`);
+      const primary = await load(screen.route);
 
       const missing = [];
       for (const [full, count] of reads) {
         const [alias, key] = full.split('.');
         if (screen.locals.has(full)) continue;
+        const extra = (screen.extraSources || []).find((x) => x.alias === alias);
+        if (extra) {
+          const body = await load(extra.route);
+          if (!getPath(body, key).found) missing.push(`${full} (read ${count}×, ${extra.route} has no "${key}")`);
+          continue;
+        }
+        // A key the screen merged onto the object from another request, declared above.
+        if (alias === 'data' && screen.merged && screen.merged.has(key)) continue;
+        if (extraAliases.has(alias)) continue;
         const dotted = resolvePath(screen.aliases, alias, key);
-        if (!getPath(res.json, dotted).found) missing.push(`${full} (read ${count}×, server has no "${dotted}")`);
+        if (!getPath(primary, dotted).found) missing.push(`${full} (read ${count}×, server has no "${dotted}")`);
       }
 
       await t.test(`${screen.name}: no read of a field the server does not send`, () => {

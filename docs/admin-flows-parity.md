@@ -119,12 +119,18 @@ payment, spending from the safe, adjusting stock, or receiving goods. A shop tha
 trading indefinitely. PharmaRidge's whole commercial lever — writes pause, reads and exports carry
 on — is not enforced here at all.
 
-### GAP 4 — *The administrator has no screen for the powers that are his alone.*
+### GAP 4 — *The administrator has no screen for the powers that are his alone.* — **CLOSED in P10**
 
 `SETTING_GROUPS` (`public/js/views/admin.js:65`) deliberately omits the six commercial keys, and no
 other view draws them. The plan screen (`public/js/views/plan.js`) reads them. So the *only* way to
 change a client's plan, caps, status or renewal date in the shipped product is a hand-made HTTP call.
 PharmaRidge's admin portal is the exact opposite: those four inputs are the first card on the page.
+
+**Closed:** the Subscription screen now draws a **Platform controls** card for the `ADMIN` role —
+the three caps (with "0 means unlimited"), the plan name, the status select and the renewal date —
+saving through `PUT /api/settings` and reporting the server's `warnings[]` (a cap set below the
+usage already on the books) and its refusals. An owner sees the same numbers with no inputs and a
+line saying the limits are set for them. Driven from both sides by `tools/frontend-platform.js`.
 
 ### GAP 5 — *"Unlimited" is displayed and enforced as "none".*
 

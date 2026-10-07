@@ -531,3 +531,65 @@ refuse a branch-less read (`400 BRANCH_REQUIRED`); the screens are wrong to offe
 report a failure — they should ask for the branch the way the rest of the app does. That is the next
 UI/UX alignment item, with the Platform screen (the administrator's own controls, which still have
 no UI) and the notifications board.
+
+---
+
+## P10 — THE ADMINISTRATOR'S POWERS REACH THE SCREEN (P8c, first half)
+
+P8a made the six commercial settings `ADMIN`-only at the API. That closed the hole and left a
+stranger one beside it: **there was no way to set a client's plan from the product at all.** The
+client's own screen hid the fields on purpose, no other view drew them, and the vendor's only route
+to them was a hand-made HTTP call. A power that needs `curl` is not a power anybody uses.
+
+The Subscription screen now draws a **Platform controls** card for the `ADMIN` role — the three caps
+(each reading "0 means unlimited"), the plan name, the status select and the renewal date — saving
+through `PUT /api/settings`. It sends **only what changed**, because the server audits every field it
+receives and a plan change recorded as six fields when one moved is a trail that hides the one that
+mattered. What comes back is kept on screen rather than flashed in a toast: the server's
+`warnings[]` when a cap lands **below the usage already on the books** (nothing is removed, but the
+next create will be refused, and the person who set the cap should be the one who knows why), and on
+refusal the fields it named.
+
+For everyone else the screen says where the plan comes from — *"These limits are set for you. Nobody
+at the shop can change them — not even the owner — because a limit its own subject can raise is not a
+limit."* That line sits in **What is in use** rather than the "Who to call" card, because that card
+is only drawn when contact details have been filled in, and an explanation that disappears is worse
+than none. (The tool caught exactly that: the sentence was invisible on a deployment with no contact
+configured, which is how the sample ships.)
+
+The usage bars now follow the server's own reading of a cap — `usage.branches.unlimited` — rather
+than re-deriving it from `maxBranches === 0`. Two places deciding what a zero means is how the screen
+and the enforcement drift apart; asking the server is how they cannot.
+
+### Driven from both sides, in a real DOM
+
+`tools/frontend-platform.js` — **19 checks, green** — boots the real frontend against a running
+server as both seats:
+
+* **ADMIN**: the Platform controls card is drawn; every commercial setting has a control; changing a
+  cap moves **what the server enforces** (verified by asking the server, not by reading the screen);
+  the usage block agrees; the cap is put back as it was found.
+* **OWNER**: **no plan inputs are drawn at all**; the owner is told where the plan comes from; and —
+  the direction that actually matters — the same write issued **straight at the API** answers
+  `403 PLATFORM_ADMIN_REQUIRED`, names the fields it refused, and nothing lands.
+
+### The guard now covers this screen too
+
+`test/unit/frontend-wire.test.js` grew a second screen: every `s.`/`usage.`/`counts.`/`features.`
+read in `plan.js` is checked against a live `/api/plan`, and the capacity card's `dm.` reads against
+`/api/data-management/status` — the blocks a screen merges onto one object are checked against the
+route that serves them, which is stricter than skipping them. It also skips **members of a DOM node**
+(`counts.replaceChildren`) after one false positive: the same file uses `counts` for a DOM container
+in its cleanup modal and for the response's usage block in `render`.
+
+### Verified
+
+`npm run verify` **422/422/0** · `bash test/run-audits.sh` **19 audits green** · frontend rendered in
+jsdom against a live server: **the owner's 27 destinations and the administrator's 8, every screen
+draws, no faults**.
+
+**Still open:** the notification engine's messages have no screen (list / read / read-all — the
+engine raises low stock, debt ageing, expiry and plan warnings that nobody can see); and the
+branch-scope misalignment P9's walk found — the owner holds several branches, so **Till & safe** and
+**Stock** render "Choose which branch this applies to" as an error block under an "All branches"
+heading, where the screen should be asking for the branch instead of reporting a failure.
