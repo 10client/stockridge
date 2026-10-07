@@ -24,7 +24,7 @@
 // =====================================================================
 
 const { authRequired } = require('../middleware/auth');
-const { getSettings, DEFAULT_SETTINGS} = require('../../domain/planLimits');
+const { getSettings, DEFAULT_SETTINGS, assertSubscriptionActive} = require('../../domain/planLimits');
 
 const health = require('./health');
 const auth = require('./auth');
@@ -86,6 +86,83 @@ function isHealthPath(pathname) {
 function isPublicPath(method, path) {
   const clean = String(path || '').replace(/\/+$/, '') || '/';
   return PUBLIC_PATHS.some((r) => r.method === String(method).toUpperCase() && r.match(clean));
+}
+
+/**
+ * WHAT A SUSPENDED SUBSCRIPTION STOPS — AND WHAT IT MUST NOT.
+ *
+ * `assertSubscriptionActive` has always been the intent ("blocks every mutating
+ * request when the subscription is SUSPENDED or EXPIRED; READ access is
+ * deliberately preserved"), and it was wired to three routes: create business,
+ * create branch, create staff. So a client who stopped paying kept ringing
+ * sales, receiving stock, paying suppliers and posting journals — the only thing
+ * they could not do was add a fourth branch. The vendor's one real lever did
+ * nothing to the thing the invoice is for.
+ *
+ * The gate now runs in the pipeline, so a new route is covered the day it is
+ * written rather than the day somebody remembers. Being reachable while
+ * suspended therefore requires an entry below, and every entry has to say why:
+ * the default is closed, exactly as it is for the public-path list above.
+ *
+ * The shape of the line: **everything that moves money or stock stops;
+ * everything about running the business as an organisation stays open.** A
+ * suspended shop still has staff who clock in, a lost phone to revoke, licences
+ * to record, an alert board to clear, a queue on a tablet to report, a sacked
+ * cashier to disable, and a contact number the vendor is about to ring.
+ */
+const SUSPENDED_EXEMPT = [
+  {
+    match: (m, p) => p.startsWith('/api/auth/'),
+    why: 'the door, not the trading: signing in, signing out, changing your own PIN, unlocking a seat',
+  },
+  {
+    match: (m, p) => p.startsWith('/api/sync/'),
+    why: 'a device that has been off the network has to report what it did and hear back per operation; each replayed sale is refused on its own way through this same pipeline, and the refusal is what the device shows the shop',
+  },
+  {
+    match: (m, p) => p.startsWith('/api/notifications/'),
+    why: 'clearing an alert is not discharging it — and the board is how they hear that service was suspended',
+  },
+  {
+    match: (m, p) => p === '/api/users' || p.startsWith('/api/users/'),
+    why: 'people and permissions, not money: a suspended shop must still be able to sack a cashier, move staff between branches and reset a PIN, which is also the only way the vendor can help them',
+  },
+  {
+    match: (m, p) => p.startsWith('/api/sessions/'),
+    why: 'revoking a lost or stolen device is security, and it has to work precisely when nobody is answering the telephone',
+  },
+  {
+    match: (m, p) => p.startsWith('/api/attendance/'),
+    why: 'shifts are people, not money — blocking a clock-in files a payroll gap over an unpaid invoice',
+  },
+  {
+    match: (m, p) => p.startsWith('/api/compliance/'),
+    why: 'a statutory register is a legal obligation, not a sale',
+  },
+  {
+    match: (m, p) => m === 'PUT' && p === '/api/settings',
+    why: 'their own configuration, including the contact line the vendor is about to ring. The six commercial fields stay ADMIN-only at every status (see PUT /api/settings), so this cannot be used to lift a suspension',
+  },
+  {
+    match: (m, p) => p === '/api/sales/preview',
+    why: 'a preview creates nothing: reads continue, and a cashier should read the refusal when they try to complete the sale rather than at the first scan of a customer’s basket',
+  },
+  {
+    match: (m, p) => p === '/api/data-management/purge/preview',
+    why: 'a preview creates nothing',
+  },
+];
+
+/** Only GET/HEAD/OPTIONS are reads. Nothing else is exempt by method alone. */
+function isReadMethod(method) {
+  const m = String(method || 'GET').toUpperCase();
+  return m === 'GET' || m === 'HEAD' || m === 'OPTIONS';
+}
+
+function exemptionFor(method, path) {
+  const m = String(method || '').toUpperCase();
+  const p = String(path || '').replace(/\/+$/, '') || '/';
+  return SUSPENDED_EXEMPT.find((r) => r.match(m, p)) || null;
 }
 
 /**
@@ -159,6 +236,22 @@ function buildRoutes(app, env = {}) {
     return next();
   });
 
+  // EVERY MUTATING REQUEST PASSES THE SUBSCRIPTION GATE.
+  //
+  // Here rather than inside each route, for the same reason the auth guard is
+  // here: a rule enforced at 97 call sites is a rule that will be missing from
+  // the 98th. `assertSubscriptionActive` throws 402 `SUBSCRIPTION_NOT_ACTIVE`
+  // with the client's contact line in it, and returns early for ADMIN — the
+  // vendor is never locked out of the instance they are trying to help.
+  app.use('/api/*', async (ctx, next) => {
+    if (isReadMethod(ctx.method)) return next();
+    if (isHealthPath(ctx.path)) return next();
+    if (isPublicPath(ctx.method, ctx.path)) return next();
+    if (exemptionFor(ctx.method, ctx.path)) return next();
+    assertSubscriptionActive(ctx.get('settings'), ctx.get('user'));
+    return next();
+  });
+
   // ---- GUARDED -----------------------------------------------------------
   branding.mountGuarded(app, '/api/branding');
   // BEFORE `admin`, because these paths live under /api/users/... and belong to the
@@ -197,4 +290,4 @@ function buildRoutes(app, env = {}) {
   return app;
 }
 
-module.exports = { buildRoutes, isPublicPath, PUBLIC_PATHS };
+module.exports = { buildRoutes, isPublicPath, PUBLIC_PATHS, SUSPENDED_EXEMPT, exemptionFor, isReadMethod };

@@ -86,12 +86,13 @@ function mount(app, base = '/api') {
       throw new HttpError('Only the deployment administrator can create a business. Each business is a separate legal entity with its own books.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const body = await ctx.req.json();
-    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
-    // the platform ADMIN — "the vendor can never be locked out of their own client's
-    // instance" — and every call site passed only the settings, so `user` was
-    // undefined and the bypass could not fire. A suspended client could not even be
-    // helped by the person they had just called.
-    assertSubscriptionActive(settings, user);
+    // THE SUBSCRIPTION GATE IS NOT HERE ANY MORE. It is one middleware on the whole
+    // API (`server/routes/index.js`), which is the only arrangement in which the list of
+    // what stays reachable while suspended can be true: a call parked inside a route
+    // fires whatever the pipeline decides, so `POST /api/users` was refusing a client who
+    // was suspended — while the pipeline exempts the users family on purpose, because a
+    // sacked cashier has to be sackable and a PIN has to be resettable whether or not the
+    // invoice is paid. One rule, one place.
     await assertCanCreateBusiness(db, settings);
 
     const name = strField(requireVal(body, 'name'), { field: 'Business name', maxLength: 160, required: true });
@@ -264,12 +265,13 @@ function mount(app, base = '/api') {
     const body = await ctx.req.json();
     const business = await resolveBusiness(db, ctx);
     if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only an owner can open a branch.', { status: 403, code: 'ROLE_REQUIRED' });
-    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
-    // the platform ADMIN — "the vendor can never be locked out of their own client's
-    // instance" — and every call site passed only the settings, so `user` was
-    // undefined and the bypass could not fire. A suspended client could not even be
-    // helped by the person they had just called.
-    assertSubscriptionActive(settings, user);
+    // THE SUBSCRIPTION GATE IS NOT HERE ANY MORE. It is one middleware on the whole
+    // API (`server/routes/index.js`), which is the only arrangement in which the list of
+    // what stays reachable while suspended can be true: a call parked inside a route
+    // fires whatever the pipeline decides, so `POST /api/users` was refusing a client who
+    // was suspended — while the pipeline exempts the users family on purpose, because a
+    // sacked cashier has to be sackable and a PIN has to be resettable whether or not the
+    // invoice is paid. One rule, one place.
     if (!boolField(settings.multi_branch_enabled)) {
       throw new HttpError('Multi-branch is not enabled on this deployment. It can be switched on in Settings — it is a plan feature, not a technical limit.', { status: 403, code: 'FEATURE_DISABLED' });
     }
@@ -453,12 +455,13 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const settings = ctx.get('settings');
     const body = await ctx.req.json();
-    // THE CALLER GOES IN. `assertSubscriptionActive` has always returned early for
-    // the platform ADMIN — "the vendor can never be locked out of their own client's
-    // instance" — and every call site passed only the settings, so `user` was
-    // undefined and the bypass could not fire. A suspended client could not even be
-    // helped by the person they had just called.
-    assertSubscriptionActive(settings, user);
+    // THE SUBSCRIPTION GATE IS NOT HERE ANY MORE. It is one middleware on the whole
+    // API (`server/routes/index.js`), which is the only arrangement in which the list of
+    // what stays reachable while suspended can be true: a call parked inside a route
+    // fires whatever the pipeline decides, so `POST /api/users` was refusing a client who
+    // was suspended — while the pipeline exempts the users family on purpose, because a
+    // sacked cashier has to be sackable and a PIN has to be resettable whether or not the
+    // invoice is paid. One rule, one place.
 
     const role = valid(oneOf(requireVal(body, 'role'), [...ROLE_ORDER], { field: 'Role' }), 'role');
     if (!canManageUser(user, { role })) {

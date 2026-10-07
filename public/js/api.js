@@ -235,6 +235,11 @@
     if (!res.ok) {
       const err = await parseError(res, text);
       if (err.isAuth) emit('auth', { reason: err.code });
+      // A REFUSAL THE APP SHOULD REACT TO, not just report. `SUBSCRIPTION_NOT_ACTIVE`
+      // means the account has been suspended since the settings were last read, and the
+      // shell draws a bar from those settings — so it has to be told. The refusal itself
+      // is still thrown: the caller shows the server's message where the person tried.
+      if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
       throw err;
     }
     if (!text) return {};

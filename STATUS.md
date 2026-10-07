@@ -657,3 +657,78 @@ to"* as a failure. `tools/frontend-alerts.js` works around it by picking the fir
 branch picker would, and the screens still need the same treatment — that is the next UI/UX item,
 with the administrator's audit-trail/anchor screen and the remaining 0% flows (branding 0/5,
 audit 0/3, sessions 0/2, profiles 0/2, catalogue/categories/customer-classes/settings/dashboard).
+
+---
+
+## P8b — WHAT A SUSPENSION ACTUALLY STOPS
+
+`assertSubscriptionActive` has always read well — *"blocks every mutating request when the
+subscription is SUSPENDED or EXPIRED. READ access is deliberately preserved: a client who has not
+paid must still be able to export their own data"* — and it was wired to **three routes**: create
+business, create branch, create staff.
+
+So a client who stopped paying kept ringing sales, receiving stock, paying suppliers, posting
+journals and approving expenses. The only thing a suspension cost them was the ability to add a
+**fourth branch**. The vendor's one commercial lever did nothing to the thing the invoice is for, and
+it looked like it worked: the status changed on the Subscription screen, the caps kept binding, and
+everything that trades carried on regardless.
+
+### Where the line is drawn
+
+The gate moved into the request pipeline (`server/routes/index.js`), immediately after the auth guard
+and the settings load, for the same reason the auth guard is there: **a rule enforced at 97 call
+sites is a rule that will be missing from the 98th.** Being reachable while suspended now requires an
+explicit entry, and every entry has to say why — the same shape as the public-path list.
+
+> Everything that moves **money or stock** stops. Everything about running the business **as an
+> organisation** stays open.
+
+Open while suspended: **the door** (sign in, sign out, change your own PIN), **sync** (a device has to
+report what it did — and each replayed sale is refused on its own way back through this same
+pipeline), **the alert board**, **people and permissions** (a sacked cashier has to be sackable and a
+PIN has to be resettable whether or not the invoice is paid — it is also the only way the vendor can
+help), **revoking a stolen device**, **attendance** (shifts are people, not money), **statutory
+registers** (a licence renewal is not a sale), **the client's own configuration** (including the
+contact line the vendor is about to ring), and **previews**, which create nothing.
+
+The three per-route calls were removed. Leaving them would have made the exemption list a lie: a call
+parked inside a route fires whatever the pipeline decides, and `POST /api/users` was doing exactly
+that — refusing the client a PIN reset on a suspended account while the pipeline exempted the family
+on purpose. One rule, one place.
+
+### The client is told, not just refused
+
+The refusal was correct and unreachable: it names the status, says that reading and exporting still
+work, and gives the contact line — and the only person who ever read it was the one who happened to
+press Save. Everyone else met a toast in the middle of a queue of customers, and it expired in nine
+seconds.
+
+A **bar in the shell** now says it before a cashier scans a basket. It is drawn from the status the
+app already carries (`publicSettings`, mirrored for offline), so it costs no request; it repaints the
+moment the server refuses a write (`SR.api` emits `plan` on `SUBSCRIPTION_NOT_ACTIVE`), because a
+cached ACTIVE can be days old; the owner gets a way through to the Subscription screen; and the
+**vendor's own session is marked differently** rather than shown a wall — an administrator working on
+a suspended client's instance is not gated by it, and a red "your service is paused" bar in front of
+the person fixing it would be a lie.
+
+### Verified
+
+`npm run verify` **451/451/0** (435 before: 16 new checks in
+`test/integration/subscription-gate.test.js`) · `bash test/run-audits.sh` **20 audits green** ·
+`tools/frontend-suspension.js` **28 checks, every one green**, against a live server through the real
+UI: the administrator suspends the client **on the Subscription screen**, the client's own signed-in
+session is refused a trade through the app's own API layer, the bar appears naming the status and the
+contact line, reading still works, the vendor's line differs, the status is restored through the same
+screen, the bar goes and the shop trades again — and **the deployment is left on the status it
+started with** (TRIAL stays TRIAL: a fixture that "restores" everything to ACTIVE has quietly
+promoted somebody's trial).
+
+Also caught by the project's own guard on the way: the new test stamped a sale with
+`new Date().toISOString()`, and `test/unit/test-hygiene.test.js` refused it — UTC where the schema
+stores WAT. It uses `watNow()` now, which is exactly what that test is for.
+
+### Reconfirmed
+
+The third time this run of stages has hit it: an **owner with several branches has no active one**,
+so any branch-scoped write must name a branch. Both new probes resolve one the way the branch picker
+would and say so; the screens still owe the same treatment.

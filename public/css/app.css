@@ -232,6 +232,18 @@ button.chip:hover { background: var(--surface-3); }
 .link-btn { background: none; border: 0; color: var(--green-700); cursor: pointer; padding: 4px; font-size: .82rem; font-weight: 600; }
 [data-theme="dark"] .link-btn { color: var(--green-500); }
 
+/* A paused subscription is not a network state: it is a decision by the vendor, and
+   the shop has to be able to read it, understand it and ring somebody about it. It
+   sits at the top of the bar stack so it is never hidden behind the offline bar. */
+.subscription-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 46;
+  background: var(--red-100); color: var(--red-700); border-top: 1px solid var(--red-700);
+  padding: 8px 16px calc(8px + env(safe-area-inset-bottom)); font-size: .8rem; text-align: center;
+  display: flex; gap: 8px; align-items: center; justify-content: center; flex-wrap: wrap;
+}
+.subscription-bar.is-vendor { background: var(--amber-100); color: var(--amber-700); border-top-color: var(--amber-500); }
+.subscription-bar .link-btn { color: inherit; text-decoration: underline; }
+
 .offline-bar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 45;
   background: var(--amber-100); color: var(--amber-700); border-top: 1px solid var(--amber-500);

@@ -297,6 +297,9 @@
     }
     buildNav();
     updateNetChrome();
+    // Decoration too: it reads ids the shell owns, and a throw here would take the
+    // rest of `showShell` with it.
+    try { updateSubscriptionChrome(); } catch (err) { console.error('[chrome] subscription paint failed', err); }
   }
 
   function paintIdentity() {
@@ -371,6 +374,87 @@
     if (scrim) scrim.hidden = true;
     const toggle = document.getElementById('nav-toggle');
     if (toggle) toggle.setAttribute('aria-expanded', 'false');
+  }
+
+  // -------------------------------------------------------------------
+  // SUBSCRIPTION CHROME
+  // -------------------------------------------------------------------
+  // A SUSPENSION IS A DECISION, NOT A NETWORK STATE.
+  //
+  // The server refuses every trading write on a suspended account with a message that
+  // names the status, says that reading and exporting still work, and gives the contact
+  // line. Before this bar, the only person who ever read that message was the one who
+  // happened to press Save — everyone else met it as a toast in the middle of a queue of
+  // customers, with the reason gone in nine seconds.
+  //
+  // The status and the contact line are already in the settings the app loads at boot
+  // (`publicSettings`), and they are mirrored for offline use, so this costs no request.
+  // The vendor seat is marked differently rather than hidden: an administrator working on
+  // a suspended client's instance is not gated by it, and a red bar saying "your service
+  // is paused" to the person fixing it would be a lie.
+  const PAUSED_STATUSES = ['SUSPENDED', 'EXPIRED'];
+
+  function subscriptionState() {
+    const st = SR.state.settings || {};
+    const user = SR.state.user || {};
+    const status = String(st.subscription_status || 'ACTIVE').toUpperCase();
+    const contact = [st.admin_contact_name, st.admin_contact_phone, st.admin_contact_email]
+      .filter(Boolean).join(', ') || 'your StockRidge account manager';
+    return {
+      status,
+      paused: PAUSED_STATUSES.includes(status),
+      vendor: String(user.role || '').toUpperCase() === 'ADMIN',
+      owner: ['OWNER', 'ADMIN'].includes(String(user.role || '').toUpperCase()),
+      renewal: st.subscription_renewal_date || null,
+      contact,
+      signedIn: Boolean(user && user.id),
+    };
+  }
+
+  function subscriptionLine(st) {
+    const when = st.renewal ? ` (renewal date ${st.renewal})` : '';
+    if (st.vendor) {
+      return `This client's subscription is ${st.status}${when}. You are not gated by it — the client cannot sell, buy, move stock, take payments or record expenses until it is restored.`
+        + ` Restore it on the Subscription screen.`;
+    }
+    return `The subscription is ${st.status}${when}. Everything here is still readable and exportable —`
+      + ` imports, sales, purchases, stock movements, payments and expenses are paused until it is restored.`
+      + ` Please contact ${st.contact} to restore service.`;
+  }
+
+  /**
+   * Paint the bar from the settings already in hand. Called on boot, on every
+   * `loaded`, and whenever the server refuses a write for this reason — a shop whose
+   * cached copy says ACTIVE must still be told the moment a write is refused.
+   */
+  function updateSubscriptionChrome() {
+    const bar = document.getElementById('subscription-bar');
+    if (!bar) return;
+    const st = subscriptionState();
+    const show = st.signedIn && st.paused;
+    bar.hidden = !show;
+    if (!show) return;
+    bar.classList.toggle('is-vendor', st.vendor);
+    setText('subscription-bar-title', st.vendor ? 'Client suspended.' : (st.status === 'EXPIRED' ? 'Subscription expired.' : 'Service paused.'));
+    setText('subscription-bar-text', subscriptionLine(st));
+    const link = document.getElementById('subscription-bar-link');
+    if (link) {
+      const reachable = st.owner;   // the Subscription screen is OWNER+ only
+      link.hidden = !reachable;
+      link.textContent = st.vendor ? 'Subscription' : 'See what is affected';
+    }
+  }
+
+  /** Re-read the settings row and repaint. Cheap, and only ever called on a refusal. */
+  async function refreshSubscriptionChrome() {
+    try {
+      const res = await SR.api.get('/api/settings');
+      if (res && res.settings) SR.state.settings = res.settings;
+    } catch (err) {
+      // Offline, or the read itself failed: the cached copy is what the bar draws from
+      // and it is better than nothing. Never throw out of a chrome repaint.
+    }
+    updateSubscriptionChrome();
   }
 
   // -------------------------------------------------------------------
@@ -606,6 +690,7 @@
       SR.api.setToken(result.token);
       void form;
       await SR.state.load({ force: true });
+      updateSubscriptionChrome();
       // The mirror is refreshed straight away so a device that loses its line
       // after signing in still has the catalogue and today's prices.
       SR.sync.start();
@@ -744,6 +829,7 @@
     if (hasToken) {
       try {
         await SR.state.load({ force: true });
+        updateSubscriptionChrome();
         restored = true;
       } catch (err) {
         if (err && err.isAuth) {
@@ -780,7 +866,14 @@
 
     startBellPolling();
     SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); });
-    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); });
+    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSubscriptionChrome(); });
+    // A REFUSED WRITE IS THE MOST RELIABLE SIGNAL THERE IS. The cached settings can be
+    // minutes or days old (they are mirrored for offline use); a 402 naming the
+    // suspension is the server saying it just now. Re-read and repaint rather than trust
+    // the copy.
+    SR.api.on('plan', () => { refreshSubscriptionChrome(); });
+    const subLink = document.getElementById('subscription-bar-link');
+    if (subLink) subLink.addEventListener('click', () => navigate('/plan'));
     SR.api.on('auth', () => handleAuthFailure());
     SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); });
     SR.state.on('business', () => paintIdentity());
@@ -861,6 +954,7 @@
     showLogin, showShell, paintIdentity, buildNav, setActiveNav, closeNav,
     updateBell, openBell, closeBell, markAllRead,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
+    updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,
     openModal: ui.openModal,
     get route() { return currentRoute; },
     get params() { return currentParams; },

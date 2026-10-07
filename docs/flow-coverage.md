@@ -28,7 +28,7 @@ Live audits: `audit.admin-manager`, `audit.admin-owner`, `audit.admin-staff`, `a
 | `auth` | 2 (25%) | 8 | account, other | audit.admin-owner, audit.admin-staff, audit.concurrency, audit.data, audit.http, audit.owner-manager, audit.roles, audit.transfers |
 | `price-lists` | 1 (33%) | 3 | — | audit.limits |
 | `suppliers` | 2 (40%) | 5 | purchase-orders, suppliers | audit.serials, audit.stockchain, audit.wht |
-| `settings` | 1 (50%) | 2 | admin, plan | audit.admin-owner, audit.money, audit.owner-manager, audit.reports, audit.serials, audit.wht |
+| `settings` | 1 (50%) | 2 | admin, plan, shell | audit.admin-owner, audit.money, audit.owner-manager, audit.reports, audit.serials, audit.wht |
 | `health` | 1 (50%) | 2 | other | audit.http |
 | `stock` | 4 (57%) | 7 | stock, transfers | audit.changeOwed, audit.concurrency, audit.deposits, audit.fulfilment, audit.limits, audit.manager-staff, audit.money, audit.reports, audit.returns, audit.serials, audit.stockchain, audit.sync, audit.warranty, audit.wht |
 | `users` | 11 (79%) | 14 | account, users | audit.admin-manager, audit.admin-owner, audit.admin-staff, audit.http, audit.manager-staff, audit.owner-manager, audit.owner-staff, audit.reports, audit.roles, audit.transfers |

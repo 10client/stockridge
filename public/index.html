@@ -177,6 +177,17 @@
   <div id="offline-bar" class="offline-bar" hidden role="status">
     <strong>Offline.</strong> <span id="offline-bar-text">You can keep selling — everything is queued on this device.</span>
   </div>
+
+  <!-- Subscription notice -------------------------------------------
+       The server refuses a suspended account's trading writes with a message that
+       says what still works — and until this bar existed, the only person who saw
+       it was the one who happened to press Save. The same rule has to be visible
+       before a cashier scans a basket. -->
+  <div id="subscription-bar" class="subscription-bar" hidden role="status">
+    <strong id="subscription-bar-title">Service paused.</strong>
+    <span id="subscription-bar-text"></span>
+    <button type="button" class="link-btn" id="subscription-bar-link" hidden>Subscription</button>
+  </div>
 </div>
 
 <!-- Account menu ------------------------------------------------- -->
