@@ -25,7 +25,7 @@
 
 // Bump this on every deploy. It is what makes the old cache get thrown away
 // rather than served forever.
-const BUILD = 'ridge-20261007-1256-d1fbfdf';
+const BUILD = 'ridge-20261007-1341-7eeafa9';
 const CACHE = `stockridge-${BUILD}`;
 
 const SHELL = [

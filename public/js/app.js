@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261007-1256-d1fbfdf';
+  SR.BUILD = 'ridge-20261007-1341-7eeafa9';
 
   // -------------------------------------------------------------------
   // ROUTES
