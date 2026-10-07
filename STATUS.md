@@ -1570,3 +1570,39 @@ shell's script tag and on every asset URL it names (35 checks).
 **Note for anyone who reported the serial box missing:** the very next page load after this deploy
 brings the current build, because the page is fetched network-first and its assets are now
 unreachable from the old cache. One reload is all it takes; no clearing of site data.
+
+### P22 — the deployment is the same everywhere, and the screen proves it (checkpoint)
+
+Live proof on **staging**, driven through the deployed bundle (`ridge-20261007-1444-e198c49`) with a
+temporary OWNER seat (`p22owner0k35`, switched off again at the end — `/purchase-orders` is
+MANAGER/OWNER work, so the administrator cannot open it):
+
+- the user's own order **PO-MAIN-5XKER**, iPhone 13 128GB (UK Used), 10 units, `requires_serial: 1`
+  — **the serial box is on the screen and visible**, quantity prefilled 10, hint *"10 unit(s) — 10
+  serial number(s) expected, one per unit; 0 entered…"*;
+- pressing Record with nothing typed: the refusal *"…10 expected for 10 unit(s), 0 given…"* and the
+  **cursor in the serial box** (`serials_e6352bb2…`), closed without writing anything;
+- a fixture order (PO-MAIN-80TN1, 1 unit, supplier "P22 Serial Proof"): one number typed → hint
+  *"1 entered"* → *"Received in full. The order is complete and the batches are on the shelf.
+  1 serial number(s) are on file against the units."* → register: **`P22-0K35-1 IN_STOCK @stock ridge
+  head office`**.
+
+**All three deployments carry the same build** (`e198c49`), verified by request — the page's script
+URL, the file behind it, and byte-for-byte equality with the working tree (only `SR.BUILD` differs,
+by the minute of each deploy):
+
+| environment | page names | file says | assets |
+| --- | --- | --- | --- |
+| production | ridge-20261007-1443-e198c49 | same | 37/37, serial box ✓ branch business field ✓ |
+| staging | ridge-20261007-1442-e198c49 | same | 37/37 ✓ ✓ |
+| sample | ridge-20261007-1444-e198c49 | same | 37/37 ✓ ✓ |
+
+`admin`/`1234` → 200 on all three. The deploy smoke test now proves the page and its scripts are the
+build it just uploaded (it caught a real propagation race on its first run — assets take 3–9s — so it
+waits, briefly, and reports a build that never turns up).
+
+**Also fixed on the way:** `tools/lib/page-harness.js` resolved `script[src]` straight to a file path,
+so the moment asset URLs carried a stamp every jsdom walker saw "script missing" for the whole app.
+It now strips the query before looking on disk.
+
+`npm run verify` → **485 pass / 0 fail** · audits **30 green** · `stamp:check` green.

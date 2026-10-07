@@ -167,7 +167,13 @@ async function bootPage({ origin, username, pin, token: givenToken = null, waitM
   // Load the page's own scripts, in the page's own order. Reading the order from
   // the HTML is the point: a script the page forgets to include is exactly the
   // kind of thing these tools should notice.
-  const scripts = [...window.document.querySelectorAll('script[src]')].map((s) => s.getAttribute('src'));
+  // THE QUERY STRING IS PART OF THE URL, NOT PART OF THE FILE NAME. Scripts are named with the
+  // deploy's build stamp (`/js/app.js?v=ridge-…`) so that a browser cannot be served last week's
+  // bundle from its own cache; on disk they are still `public/js/app.js`. Stripping the query here
+  // is the difference between a harness that finds every script and one that reports the whole app
+  // missing — which is exactly what happened the first time the stamps went on.
+  const scripts = [...window.document.querySelectorAll('script[src]')]
+    .map((s) => String(s.getAttribute('src')).split('?')[0].split('#')[0]);
   const missing = [];
   for (const src of scripts) {
     const file = path.join(PUBLIC_DIR, src.replace(/^\//, ''));

@@ -493,9 +493,27 @@ async function smokeTest(baseUrl, { pinEffective = null, stampValue = null } = {
   // worker was correct). The HTML names its assets with this deploy's stamp, so the check is
   // simply: does the page ask for THIS build, and does the file behind that URL admit to being it?
   if (stampValue) {
-    const named = (html.match(/js\/app\.js\?v=([^"']+)/) || [])[1] || null;
+    // A DEPLOY TAKES A MOMENT TO BE THE THING THAT ANSWERS. Cloudflare serves a new version's assets
+    // as they propagate, so a fetch of `/` taken the instant the upload returns can still be the
+    // PREVIOUS build — which this check saw on its first live run ("the page asks for …1440… while
+    // this deploy stamped …1441…"). That is a race, not a fault: it converges in seconds. So the page
+    // is asked again, briefly, and only a build that never turns up is reported. Everything below
+    // reads the LAST copy fetched, never the first — reading the stale one is how this check reported
+    // "all 0 scripts the page names are served" on production while the page was in fact fine.
+    let pageHtml = html;
+    let named = (pageHtml.match(/js\/app\.js\?v=([^"']+)/) || [])[1] || null;
+    for (let attempt = 0; named !== stampValue && attempt < 6; attempt += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const retry = await fetch(`${baseUrl}/?_=${Date.now()}`);
+      pageHtml = await retry.text();
+      named = (pageHtml.match(/js\/app\.js\?v=([^"']+)/) || [])[1] || null;
+      if (named === stampValue) {
+        warn(`the deployment took about ${(attempt + 1) * 3}s to start serving this build (assets propagate)`);
+        break;
+      }
+    }
     if (named !== stampValue) {
-      problems.push(`the page asks for js/app.js?v=${named} while this deploy stamped ${stampValue} — a browser would load a different build from the one deployed`);
+      problems.push(`the page asks for js/app.js?v=${named} while this deploy stamped ${stampValue} — a browser would load a different build from the one deployed, even after waiting`);
     } else {
       const script = await fetch(`${baseUrl}/js/app.js?v=${encodeURIComponent(stampValue)}`);
       const body = await script.text();
@@ -507,7 +525,7 @@ async function smokeTest(baseUrl, { pinEffective = null, stampValue = null } = {
       }
     }
     // ...and every one of the page's own scripts must answer, or the screen half-loads.
-    const asked = [...new Set((html.match(/\/js\/[^"']+?\.js\?v=[^"']+/g) || []))];
+    const asked = [...new Set(pageHtml.split('src="').slice(1).map((x) => x.split('"')[0]).filter((u) => u.startsWith('/js/') && u.includes('.js?v=')))];
     const missing = [];
     for (const path of asked) {
       const res = await fetch(`${baseUrl}${path}`, { method: 'HEAD' });
