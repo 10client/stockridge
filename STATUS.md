@@ -837,3 +837,70 @@ percentage, a zero delta, nothing at all) are driven through the same component;
 **back to front** every screen in the sidebar is swept: **every money figure on every screen
 carries a money icon and nothing renders the fallback square** (74 tiles over 26 screens as the
 owner, 35 over 12 as a cashier).
+
+---
+
+## P13 — THE AUDIT TRAIL, AND WHETHER IT CAN BE LIED ABOUT
+
+Every privileged action writes a row to `audit_log`: who, which business and branch, what it was
+before and after, the address it came from. Each row carries the hash of the row before it, so an
+edited or removed row breaks every link after it — and two routes exist to prove exactly that:
+`GET /api/audit/verify` recomputes the whole chain, `POST /api/audit/anchor` returns a short
+commitment to the head that an owner can keep somewhere the vendor does not control.
+
+**Nothing had ever exercised them.** The screen called all three routes, the nav offered it to
+managers and owners, and the flow has read **0/3** since it was written — the exact shape of "the
+feature exists and nobody has seen it work".
+
+### What the audit found — four dead field reads and a button that always fails
+
+The screen is a screen about proof, and it could not show its own proof:
+
+* the **Chain column read `a.hash`**, and the column is `row_hash` — so this column said "—" for
+  every row of every deployment, and the entry dialog's "Hash chain" line read `hash: —` too. Neither
+  name throws; `undefined` renders as a dash. **The one field whose whole job is to show the row is
+  chained was blank, on the screen whose entire argument is that the chain is real.**
+* **"Who" read `a.role`** — not a column of `audit_log` — so the second line of every row was blank
+  where the address it came from should have been.
+* **the entry dialog read `entry.reason` and `entry.device_id`** — neither is a column — so two of
+  its seven lines could only ever say "—", while the two facts the trail does carry (`ip_address`,
+  `user_agent`) were not shown at all.
+* **"Detail" read `a.summary || a.description`**, neither of which exists; it rendered correctly only
+  because the third name in the chain does. Off by a hidden fallback is still off — and a deletion
+  has only `before_json` to show, so that is now the fallback rather than a second choice.
+* **"Verify the chain" was drawn for managers**, while both routes are `atLeast(OWNER)`. A manager
+  may read the trail (the read route allows it, and the nav matches); a manager pressing Verify got a
+  403 toast. A button that always refuses teaches people to ignore refusals.
+
+### And the audit that pins it
+
+`test/audit/audit.auditTrail.js` — **12 checks, green**:
+
+**front to back** a privileged action is performed and its row appears with the actor, the branch and
+the before/after → every filter the screen offers finds it (action, user, entity, free text, and a
+range that cannot contain it returns nothing) → the per-action counts are reproduced from the rows
+behind them → the chain verifies over every row → anchoring returns a head hash and **the act of
+anchoring is itself on the trail** → **the screen only reads fields the rows actually carry**: the
+audit walks the screen's own source, strips comments and strings, collects every `a.`/`entry.` read
+in the audit section and refuses any the API's live row does not send. That check fails on all four
+dead reads above, which is how they were found.
+
+**back to front — the attack the whole feature exists for**: a trail row is **edited directly in the
+database**, through a second SQLite connection, the way somebody with a SQL client would. `verify`
+must answer 500, name the row, and report `HASH_MISMATCH` — and it does. Then the row is **deleted**,
+and the report must turn into `BROKEN_LINK` — and it does. The row is put back through the same
+connection in a `finally`, so a failed run cannot leave a deployment with a genuinely broken chain;
+and the audit is honest that a deleted row **cannot** be restored byte for byte, so the chain stays
+broken afterwards — which is the point of it. Also: the API cannot write, edit or delete a trail row
+(four attempts, all refused, row count unchanged); a manager may read the trail but gets `403` for
+verify and anchor; a staff member gets `403` for the trail at all; and a manager cannot read another
+business's rows.
+
+### Verified
+
+`npm run verify` **469/469/0** · `bash test/run-audits.sh` **22 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 157 audited · 26 screen-only · 14 unreached**, with
+**audit 3/3** (was 0/3) · `tools/frontend-roles.js` across all four seats: **no problems, both
+directions** — 12/12 critical boundaries checked for the cashier, 10/12 for the manager · and the
+live DOM: the owner's trail shows real hashes in the Chain column with both buttons; the manager's
+shows real hashes with **neither** button; the cashier has no trail at all.

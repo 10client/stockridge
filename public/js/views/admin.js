@@ -628,7 +628,12 @@
         ui.h('h1', {}, 'Audit trail'),
         ui.h('p', { class: 'sub' }, 'Every change, hash-chained. Rows cannot be edited or deleted through the API, and removing one breaks every link after it — which is exactly how a break becomes visible.')),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm', onClick: () => verifyChain() }, 'Verify the chain'),
+        // BOTH BUTTONS ARE THE OWNER'S, because both ROUTES are (`atLeast(user.role, 'OWNER')`
+        // in `server/routes/admin.js`). A manager may read the trail — the screen is offered
+        // to managers and the read route allows them — but a button that always answers 403
+        // is a button that teaches people to ignore refusals. Hiding a control the API
+        // refuses is not a permission; showing one it refuses is a lie with extra steps.
+        SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => verifyChain() }, 'Verify the chain') : null,
         SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => anchorChain() }, 'Anchor the head hash') : null)));
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
@@ -678,15 +683,30 @@
           table: ui.renderTable({
             columns: [
               { key: 'created_at', label: 'When', render: (a) => ui.h('div', {}, ui.h('div', {}, U.dateTime(a.created_at)), ui.h('div', { class: 'hint' }, U.relTime(a.created_at))) },
-              { key: 'username', label: 'Who', render: (a) => ui.h('div', {}, ui.h('div', {}, a.username || 'system'), ui.h('div', { class: 'hint' }, a.role || '')) },
+              { key: 'username', label: 'Who', render: (a) => ui.h('div', {}, ui.h('div', {}, a.username || 'system'), ui.h('div', { class: 'hint' }, a.ip_address || 'no address recorded')) },
               { key: 'action', label: 'What', render: (a) => ui.badge(U.humanise(a.action), actionTone(a.action)) },
               { key: 'entity_type', label: 'On', render: (a) => ui.h('div', {}, ui.h('div', {}, U.humanise(a.entity_type || '—')), ui.h('div', { class: 'hint' }, String(a.entity_id || '').slice(0, 10))) },
               { key: 'branch_name', label: 'Branch', render: (a) => a.branch_name || '—' },
-              { key: 'summary', label: 'Detail', render: (a) => (a.summary || a.description || (a.after_json ? String(a.after_json).slice(0, 70) : '—')) },
               {
-                key: 'hash',
+                // THE ONE DEAD READ A FALLBACK WAS HIDING. `a.summary` and `a.description`
+                // are not columns and never were; the row rendered correctly only because
+                // the third name in the chain exists. Off by a hidden fallback is still off —
+                // and a DECISION shows what was there before, so `before_json` is not a
+                // second choice here, it is the only field a deletion has to show.
+                key: 'detail',
+                label: 'Detail',
+                render: (a) => (a.after_json ? String(a.after_json).slice(0, 70)
+                  : (a.before_json ? String(a.before_json).slice(0, 70) : '—')),
+              },
+              {
+                // THE COLUMN IS `row_hash`. It was read as `a.hash`, which does not exist on
+                // `audit_log`, so the Chain column of every row on every deployment said "—":
+                // the one field on the screen whose job is to prove the row is chained was
+                // silently blank, on the screen whose whole argument is that the chain is real.
+                key: 'chain',
                 label: 'Chain',
-                render: (a) => ui.h('span', { class: 'hint mono', title: a.hash || '' }, a.hash ? `${String(a.hash).slice(0, 8)}…` : '—'),
+                render: (a) => ui.h('span', { class: 'hint mono', title: a.row_hash || '' },
+                  a.row_hash ? `${String(a.row_hash).slice(0, 8)}…` : '—'),
               },
             ],
             rows,
@@ -712,14 +732,18 @@
 
     function showEntry(entry) {
       const body = ui.h('div', { class: 'stack' });
+      // THE FIELDS ARE THE COLUMNS. `reason` and `device_id` are not columns of `audit_log`
+      // and `role` is not one either, so three lines of this dialog could only ever read
+      // "—" while the two facts the trail DOES carry — the address it came from and the
+      // agent it claimed to be — were not shown at all.
       body.appendChild(ui.kv([
         ['When', U.dateTime(entry.created_at)],
-        ['Who', `${entry.username || 'system'}${entry.role ? ` (${entry.role})` : ''}`],
+        ['Who', entry.username || 'system'],
         ['Action', U.humanise(entry.action)],
         ['Entity', `${U.humanise(entry.entity_type || '—')} ${String(entry.entity_id || '').slice(0, 12)}`],
         ['Branch', entry.branch_name || '—'],
-        ['Reason', entry.reason || '—'],
-        ['Device', entry.device_id || '—'],
+        ['From', entry.ip_address || '—'],
+        ['Device', entry.user_agent || '—'],
       ]));
       for (const [label, raw] of [['Before', entry.before_json], ['After', entry.after_json]]) {
         if (!raw) continue;
@@ -729,7 +753,7 @@
         body.appendChild(ui.h('pre', { class: 'pre-block' }, String(pretty).slice(0, 4000)));
       }
       body.appendChild(ui.h('h3', {}, 'Hash chain'));
-      body.appendChild(ui.h('pre', { class: 'pre-block' }, `previous: ${entry.prev_hash || '—'}\nhash:     ${entry.hash || '—'}`));
+      body.appendChild(ui.h('pre', { class: 'pre-block' }, `previous: ${entry.prev_hash || '—'}\nhash:     ${entry.row_hash || '—'}`));
       ui.openModal({ title: 'Audit entry', body, size: 'wide' });
     }
 
