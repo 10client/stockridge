@@ -93,20 +93,29 @@ runAudit('createFlows', async (audit, d) => {
   // ------------------------------------------------------------------
   // FRONT TO BACK — A BRANCH, AND THE CODE IT DERIVES
   // ------------------------------------------------------------------
-  const newBranch = await audit.captureAsync('an owner opens a branch with nothing but a name', async () => {
+  // THE BUSINESS IS NAMED, NOT GUESSED. The route has always honoured a `business_id` in the body
+  // (`resolveBusiness`, scope-checked), but the branch form never sent one — so an owner running
+  // several businesses got whichever business the server resolved on its own. The branch is opened
+  // here under the business created at the top of this audit, and the row must say so: a branch in
+  // the wrong set of books is a branch nobody can find.
+  const newBranch = await audit.captureAsync('an owner opens a branch under a named business', async () => {
     const res = await owner.post('/api/branches', {
-      name: `Audit Branch ${TAG}`, city: 'Kano', state: 'Kano', business_id: branch.business_id,
+      name: `Audit Branch ${TAG}`, city: 'Kano', state: 'Kano', business_id: made.id,
     });
     assert.ok(res.status < 400, `opening a branch answered ${res.status}: ${String(res.text).slice(0, 240)}`);
     return { id: res.json.id || (res.json.branch && res.json.branch.id), message: String(res.json.message || '') };
   });
 
-  await audit.checkAsync('the branch is open, named, coded, and usable', async () => {
+  await audit.checkAsync('the branch is open, named, coded, and filed under the business that was asked for', async () => {
     const res = await owner.get('/api/branches?limit=200');
     const row = ((res.json && res.json.data) || []).find((b) => String(b.id) === String(newBranch.id));
     assert.ok(row, 'the branch that was just opened is not in the branch list');
     assert.ok(row.code, 'the branch has no code — codes appear on receipt numbers and transfer references');
     assert.equal(String(row.is_active), '1', 'a branch created a moment ago is not active');
+    assert.equal(String(row.business_id), String(made.id),
+      `the branch was filed under ${row.business_name || row.business_id} — not the business that was asked for`);
+    assert.ok(/Audit Co/.test(String(row.business_name || '')),
+      `the branch names its business as "${row.business_name}" — every branch belongs to one set of books`);
   });
 
   // ------------------------------------------------------------------

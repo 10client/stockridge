@@ -1491,3 +1491,18 @@ been scanned.
   2 serial number(s) are on file against the units."; serial `CF-…` on the register `IN_STOCK` at the
   branch; branch / business / staff creates all green, staff create with the branch left at its
   default (the misalignment).
+
+### P21, second pass — the branch form now names its business (found while proving the first pass)
+
+The branch create form had **no business field at all**, while `POST /api/branches` has always
+honoured `business_id` in the body (`resolveBusiness`, precedence 2, scope-checked). A live walk
+from an owner whose own branch is "Ridge Building Supplies — Ibadan" was answered *"…opened under
+Ridge Electronics Ltd"* — a real branch in the wrong set of books, and nothing on the screen had
+ever said which business it would be in. The form now asks: a required Business select when the
+caller reaches more than one business (defaulting to the one they are in, labelled as such), a named
+single-business hint when they reach one, and — on an existing branch — a line saying which business
+it belongs to and that it cannot be moved. Live: choosing "Ridge Building Supplies" answered
+*"Pick Biz ZVJ (PICKBI) opened under Ridge Building Supplies."* The audit asserts the row comes back
+with that `business_id` and that the branch names its business.
+
+`audit.createFlows.js` 15 checks · suite 30 green · verify 479/0 · coverage 198 · 187 · 8 · 3.

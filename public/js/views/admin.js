@@ -243,7 +243,36 @@
       const isNew = !branch;
       const b = branch || {};
       const form = ui.h('div', {});
+      // WHICH BUSINESS THIS BRANCH BELONGS TO — asked, not guessed.
+      //
+      // The route has always honoured a `business_id` in the body (`resolveBusiness`, precedence 2,
+      // scope-checked), but this form never sent one, so an owner running several businesses got
+      // whichever business the server resolved on its own: their own row, or the recorded primary,
+      // or the oldest live business. A live walk opened a branch from an owner whose own branch is
+      // "Ridge Building Supplies — Ibadan" and the answer was "opened under Ridge Electronics Ltd" —
+      // a real branch in the wrong set of books, with nothing on the screen that had said so.
+      const reachableBusinesses = SR.state.businesses() || [];
+      const businessField = isNew
+        ? (reachableBusinesses.length > 1
+          ? ui.field({
+            label: 'Business', name: 'business_id', required: true,
+            options: reachableBusinesses.map((biz) => ({
+              value: biz.id,
+              label: biz.name + (String(biz.id) === String(SR.state.activeBusinessId) ? ' — the one you are in' : ''),
+            })),
+            value: SR.state.activeBusinessId || (reachableBusinesses[0] || {}).id || '',
+            hint: 'Each business keeps its own books, catalogue and staff. A branch cannot be moved between businesses later.',
+          })
+          : ui.field({
+            label: 'Business', name: 'business_id', required: true,
+            options: reachableBusinesses.map((biz) => ({ value: biz.id, label: biz.name })),
+            value: (reachableBusinesses[0] || {}).id || '',
+            hint: 'The branch opens under this business. It cannot be moved to another one later.',
+          }))
+        : ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Business'),
+          ui.h('div', { class: 'hint' }, `This branch belongs to ${b.business_name || 'its business'} and cannot be moved to another one.`));
       form.appendChild(ui.h('div', { class: 'form-grid' },
+        businessField,
         ui.field({ label: 'Branch name', name: 'name', value: b.name || '', required: true, placeholder: 'Ikeja Showroom' }),
         ui.field({ label: 'Code', name: 'code', value: b.code || '', hint: 'Appears on receipt numbers and transfer references. Generated from the name if left blank.' }),
         ui.field({ label: 'Type', name: 'branch_type', options: BRANCH_TYPES.map((t) => ({ value: t, label: U.humanise(t) })), value: b.branch_type || 'RETAIL' }),
