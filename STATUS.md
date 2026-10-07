@@ -732,3 +732,47 @@ stores WAT. It uses `watNow()` now, which is exactly what that test is for.
 The third time this run of stages has hit it: an **owner with several branches has no active one**,
 so any branch-scoped write must name a branch. Both new probes resolve one the way the branch picker
 would and say so; the screens still owe the same treatment.
+
+---
+
+## P8d — THE VENDOR'S HAND ON THE CONTROLS, AUDITED BOTH WAYS
+
+Every commercial control in the product belongs to the platform administrator: the three caps, the
+plan name, the subscription status, the renewal date. P8a made them the vendor's at the API, P8b
+made a suspension actually stop trade, P9/P10 put them on the Subscription screen. What was missing
+was a run that measures the whole control surface **from both ends at once** — and it found the last
+two places where the screen and the server disagreed about what a control means:
+
+* **`GET /api/plan` is camelCase and carries the counts separately.** The screen draws
+  `maxBusinesses` / `maxBranches` / `maxStaff` / `plan` / `status` / `renewalDate` beside a live
+  `counts` object — and an audit that assumed `usage.<key>` had nothing to assert against, which is
+  how a screen and an API drift apart in the first place. The keys are now pinned by a check that
+  fails if one is renamed.
+* **the caps refuse in the client's own terms.** *"Your Standard plan includes 1 branch and all 1 are
+  in use. Contact your StockRidge account manager to add another."* — the number, the plan and the
+  contact line, asserted rather than admired.
+
+`test/audit/audit.platformAdmin.js` — **10 checks, green** — walks:
+
+**front to back** the six controls are drawn with the live usage → a cap the administrator sets
+**binds** at the create route → a cap **below** current usage warns and takes nothing away (nothing
+is ever deleted to fit a ceiling) → the change lands on the audit trail as **`PLAN_LIMITS_CHANGED`**,
+naming the field that moved → **0 means unlimited**, which is how the screen has always read it and
+how the server now behaves (a cap of 0 lets a create through that a cap of 1 refused);
+
+**back to front** the client cannot write **any** of the six — three probes per field asserting
+`403 PLATFORM_ADMIN_REQUIRED`, the field named, and the value unchanged afterwards (a refusal that
+writes is worse than no rule) — a manager and a staff member cannot even **read** the commercial
+position (`403 ROLE_REQUIRED`), a suspension refuses the client's trading write `402` while the
+client's reads keep answering `200`, and **the vendor is never gated** on the instance they have been
+telephoned about.
+
+**And it leaves nobody on a different plan.** Every field it touches is captured first and handed back
+to the harness — including the subscription status, because an audit that ends with a client suspended
+has stopped a shop trading.
+
+### Verified
+
+`npm run verify` **451/451/0** · `bash test/run-audits.sh` **21 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 155 audited · 28 screen-only · 14 unreached**, with
+**plan 1/1** (was 0/1) and **settings 2/2**.
