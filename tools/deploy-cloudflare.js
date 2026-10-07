@@ -563,6 +563,14 @@ async function main() {
   console.log(`  target: ${ENV_NAME ? `environment "${ENV_NAME}"` : 'production (the default configuration)'}`);
   console.log('──────────────────────────────────────────────────────────');
 
+  // STAMP THE BUILD BEFORE ANYTHING IS UPLOADED. The service worker names its cache after this
+  // stamp and serves assets cache-first, so a deploy that does not bump it hands every browser
+  // that has already visited the build it already has — the new files land on the server and
+  // never reach the screen. See tools/stamp-build.js.
+  const stamped = require('./stamp-build').stamp();
+  console.log(`  build stamp   : ${stamped.stampValue}${stamped.changed.length ? '' : ' (unchanged)'}`);
+  for (const f of stamped.changed) console.log(`                  updated ${f}`);
+
   await verifyToken();
   const databaseId = await ensureDatabase();
   writeDatabaseId(databaseId);

@@ -15,14 +15,14 @@ Live audits: `audit.admin-manager`, `audit.admin-owner`, `audit.admin-staff`, `a
 | flow | audited | routes | screens | audits |
 |---|---:|---:|---|---|
 | `price-lists` | 1 (33%) | 3 | — | audit.limits |
-| `suppliers` | 2 (40%) | 5 | purchase-orders, suppliers | audit.serials, audit.stockchain, audit.wht |
+| `suppliers` | 2 (40%) | 5 | purchase-orders, suppliers | audit.stockchain, audit.wht |
 | `health` | 1 (50%) | 2 | other | audit.http |
 | `stock` | 4 (57%) | 7 | stock, transfers | audit.changeOwed, audit.concurrency, audit.dashboard, audit.deposits, audit.fulfilment, audit.limits, audit.manager-staff, audit.money, audit.reference, audit.reports, audit.returns, audit.serials, audit.stockchain, audit.sync, audit.warranty, audit.wht |
-| `purchase-orders` | 4 (80%) | 5 | purchase-orders | audit.serials, audit.stockchain |
+| `purchase-orders` | 4 (80%) | 5 | purchase-orders | audit.stockchain |
 | `accounting` | 9 (82%) | 11 | accounting | audit.admin-staff, audit.changeOwed, audit.money, audit.owner-manager, audit.owner-staff, audit.roles, audit.warranty, audit.wht |
 | `users` | 12 (86%) | 14 | account, users | audit.admin-manager, audit.admin-owner, audit.admin-staff, audit.auth, audit.http, audit.manager-staff, audit.owner-manager, audit.owner-staff, audit.platformAdmin, audit.reports, audit.roles, audit.sessions, audit.transfers |
-| `sales` | 6 (86%) | 7 | other, pos, sales | audit.changeOwed, audit.concurrency, audit.dashboard, audit.deposits, audit.fulfilment, audit.limits, audit.manager-staff, audit.money, audit.platformAdmin, audit.reports, audit.returns, audit.serials, audit.sync, audit.warranty, audit.wht |
-| `customers` | 9 (90%) | 10 | customers, instalments, pos | audit.admin-manager, audit.auditTrail, audit.changeOwed, audit.deposits, audit.fulfilment, audit.limits, audit.money, audit.owner-manager, audit.owner-staff, audit.platformAdmin, audit.reports, audit.roles, audit.serials, audit.sync, audit.warranty |
+| `sales` | 6 (86%) | 7 | other, pos, sales | audit.changeOwed, audit.concurrency, audit.dashboard, audit.deposits, audit.fulfilment, audit.limits, audit.manager-staff, audit.money, audit.platformAdmin, audit.reports, audit.returns, audit.sync, audit.warranty, audit.wht |
+| `customers` | 9 (90%) | 10 | customers, instalments, pos | audit.admin-manager, audit.auditTrail, audit.changeOwed, audit.deposits, audit.fulfilment, audit.limits, audit.money, audit.owner-manager, audit.owner-staff, audit.platformAdmin, audit.reports, audit.roles, audit.sync, audit.warranty |
 | `attendance` | 8 (100%) | 8 | attendance | audit.staff |
 | `auth` | 8 (100%) | 8 | account, other, users | audit.admin-owner, audit.admin-staff, audit.auditTrail, audit.auth, audit.concurrency, audit.data, audit.http, audit.owner-manager, audit.roles, audit.sessions, audit.transfers |
 | `reports` | 8 (100%) | 8 | other, reports | audit.reports |
@@ -47,7 +47,7 @@ Live audits: `audit.admin-manager`, `audit.admin-owner`, `audit.admin-staff`, `a
 | `safe` | 3 (100%) | 3 | till | audit.admin-staff, audit.changeOwed, audit.money, audit.owner-staff |
 | `expenses` | 3 (100%) | 3 | expenses | audit.manager-staff, audit.money, audit.reports, audit.sync, audit.wht |
 | `sessions` | 2 (100%) | 2 | account, users | audit.auth, audit.sessions |
-| `settings` | 2 (100%) | 2 | admin, plan, shell | audit.admin-owner, audit.money, audit.owner-manager, audit.platformAdmin, audit.reports, audit.serials, audit.wht |
+| `settings` | 2 (100%) | 2 | admin, plan, shell | audit.admin-owner, audit.money, audit.owner-manager, audit.platformAdmin, audit.reports, audit.wht |
 | `profiles` | 2 (100%) | 2 | products | audit.reference |
 | `catalogue` | 2 (100%) | 2 | admin, pos | audit.reference |
 | `categories` | 2 (100%) | 2 | products, stocktake | audit.reference |

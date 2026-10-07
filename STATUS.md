@@ -1222,3 +1222,71 @@ a synthetic row in the admin list takes the profile's label as its name.
 `node tools/flow-coverage.js` → **197 routes · 181 audited · 13 screen-only · 3 unreached** ·
 live probe on the restarted demo: `200 matchedBy=SKU` / `404 SCAN_NOT_FOUND` / `400 MISSING_FIELD` /
 cashier 200. Next: suppliers (2/5) and stock (4/7), then the last three unreached routes.
+
+## P19 — THE NUMBER ON THE LABEL, AND THE SCREEN THAT ASKS FOR IT (2026-10-07)
+
+Reported: receiving a serial-tracked product was refused with `"Haier Thermocool 300L Double Door
+Fridge" is serial-tracked, so each unit needs its own serial number: 1 expected for 1 unit(s), 0
+given` — and the same for a console (`10 expected for 10 unit(s), 0 given`) — **with nowhere on the
+form to type a number**. Plus: "when owner clicks account … That failed. transfers is not defined".
+
+### The demand was right. The form was the dead end.
+
+Three faults, all on the screen, none in the rule the server enforces:
+
+1. **The box only opened on a CLICK.** The receive form's Product field is free text with a
+   suggestion list, and the serials box was revealed only by clicking a suggestion. An operator who
+   typed the product name and pressed Receive sent a receipt the server could only refuse — and the
+   refusal told them to scan or type numbers into a field that was not on the form. There was no
+   path from that message to compliance.
+2. **The count was counted in the wrong thing.** The form asked for `Math.ceil(quantity typed)`;
+   the server counts BASE UNITS. Receiving **one carton of four units** was told "1 expected" while
+   the server wanted 4 — two numbers for one fact, and the form had no way to be right.
+3. **A refusal shut the box.** Even the operator who wanted to comply was left holding labels and a
+   form with no field.
+
+Now: a typed name is resolved on submit (exact SKU, exact name, or a single unambiguous match) and
+the box opens with the focus in it; the hint counts the product's own ladder (`unitsExpected()` over
+`unitFactors`) so a carton asks for one number per unit inside it; the client refuses before the
+server does, in the same sentence the server uses; and any `SERIALS_REQUIRED` from the server opens
+and focuses the box whatever the client believed about the product.
+
+### Proven on the screen, not only in the route
+
+`test/audit/audit.serials.js` **7/7**: no numbers is `400 SERIALS_REQUIRED` naming the product and
+counting the gap (`1 expected for 1 unit(s), 0 given`) and writes nothing; two numbers in, two
+serials on file `IN_STOCK` and reachable by their own number; **one number for a carton of four is
+refused with `4 expected for 4 unit(s), 1 given`** and the same carton with four is accepted;
+a serial on a product with no serial identity is `SERIALS_NOT_EXPECTED`; the same number twice is
+`DUPLICATE_SERIAL_IN_REQUEST`; a number already on file is `409 SERIAL_ALREADY_RECEIVED`; and the
+screen scan asserts the box, the reveal, the recovery and the base-unit count, and FAILS if the form
+goes back to comparing serials against the quantity typed.
+
+A live walk of the reported path: box hidden → type `Binatone Standing Fan 18"` → press Receive →
+**box open, hint "2 unit(s) — 2 serial number(s) expected", focus on the textarea** → type two
+numbers → press Receive → both on the register as `IN_STOCK`.
+
+### "That failed. transfers is not defined" — the code was fixed; the browser was never told
+
+The `ReferenceError` was fixed in P16 (`f24f6c6`); the account screen now renders for owner, admin
+and cashier with no toast and no console error. **Note for the record:** the first check of this
+reported it as STILL BROKEN because `document.body.textContent` includes the source of every
+`<script>` in the page — the scan matched the fix's own explanatory comment. Element-level checks
+(with script/style stripped) are the honest way to read a screen.
+
+What was genuinely broken is how a browser learns the fix exists: `public/sw.js` names its cache
+after `BUILD = 'ridge-2'` and `public/js/app.js` carried `SR.BUILD = 'ridge-1'`, both hand-typed and
+never bumped, while the service worker serves `/js` and `/css` **cache-first**. Every browser that
+had already visited kept being handed the old bundle — the fixed file on the server, the broken
+screen on the desk, indefinitely.
+
+`tools/stamp-build.js` now derives ONE stamp (commit + minute) and writes it into both files;
+`npm run deploy` stamps before it uploads, so a deploy can no longer ship the previous cache key;
+`node tools/stamp-build.js --check` fails if the two files ever disagree. This deploy carries
+`ridge-20261007-1235-dd90aa3`.
+
+### Verified
+
+`npm run verify` **479/479/0** · `bash test/run-audits.sh` **27 audits, every check green** ·
+`node tools/flow-coverage.js` → **197 routes · 181 audited · 13 screen-only · 3 unreached** ·
+live jsdom walk of the reported path, end to end.

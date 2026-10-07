@@ -462,15 +462,43 @@
         serialsField.hidden = !tracked;
         if (tracked) serialsHint();
       }
+      // ONE NUMBER PER UNIT THAT CAN BE SOLD, which is what the server counts. A receipt of
+      // 1 CARTON of a 48-piece ladder needs 48 numbers; the form used to ask for one, so the
+      // clerk was told "1 expected" and the server refused with "48 expected" — the two
+      // disagreed and the form had no way to be right.
+      function unitsExpected() {
+        const qty = Number((wrapEl.querySelector('[name="quantity"]') || {}).value) || 0;
+        if (!(qty > 0)) return 0;
+        const code = String(((wrapEl.querySelector('[name="unit_code"]') || {}).value) || '').toUpperCase();
+        const factor = unitFactors[code] || 1;
+        return Math.ceil(qty * factor);
+      }
+
       function serialsHint() {
         if (serialsField.hidden) return;
-        const qty = Number((wrapEl.querySelector('[name="quantity"]') || {}).value) || 0;
         const hint = serialsField.querySelector('.hint');
         if (!hint) return;
-        const base = (picked && picked.base_unit_name) || 'unit';
-        hint.textContent = qty > 0
-          ? `${qty} ${base} — ${Math.ceil(qty)} serial number(s) expected, one per unit. The receipt is refused without them.`
+        const expected = unitsExpected();
+        const label = (serialsField.querySelector('label') || {});
+        if (label.childNodes && label.childNodes.length) label.childNodes[0].textContent = 'Serial numbers ';
+        hint.textContent = expected > 0
+          ? `${expected} unit(s) — ${expected} serial number(s) expected, one per unit. The receipt is refused without them.`
           : 'Every unit gets its own number. This is what a warranty claim is proved with two years from now.';
+      }
+
+      // SHOW THE BOX, DO NOT HIDE IT BEHIND A CLICK. The box appears when a serial-tracked
+      // product is chosen from the suggestions — but the product field is free text, so an
+      // operator who TYPED the name and pressed Receive got the server's refusal ("...is
+      // serial-tracked, so each unit needs its own serial number: 1 expected..., 0 given") with
+      // no box on the form to type into. The refusal was right and the form was a dead end. Now
+      // the form resolves the typed name itself, opens the box, and says the same thing the
+      // server would have said — before the operator has to be told by a red toast.
+      function openSerialsFor(p) {
+        picked = p;
+        serialsField.hidden = false;
+        serialsHint();
+        const box = serialsField.querySelector('textarea');
+        if (box) { try { box.focus(); } catch (e) { /* focus is a courtesy */ } }
       }
 
       // The catalogue price of a product is per BASE unit. Whatever unit this
@@ -520,6 +548,12 @@
        * Offline it falls back to the device mirror, so receiving keeps working on a
        * phone with no line — which is when most receiving actually happens.
        */
+      // HOW MANY BASE UNITS EACH CODE ON THE LADDER IS WORTH. The serial demand is counted in
+      // BASE UNITS — the route asks for one number per unit that can be sold on its own — so a
+      // receipt of "1 carton" of a 48-piece carton needs 48 serials, not one. Reading the factor
+      // out of the option's label text was the only thing here that knew, and parsing a label is
+      // no way to decide how many warranty numbers a delivery needs.
+      let unitFactors = {};
       async function loadUnits(p) {
         let ladder = unitsOf(p);
         if (!ladder.length) {
@@ -534,7 +568,9 @@
         }
         perBaseCost = Number(p.cost_price) || 0;
         perBasePrice = Number(p.selling_price) || 0;
+        unitFactors = {};
         if (ladder.length) {
+          for (const u of ladder) unitFactors[String(u.code || '').toUpperCase()] = Number(u.quantity_in_base) || 1;
           fillUnits(ladder);
           return;
         }
@@ -544,6 +580,7 @@
           sel.replaceChildren();
           const opt = document.createElement('option');
           opt.value = p.default_unit_code || p.base_unit_name || 'PIECE';
+          unitFactors[String(opt.value).toUpperCase()] = 1;
           opt.textContent = p.base_unit_name || 'Piece';
           sel.appendChild(opt);
         }
@@ -576,20 +613,45 @@
             class: 'btn btn-primary',
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
-              const productId = picked ? picked.id : (v.product_id || '');
               const quantity = Number(v.quantity);
               const cost = Number(v.cost_price_per_unit);
-              if (!productId) { ui.warn('Pick a product from the list.'); return; }
               if (!(quantity > 0)) { ui.warn('Enter how many units arrived.'); return; }
               if (!(cost >= 0)) { ui.warn('Enter the cost per unit.'); return; }
+
+              // A TYPED NAME IS RESOLVED BEFORE THE PRODUCT IS JUDGED MISSING. The catalogue
+              // answers exact matches; if the typed text is a serial-tracked product, its box
+              // opens here and the operator is told why, instead of the form sending a receipt
+              // the server can only refuse.
+              if (!picked) {
+                const typed = String(v.product_id || '').trim();
+                if (!typed) { ui.warn('Pick a product from the list.'); return; }
+                try {
+                  const found = await SR.api.get('/api/products', { query: SR.state.query({ q: typed, limit: 12 }) });
+                  const rows = found.data || [];
+                  const exact = rows.find((r) => String(r.sku || '').toLowerCase() === typed.toLowerCase())
+                    || rows.find((r) => String(r.name || '').toLowerCase() === typed.toLowerCase())
+                    || (rows.length === 1 ? rows[0] : null);
+                  if (exact) { openSerialsFor(exact); loadUnits(exact); }
+                  else { ui.warn(`“${typed}” is not one product on the list. Choose it from the suggestions so the receipt is filed against the right one.`); return; }
+                } catch (err) { ui.warn('Pick a product from the list.'); return; }
+              }
+              const productId = picked ? picked.id : '';
               // One number per unit, split on lines, commas or spaces: a label scanner
               // usually emits a newline, and a clerk pasting from a supplier's dispatch
               // note usually emits anything at all.
               const serials = String(v.serials || '')
                 .split(/[\n,\t]+/).map((x) => x.trim()).filter(Boolean);
-              if (picked && Number(picked.requires_serial) && serials.length !== Math.ceil(quantity)) {
-                ui.warn(`${picked.name} is serial-tracked: ${Math.ceil(quantity)} serial number(s) are needed for ${U.qty(quantity)} unit(s), ${serials.length} entered. One number per unit.`);
-                return;
+              if (picked && Number(picked.requires_serial)) {
+                // Refuse HERE rather than at the server, and OPEN THE BOX when it is shut: a
+                // refusal a person cannot act on is a dead end, not a validation.
+                if (serialsField.hidden) openSerialsFor(picked);
+                const expected = unitsExpected();
+                if (serials.length !== expected) {
+                  ui.warn(`${picked.name} is serial-tracked, so each unit needs its own serial number: ${expected} expected for ${U.qty(quantity)} unit(s), ${serials.length} given. Scan or type the number off each label — one number per unit, one line each.`);
+                  const box = serialsField.querySelector('textarea');
+                  if (box) { try { box.focus(); } catch (e) { /* courtesy */ } }
+                  return;
+                }
               }
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Recording…';
@@ -617,6 +679,15 @@
                 m.close();
                 load();
               } catch (err) {
+                // A REFUSAL FROM THE SERVER MUST STILL LEAVE SOMEWHERE TO TYPE. If it comes back
+                // SERIALS_REQUIRED, the box this form owns is opened and focused whatever the
+                // client thought the product was — the server is the authority on what it needs.
+                if (err && (err.code === 'SERIALS_REQUIRED' || /serial-tracked/i.test(String(err.message || '')))) {
+                  serialsField.hidden = false;
+                  serialsHint();
+                  const box = serialsField.querySelector('textarea');
+                  if (box) { try { box.focus(); } catch (e) { /* courtesy */ } }
+                }
                 ui.apiError(err);
                 ev.currentTarget.disabled = false;
                 ev.currentTarget.textContent = 'Receive';
