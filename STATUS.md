@@ -904,3 +904,92 @@ business's rows.
 directions** — 12/12 critical boundaries checked for the cashier, 10/12 for the manager · and the
 live DOM: the owner's trail shows real hashes in the Chain column with both buttons; the manager's
 shows real hashes with **neither** button; the cashier has no trail at all.
+
+## P14 — THE DEVICE THAT IS SIGNED IN, AND THE NAMES ON THE TRAIL (2026-10-07)
+
+Two small stages, both about a screen promising something the database was not holding.
+
+### 1. The audit vocabulary, reconciled with the code that writes it
+
+The trail's list of permitted action names was **fiction in both directions**: 50 actions were
+written under names the list did not contain (`SESSIONS_REVOKED`, `CUSTOMER_DELETED`, every
+compliance action), and 31 names in the list had never been written by anything — an auditor
+grepping the trail for them would find nothing and not know why. The numbers also have to be
+stated carefully, because the first tool was wrong: the naive `action: 'X'` scan reported 74
+written actions and missed every ternary (`PLAN_LIMITS_CHANGED` / `SETTINGS_UPDATED` is chosen at
+run time in one expression). `tools/audit-actions.js` walks the source with comments blanked
+**length-preservingly** — skipping `*/` without emitting characters drifted every later index by
+28 characters in `sales.js` — and reports **96 written · 96 declared · 31 reserved**.
+
+`server/lib/audit.js` now holds both blocks, and `test/unit/audit-actions.test.js` (10 checks)
+fails the build if they drift. The reserved block is the point of the exercise: `USER_ROLE_CHANGED`
+is not missing from the trail by accident, a role change is recorded *inside* `USER_UPDATED`; the
+VAT rate inside `SETTINGS_UPDATED`; an export and a superseded session are not recorded at all.
+Deleting those names would erase the record that the difference is known.
+
+**`record()` still validates nothing, and that is now a written decision** (the docstring says so):
+refusing a write because a caller invented a name would drop the row — trading the record of a
+privileged action for the tidiness of a list, which inverts what a trail is for. Drift is caught
+where it is cheap instead. The tool reports reserved names as reserved, exits 0 when they are the
+only unwritten ones, and a second `--write` changes nothing.
+
+### 2. Sessions — who is signed in, and cutting them off
+
+`test/audit/audit.sessions.js` — **8/8**, and the flow moved **0/2 → 2/2**.
+
+**front to back**: a seat signs in carrying a device id → the list shows it once, with the branch,
+the device, the address it last came from, when it signed in, when it last did anything and when
+the session ends on its own → a manager revokes a cashier (`sessionsEnded: 1`) → the cashier's
+token is refused **immediately** as `SESSION_REVOKED` → they can sign in again, because a
+revocation is not a deactivation → the act is on the trail with the count and `"self": false`.
+
+**back to front**: a manager cannot revoke an owner or the vendor (`403 ROLE_REQUIRED`); a cashier
+can revoke nobody but themselves; a second sign-in **supersedes** the first rather than leaving two
+live tokens, and the two refusals are asserted as different: `SESSION_SUPERSEDED` carries the
+message that tells the person their PIN may be known to somebody else.
+
+Five defects, all found by reading the screen against the query rather than against the idea of it:
+
+* **Four dead field reads on two screens.** The manager's session table and the "where you are
+  signed in" card both asked for `device_id`, `ip_address`, `created_at` and `expires_at`. The
+  route sends `last_ip`, `issued_at`, computes no expiry, and `user_sessions` had **no device
+  column at all** — four of six columns drew an em dash at every row, and nothing noticed, because
+  a missing name renders as a dash instead of an error. Both tables now read the fields the route
+  sends, and the audit **scans the two screens' source against the route's own SELECT** so the
+  contract cannot rot again. Each scan is anchored to its table: the first version scanned all of
+  `account.js` and failed on a *different* table's columns (`person`, `asked`, `act`).
+* **The vendor was in the client's lists.** A client manager could see the deployment
+  administrator's session — a username, a device, an address, when they last acted — and the
+  vendor's account sat in the middle of the staff list, where every action on it answers 403. The
+  plan's own wording settles it ("the ADMIN vendor seat is NOT counted — it is not part of the
+  client's team"), so the rule is now written in both routes as one line, and the audit checks both
+  lists for both client seats **and** that the vendor can still see their own row.
+* **The screen offered the button to the wrong people.** "Sign out" was shown to owners only, while
+  the route allows any manager to end a lower-ranked person's session — a manager holding a
+  cashier's lost phone had the power and not the button. `SR.state.canManageUser` now mirrors the
+  server's `canManageUser`, documented as a mirror with the server authoritative.
+* **Migration 0008** adds `user_sessions.device_id` and `user_agent`. The sign-in route has always
+  received a device id (the app sends `X-Device-Id` on every request) and dropped it; now it is
+  stored from the body **or** the header, so the Device column names the phone a session belongs
+  to. `expires_at` is computed from `TOKEN_TTL_SECONDS` **bound as a parameter**, not typed into
+  the SQL: a screen that says "ends in four hours" and a token that lives twelve is worse than no
+  column at all. Both columns are nullable on purpose — "no device reported" and "written before
+  this migration" are different facts.
+* **The fixture now signs in the way the app does**, with a device id. A fixture that omits it
+  leaves the column null everywhere and quietly proves nothing about the column a manager relies on.
+
+### Verified
+
+`npm run verify` **479/479/0** (up 10: the vocabulary test) · `bash test/run-audits.sh` **23 audits,
+every check green** · `node tools/flow-coverage.js` → **197 routes · 159 audited · 24 screen-only ·
+14 unreached**, **sessions 2/2** · live on the demo deployment: the manager's list carries
+`device_id` and an `expires_at` exactly twelve hours after `issued_at`; the vendor sees all 4
+sessions and all 16 accounts including their own; the manager's and the cashier's lists carry no
+vendor row; the manager revokes the cashier (`sessionsEnded: 1`), the dead token answers
+`401 SESSION_REVOKED`, the cashier signs straight back in; the vendor signing themselves out gets
+the "signed out of every device" variant and their own token dies with it.
+
+**Note for the next stage:** the local demo's vendor PIN is the dev seed's `90210`;
+`1234` is the staging/sample/production PIN the Stage-6 directive set, so a probe against the demo
+must use the former. Staging was down on the free-tier D1 daily row-read limit and is still
+awaiting its re-probe.

@@ -38,38 +38,47 @@
 const { appendChained, verifyChain, anchor } = require('../../domain/hashChain');
 
 const AUDIT_ACTIONS = Object.freeze([
-  // authentication
-  'LOGIN_SUCCESS', 'LOGIN_FAILURE', 'LOGOUT', 'LOGIN_LOCK_CLEARED', 'SESSION_SUPERSEDED',
-  // users and authority
-  'USER_CREATED', 'USER_UPDATED', 'USER_DEACTIVATED', 'USER_ROLE_CHANGED', 'USER_BRANCH_CHANGED',
-  'USER_BUSINESS_CHANGED', 'USER_PIN_RESET', 'USER_TRANSFER_REQUESTED', 'USER_TRANSFER_RESOLVED',
-  'DEVICE_REGISTERED', 'DEVICE_REVOKED',
-  // structure
-  'BUSINESS_CREATED', 'BUSINESS_UPDATED', 'BRANCH_CREATED', 'BRANCH_UPDATED', 'BRANCH_DEACTIVATED',
-  'CATEGORY_CREATED', 'COMPLIANCE_ADDED',
-  // settings and plan
-  'SETTINGS_UPDATED', 'VAT_CHANGED', 'PERMISSION_CHANGED', 'PLAN_LIMITS_CHANGED', 'BRANDING_UPDATED',
-  // money
-  'SALE_VOIDED', 'SALE_REFUNDED', 'RETURN_APPROVED', 'RETURN_COMPLETED', 'TILL_OPENED', 'TILL_CLOSED',
-  'SAFE_ENTRY', 'EXPENSE_CREATED', 'EXPENSE_APPROVED', 'EXPENSE_REJECTED', 'CREDIT_OVERRIDE',
-  'DEBTOR_PAYMENT', 'CREDITOR_PAYMENT', 'WHT_POSTED', 'WHT_REMITTED', 'CHANGE_OWED_ISSUED',
-  'CHANGE_OWED_REDEEMED', 'INSTALMENT_PLAN_CREATED', 'INSTALMENT_PAYMENT', 'INSTALMENT_DEFAULTED',
-  'DEPOSIT_CREATED', 'DEPOSIT_COMPLETED', 'DEPOSIT_CANCELLED', 'DEPOSIT_FORFEITED',
-  // stock
-  'STOCK_ADJUSTED', 'STOCKTAKE_OPENED', 'STOCKTAKE_COMMITTED', 'TRANSFER_INITIATED', 'TRANSFER_RECEIVED',
-  'TRANSFER_CANCELLED', 'PO_CREATED', 'PO_RECEIVED', 'BATCH_QUARANTINED', 'RECALL_OPENED',
-  'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'PRICE_CHANGED',
-  // fulfilment
-  'DELIVERY_CREATED', 'DELIVERY_STATUS_CHANGED', 'INSTALLATION_COMPLETED', 'WARRANTY_CLAIM_OPENED',
-  'WARRANTY_CLAIM_RESOLVED',
-  // data lifecycle
-  'EXPORT_TAKEN', 'DATA_CLEANUP', 'SYNC_CONFLICT', 'SYNC_PUSH_REJECTED',
-  // security
-  'ACCESS_DENIED', 'REPARENT_BLOCKED', 'TOKEN_REJECTED',
+  // THE NAMES THE TRAIL MAY USE, reconciled with the code that writes it by
+  // `tools/audit-actions.js` and held there by `test/unit/audit-actions.test.js`.
+  //
+  // An action that is not in this list is an action an auditor cannot name, and a name
+  // in this list that nothing writes is a name they will search for and never find. Both
+  // were true of this list before it was reconciled: 50 actions were written under names
+  // it did not contain (`SESSIONS_REVOKED`, `CUSTOMER_DELETED`, every compliance action)
+  // and 31 names in it had never been written by anything.
+  'ACCESS_DENIED', 'ATTENDANCE_REJECTED', 'ATTENDANCE_REVIEWED', 'AUDIT_CHAIN_ANCHORED', 'BATCH_QUARANTINED', 'BRANCH_CREATED', 'BRANCH_UPDATED', 'BRANDING_UPDATED', 'BUSINESS_ACCESS_GRANTED', 'BUSINESS_ACCESS_REGRANTED', 'BUSINESS_ACCESS_REVOKED', 'BUSINESS_CREATED',
+  'BUSINESS_UPDATED', 'CATEGORY_CREATED', 'CHANGE_OWED_SETTLED', 'CHANGE_OWED_WRITTEN_OFF', 'CLOCK_IN', 'CLOCK_OUT', 'COMPLIANCE_ALERTS_RAISED', 'COMPLIANCE_RECORD_CREATED', 'COMPLIANCE_RECORD_REMOVED', 'COMPLIANCE_RECORD_UPDATED', 'CUSTOMER_CLASS_CREATED', 'CUSTOMER_CREATED',
+  'CUSTOMER_DELETED', 'CUSTOMER_PAYMENT', 'CUSTOMER_UPDATED', 'DATA_CLEANUP_RUN', 'DEBTOR_PAYMENT', 'DEBT_WRITTEN_OFF', 'DELIVERY_STATUS_CHANGED', 'DEPOSIT_CANCELLED', 'DEPOSIT_COMPLETED', 'DEPOSIT_FORFEITED', 'DEPOSIT_PAYMENT', 'DEPOSIT_TAKEN',
+  'DEVICE_STATUS_CHANGED', 'EXPENSE_APPROVED', 'EXPENSE_RECORDED', 'EXPENSE_REJECTED', 'GEOFENCE_UPDATED', 'GL_ACCOUNT_CREATED', 'INSTALLATION_BOOKED', 'INSTALLATION_COMPLETED', 'INSTALMENT_PAYMENT', 'INSTALMENT_PLAN_OPENED', 'LOGIN_FAILURE', 'LOGIN_LOCK_CLEARED',
+  'LOGIN_SUCCESS', 'LOGOUT', 'MANUAL_JOURNAL_POSTED', 'PIN_CHANGED', 'PIN_RESET', 'PLAN_LIMITS_CHANGED', 'PO_CANCELLED', 'PO_CREATED', 'PO_RECEIVED', 'PRICE_CHANGED', 'PRICE_OVERRIDE_CHANGED', 'PRICE_OVERRIDE_REMOVED',
+  'PRICE_OVERRIDE_SET', 'PRODUCT_CREATED', 'PRODUCT_UPDATED', 'RETURN_APPROVED', 'RETURN_CREATED', 'RETURN_REJECTED', 'SAFE_ENTRY', 'SAFE_PAYOUT', 'SAFE_RECONCILED', 'SALE_COMPLETED', 'SALE_VOIDED', 'SESSIONS_REVOKED',
+  'SETTINGS_UPDATED', 'STOCKTAKE_COMMITTED', 'STOCKTAKE_OPENED', 'STOCK_ADJUSTED', 'SUPPLIER_PAID', 'SYNC_CONFLICT_RESOLVED', 'SYNC_PUSH_PARTIAL', 'TILL_CLOSED', 'TILL_OPENED', 'TILL_REVIEWED', 'TILL_REVIEW_REJECTED', 'TRANSFER_INITIATED',
+  'TRANSFER_RECEIVED', 'USER_CREATED', 'USER_DEACTIVATED', 'USER_PIN_RESET', 'USER_TRANSFER_ACCEPTED', 'USER_TRANSFER_CANCELLED', 'USER_TRANSFER_REJECTED', 'USER_TRANSFER_REQUESTED', 'USER_UPDATED', 'WARRANTY_CLAIM_OPENED', 'WARRANTY_CLAIM_RESOLVED', 'WHT_REMITTED',
+]);
+
+const AUDIT_ACTIONS_RESERVED = Object.freeze([
+  // RESERVED: names for events this product does not distinguish yet. Kept, separately and
+  // labelled, because deleting them would erase the record that the difference is known.
+  // A role change is recorded inside USER_UPDATED; the VAT rate inside SETTINGS_UPDATED; a
+  // bulk export is not recorded at all; a superseded session is not recorded at all. An
+  // auditor reading the trail cannot tell those apart today, and this list is how that is
+  // said out loud instead of hidden behind a vocabulary that pretends otherwise.
+  'BRANCH_DEACTIVATED', 'CHANGE_OWED_ISSUED', 'CHANGE_OWED_REDEEMED', 'COMPLIANCE_ADDED', 'CREDITOR_PAYMENT', 'CREDIT_OVERRIDE', 'DATA_CLEANUP', 'DELIVERY_CREATED', 'DEPOSIT_CREATED', 'DEVICE_REGISTERED', 'DEVICE_REVOKED', 'EXPENSE_CREATED',
+  'EXPORT_TAKEN', 'INSTALMENT_DEFAULTED', 'INSTALMENT_PLAN_CREATED', 'PERMISSION_CHANGED', 'RECALL_OPENED', 'REPARENT_BLOCKED', 'RETURN_COMPLETED', 'SALE_REFUNDED', 'SESSION_SUPERSEDED', 'SYNC_CONFLICT', 'SYNC_PUSH_REJECTED', 'TOKEN_REJECTED',
+  'TRANSFER_CANCELLED', 'USER_BRANCH_CHANGED', 'USER_BUSINESS_CHANGED', 'USER_ROLE_CHANGED', 'USER_TRANSFER_RESOLVED', 'VAT_CHANGED', 'WHT_POSTED',
 ]);
 
 /**
  * Append one audit entry.
+ *
+ * THE VOCABULARY IS NOT ENFORCED HERE, deliberately. `AUDIT_ACTIONS` above is the list of
+ * names the trail may use, but `record()` accepts any string, and this is a decision rather
+ * than an oversight. Failing a write because a caller invented a name would DROP THE ROW —
+ * losing the record of a privileged action in order to protect a list — which inverts what an
+ * audit trail is for. A new call site whose name nobody listed must still produce its row.
+ * The drift is then caught where it is cheap: `node tools/audit-actions.js` reports names the
+ * code writes that the vocabulary does not admit, and `test/unit/audit-actions.test.js` fails
+ * the build on the same condition. Keep this order — never trade a row for a name.
  *
  * NEVER THROWS. An audit failure must not break the action being audited —
  * a shop that cannot void a sale because its audit table is locked is a shop
@@ -225,4 +234,4 @@ async function anchorAudit(db) {
   return anchor(db, { table: 'audit_log', hashColumn: 'row_hash', prevColumn: 'prev_hash' });
 }
 
-module.exports = { AUDIT_ACTIONS, record, recordFromCtx, recordDenied, list, verifyAuditChain, anchorAudit };
+module.exports = { AUDIT_ACTIONS, AUDIT_ACTIONS_RESERVED, record, recordFromCtx, recordDenied, list, verifyAuditChain, anchorAudit };

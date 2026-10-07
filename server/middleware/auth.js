@@ -89,7 +89,7 @@ async function resolveScope(db, user) {
  * recording, which are kept OUT of here so this function stays testable
  * without a database of login attempts.
  */
-async function login(db, { username, pin, secret, deviceId = null }) {
+async function login(db, { username, pin, secret, deviceId = null, userAgent = null }) {
   const uname = String(username || '').trim().toLowerCase();
   if (!uname) throw new HttpError('Enter your username.', { status: 400, code: 'USERNAME_REQUIRED' });
   if (pin == null || String(pin).trim() === '') throw new HttpError('Enter your PIN.', { status: 400, code: 'PIN_REQUIRED' });
@@ -135,10 +135,16 @@ async function login(db, { username, pin, secret, deviceId = null }) {
   // second sign-in silently retires the first; the retired device gets a
   // clear message on its next request rather than mysteriously failing.
   await db.run(
-    `INSERT INTO user_sessions (user_id, session_id, issued_at, updated_at)
-     VALUES (?, ?, datetime('now'), datetime('now'))
-     ON CONFLICT(user_id) DO UPDATE SET session_id = excluded.session_id, issued_at = datetime('now'), updated_at = datetime('now')`,
-    [String(user.id), sessionId],
+    // THE DEVICE IS RECORDED WITH THE SESSION (migration 0008). The sign-in route has always
+    // received it — the app sends `X-Device-Id` on every request — and the screen has always
+    // shown a Device column. Storing it is what makes both true: a manager can now tell WHICH
+    // phone a session belongs to before cutting it off, instead of signing out a person and
+    // hoping the one in their hand was the right one.
+    `INSERT INTO user_sessions (user_id, session_id, issued_at, updated_at, device_id, user_agent)
+     VALUES (?, ?, datetime('now'), datetime('now'), ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET session_id = excluded.session_id, issued_at = datetime('now'), updated_at = datetime('now'),
+       device_id = excluded.device_id, user_agent = excluded.user_agent`,
+    [String(user.id), sessionId, deviceId ? String(deviceId).slice(0, 120) : null, userAgent ? String(userAgent).slice(0, 300) : null],
   );
   await db.run("UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [String(user.id)]);
 

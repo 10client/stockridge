@@ -29,6 +29,7 @@ const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit')
 // the module header in services/assignmentService.js for why a move is a handover.
 const assignments = require('../services/assignmentService');
 const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor } = require('../../domain/roles');
+const { TOKEN_TTL_SECONDS } = require('../middleware/auth');
 const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId, hashPin, verifyPin, numericCode } = require('../../domain/crypto');
@@ -410,11 +411,18 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/users`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
     const where = ['u.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'u' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+    // THE VENDOR IS NOT PART OF THE CLIENT'S TEAM — the same rule as the session list below.
+    // The deployment administrator's account was listed among the shop's own staff: a row the
+    // client cannot manage, cannot reset and cannot revoke (every action on it answers 403),
+    // sitting in the middle of the people they CAN. The count on the plan already excludes it;
+    // the list now agrees with the count.
+    if (!atLeast(user.role, 'ADMIN')) where.push("u.role <> 'ADMIN'");
     const role = ctx.req.queryParam('role');
     if (role) { where.push('u.role = ?'); params.push(String(role).toUpperCase()); }
     const active = ctx.req.queryParam('active');
@@ -808,17 +816,35 @@ function mount(app, base = '/api') {
   /** Who is signed in right now, and from where. */
   app.get(`${base}/sessions`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
     const scope = ctx.get('scope');
     const where = ['u.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'u' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+    // THE VENDOR IS NOT PART OF THE CLIENT'S TEAM. The deployment ADMIN's own session was
+    // listed to client managers — a username, when they last acted and the address they came
+    // from — and there is nothing the manager could do with the row: `canManageUser` refuses
+    // the revocation, so the row is information they cannot act on and have no business
+    // holding. A session is the most sensitive row this product holds (it says where a person
+    // is working from and when they last touched the system), so the rule is stated here
+    // rather than left to whoever remembers. The same rule already governs the plan: "the
+    // ADMIN vendor seat is NOT counted — it is not part of the client's team". The owner of
+    // the deployment still sees every session, vendor included: hiding the vendor's own
+    // session from the vendor would hide the account that is signed in as you.
+    if (!atLeast(user.role, 'ADMIN')) where.push("u.role <> 'ADMIN'");
+    // EXPIRES_AT IS COMPUTED FROM THE SAME CONSTANT THE TOKEN IS SIGNED WITH, bound as a
+    // parameter rather than typed into the SQL — a screen that says "expires in 4 hours" and a
+    // token that lives for twelve is worse than no column at all.
     const rows = await db.all(`SELECT us.user_id, us.session_id, us.issued_at, us.updated_at,
+          us.device_id, us.user_agent,
+          datetime(us.issued_at, ?) AS expires_at,
           u.full_name, u.username, u.role, b.name AS branch_name,
           (SELECT MAX(a.created_at) FROM audit_log a WHERE a.user_id = u.id) AS last_action_at,
           (SELECT a.ip_address FROM audit_log a WHERE a.user_id = u.id ORDER BY a.created_at DESC LIMIT 1) AS last_ip
         FROM user_sessions us JOIN users u ON u.id = us.user_id
         LEFT JOIN branches b ON b.id = u.branch_id
-        WHERE ${where.join(' AND ')} ORDER BY us.issued_at DESC LIMIT 200`, params);
+        WHERE ${where.join(' AND ')} ORDER BY us.issued_at DESC LIMIT 200`,
+    [`+${TOKEN_TTL_SECONDS} seconds`, ...params]);
     ctx.json({ ok: true, data: rows, count: rows.length });
   });
 

@@ -1,0 +1,28 @@
+-- =====================================================================
+-- 0008 — THE DEVICE A SESSION CAME FROM
+-- =====================================================================
+-- The screen that lists who is signed in has always shown a "Device"
+-- column, and the sign-in route has always received one: the app sends a
+-- stable per-device id on every request (`X-Device-Id`, kept in
+-- `public/js/deviceId.js`), and `POST /api/auth/login` has read it into
+-- `deviceId` since the attendance module needed it. Then `user_sessions`
+-- recorded nothing but the session id and two timestamps, so the column
+-- rendered an em dash for every row — the same class of defect as reading
+-- `audit_log.role` or `user_sessions.expires_at`, a screen promising a
+-- fact the database never held.
+--
+-- Two columns, both nullable, both additive:
+--
+--   device_id   the id the device reported. This is what a manager needs
+--               when they are standing in front of two phones and one of
+--               them has to be cut off.
+--   user_agent  the browser string that came with it, because an id the
+--               client chooses is a claim and a user-agent is evidence.
+--               They can disagree, and when they do, that is the answer.
+--
+-- Nullable on purpose: a sign-in that arrives without a device id (a
+-- script, a probe, an operator with curl) must not fail, and an old row
+-- written before this migration must not read as "unknown device" being
+-- the same thing as "no device was reported".
+ALTER TABLE user_sessions ADD COLUMN device_id TEXT;
+ALTER TABLE user_sessions ADD COLUMN user_agent TEXT;

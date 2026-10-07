@@ -129,7 +129,13 @@ class Deployment {
   /** Sign in and keep the seat. Throws on failure — see the harness note about
    *  a probe that skips. */
   async login({ username, pin, remember = true }) {
-    const res = await this.request('POST', '/api/auth/login', { body: { username, pin } });
+    // THE FIXTURE SIGNS IN THE WAY THE APP DOES. The app sends a stable per-device id on
+    // every request (`X-Device-Id`), and the sign-in route records it against the session, so
+    // a fixture that omits it leaves `device_id` null everywhere and quietly proves nothing
+    // about the column that a manager relies on to cut off the right phone.
+    const res = await this.request('POST', '/api/auth/login', {
+      body: { username, pin, deviceId: `audit-${username}` },
+    });
     if (res.status !== 200 || !res.json || !res.json.token) {
       throw new Error(`could not sign in as ${username}: ${res.status} ${res.text.slice(0, 200)}`);
     }

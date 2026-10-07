@@ -164,11 +164,16 @@
         stack.appendChild(ui.dataCard({
           title: 'Where you are signed in',
           table: ui.renderTable({
+            // THE FIELDS THE API SENDS, not the ones this screen was written against: it read
+            // `ip_address`, `created_at` and never-read `expires_at` while the route answers
+            // `last_ip`, `issued_at` and a computed `expires_at`. Same fix as the manager's
+            // list in `views/users.js` — the two screens were wrong in exactly the same way.
             columns: [
               { key: 'device_id', label: 'Device', render: (s) => s.device_id || '—' },
-              { key: 'ip_address', label: 'From', render: (s) => s.ip_address || '—' },
-              { key: 'created_at', label: 'Signed in', render: (s) => U.relTime(s.created_at) },
-              { key: 'expires_at', label: 'Expires', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
+              { key: 'last_ip', label: 'From', render: (s) => s.last_ip || '—' },
+              { key: 'issued_at', label: 'Signed in', render: (s) => U.relTime(s.issued_at) },
+              { key: 'last_action_at', label: 'Last did something', render: (s) => (s.last_action_at ? U.relTime(s.last_action_at) : '—') },
+              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
             ],
             rows: sessions,
             emptyTitle: 'Only this device',

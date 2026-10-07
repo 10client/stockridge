@@ -413,18 +413,31 @@
           'A session is a device holding a valid sign-in. Revoking one is how you remove access from a phone that has been lost, sold or borrowed — the token stops working immediately.'),
         ui.dataCard({
           title: `${rows.length} signed in`,
+          // EVERY COLUMN READS A FIELD THE API ACTUALLY SENDS. This table used to show
+          // `device_id`, `ip_address`, `created_at` and `expires_at`, and the route sends
+          // `last_ip`, `issued_at` and computes `expires_at` — four columns out of six drawing
+          // an em dash at every row. It is the same defect P13 fixed on the audit trail, found
+          // the same way: by reading the screen against the query instead of against the idea
+          // of the screen. `device_id` now really is a column too (migration 0008).
           table: ui.renderTable({
             columns: [
               { key: 'full_name', label: 'Who', render: (s) => s.full_name || s.username || '—' },
               { key: 'role', label: 'Role', render: (s) => U.titleCase(s.role) },
+              { key: 'branch_name', label: 'Branch', render: (s) => s.branch_name || 'All branches' },
               { key: 'device_id', label: 'Device', render: (s) => s.device_id || '—' },
-              { key: 'ip_address', label: 'From', render: (s) => s.ip_address || '—' },
-              { key: 'created_at', label: 'Signed in', render: (s) => U.relTime(s.created_at) },
-              { key: 'expires_at', label: 'Expires', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
+              { key: 'last_ip', label: 'From', render: (s) => s.last_ip || '—' },
+              { key: 'issued_at', label: 'Signed in', render: (s) => U.relTime(s.issued_at) },
+              { key: 'last_action_at', label: 'Last did something', render: (s) => (s.last_action_at ? U.relTime(s.last_action_at) : '—') },
+              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
               {
                 key: 'revoke',
                 label: '',
-                render: (s) => (SR.state.atLeast('OWNER') || String(s.user_id) === String(SR.state.user.id)
+                // THE SAME RULE THE ROUTE ENFORCES: yourself always, somebody below you if you
+                // are a manager or above. The screen offered this only to owners, so a manager
+                // with a cashier's lost phone in front of them could not end that session from
+                // the till — the route allows it, the audit proves it, and the button was
+                // hidden. `SR.state.canManageUser` mirrors `canManageUser` on the server.
+                render: (s) => (SR.state.canManageUser(s)
                   ? ui.h('button', { class: 'btn btn-xs', onClick: (ev) => { ev.stopPropagation(); revoke(s); } }, 'Sign out')
                   : ''),
               },
@@ -437,12 +450,23 @@
     }
 
     async function revoke(session) {
+      // The dialog names the DEVICE when there is one and the ADDRESS when there is not, and it
+      // says which of the two is happening: "cut off the phone" and "cut off whatever is coming
+      // from 197.x.x.x" are different decisions with the same button.
+      const where = session.device_id
+        ? `the device “${session.device_id}”`
+        : (session.last_ip ? `whatever is signed in from ${session.last_ip}` : 'that device');
+      const mine = String(session.user_id) === String(SR.state.user && SR.state.user.id);
       const confirmed = await ui.confirmDialog({
-        title: 'Sign this device out',
-        message: `End the session for ${session.full_name || session.username} on ${session.device_id || 'that device'}?`,
+        title: mine ? 'Sign yourself out here' : 'Sign this device out',
+        message: mine
+          ? 'End your own session? You will have to sign in again — on this device too.'
+          : `End the session for ${session.full_name || session.username} on ${where}?`,
         confirmLabel: 'Sign out',
         danger: true,
-        detail: 'Anything already saved stays saved. Anything half-entered on that device is lost.',
+        detail: mine
+          ? 'The work you have already saved stays saved.'
+          : 'Anything already saved stays saved. Anything half-entered on that device is lost. They can sign in again with their PIN.',
       });
       if (!confirmed) return;
       try {

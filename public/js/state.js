@@ -94,6 +94,30 @@
   /** May this user act on a screen? `min` is a role name. */
   function can(min) { return atLeast(min); }
 
+  /**
+   * May this user manage THAT user — reset their PIN, change their role, end their session?
+   *
+   * THE SERVER DECIDES (`canManageUser`, domain/roles.js) AND THIS MIRRORS IT. It exists so a
+   * button is not offered where the route would answer 403 — a screen that offers an action it
+   * cannot deliver teaches people the product is broken. The mirror is not the authority: every
+   * call is checked again server-side, and a disagreement shows up as a refusal through
+   * `ui.apiError`, which is the safe direction for the screen to be wrong in.
+   *
+   * Two deliberate differences from `atLeast`, both taken from the route: signing YOURSELF out
+   * is always allowed (it is not an authority question), and the deployment administrator
+   * cannot be managed by anyone but themselves.
+   */
+  function canManageUser(target) {
+    if (!target) return false;
+    const me = state.user || {};
+    const targetRole = String(target.role || '').toUpperCase();
+    const targetId = String(target.id != null ? target.id : target.user_id);
+    if (targetId !== 'undefined' && targetId === String(me.id)) return true; // your own session
+    if (targetRole === 'ADMIN') return false;
+    if (!atLeast('MANAGER')) return false;
+    return rank(me.role) > rank(targetRole);
+  }
+
   // -------------------------------------------------------------------
   // feature flags
   // -------------------------------------------------------------------
@@ -321,7 +345,7 @@
 
   SR.state = Object.assign(state, {
     on, emit, load, loadFromMirror, clear,
-    rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager,
+    rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager, canManageUser,
     canSeeAllBranches, can,
     feature, featureLabel,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,

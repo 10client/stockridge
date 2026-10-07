@@ -57,7 +57,12 @@ function mount(app, base = '/api/auth', makeEnv = null) {
     const rawUsername = requireField(body, 'username', 'Username');
     const rawPin = requireField(body, 'pin', 'PIN');
     const username = String(rawUsername).trim().toLowerCase();
-    const deviceId = body.deviceId ? String(body.deviceId).slice(0, 120) : null;
+    // THE DEVICE COMES FROM THE BODY OR, FAILING THAT, THE HEADER THE APP ALREADY SENDS ON
+    // EVERY REQUEST (`X-Device-Id`, public/js/api.js). One of the two is always there, so a
+    // session row is never left guessing which phone it belongs to.
+    const deviceId = body.deviceId
+      ? String(body.deviceId).slice(0, 120)
+      : (ctx.req.header('X-Device-Id') ? String(ctx.req.header('X-Device-Id')).slice(0, 120) : null);
     const ipAddress = clientIp(ctx);
     const userAgent = ctx.req.header('User-Agent') || null;
 
@@ -80,7 +85,7 @@ function mount(app, base = '/api/auth', makeEnv = null) {
     }
 
     try {
-      const result = await login(db, { username, pin: String(rawPin), secret, deviceId });
+      const result = await login(db, { username, pin: String(rawPin), secret, deviceId, userAgent });
       await recordLoginAttempt(db, { username, userId: result.user.id, succeeded: true, ipAddress, userAgent });
       await recordFromCtx(ctx, { action: 'LOGIN_SUCCESS', entityType: 'USER', entityId: result.user.id });
 
