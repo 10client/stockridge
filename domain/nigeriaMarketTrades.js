@@ -596,6 +596,39 @@ function addTrades(api) {
     'Samsung Galaxy Tab A9 64GB', 'Samsung Galaxy Tab A9 128GB',
   ], { unit: 'piece' });
 
+  // Official iPhone 18 Pro finishes, confirmed by Apple on 9 September 2026
+  // and on sale in Ikeja and on Jumia: Black, Silver, Glacier, Burgundy,
+  // each in 256GB, 512GB, 1TB and 2TB. The earlier Blue rows stay, because
+  // that is the word some Computer Village ads use for Glacier. add() skips
+  // a name already on the list. The plain iPhone 18 is not here: Apple has
+  // not released it. Shops and Jumia still mark it coming in spring 2027.
+  handset('Apple', 'iPhone 18 Pro', ['256GB', '512GB', '1TB', '2TB'], ['Silver', 'Glacier', 'Burgundy']);
+  handset('Apple', 'iPhone 18 Pro', ['2TB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 18 Pro Max', ['256GB', '512GB', '1TB', '2TB'], ['Silver', 'Glacier', 'Burgundy']);
+  handset('Apple', 'iPhone 18 Pro Max', ['2TB'], ['Black', 'Blue']);
+  // Apple published these. Pre-order 16 October, on sale 23 October.
+  handset('Apple', 'iPhone Duo', ['256GB', '512GB', '1TB', '2TB'], ['Star White', 'Night Sky']);
+
+  handset('Samsung', 'Galaxy Z Fold 7', ['256GB', '512GB'], ['Black', 'Blue', 'Silver']);
+  handset('Samsung', 'Galaxy Z Fold 7', ['1TB'], ['Black']);
+  handset('Samsung', 'Galaxy Z Flip 7', ['256GB', '512GB'], ['Black', 'Blue']);
+  handset('Samsung', 'Galaxy Z Flip 7', ['256GB'], ['Coral Red']);
+
+  handset('Infinix', 'Hot 70', ['128GB', '256GB'], ['Black', 'Green', 'Blue']);
+  handset('Tecno', 'Spark 50', ['128GB'], ['Black', 'Blue', 'Gray']);
+  handset('Tecno', 'Spark 50', ['256GB'], ['Black']);
+  handset('Tecno', 'Spark 50 Pro', ['128GB', '256GB'], ['Black']);
+
+  each('NG_ACCESSORY', [
+    'Apple AirPods 5 USB-C case',
+    'Apple AirPods 5 wireless charging case',
+    'Apple AirPods Pro 3',
+    'Apple Watch Series 12 GPS 46mm Black',
+    'Apple Watch Series 12 GPS 46mm Dark Bronze',
+    'Apple Watch Series 12 GPS 46mm Light Gold',
+    'Apple Watch Ultra 4 49mm Natural Titanium',
+  ], { unit: 'piece' });
+
 }
 
 module.exports = { addTrades };

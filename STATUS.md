@@ -1756,3 +1756,13 @@ Added, without repeating a name: iPhone 15 through 17 including 17 Air, 17 Pro M
 **Cards.** Sales, till, reports, accounting, plan, staff, sync and admin each pasted its own rules for the same tiles. A later screen restyled every tile, including the top-bar avatar, and a card's own margin painted over the card beneath it. The layout now lives in one stylesheet. A sale that still has a balance is settled from Actions only, not from a second button on the warning.
 
 Local: `test/unit/nigeria-market.test.js` and `audit.market` 25/25. Live on staging, sample and production as `ridge-20261010-1809-b4bd63a`. A search for iPhone 18 Pro returns 13 named variants; iPhone Duo returns one. The list is 4,635 goods and still has no price field. The admin PIN was not changed.
+
+### P31 — the iPhone 18 finishes the shops actually sell (checkpoint)
+
+The list is 4,702 goods. Still no prices, no medicines, and the old SKUs did not move.
+
+Added, because they are on sale in Nigeria: iPhone 18 Pro and Pro Max in Silver, Glacier and Burgundy, including 2TB; iPhone Duo in Star White and Night Sky at 256GB, 512GB, 1TB and 2TB; Samsung Galaxy Z Fold 7 and Z Flip 7; Infinix Hot 70; Tecno Spark 50 and Spark 50 Pro; AirPods 5, AirPods Pro 3, Apple Watch Series 12 and Ultra 4.
+
+Not added: a plain iPhone 18. Apple has not released that model. Jumia still marks it coming in spring 2027. Putting a name on the list would invent a phone the shelf does not have.
+
+Local: market list test and `audit.market` 25/25. Not yet on the hosted builds.

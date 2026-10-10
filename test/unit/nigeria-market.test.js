@@ -39,9 +39,10 @@ test('the Nigerian market list is thousands of goods, with no prices and no seri
   assert.equal(market.ITEMS.find((i) => i.name === 'Dangote 3X cement 50kg').sku, 'NG-02044');
   assert.equal(market.ITEMS.find((i) => i.name === 'Gas cylinder 12.5kg').sku, 'NG-02776');
   assert.equal(market.get('NG-02740'), null, 'a retired pharmacy number was given to another good');
-  for (const name of ['Apple iPhone 18 Pro 256GB Black', 'Apple iPhone Duo', 'Apple iPhone 17e 256GB Soft pink', 'Samsung Galaxy S26 Ultra 256GB Black', 'Tecno Camon 50 256GB Black']) {
+  for (const name of ['Apple iPhone 18 Pro 256GB Burgundy', 'Apple iPhone 18 Pro Max 2TB Glacier', 'Apple iPhone Duo 256GB Star White', 'Samsung Galaxy Z Fold 7 512GB Black', 'Infinix Hot 70 256GB Green', 'Tecno Spark 50 128GB Blue', 'Apple AirPods 5 USB-C case', 'Apple Watch Series 12 GPS 46mm Black']) {
     assert.ok(market.ITEMS.some((i) => i.name === name), `${name} is not on the market list`);
   }
+  assert.equal(market.ITEMS.some((i) => /^Apple iPhone 18 \d/.test(i.name)), false, 'the plain iPhone 18 is not in shops yet');
   const css = fs.readFileSync(path.join(__dirname, '../../public/css/app.css'), 'utf8');
   assert.match(css, /\.kpis, \.kpi-grid/);
   assert.match(css, /grid > \.card/);
