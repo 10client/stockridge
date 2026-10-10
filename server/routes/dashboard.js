@@ -36,29 +36,40 @@ function mount(app, base = '/api') {
     const today = watToday();
     const scope = ctx.get('scope');
 
-    // The scope decides the shape of the answer, and it is derived from the user
-    // rather than requested — a client cannot ask to see the whole group.
+    // The scope decides who may see the group. An owner sees it until they name a
+    // branch; naming one is a switch, not a request to widen. A client cannot ask
+    // to see a branch they cannot reach.
     const isOwnerView = scope.allBusinesses;
     const business = isOwnerView ? null : await resolveBusiness(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
-    const useBranch = branch && !scope.allBranches ? String(branch.id) : null;
 
-    // A BRANCH THE CALLER NAMED NARROWS THE WHOLE SCREEN. The comment above explains why
-    // the owner's DEFAULT view is the group: it is the shape of the answer that is derived
-    // from the user. Naming a branch is the opposite — it is the user asking a question
-    // about one shop — and it was being ignored here while reports.js honoured it, so an
-    // owner who switched branch saw the same group figures under a branch's name.
-    const named = await branchFilter(db, ctx, {});
+    // BRANCH TOTALS ONLY AFTER A SWITCH. An owner reaches every branch, so the row on their
+    // own user is not a choice they made — and neither is the shell guessing a shop because
+    // the active business has one. The dashboard is the group until the request NAMES a
+    // branch, which is what the branch switcher sends. A pinned manager has no such choice:
+    // their pin is the branch, named or not.
+    //
+    // This used to set `useBranch` only when the caller could NOT see every branch. An owner
+    // who switched therefore still got view GROUP, scope "All branches", and the same stock,
+    // debt and safe as the group — the sales clause noticed the name and everything else
+    // ignored it. Live: `?branch_id=<head office>` answered the identical payload as no name.
+    const named = await branchFilter(db, ctx, { nullMeansEveryBranch: false });
+    const focusBranchId = named.branchId || (!scope.allBranches && branch ? String(branch.id) : null);
+    const useBranch = focusBranchId;
+    const focused = focusBranchId && branch && String(branch.id) === String(focusBranchId) ? branch : null;
 
     const scopeClause = (alias) => {
       const where = []; const params = [];
-      if (named.branchId) { where.push(`(${alias}.branch_id IS NULL OR ${alias}.branch_id = ?)`); params.push(named.branchId); }
-      if (business) { where.push(`${alias}.business_id = ?`); params.push(String(business.id)); }
-      if (useBranch) { where.push(`${alias}.branch_id = ?`); params.push(useBranch); }
-      else if (!scope.allBranches && scope.branchIds) {
-        const ids = [...scope.branchIds];
-        where.push(`${alias}.branch_id IN (${ids.map(() => '?').join(',')})`);
-        params.push(...ids);
+      if (focusBranchId) {
+        where.push(`${alias}.branch_id = ?`);
+        params.push(focusBranchId);
+      } else {
+        if (business) { where.push(`${alias}.business_id = ?`); params.push(String(business.id)); }
+        if (!scope.allBranches && scope.branchIds) {
+          const ids = [...scope.branchIds];
+          where.push(`${alias}.branch_id IN (${ids.map(() => '?').join(',')})`);
+          params.push(...ids);
+        }
       }
       return { sql: where.length ? `AND ${where.join(' AND ')}` : '', params };
     };
@@ -227,35 +238,13 @@ function mount(app, base = '/api') {
       cash = { accounts, total: round2(accounts.reduce((a, x) => a + x.balance, 0)) };
     }
 
-    // ---- GROUP VIEW: per-business and per-branch ----------------------
+    // ---- GROUP VIEW: per-business, and only while no branch is chosen -
+    // The per-branch total list is not built here. Those figures are the tiles, and they
+    // are a branch's tiles only after the owner has switched to that branch. Listing every
+    // shop's takings on the group screen is what "branch totals" were doing before a switch.
     let byBranch = null;
     let byBusiness = null;
-    if (scope.allBranches || isOwnerView) {
-      const bWhere = ['b.is_deleted = 0', 'b.is_active = 1']; const bParams = [];
-      if (business) { bWhere.push('b.business_id = ?'); bParams.push(String(business.id)); }
-      else if (!scope.allBranches && scope.branchIds) {
-        const ids = [...scope.branchIds];
-        bWhere.push(`b.id IN (${ids.map(() => '?').join(',')})`); bParams.push(...ids);
-      }
-      const branches = await db.all(`SELECT b.id, b.name, b.code, b.city, b.business_id, biz.name AS business_name
-          FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id
-          WHERE ${bWhere.join(' AND ')} ORDER BY b.name`, bParams);
-      byBranch = [];
-      for (const b of branches) {
-        const r = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-            FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? AND s.branch_id = ?`, [from, to, String(b.id)]);
-        const todayR = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross
-            FROM sales s WHERE ${COUNTS} AND date(s.sold_at) = ? AND s.branch_id = ?`, [today, String(b.id)]);
-        const st = await db.first(`SELECT COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost
-            FROM stock_batches sb WHERE sb.is_deleted = 0 AND sb.branch_id = ? AND sb.status NOT IN ('QUARANTINED','EXPIRED')`, [String(b.id)]);
-        byBranch.push({
-          ...b,
-          today: { sales: Number(todayR.count) || 0, gross: round2(Number(todayR.gross)) },
-          period: { sales: Number(r.count) || 0, gross: round2(Number(r.gross)), net: round2(Number(r.gross) - Number(r.vat)) },
-          stockAtCost: round2(Number(st.at_cost)),
-        });
-      }
-      if (isOwnerView) {
+    if (!focusBranchId && isOwnerView) {
         const businesses = await db.all('SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name');
         byBusiness = [];
         for (const biz of businesses) {
@@ -267,7 +256,6 @@ function mount(app, base = '/api') {
             period: { sales: Number(r.count) || 0, gross: round2(Number(r.gross)), net: round2(Number(r.gross) - Number(r.vat)) },
           });
         }
-      }
     }
 
     // ---- WHAT NEEDS DOING --------------------------------------------
@@ -300,8 +288,11 @@ function mount(app, base = '/api') {
       // literal below then OVERWROTE, so the date silently vanished and esbuild
       // warned about a duplicate key that nobody had read.
       date: today,
-      view: isOwnerView ? 'GROUP' : (scope.allBranches ? 'BUSINESS' : (useBranch ? 'BRANCH' : 'ALL_ACCESSIBLE')),
-      scope: { business: business ? business.name : 'All businesses', branch: useBranch ? (branch && branch.name) : 'All branches' },
+      view: focusBranchId ? 'BRANCH' : (isOwnerView ? 'GROUP' : (scope.allBranches ? 'BUSINESS' : 'ALL_ACCESSIBLE')),
+      scope: {
+        business: business ? business.name : 'All businesses',
+        branch: focused ? focused.name : 'All branches',
+      },
       user: { id: user.id, name: user.full_name || user.username, role: user.role, navigation: navigationFor(user.role) },
 
       today: {
@@ -391,7 +382,14 @@ function mount(app, base = '/api') {
   app.get(`${base}/dashboard/summary`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    const branch = await resolveBranch(db, ctx, { required: false });
+    const scope = ctx.get('scope');
+    // Same rule as the full dashboard: an owner who has not named a branch is the group.
+    // resolveBranch would otherwise answer with their pinned row, and the summary would
+    // disagree with the screen it summarises.
+    const named = ctx.req.queryParam('branch_id');
+    const branch = (named || (scope && !scope.allBranches))
+      ? await resolveBranch(db, ctx, { required: false })
+      : null;
     const today = watToday();
     const sc = branch ? 'AND s.branch_id = ?' : '';
     const params = branch ? [today, String(branch.id)] : [today];

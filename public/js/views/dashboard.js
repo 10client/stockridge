@@ -159,7 +159,17 @@
       const sub = document.getElementById('dash-sub');
       if (sub) {
         const period = data.period ? `${U.date(data.period.from)} → ${U.date(data.period.to)}` : U.date(U.nowIso());
-        sub.textContent = `${SR.state.activeBranchName()} · ${period}`;
+        // The server's scope is the truth. The chip can say a branch while the figures
+        // are still the group — that is the bug this subtitle used to repeat.
+        const scopeBranch = data.scope && data.scope.branch;
+        sub.textContent = `${scopeBranch || SR.state.activeBranchName()} · ${period}`;
+      }
+      if (SR.state.canSeeAllBranches()) {
+        const scopeBranch = data.scope && data.scope.branch;
+        const onABranch = scopeBranch && scopeBranch !== 'All branches';
+        host.appendChild(ui.h('p', { class: 'hint' }, onABranch
+          ? `These figures are ${scopeBranch} only.`
+          : 'These figures are every branch together. Switch to a branch to see that shop\'s totals.'));
       }
 
       const today = data.today || {};
@@ -330,12 +340,10 @@
         card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'By business')));
         card.appendChild(ui.h('div', { class: 'card-body' }, ui.bars(groupRows(data.byBusiness), { format: U.money, tone: 'b2' })));
         cols.appendChild(card);
-      } else if (Array.isArray(data.byBranch) && data.byBranch.length > 1) {
-        const card = ui.h('div', { class: 'card' });
-        card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'By branch')));
-        card.appendChild(ui.h('div', { class: 'card-body' }, ui.bars(groupRows(data.byBranch), { format: U.money, tone: 'b2' })));
-        cols.appendChild(card);
       }
+      // No "By branch" card. Those totals are the tiles above, and only after the
+      // owner has switched to a branch. Listing every shop here showed branch totals
+      // on the group screen, which is the view that must not carry them.
       if (cols.childElementCount) host.appendChild(cols);
 
       // ---- what needs somebody to do something

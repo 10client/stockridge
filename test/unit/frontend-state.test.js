@@ -145,6 +145,24 @@ test('state: an owner with several branches and no pin is asked, not guessed at'
   assert.equal(typeof state.activeBranchName(), 'string', 'the chip still has something to show');
 });
 
+test('state: an owner is not switched onto the only branch of the active business', async () => {
+  // The active business having one shop is not a switch. The dashboard sends
+  // whatever activeBranchId is set, and a guessed id is how branch totals
+  // appeared before the owner had chosen a shop.
+  const state = loadState({
+    me: {
+      user: { id: 'u3', username: 'solo', role: 'OWNER', fullName: 'Solo', business: { id: 'b1', name: 'One' } },
+      scope: { role: 'OWNER', allBusinesses: true, allBranches: true, businessIds: null, branchIds: null, pinnedBusinessId: null, pinnedBranchId: null },
+      businesses: [{ id: 'b1', name: 'One' }, { id: 'b2', name: 'Two' }],
+      branches: [{ id: 'br1', business_id: 'b1', name: 'Only shop' }, { id: 'br2', business_id: 'b2', name: 'Other shop' }],
+      settings: {}, featureLabels: {}, vertical: null,
+    },
+  });
+  await state.load({ force: true });
+  assert.equal(state.activeBranch(), null, 'the only branch of the active business was treated as a switch');
+  assert.equal(state.query().branch_id, undefined, 'the dashboard query names a branch the owner did not switch to');
+});
+
 test('state: an administrator with no business loads without throwing', async () => {
   // The case the user hit: an ADMIN belongs to no business and no branch, so
   // every list is empty and every accessor still has to be callable. A guard that

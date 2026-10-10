@@ -241,9 +241,10 @@
     const stillValid = forBiz.some((b) => String(b.id) === String(state.activeBranchId));
     if (!stillValid) {
       const pinned = state.user && state.user.branch && state.user.branch.id;
+      const ownerChooses = canSeeAllBranches() && !pinned && branches().length > 1;
       const next = pinned && forBiz.some((b) => String(b.id) === String(pinned))
         ? pinned
-        : (forBiz.length === 1 ? forBiz[0].id : null);
+        : (ownerChooses ? null : (forBiz.length === 1 ? forBiz[0].id : null));
       state.activeBranchId = next ? String(next) : null;
       writeLocal(ACTIVE_BRANCH_KEY, state.activeBranchId);
     }
@@ -321,12 +322,17 @@
 
     const forBiz = branchesFor(state.activeBusinessId);
 
-    // Branch: a pinned user gets their own, always. Anyone else gets the
-    // remembered branch if it is still visible, else the only one, else none.
+    // Branch: a pinned user gets their own, always. A remembered branch is a
+    // switch they already made. An owner who can see more than one branch is
+    // NOT switched onto the only shop of the active business — that guess is
+    // how the dashboard showed a branch's totals before anybody had switched.
+    const ownerChooses = canSeeAllBranches() && !pinned && branches().length > 1;
     if (pinned && branches().some((b) => String(b.id) === String(pinned))) {
       state.activeBranchId = String(pinned);
     } else if (rememberedBranch && branches().some((b) => String(b.id) === String(rememberedBranch))) {
       state.activeBranchId = String(rememberedBranch);
+    } else if (ownerChooses) {
+      state.activeBranchId = null;
     } else if (forBiz.length === 1) {
       state.activeBranchId = String(forBiz[0].id);
     } else if (branches().length === 1) {

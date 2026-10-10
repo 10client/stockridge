@@ -823,8 +823,29 @@
   // -------------------------------------------------------------------
   function openBranchPicker() {
     const body = ui.h('div', {});
-    body.appendChild(ui.h('p', { class: 'hint' }, 'Every number on every screen belongs to the branch you pick here. Stock, cash and reports do not mix between shops.'));
+    body.appendChild(ui.h('p', { class: 'hint' }, 'Every number on every screen belongs to the branch you pick here. Stock, cash and reports do not mix between shops. An owner starts on all branches; branch totals appear only after a switch.'));
     const list = ui.h('div', { class: 'stack' });
+    const pinned = SR.state.user && SR.state.user.branch && SR.state.user.branch.id;
+    if (SR.state.canSeeAllBranches() && !pinned) {
+      const onAll = !SR.state.activeBranchId;
+      const all = ui.h('button', {
+        class: `nav-item ${onAll ? 'is-active' : ''}`,
+        style: { justifyContent: 'flex-start' },
+        onClick: () => {
+          const res = SR.state.setBranch(null);
+          if (!res.ok) { ui.warn(res.reason); return; }
+          m.close();
+          paintIdentity();
+          ui.ok('Now working across all branches.');
+          render();
+        },
+      });
+      all.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
+        ui.h('strong', {}, 'All branches'),
+        ui.h('div', { class: 'hint' }, 'Group totals. Pick a shop below to see that branch\'s totals.')));
+      if (onAll) all.appendChild(ui.badge('Current', 'badge-good'));
+      list.appendChild(all);
+    }
     for (const branch of SR.state.branches()) {
       const isActive = String(branch.id) === String(SR.state.activeBranchId);
       const row = ui.h('button', {

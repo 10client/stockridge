@@ -229,6 +229,29 @@ runAudit('dashboard', async (audit, d) => {
     audit.skip('the cashier seat could not be created on this target', 'set AUDIT_WRITE=1 to run the scope checks');
   }
 
+  await audit.checkAsync('an owner sees a branch\'s totals only after naming that branch', async () => {
+    const group = await dash(owner);
+    assert.equal(String(group.scope && group.scope.branch), 'All branches',
+      `the owner's dashboard is already a branch before they have switched: ${JSON.stringify(group.scope)}`);
+    assert.equal(String(group.view), 'GROUP', `the unswitched owner view is ${group.view}`);
+    assert.ok(!group.byBranch || group.byBranch.length === 0,
+      'branch totals are listed before the owner has switched');
+
+    const one = await dash(owner, `?branch_id=${encodeURIComponent(branch.id)}`);
+    assert.equal(String(one.scope && one.scope.branch), String(branch.name),
+      `switching to ${branch.name} still answers ${JSON.stringify(one.scope)}`);
+    assert.equal(String(one.view), 'BRANCH', `a switched owner is still view ${one.view}`);
+    assert.ok(!one.byBranch || one.byBranch.length === 0,
+      'switching to one branch still lists every other branch\'s totals');
+    assert.ok(Number(one.stock.atCost) <= Number(group.stock.atCost) + 0.01,
+      `the branch stock ${one.stock.atCost} exceeds the group ${group.stock.atCost}`);
+    assert.ok(Number(one.today.gross) <= Number(group.today.gross) + 0.01,
+      `the branch's takings ${one.today.gross} exceed the group ${group.today.gross}`);
+    assert.ok(Number(one.today.gross) > 0,
+      'the branch the sale was rung on shows no takings after the switch');
+    audit.note(`group stock ${money(group.stock.atCost)} / branch stock ${money(one.stock.atCost)}; group today ${money(group.today.gross)} / branch today ${money(one.today.gross)}`);
+  });
+
   await audit.checkAsync('the summary agrees with the full dashboard it summarises', async () => {
     const full = await dash(owner);
     const res = await owner.get('/api/dashboard/summary');
