@@ -1626,3 +1626,31 @@ Driven against staging's data with the new screens: the owner form lists 16 bran
 | sample | ridge-20261010-0840-22fb1d6 | live | live | 200 |
 
 Live route, staging: an owner created with no branch answered 201 *"…created as Owner with access to every branch."* and was switched off again. A cashier with no branch is still refused `BRANCH_REQUIRED`. Production has no business yet, so adding an owner there is refused with `BUSINESS_REQUIRED` ("Choose which business this applies to") — the screen says create a business first, and does not say add a branch.
+
+### P24 — branch totals appear only after the owner switches to a branch (checkpoint)
+
+Switching branch did nothing for an owner. `GET /api/dashboard` and `GET /api/dashboard?branch_id=<head office>` returned the same payload: view GROUP, scope "All branches", stock at cost 13,232,491.12, owed 63,000, safe −17,800, and a per-branch total list. The sales clause noticed the name; stock, debt, tills and the safe did not, because a branch filter was applied only when the caller could *not* see every branch.
+
+**The rule now.** No branch named → the group. Every tile is every shop together, and the per-branch total list is not sent, so the screen cannot paint branch totals before a switch. A named `branch_id` (what the switcher sends) → view BRANCH, scope names that shop, and every tile is that shop only (`branch_id = ?`, not `IS NULL OR`). A branch stored on the owner's own user row is not a switch. The shell no longer guesses the only shop of the active business when the owner can see more than one, and the switcher has an "All branches" row so they can come back.
+
+**Live, after the deploy** (temporary owner created with no branch, then switched off):
+
+| | view | scope | stock at cost | owed | safe | byBranch |
+| --- | --- | --- | --- | --- | --- | --- |
+| staging, no switch | GROUP | All branches | 13,232,491.12 | 63,000 | −17,800 | none |
+| staging, head office | BRANCH | stock ridge head office | 5,125,000.00 | 0 | 0 | none |
+| staging, a second branch | BRANCH | Roles Second Branch yfo3 | 1,967,151.97 | 12,000 | 0 | none |
+
+The two shops do not share a figure. Sample (one branch): the unswitched owner is still GROUP / All branches, and naming that branch answers BRANCH. Production has no branch yet, so the administrator's dashboard is GROUP / All branches and sends no branch list — there is nothing to switch to.
+
+**Deployed, same commit `66cf518` on all three** (the minute differs by when each upload finished; the code does not). Page, scripts and the dashboard screen agree on each host (37/37). `admin`/`1234` → 200. PINs were not reset.
+
+| environment | page names | dashboard |
+| --- | --- | --- |
+| staging | ridge-20261010-1333-66cf518 | https://stockridge-staging.stockridge.workers.dev |
+| production | ridge-20261010-1334-66cf518 | https://stockridge.stockridge.workers.dev |
+| sample | ridge-20261010-1335-66cf518 | https://sample.stockridge.workers.dev |
+
+**Local.** `audit.dashboard` 14/14, including "an owner sees a branch's totals only after naming that branch". `frontend-state` 11/11. A full `npm run verify` was not re-run this stage.
+
+**Still open, not this stage:** every provisioned product barcode is skipped (`summary.skipped`); incoming/outgoing transfer cards still need `activeBranchId` alignment; `/api/stock?branch_id=` probes empty. Reload once if a tab opened before this deploy — the page asks for this stamp, and a session from before the deploy may need a fresh sign-in.
