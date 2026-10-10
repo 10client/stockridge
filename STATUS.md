@@ -1787,4 +1787,6 @@ Rice was the gap. Mama Gold and Royal Stallion were already there. Missing, and 
 
 Also added, from the same pass through the other trades: Ibeto and UniCem cement, Conoil Golden Super and Quatro oil, and the Hisense twin-tub machines Jumia is selling. Brands already on the list were skipped.
 
-Local: market list test and `audit.market` 25/25. Not yet on the hosted builds.
+Local: market list test and `audit.market` 25/25.
+
+Live on staging, sample and production as `ridge-20261010-1833-d358a27`. The list is 4,828 goods. A search for Dantata returns the 50kg bag. No price field. The admin PIN was not changed.
