@@ -704,7 +704,7 @@
         //
         // The count is in BASE UNITS — the same unit the quantity box is in — because that is how
         // the route counts and how the warranty follows the individual unit.
-        const tracked = Boolean(Number(i.requires_serial));
+        const tracked = Boolean(Number(i.requires_serial) && SR.state.usesSerialNumbers());
         const serialBox = ui.field({
           label: 'Serial numbers', name: serialName, type: 'textarea', span: true, rows: 3,
           placeholder: 'One per line — scan or type each label',
@@ -816,7 +816,7 @@
             // is opened, focused, and the person is told exactly what is missing before a round
             // trip tells them in red.
             for (const e of plan.values()) {
-              if (!Number(e.item.requires_serial) || !(e.quantityBase > 0)) continue;
+              if (!SR.state.usesSerialNumbers() || !Number(e.item.requires_serial) || !(e.quantityBase > 0)) continue;
               const need = Math.ceil(e.quantityBase);
               if (e.serials.length === need) continue;
               revealSerials(wrapEl.querySelector(`[name="serials_${e.item.id}"]`));

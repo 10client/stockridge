@@ -44,7 +44,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   subscription_status: 'ACTIVE', subscription_plan: 'Standard', subscription_renewal_date: null,
   attendance_module_enabled: 1, warranty_module_enabled: 1, instalment_module_enabled: 1,
   delivery_module_enabled: 1, multi_branch_enabled: 1, multi_business_enabled: 1,
-  serial_tracking_enabled: 1, offline_sync_enabled: 1,
+  serial_tracking_enabled: 0, offline_sync_enabled: 1,
   vat_enabled: 0, vat_rate_percent: 7.5,
   managers_can_void_sales: 1, managers_can_approve_expenses: 1, managers_can_edit_prices: 1,
   managers_can_override_credit_limit: 1,

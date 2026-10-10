@@ -1654,3 +1654,13 @@ The two shops do not share a figure. Sample (one branch): the unswitched owner i
 **Local.** `audit.dashboard` 14/14, including "an owner sees a branch's totals only after naming that branch". `frontend-state` 11/11. A full `npm run verify` was not re-run this stage.
 
 **Still open, not this stage:** every provisioned product barcode is skipped (`summary.skipped`); incoming/outgoing transfer cards still need `activeBranchId` alignment; `/api/stock?branch_id=` probes empty. Reload once if a tab opened before this deploy — the page asks for this stamp, and a session from before the deploy may need a fresh sign-in.
+
+### P25 — serial numbers are a business setting, off unless turned on (checkpoint)
+
+A shop was being asked for a serial number whether or not it identifies units that way. The switch already existed (`serial_tracking_enabled`) and defaulted **on**, so every deployment inherited the demand. It is now **off** until an owner turns it on under Settings → Modules → “This business uses serial numbers”.
+
+Off, which is the new default: the counter does not show a serial box, goods received and purchase-order receiving do not ask for numbers, and the receipt does not print an empty serial line. A product can still be marked “track serial numbers”; that flag is recorded and only demanded once the business switch is on. Numbers already on file are not deleted. Turning the switch on asks for one number per unit at the counter, on a goods receipt, and on the slip.
+
+**The till and the receipt.** The sale screen is one ticket: the total is the first figure, each line is name and amount, then quantity, unit and price, and a serial row only when the business uses them and that line is short a number. Taking payment shows the lines being charged, then the method, then the amount. The receipt the customer is shown is a slip — business, receipt number, date, cashier, customer, items, total, how it was paid — and the thermal text follows the same order. A serial is printed under its item only when one was captured.
+
+Local: `audit.serials` 8/8 (including “off until the business turns them on”), `audit.createFlows` 17/17, `audit.warranty` 26/26. Deploy follows.

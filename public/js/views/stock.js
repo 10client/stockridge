@@ -458,7 +458,7 @@
       // The serials box is shown for products that identify each unit, and its hint
       // names how many numbers the receipt will be refused without.
       function showSerials(p) {
-        const tracked = Boolean(p && Number(p.requires_serial));
+        const tracked = Boolean(p && Number(p.requires_serial) && SR.state.usesSerialNumbers());
         serialsField.hidden = !tracked;
         if (tracked) serialsHint();
       }
@@ -631,7 +631,7 @@
                   const exact = rows.find((r) => String(r.sku || '').toLowerCase() === typed.toLowerCase())
                     || rows.find((r) => String(r.name || '').toLowerCase() === typed.toLowerCase())
                     || (rows.length === 1 ? rows[0] : null);
-                  if (exact) { openSerialsFor(exact); loadUnits(exact); }
+                  if (exact) { picked = exact; showSerials(exact); loadUnits(exact); }
                   else { ui.warn(`“${typed}” is not one product on the list. Choose it from the suggestions so the receipt is filed against the right one.`); return; }
                 } catch (err) { ui.warn('Pick a product from the list.'); return; }
               }
@@ -641,7 +641,7 @@
               // note usually emits anything at all.
               const serials = String(v.serials || '')
                 .split(/[\n,\t]+/).map((x) => x.trim()).filter(Boolean);
-              if (picked && Number(picked.requires_serial)) {
+              if (picked && Number(picked.requires_serial) && SR.state.usesSerialNumbers()) {
                 // Refuse HERE rather than at the server, and OPEN THE BOX when it is shut: a
                 // refusal a person cannot act on is a dead end, not a validation.
                 if (serialsField.hidden) openSerialsFor(picked);

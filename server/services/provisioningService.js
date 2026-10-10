@@ -406,8 +406,8 @@ async function provisionPlatform(db, {
 
   const existing = await db.first('SELECT id FROM client_settings WHERE id = 1');
   if (!existing) {
-    await db.run(`INSERT INTO client_settings (id, business_name, subscription_status, subscription_plan, updated_at)
-                  VALUES (1, ?, 'TRIAL', 'Standard', datetime('now'))`, [businessName]);
+    await db.run(`INSERT INTO client_settings (id, business_name, subscription_status, subscription_plan, serial_tracking_enabled, updated_at)
+                  VALUES (1, ?, 'TRIAL', 'Standard', 0, datetime('now'))`, [businessName]);
   } else if (businessName) {
     await db.run("UPDATE client_settings SET business_name = COALESCE(business_name, ?), updated_at = datetime('now') WHERE id = 1", [businessName]);
   }
@@ -467,8 +467,8 @@ async function provisionDeployment(db, {
 
   const settingsRow = await db.first('SELECT id FROM client_settings WHERE id = 1');
   if (!settingsRow) {
-    await db.run(`INSERT INTO client_settings (id, business_name, subscription_status, subscription_plan, updated_at)
-                  VALUES (1, ?, 'TRIAL', 'Standard', datetime('now'))`, [businessName || null]);
+    await db.run(`INSERT INTO client_settings (id, business_name, subscription_status, subscription_plan, serial_tracking_enabled, updated_at)
+                  VALUES (1, ?, 'TRIAL', 'Standard', 0, datetime('now'))`, [businessName || null]);
   } else {
     await db.run("UPDATE client_settings SET business_name = COALESCE(?, business_name), updated_at = datetime('now') WHERE id = 1", [businessName || null]);
   }

@@ -387,14 +387,11 @@ async function prepare(db, {
     const serialRows = [];
     // WHETHER SERIALS ARE DEMANDED IS THE BUSINESS'S SWITCH, NOT THE PRODUCT'S FLAG.
     //
-    // `serial_tracking_enabled` is on by default and is what the administrator sees
-    // as "Capture serial numbers for products that track them". It used to be read
-    // by nothing, so switching it off changed nothing: a serial-tracked product
-    // still demanded serials, and — before goods-received could capture any — could
-    // not be sold at all. Switched off now, the flag stops biting anywhere; the
-    // serials that ARE supplied are still validated, because a serial somebody
-    // typed is a claim about which unit left the shop.
-    const serialTrackingOn = !settings || Number(settings.serial_tracking_enabled) !== 0;
+    // Off unless the owner has turned it on. A missing settings row is the same
+    // answer as off — a deployment that has not chosen serials must not be asked
+    // for them. Numbers that ARE typed are still checked: a serial somebody entered
+    // is a claim about which unit left the shop.
+    const serialTrackingOn = Boolean(settings) && Number(settings.serial_tracking_enabled) === 1;
     const serialTracked = Number(product.requires_serial) === 1;
     if (serialTracked && serialTrackingOn) {
       if (requestedSerials.length !== Math.ceil(conversion.baseQuantity)) {

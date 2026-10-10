@@ -414,7 +414,7 @@ function mount(app, base = '/api') {
       const accepted = await acceptSerials(db, {
         product, quantityBase: qtyBase,
         supplied: parseSerials(r.serials || r.serial_numbers || r.serial_no),
-        featureOn: !settings || Number(settings.serial_tracking_enabled) !== 0,
+        featureOn: Boolean(settings) && Number(settings.serial_tracking_enabled) === 1,
         what: 'order',
       });
       const batchId = newId();
@@ -506,11 +506,7 @@ function mount(app, base = '/api') {
         + (serialCount ? ` ${serialCount} serial number(s) filed, so each unit can be sold and its warranty proved.` : ''),
       receivedValue, fullyReceived, serialCount,
       serials: plan.flatMap((p) => (p.serialRows || []).map((r) => r.serialNo)),
-      warnings: [
-        ...plan.flatMap((p) => p.serialWarnings || []),
-        ...plan.filter((p) => Number(p.product.requires_serial) === 1 && !(p.serialRows || []).length && settings && Number(settings.serial_tracking_enabled) === 0)
-          .map((p) => `Serial numbers were not asked for: serial capture is switched off in Settings. ${p.product.name} expects them, so its warranty cannot be proved from the serial until it is switched back on.`),
-      ],
+      warnings: plan.flatMap((p) => p.serialWarnings || []),
       newStatus: fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED',
     });
   }));

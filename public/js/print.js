@@ -51,9 +51,47 @@
   };
   const money = (v) => U.money(v, { kobo: true }).replace('₦', 'N');
 
+  // Every serial that belongs on one line of a receipt, from whichever shape
+  // handed it over: the cart (`serialNumbers`), the sale item (`serial_no`),
+  // or the register rows attached to the sale (`sale.serials`).
+  function serialsForItem(item, sale) {
+    const found = [];
+    const push = (value) => {
+      String(value || '').split(/,\s*/).forEach((part) => {
+        const sn = part.trim();
+        if (sn && !found.includes(sn)) found.push(sn);
+      });
+    };
+    if (Array.isArray(item.serial_numbers)) item.serial_numbers.forEach(push);
+    if (Array.isArray(item.serialNumbers)) item.serialNumbers.forEach(push);
+    push(item.serial_no);
+    for (const row of (sale && sale.serials) || []) {
+      const sameItem = item.id && row.sale_item_id && String(row.sale_item_id) === String(item.id);
+      const sameName = !item.id && row.product_name && (item.product_name || item.name) && row.product_name === (item.product_name || item.name);
+      if (sameItem || sameName) push(row.serial_no);
+    }
+    return found;
+  }
+
+  function wrapCentre(text, width) {
+    const words = String(text || '').split(/\s+/).filter(Boolean);
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+      if (!cur) cur = w;
+      else if ((cur.length + 1 + w.length) <= width) cur += ` ${w}`;
+      else { lines.push(centre(cur, width)); cur = w; }
+    }
+    if (cur) lines.push(centre(cur, width));
+    return lines.length ? lines : [centre('', width)];
+  }
+
   // -------------------------------------------------------------------
   // SALE RECEIPT
   // -------------------------------------------------------------------
+  // One shape, used by the thermal roll and by the on-screen slip: who sold
+  // it, what left the shop, what was paid, and — only when a number was
+  // actually captured — which unit it was. An empty serial line is not printed.
   function saleReceipt(sale, { brand = 'StockRidge', footer = null, paper = null } = {}) {
     const width = WIDTHS[paper || printerPrefs.paper] || 48;
     const L = [];
@@ -61,22 +99,29 @@
     if (sale.branch_name) L.push(centre(sale.branch_name, width));
     if (sale.branch_address) L.push(centre(sale.branch_address, width));
     if (sale.branch_phone) L.push(centre(sale.branch_phone, width));
-    L.push(rule(width));
-    L.push(cols(`Receipt ${sale.receipt_no || ''}`, U.soldAt(sale.sold_at).slice(0, 10), width));
-    L.push(cols(U.soldAt(sale.sold_at).slice(11), String(sale.branch_code || ''), width));
-    L.push(cols(`Cashier: ${sale.cashier_name || sale.sold_by_name || '—'}`, String(sale.sale_type || 'RETAIL'), width));
-    if (sale.customer_name) L.push(`Customer: ${sale.customer_name}`);
-    if (sale.customer_phone) L.push(`Phone   : ${sale.customer_phone}`);
+    L.push(rule(width, '='));
+    L.push(cols('Receipt', sale.receipt_no || '—', width));
+    L.push(cols('Date', U.soldAt(sale.sold_at), width));
+    if (sale.branch_code) L.push(cols('Branch', String(sale.branch_code), width));
+    L.push(cols('Cashier', sale.cashier_name || sale.sold_by_name || '—', width));
+    L.push(cols('Type', U.humanise(sale.sale_type || 'RETAIL'), width));
+    L.push(cols('Customer', sale.customer_name || 'Walk-in', width));
+    if (sale.customer_phone) L.push(cols('Phone', sale.customer_phone, width));
     L.push(rule(width));
 
-    for (const item of sale.items || []) {
+    const items = sale.items || [];
+    if (!items.length) L.push(centre('No items', width));
+    for (const item of items) {
       const name = item.product_name || item.name || 'Item';
       L.push(name.length > width ? `${name.slice(0, width - 1)}…` : name);
-      if (item.serial_no) L.push(`  S/N ${item.serial_no}`);
       if (item.variant_name) L.push(`  ${item.variant_name}`);
       const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.base_unit_name || ''}`.trim();
       const unit = U.money(item.unit_price, { kobo: true }).replace('₦', '@');
-      L.push(cols(`  ${qtyText} ${unit}`, money(item.line_total), width));
+      L.push(cols(`  ${qtyText} x ${unit}`, money(item.line_total), width));
+      for (const sn of serialsForItem(item, sale)) {
+        const line = `  S/N ${sn}`;
+        L.push(line.length > width ? `${line.slice(0, width - 1)}…` : line);
+      }
       if (Number(item.line_discount)) L.push(cols('  less discount', `-${money(item.line_discount)}`, width));
     }
 
@@ -104,7 +149,7 @@
       L.push(cols('BALANCE DUE', money(sale.balance_due), width));
     }
     L.push(rule(width));
-    L.push(centre(U.amountInWords(sale.total), width));
+    L.push(...wrapCentre(U.amountInWords(sale.total), width));
     if ((sale.items || []).some((i) => Number(i.warranty_months))) {
       L.push(rule(width));
       L.push('WARRANTY');
@@ -152,7 +197,13 @@
     for (const line of cart.lines || []) {
       const name = line.name || line.product_name || line.product_id || 'Item';
       L.push(name.length > width ? `${name.slice(0, width - 1)}…` : name);
-      L.push(cols(`  ${U.qty(line.quantity)} ${line.unitCode || ''}`, money(line.expectedTotal != null ? line.expectedTotal : line.unitPrice * line.quantity), width));
+      const qtyText = `${U.qty(line.quantity)} ${line.unitCode || ''}`.trim();
+      const lineTotal = line.expectedTotal != null ? line.expectedTotal : Number(line.unitPrice || 0) * Number(line.quantity || 0);
+      L.push(cols(`  ${qtyText}`, money(lineTotal), width));
+      for (const sn of serialsForItem(line, { serials: cart.serials })) {
+        const row = `  S/N ${sn}`;
+        L.push(row.length > width ? `${row.slice(0, width - 1)}…` : row);
+      }
     }
     L.push(rule(width));
     L.push(cols('TOTAL', money(cart.expectedTotal), width));
@@ -329,10 +380,82 @@
     return L.join('\n');
   }
 
+  function row(label, value, cls) {
+    return SR.ui.h('div', { class: `slip-row${cls ? ' ' + cls : ''}` },
+      SR.ui.h('span', {}, label),
+      SR.ui.h('span', {}, value));
+  }
+
+  /** The receipt as a slip, not a wall of monospace. Print still uses the text. */
+  function slipNode(sale, { brand = 'StockRidge', footer = null } = {}) {
+    const h = SR.ui.h;
+    const head = h('div', { class: 'slip-head' },
+      h('div', { class: 'slip-brand' }, brand || 'StockRidge'),
+      sale.branch_name ? h('div', { class: 'slip-sub' }, sale.branch_name) : null,
+      sale.branch_address ? h('div', { class: 'slip-sub' }, sale.branch_address) : null,
+      sale.branch_phone ? h('div', { class: 'slip-sub' }, sale.branch_phone) : null);
+    const meta = h('div', { class: 'slip-meta' },
+      row('Receipt', sale.receipt_no || '—'),
+      row('Date', U.soldAt(sale.sold_at)),
+      row('Cashier', sale.cashier_name || sale.sold_by_name || '—'),
+      row('Customer', sale.customer_name || 'Walk-in'),
+      sale.customer_phone ? row('Phone', sale.customer_phone) : null);
+    const items = h('div', { class: 'slip-items' });
+    for (const item of sale.items || []) {
+      const block = h('div', { class: 'slip-item' });
+      block.appendChild(h('div', { class: 'slip-item-name' }, item.product_name || item.name || 'Item'));
+      if (item.variant_name) block.appendChild(h('div', { class: 'slip-sub' }, item.variant_name));
+      const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.base_unit_name || ''}`.trim();
+      block.appendChild(row(`${qtyText} × ${U.money(item.unit_price)}`, U.money(item.line_total)));
+      const serials = serialsForItem(item, sale);
+      if (serials.length) {
+        block.appendChild(h('div', { class: 'slip-serial' }, serials.map((sn) => `S/N ${sn}`).join('  ·  ')));
+      }
+      items.appendChild(block);
+    }
+    const totals = h('div', { class: 'slip-totals' },
+      row('Subtotal', U.money(sale.subtotal)));
+    const discount = Number(sale.discount_amount) + Number(sale.order_discount_amount || 0);
+    if (discount) totals.appendChild(row('Discount', `−${U.money(discount)}`));
+    if (Number(sale.delivery_fee)) totals.appendChild(row('Delivery', U.money(sale.delivery_fee)));
+    totals.appendChild(row('Total', U.money(sale.total), 'slip-total'));
+    if (Number(sale.vat_amount)) totals.appendChild(row(`VAT included (${U.qty(sale.vat_rate_percent || 7.5, 2)}%)`, U.money(sale.vat_amount)));
+    const pay = h('div', { class: 'slip-pay' });
+    for (const pmt of sale.payments || []) {
+      const ref = pmt.reference ? ` · ${pmt.reference}` : '';
+      pay.appendChild(row(`${U.humanise(pmt.method)}${ref}`, U.money(pmt.amount)));
+    }
+    if (Number(sale.change_given)) pay.appendChild(row('Change', U.money(sale.change_given)));
+    if (Number(sale.change_owed)) pay.appendChild(row('Change owed', U.money(sale.change_owed)));
+    if (Number(sale.balance_due)) pay.appendChild(row('Balance due', U.money(sale.balance_due), 'slip-due'));
+    const foot = h('div', { class: 'slip-foot' },
+      h('div', { class: 'slip-words' }, U.amountInWords(sale.total)),
+      h('div', {}, footer || 'Thank you for your custom.'));
+    return h('div', { class: 'slip' }, head, h('hr', { class: 'slip-rule' }), meta, h('hr', { class: 'slip-rule' }), items, h('hr', { class: 'slip-rule' }), totals, h('hr', { class: 'slip-rule' }), pay, h('hr', { class: 'slip-rule' }), foot);
+  }
+
+  /**
+   * The receipt the cashier shows the customer, and the text the printer gets.
+   * One function so the counter and the sales screen cannot drift apart.
+   */
+  function previewSale(sale, { brand = 'StockRidge', footer = null, title = null, autoPrint = false } = {}) {
+    const text = saleReceipt(sale, { brand, footer });
+    const heading = title || `Receipt ${sale.receipt_no || ''}`.trim();
+    const body = SR.ui.h('div', { class: 'stack' }, slipNode(sale, { brand, footer }));
+    const actions = [
+      SR.ui.h('button', { class: 'btn', onClick: () => SR.ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
+      SR.ui.h('button', { class: 'btn', onClick: () => U.download(`${heading.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
+      SR.ui.h('button', { class: 'btn btn-primary', onClick: () => printText(text, { title: heading }) }, 'Print'),
+    ];
+    const modal = SR.ui.openModal({ title: heading, body, footer: actions, size: 'narrow' });
+    if (autoPrint && prefs().autoPrint !== false) setTimeout(() => printText(text, { title: heading }), 350);
+    return { modal, text };
+  }
+
   SR.print = {
     WIDTHS, loadPrefs, savePrefs, prefs,
     saleReceipt, pendingReceipt, tillSheet, countSheet,
-    printText, preview, printReport, testPage,
-    centre, cols, rule,
+    printText, preview, previewSale, slipNode, printReport, testPage,
+    centre, cols, rule, serialsForItem,
   };
 }(window));

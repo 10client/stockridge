@@ -107,9 +107,9 @@ async function buildSeedSql({ username, pin, businessName = null, adminName = 'S
   // that does not exist is the first thing a real D1 deployment would have said
   // no to — which is why test/integration/d1-seed.test.js executes this file.
   statements.push(`INSERT OR IGNORE INTO client_settings
-  (id, business_name, subscription_status, subscription_plan, vat_enabled, vat_rate_percent, updated_at)
+  (id, business_name, subscription_status, subscription_plan, vat_enabled, vat_rate_percent, serial_tracking_enabled, updated_at)
 VALUES
-  (1, ${sqlString(businessName)}, 'ACTIVE', 'Standard', 1, 7.5, datetime('now'));`);
+  (1, ${sqlString(businessName)}, 'ACTIVE', 'Standard', 1, 7.5, 0, datetime('now'));`);
   statements.push('');
 
   // ---- 2. the withholding schedule, as data

@@ -163,6 +163,18 @@
     if (raw === undefined || raw === null) return true;
     return Boolean(Number(raw));
   }
+
+  /**
+   * Does this business identify units by serial number?
+   *
+   * Off unless the owner has turned the switch on. `feature()` treats a missing
+   * setting as on, which is the right answer for a module that ships enabled and
+   * the wrong one here: a shop that has not chosen serials must not be asked for
+   * them at the counter, on a goods receipt, or on the slip.
+   */
+  function usesSerialNumbers() {
+    return Number(state.settings && state.settings.serial_tracking_enabled) === 1;
+  }
   function featureLabel(key) { return state.featureLabels[key] || key; }
 
   // -------------------------------------------------------------------
@@ -390,7 +402,7 @@
     on, emit, load, loadFromMirror, clear,
     rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager, canManageUser,
     canCreateRole, roleNeedsBranch,
-    canSeeAllBranches, can,
+    canSeeAllBranches, can, usesSerialNumbers,
     feature, featureLabel,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,
     setBranch, setBusiness, query,

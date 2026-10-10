@@ -220,7 +220,7 @@ function mount(app, base = '/api') {
     // ===================================================================
     // The rules are in server/services/serialsService.js, because there are two routes that
     // receive goods and the first version of this capture lived in only one of them.
-    const serialTrackingOn = !settings || Number(settings.serial_tracking_enabled) !== 0;
+    const serialTrackingOn = Boolean(settings) && Number(settings.serial_tracking_enabled) === 1;
     const accepted = await acceptSerials(db, {
       product, quantityBase,
       supplied: parseSerials(body.serials || body.serial_numbers || body.serial_no),

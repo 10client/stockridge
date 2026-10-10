@@ -196,7 +196,7 @@
           ui.h('p', { class: 'sub' }, `${U.soldAt(sale.sold_at)} · ${sale.branch_name || SR.state.activeBranchName()} · ${sale.cashier_name || '—'}`)),
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales') }, 'Back to sales'),
-          repaintButton(sale, items, payments)));
+          repaintButton(sale, items, payments, serials)));
       host.appendChild(head);
 
       if (sale.status === 'VOIDED') {
@@ -224,8 +224,13 @@
         title: 'Items',
         table: ui.renderTable({
           columns: [
-            { key: 'product_name', label: 'Item', className: 'wrap' },
-            { key: 'serial_no', label: 'Serial', render: (r) => r.serial_no || '—' },
+            { key: 'product_name', label: 'Item', className: 'wrap', render: (r) => {
+              const sns = serials.filter((sn) => String(sn.sale_item_id) === String(r.id)).map((sn) => sn.serial_no).filter(Boolean);
+              const listed = sns.length ? sns : (r.serial_no ? [r.serial_no] : []);
+              return ui.h('div', {},
+                ui.h('div', {}, r.product_name || r.name || 'Item'),
+                listed.length ? ui.h('div', { class: 'hint mono' }, listed.map((sn) => `S/N ${sn}`).join(' · ')) : null);
+            } },
             { key: 'quantity', label: 'Qty', align: 'right', render: (r) => `${U.qty(r.quantity)} ${r.unit_code || ''}` },
             { key: 'unit_price', label: 'Price', align: 'right', render: (r) => U.money(r.unit_price) },
             { key: 'line_total', label: 'Total', align: 'right', render: (r) => U.money(r.line_total) },
@@ -310,7 +315,7 @@
       actions.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Actions')));
       const abody = ui.h('div', { class: 'card-body' });
       abody.appendChild(ui.h('div', { class: 'btn-row' },
-        ui.h('button', { class: 'btn', onClick: () => SR.print.preview(SR.print.saleReceipt(sale, { brand: (SR.state.settings || {}).business_name || 'StockRidge', footer: (SR.state.settings || {}).receipt_footer_text || '' }), { title: `Receipt ${sale.receipt_no}` }) }, 'Print receipt'),
+        ui.h('button', { class: 'btn', onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), { brand: (SR.state.settings || {}).business_name || 'StockRidge', footer: (SR.state.settings || {}).receipt_footer_text || '', title: `Receipt ${sale.receipt_no}` }) }, 'Print receipt'),
         ui.h('button', {
           class: 'btn',
           onClick: () => openReturn(sale, items),
@@ -489,13 +494,14 @@
       });
     }
 
-    function repaintButton(sale, items, payments) {
+    function repaintButton(sale, items, payments, serials) {
       return ui.h('button', {
         class: 'btn btn-sm',
-        onClick: () => SR.print.preview(SR.print.saleReceipt(Object.assign({}, sale, { items, payments }), {
+        onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), {
           brand: (SR.state.settings || {}).business_name || 'StockRidge',
           footer: (SR.state.settings || {}).receipt_footer_text || '',
-        }), { title: `Receipt ${sale.receipt_no}` }),
+          title: `Receipt ${sale.receipt_no}`,
+        }),
       }, 'Print');
     }
 

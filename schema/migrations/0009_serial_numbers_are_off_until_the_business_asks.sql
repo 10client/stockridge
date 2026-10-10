@@ -1,0 +1,18 @@
+-- =====================================================================
+-- 0009 — SERIAL NUMBERS ARE OFF UNTIL THE BUSINESS ASKS
+-- =====================================================================
+-- The column was created ON. Every deployment therefore demanded a serial
+-- number for phones, fridges and generators whether or not that shop
+-- identifies units that way. A furniture counter and a provisions shop were
+-- asked for a number they do not have, and the sale screen grew a serial
+-- button on lines that did not need one.
+--
+-- The switch stays. The default does not. An owner who sells serialised
+-- goods turns it on under Settings; nothing already on file is deleted, and
+-- a number that was captured is still a number. This only stops the demand
+-- that nobody chose.
+--
+-- SQLite cannot change a column default in place. New rows are written with
+-- the value 0 by the provisioning insert. This statement covers the row that
+-- already exists.
+UPDATE client_settings SET serial_tracking_enabled = 0 WHERE id = 1;

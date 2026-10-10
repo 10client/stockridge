@@ -229,6 +229,11 @@ runAudit('createFlows', async (audit, d) => {
     return { poId: po.json.id, line, product: pick, supplierId: sup.json.id };
   });
 
+  await audit.checkAsync('serial numbers are a setting, and this check turns them on', async () => {
+    const on = await owner.put('/api/settings', { serial_tracking_enabled: 1 });
+    assert.equal(on.status, 200, `turning serial numbers on answered ${on.status}: ${String(on.text).slice(0, 180)}`);
+  });
+
   await audit.checkAsync('a delivery of a serial-tracked line with no numbers is refused, and says how many are wanted', async () => {
     const res = await manager.post(`/api/purchase-orders/${serialGoods.poId}/receive`, {
       receipts: [{ item_id: serialGoods.line.id, quantity_received: 2 }],

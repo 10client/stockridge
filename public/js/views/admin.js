@@ -71,7 +71,7 @@
         { key: 'warranty_module_enabled', type: 'flag', label: 'Warranty tracking' },
         { key: 'instalment_module_enabled', type: 'flag', label: 'Instalment plans (work and pay)' },
         { key: 'delivery_module_enabled', type: 'flag', label: 'Delivery and installation jobs' },
-        { key: 'serial_tracking_enabled', type: 'flag', label: 'Capture serial numbers for products that track them', hint: 'Serial numbers are what make a warranty claim provable two years later.' },
+        { key: 'serial_tracking_enabled', type: 'flag', label: 'This business uses serial numbers', hint: 'Off unless you turn it on. Leave it off and a sale is the product, the quantity and the price — no serial box on the counter, on goods received, or on the receipt. Turn it on for phones, generators and appliances, where each unit has its own number and a warranty claim has to name that unit.' },
         { key: 'offline_sync_enabled', type: 'flag', label: 'Offline sync', hint: 'Sales taken while the network is down are queued and pushed when it returns.' },
         { key: 'multi_branch_enabled', type: 'flag', label: 'More than one branch' },
         { key: 'multi_business_enabled', type: 'flag', label: 'More than one business' },

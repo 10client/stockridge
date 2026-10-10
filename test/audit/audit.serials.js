@@ -55,6 +55,22 @@ runAudit('serials', async (audit, d) => {
   const tag = Date.now().toString(36).slice(-5).toUpperCase();
   const serialsFor = (n, prefix = 'AUD') => Array.from({ length: n }, (_, i) => `${prefix}${tag}-${i + 1}`);
 
+  await audit.checkAsync('serial numbers are off until the business turns them on', async () => {
+    const settings = await owner.get('/api/settings');
+    assert.equal(settings.status, 200, `settings answered ${settings.status}`);
+    assert.equal(Number(settings.json.settings.serial_tracking_enabled), 0,
+      'a fresh deployment demands serial numbers before the business has asked for them');
+    const off = await owner.post('/api/stock/receive', {
+      branch_id: branch.id, product_id: serial.id, quantity: 1, unit_code: 'PIECE',
+      cost_price: Number(serial.cost_price || 1000), selling_price: Number(serial.selling_price),
+      reference: `AUDIT-SN-${tag}-OFF`,
+    });
+    assert.ok(off.status < 400, `with serials switched off, receiving a serial-tracked unit was refused ${off.status}: ${String(off.text).slice(0, 220)}`);
+    const on = await owner.put('/api/settings', { serial_tracking_enabled: 1 });
+    assert.equal(on.status, 200, `turning serial numbers on answered ${on.status}: ${String(on.text).slice(0, 200)}`);
+    assert.equal(Number(on.json.settings.serial_tracking_enabled), 1, 'the switch did not stay on');
+  });
+
   // ------------------------------------------------------------------
   await audit.checkAsync('a serial-tracked receipt without its numbers is refused, and the refusal says how many', async () => {
     const res = await owner.post('/api/stock/receive', {

@@ -325,3 +325,9 @@ test('settings: every control is backed by a real column, and every column is re
     }
   });
 });
+
+test('serial numbers are off unless the business turns them on', () => {
+  assert.equal(DEFAULT_SETTINGS.serial_tracking_enabled, 0,
+    'the default demands serial numbers from a shop that has not asked for them');
+  assert.ok(FLAG_SETTINGS.has('serial_tracking_enabled'), 'the serial switch must stay a flag, not a number');
+});

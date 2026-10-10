@@ -163,6 +163,38 @@ test('state: an owner is not switched onto the only branch of the active busines
   assert.equal(state.query().branch_id, undefined, 'the dashboard query names a branch the owner did not switch to');
 });
 
+test('state: serial numbers are off unless the business has turned them on', async () => {
+  const off = loadState({
+    me: {
+      user: { id: 'u9', username: 'owner', role: 'OWNER', fullName: 'Owner' },
+      scope: { role: 'OWNER', allBusinesses: true, allBranches: true },
+      businesses: [], branches: [], settings: { serial_tracking_enabled: 0 }, featureLabels: {}, vertical: null,
+    },
+  });
+  await off.load({ force: true });
+  assert.equal(off.usesSerialNumbers(), false, 'a business that has not asked for serials is being asked for them');
+
+  const missing = loadState({
+    me: {
+      user: { id: 'u9b', username: 'owner', role: 'OWNER', fullName: 'Owner' },
+      scope: { role: 'OWNER', allBusinesses: true, allBranches: true },
+      businesses: [], branches: [], settings: {}, featureLabels: {}, vertical: null,
+    },
+  });
+  await missing.load({ force: true });
+  assert.equal(missing.usesSerialNumbers(), false, 'a missing switch was treated as on');
+
+  const on = loadState({
+    me: {
+      user: { id: 'u9c', username: 'owner', role: 'OWNER', fullName: 'Owner' },
+      scope: { role: 'OWNER', allBusinesses: true, allBranches: true },
+      businesses: [], branches: [], settings: { serial_tracking_enabled: 1 }, featureLabels: {}, vertical: null,
+    },
+  });
+  await on.load({ force: true });
+  assert.equal(on.usesSerialNumbers(), true, 'turning the switch on did not reach the counter');
+});
+
 test('state: an administrator with no business loads without throwing', async () => {
   // The case the user hit: an ADMIN belongs to no business and no branch, so
   // every list is empty and every accessor still has to be callable. A guard that

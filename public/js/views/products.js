@@ -108,7 +108,7 @@
             cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_name].filter(Boolean).join(' · ')));
             const tags = [];
             if (Number(p.tracks_variants)) tags.push('variants');
-            if (Number(p.requires_serial)) tags.push('serialised');
+            if (Number(p.requires_serial) && SR.state.usesSerialNumbers()) tags.push('serialised');
             if (Number(p.requires_installation)) tags.push('installation');
             if (Number(p.has_expiry)) tags.push('expiry');
             if (Number(p.warranty_months)) tags.push(`${p.warranty_months}m warranty`);
@@ -230,7 +230,7 @@
     const flags = ui.h('fieldset');
     flags.appendChild(ui.h('legend', {}, 'Behaviour'));
     const flagList = [
-      ['requires_serial', 'Track serial numbers', 'Every unit is individually identified. Needed for warranty claims on electronics and appliances.'],
+      ['requires_serial', 'Track serial numbers', 'Marks this product as one that has a number on each unit. The counter only asks for that number when Settings → “This business uses serial numbers” is on. Off, which is the default, and the flag is recorded but not demanded.'],
       ['tracks_variants', 'Has variants', 'The same product in several sizes, colours or capacities.'],
       ['has_expiry', 'Has an expiry date', 'Batches carry an expiry and the system will refuse to receive already-expired stock.'],
       ['requires_installation', 'Needs installation', 'Selling it creates an installation job for a technician.'],

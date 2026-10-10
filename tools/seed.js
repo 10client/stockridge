@@ -477,6 +477,7 @@ async function main() {
   // The caps are not decorative here — they are what `assertCanCreateBranch` and
   // friends enforce, so the demo has to be INSIDE them for its own flows to work.
   await db.run(`UPDATE client_settings SET vat_enabled = 1, vat_rate_percent = 7.5,
+      serial_tracking_enabled = 0,
       max_businesses = 5, max_branches = 10, max_staff = 30 WHERE id = 1`);
   const settings = await getSettings(db);
 

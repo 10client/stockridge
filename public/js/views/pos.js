@@ -68,14 +68,15 @@
     // ---------------- layout ----------------
     const grid = ui.h('div', { class: 'pos' });
     const left = ui.h('div', { class: 'stack' });
-    const right = ui.h('div', { class: 'stack' });
+    const right = ui.h('div', { class: 'stack pos-side' });
     grid.appendChild(left);
     grid.appendChild(right);
 
     // ---------------- the scan box ----------------
+    const serialsOn = () => SR.state.usesSerialNumbers();
     const scanInput = ui.h('input', {
       type: 'search',
-      placeholder: 'Scan a barcode, or type a name, SKU or serial…',
+      placeholder: serialsOn() ? 'Scan a barcode, or type a name, SKU or serial…' : 'Scan a barcode, or type a name or SKU…',
       id: 'pos-scan',
       autocomplete: 'off',
       autocapitalize: 'off',
@@ -87,7 +88,9 @@
     const scanCard = ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
         scanBox,
-        ui.h('div', { class: 'hint' }, 'A barcode scanner types and presses Enter. A serial number is looked up too.'),
+        ui.h('div', { class: 'hint' }, serialsOn()
+          ? 'A barcode scanner types and presses Enter. A serial number is looked up too.'
+          : 'A barcode scanner types and presses Enter. Serial numbers stay off until the business turns them on in Settings.'),
         results));
     left.appendChild(scanCard);
 
@@ -163,7 +166,7 @@
           p.category_name || null,
           p.brand || null,
           p.on_hand != null ? `${U.qty(p.on_hand)} on hand` : null,
-          Number(p.requires_serial) ? 'serial tracked' : null,
+          serialsOn() && Number(p.requires_serial) ? 'serial tracked' : null,
         ].filter(Boolean).join(' · '))));
       btn.appendChild(ui.h('span', { class: 'ph-price' }, U.money(p.selling_price)));
       const avail = Number(p.on_hand != null ? p.on_hand : 9999);
@@ -305,7 +308,7 @@
           listPrice: price,
           listUnitPrice: price,
           lineDiscount: 0,
-          requiresSerial: Boolean(Number(product.requires_serial)),
+          requiresSerial: serialsOn() && Boolean(Number(product.requires_serial)),
           tracksVariants: Boolean(Number(product.tracks_variants)),
           variantName: opts.variantName || null,
           warrantyMonths: Number(product.warranty_months) || null,
@@ -517,25 +520,42 @@
       if (complete) complete.disabled = cart.lines.length === 0;
     }
 
+    function serialsNeeded(line) {
+      return line.requiresSerial && serialsOn() ? Math.ceil(Number(line.quantity) || 0) : 0;
+    }
+    function missingSerials() {
+      if (!serialsOn()) return [];
+      return cart.lines.filter((line) => {
+        const need = serialsNeeded(line);
+        return need > 0 && (line.serialNumbers || []).length < need;
+      });
+    }
+
     function cartLineNode(line, index) {
+      const total = Number(line.quantity) * Number(line.unitPrice) - Number(line.lineDiscount || 0);
       const row = ui.h('div', { class: 'cart-line' });
-      const leftCol = ui.h('div', {});
-      leftCol.appendChild(ui.h('div', { class: 'cl-name' }, `${index + 1}. ${line.name}`));
-      leftCol.appendChild(ui.h('div', { class: 'cl-meta' }, [
-        line.sku || null,
+      row.appendChild(ui.h('div', { class: 'cl-top' },
+        ui.h('div', { class: 'cl-name' }, `${index + 1}. ${line.name}`),
+        ui.h('div', { class: 'cl-total' }, U.money(total))));
+      const meta = [
+        line.sku ? `SKU ${line.sku}` : null,
         line.variantName || null,
         `${U.money(line.unitPrice)} / ${line.unitCode}`,
-        line.serialNumbers && line.serialNumbers.length ? `S/N ${line.serialNumbers.join(', ')}` : null,
-      ].filter(Boolean).join(' · ')));
+      ];
+      const avail = line.maxQuantity;
+      if (avail != null && Number(line.quantity) > avail) meta.push(`only ${U.qty(avail)} in stock`);
+      row.appendChild(ui.h('div', { class: 'cl-meta' }, meta.filter(Boolean).join(' · ')));
 
-      const controls = ui.h('div', { class: 'qty', style: { marginTop: '6px' } });
-      controls.appendChild(ui.h('button', { 'aria-label': 'Less', onClick: () => setQty(line.key, Number(line.quantity) - 1) }, '−'));
+      const actions = ui.h('div', { class: 'cl-actions' });
+      const qty = ui.h('div', { class: 'qty' });
+      qty.appendChild(ui.h('button', { 'aria-label': 'Less', onClick: () => setQty(line.key, Number(line.quantity) - 1) }, '−'));
       const qtyInput = ui.h('input', { type: 'number', step: 'any', min: '0', value: U.numInput(line.quantity), 'aria-label': 'Quantity' });
       qtyInput.addEventListener('change', () => setQty(line.key, qtyInput.value));
-      controls.appendChild(qtyInput);
-      controls.appendChild(ui.h('button', { 'aria-label': 'More', onClick: () => setQty(line.key, Number(line.quantity) + 1) }, '+'));
+      qty.appendChild(qtyInput);
+      qty.appendChild(ui.h('button', { 'aria-label': 'More', onClick: () => setQty(line.key, Number(line.quantity) + 1) }, '+'));
+      actions.appendChild(qty);
       if (line.tracksVariants && !line.variantId) {
-        controls.appendChild(ui.h('button', {
+        actions.appendChild(ui.h('button', {
           class: 'btn btn-sm btn-primary',
           onClick: () => chooseVariant({ id: line.productId, name: line.name, selling_price: line.unitPrice, tracks_variants: 1 }, {
             onPick: (v) => {
@@ -548,28 +568,26 @@
             },
           }),
         }, 'Choose variant'));
-        leftCol.appendChild(ui.h('div', { class: 'hint', style: { color: 'var(--amber-700, #92400e)' } }, 'This product comes in variants — choose one before taking payment.'));
       }
-      if (line.requiresSerial) {
-        controls.appendChild(ui.h('button', {
-          class: 'btn btn-sm',
-          onClick: () => captureSerials(line),
-        }, line.serialNumbers && line.serialNumbers.length ? `S/N (${line.serialNumbers.length})` : 'Add S/N'));
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => chooseUnit(line) }, line.unitCode || 'Unit'));
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => editLine(line) }, 'Price'));
+      actions.appendChild(ui.h('button', { class: 'link-btn', onClick: () => removeLine(line.key) }, 'Remove'));
+      row.appendChild(actions);
+      if (line.tracksVariants && !line.variantId) {
+        row.appendChild(ui.h('div', { class: 'hint' }, 'Choose the variant before taking payment.'));
       }
-      controls.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => editLine(line) }, 'Price'));
-      controls.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => chooseUnit(line) }, `Unit: ${line.unitCode}`));
-      leftCol.appendChild(controls);
-      row.appendChild(leftCol);
 
-      const rightCol = ui.h('div', {});
-      const total = line.quantity * line.unitPrice - Number(line.lineDiscount || 0);
-      rightCol.appendChild(ui.h('div', { class: 'cl-total' }, U.money(total)));
-      const avail = line.maxQuantity;
-      if (avail != null && Number(line.quantity) > avail) {
-        rightCol.appendChild(ui.h('div', {}, ui.badge(`only ${U.qty(avail)} in stock`, 'badge-warn')));
+      const need = serialsNeeded(line);
+      if (need) {
+        const have = (line.serialNumbers || []).length;
+        const missing = have < need;
+        const serialRow = ui.h('div', { class: `cl-serial${missing ? ' is-missing' : ''}` },
+          ui.h('span', {}, missing
+            ? `Serial ${have} of ${need} — one number per unit`
+            : `S/N ${line.serialNumbers.join(', ')}`),
+          ui.h('button', { class: 'btn btn-sm', onClick: () => captureSerials(line) }, have ? 'Edit serials' : 'Enter serials'));
+        row.appendChild(serialRow);
       }
-      rightCol.appendChild(ui.h('button', { class: 'link-btn', style: { display: 'block', marginLeft: 'auto' }, onClick: () => removeLine(line.key) }, 'Remove'));
-      row.appendChild(rightCol);
       return row;
     }
 
@@ -601,7 +619,8 @@
 
     function captureSerials(line) {
       const wrapEl = ui.h('div', {});
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Enter one serial number per unit. A washer or a phone leaves the shop with its warranty tied to the exact unit, so a claim later can be checked.'));
+      const need = serialsNeeded(line) || Math.ceil(Number(line.quantity) || 0);
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, `One serial number per unit — ${need} for this line. The receipt prints each number under the item.`));
       const area = ui.h('textarea', { rows: 4, placeholder: 'One serial per line' });
       area.value = (line.serialNumbers || []).join('\n');
       wrapEl.appendChild(area);
@@ -646,30 +665,21 @@
       totalsEl.replaceChildren();
       const row = (label, value, cls = '') => ui.h('div', { class: `totals-row ${cls}` },
         ui.h('span', {}, label), ui.h('span', {}, value));
+      totalsEl.appendChild(row('Total', U.money(t.total), 'grand'));
       totalsEl.appendChild(row('Subtotal', U.money(t.subtotal)));
       if (t.discount) totalsEl.appendChild(row('Discount', `−${U.money(t.discount)}`));
       if (t.delivery) totalsEl.appendChild(row('Delivery', U.money(t.delivery)));
-      totalsEl.appendChild(row('Total', U.money(t.total), 'grand'));
-      if (t.vatEnabled && t.vat) totalsEl.appendChild(row(`includes VAT @ ${t.vatRate}%`, U.money(t.vat)));
-      if (cart.saleType === 'CREDIT' || cart.saleType === 'INSTALMENT' || cart.saleType === 'LAYAWAY') {
-        totalsEl.appendChild(row('Customer', cart.customerName || '— walk-in —'));
-      }
+      if (t.vatEnabled && t.vat) totalsEl.appendChild(row(`VAT included @ ${t.vatRate}%`, U.money(t.vat)));
+      totalsEl.appendChild(row('Customer', cart.customerName || 'Walk-in'));
+      totalsEl.appendChild(row('Sale', U.humanise(cart.saleType)));
       const method = dominantMethod();
-      totalsEl.appendChild(row('Paying by', method ? METHOD_LABEL[method] || method : 'not chosen'));
+      if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
+      const pay = document.getElementById('pos-complete');
+      if (pay) pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.total)}` : 'Take payment';
     }
 
     function paintInfo() {
       infoBody.replaceChildren();
-      const t = computedTotals();
-      infoBody.appendChild(ui.kv([
-        ['Branch', SR.state.activeBranchName()],
-        ['Cashier', (SR.state.user && SR.state.user.fullName) || '—'],
-        ['Sale type', U.humanise(cart.saleType)],
-        ['Customer', cart.customerName || 'Walk-in'],
-        ['Lines', String(cart.lines.length)],
-        ['Units', U.qty(cart.lines.reduce((a, l) => a + Number(l.quantity || 0), 0))],
-        ['VAT rate', t.vatEnabled ? `${t.vatRate}%` : 'not registered'],
-      ]));
       const pending = SR.sync.status().running;
       if (!SR.api.isOnline() || pending) {
         infoBody.appendChild(ui.h('div', { class: 'alert alert-warn' },
@@ -678,6 +688,7 @@
             : 'Offline. Sales completed here are stored on this device and sent automatically.'));
       }
       if (cart.deliveryRequired) infoBody.appendChild(ui.h('div', { class: 'hint' }, `Delivery to: ${cart.deliveryAddress || cart.customerName || '—'}`));
+      infoCard.hidden = infoBody.childElementCount === 0;
     }
 
     function dominantMethod() {
@@ -871,6 +882,12 @@
     // ---------------- tender ----------------
     function openTender() {
       if (!cart.lines.length) { ui.warn('Add something to the cart first.'); return; }
+      const missing = missingSerials();
+      if (missing.length) {
+        ui.warn(`${missing[0].name} needs one serial number per unit before it can be sold.`);
+        captureSerials(missing[0]);
+        return;
+      }
       const t = computedTotals();
       const needsCustomer = ['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(cart.saleType);
       if (needsCustomer && !cart.customerId) {
@@ -879,9 +896,18 @@
       }
 
       const wrapEl = ui.h('div', {});
+      const ticket = ui.h('div', { class: 'stack', style: { marginBottom: '12px' } });
+      for (const line of cart.lines) {
+        const lineTotal = Number(line.quantity) * Number(line.unitPrice) - Number(line.lineDiscount || 0);
+        ticket.appendChild(ui.h('div', { class: 'slip-row' },
+          ui.h('span', {}, `${U.qty(line.quantity)} × ${line.name}`),
+          ui.h('span', { class: 'mono' }, U.money(lineTotal))));
+      }
+      wrapEl.appendChild(ticket);
+      wrapEl.appendChild(ui.h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'How is the customer paying?'));
       const running = ui.h('div', { class: 'totals' });
 
-      const methods = ui.h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit, minmax(96px, 1fr))', gap: '7px' } });
+      const methods = ui.h('div', { class: 'grid', style: { gridTemplateColumns: 'repeat(auto-fit, minmax(108px, 1fr))', gap: '7px' } });
       let activeMethod = t.balance <= 0 && cart.payments.length ? null : (cart.payments[cart.payments.length - 1] || {}).method || 'CASH';
       const methodButtons = new Map();
       for (const m of METHODS) {
@@ -894,7 +920,8 @@
       }
       wrapEl.appendChild(methods);
 
-      const amountInput = ui.h('input', { type: 'number', step: '0.01', min: '0', placeholder: 'Amount', inputmode: 'decimal', style: { marginTop: '10px', fontSize: '1.2rem', fontFamily: 'var(--mono)' } });
+      wrapEl.appendChild(ui.h('label', { class: 'hint', style: { display: 'block', marginTop: '12px' } }, 'Amount received'));
+      const amountInput = ui.h('input', { type: 'number', step: '0.01', min: '0', placeholder: 'Amount', inputmode: 'decimal', style: { marginTop: '4px', fontSize: '1.2rem', fontFamily: 'var(--mono)' } });
       amountInput.value = String(U.round2(Math.max(0, t.balance)));
       wrapEl.appendChild(amountInput);
 
@@ -1141,19 +1168,26 @@
             product_name: l.name, quantity: l.quantity, unit_code: l.unitCode,
             unit_price: l.unitPrice, line_total: Number(l.quantity) * Number(l.unitPrice) - Number(l.lineDiscount || 0),
             line_discount: l.lineDiscount, warranty_months: l.warrantyMonths,
-            serial_no: (l.serialNumbers || [])[0] || null,
+            serial_no: (l.serialNumbers || []).join(', ') || null,
+            serialNumbers: l.serialNumbers || [],
           })),
           payments: cart.payments,
           change_given: result.changeGiven || 0,
           change_owed: result.changeOwed || 0,
           balance_due: result.balanceDue || 0,
         });
+        title = `Sale ${result.receiptNo}`;
         try {
-          text = SR.print.saleReceipt(sale, { brand, footer });
+          const shown = SR.print.previewSale(sale, { brand, footer, title, autoPrint: true });
+          if (saleId) {
+            const foot = document.querySelector('.modal-foot');
+            if (foot) foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => { SR.app.navigate(`/sales/${saleId}`); } }, 'Open the sale'), foot.firstElementChild);
+          }
+          void shown;
+          return;
         } catch (err) {
-          // The sale IS recorded — it came back with a receipt number. Losing the
-          // receipt to a formatting fault would leave the cashier with nothing to
-          // show or print, and every reason to ring it again. Print the facts.
+          // The sale IS recorded. Losing the slip to a layout fault must not
+          // send the cashier back to an empty cart with nothing to show.
           console.error('[pos] the receipt could not be formatted', err);
           text = [
             brand,
@@ -1164,31 +1198,24 @@
             'Open it from Sales to see or reprint it.',
           ].join('\n');
         }
-        title = `Sale ${result.receiptNo}`;
       }
 
       const body = ui.h('div', {});
-      body.appendChild(ui.h('div', { class: 'receipt' }, text));
-      const actions = [];
       if (result.offline) {
-        actions.push(ui.h('div', { class: 'alert alert-warn', style: { marginBottom: '10px' } },
+        body.appendChild(ui.h('div', { class: 'alert alert-warn' },
           'This sale is on the device and has NOT reached the office yet. It will be sent automatically. ',
           ui.h('strong', {}, `Local reference ${String(result.clientId).slice(-8)}.`)));
       }
-      actions.push(ui.h('button', { class: 'btn', onClick: () => U.download(`${title.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save .txt'));
-      actions.push(ui.h('button', { class: 'btn', onClick: () => ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'));
-      if (saleId) {
-        actions.push(ui.h('button', { class: 'btn', onClick: () => { SR.app.navigate(`/sales/${saleId}`); } }, 'Open the sale'));
-      }
-      actions.push(ui.h('button', { class: 'btn btn-primary', onClick: () => SR.print.printText(text, { title }) }, 'Print'));
-
+      body.appendChild(ui.h('div', { class: 'receipt' }, text));
       ui.openModal({
         title,
-        body: result.offline ? ui.h('div', {}, actions.splice(0, 1)[0], body) : body,
-        footer: actions,
+        body,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => U.download(`${title.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
+          ui.h('button', { class: 'btn', onClick: () => ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
+          ui.h('button', { class: 'btn btn-primary', onClick: () => SR.print.printText(text, { title }) }, 'Print'),
+        ],
       });
-      // Print immediately: a counter does not want two taps, and the receipt is
-      // the last thing between the customer and the door.
       if (SR.print.prefs().autoPrint !== false) {
         setTimeout(() => SR.print.printText(text, { title }), 350);
       }
