@@ -1765,4 +1765,6 @@ Added, because they are on sale in Nigeria: iPhone 18 Pro and Pro Max in Silver,
 
 Not added: a plain iPhone 18. Apple has not released that model. Jumia still marks it coming in spring 2027. Putting a name on the list would invent a phone the shelf does not have.
 
-Local: market list test and `audit.market` 25/25. Not yet on the hosted builds.
+Local: market list test and `audit.market` 25/25.
+
+Live on staging, sample and production as `ridge-20261010-1816-95adfcd`. The list is 4,702 goods. A search for iPhone 18 returns 42 named variants, all Pro, Pro Max or nothing plain. Burgundy returns 8. iPhone Duo Star White returns 4. No price field. The admin PIN was not changed.
