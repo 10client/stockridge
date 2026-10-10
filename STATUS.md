@@ -1689,4 +1689,4 @@ Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue
 
 **Found and left as it is.** The price a sale charges is the price on the stock batch, not a price typed onto the product afterwards. The probe set the phone's catalogue price to ₦120,000 after receiving it at ₦1,000. The sale charged ₦1,000. Paying the catalogue figure is refused as overpayment. The till shows the catalogue price. Those two figures are not the same number.
 
-**Live read.** Signed in on staging, sample and production. Each serves the market list: 2,786 goods, no price fields, Dangote 3X cement 50kg is on it. The unpriced-sale refusal is local until this checkpoint is deployed.
+**Live read.** Signed in on staging, sample and production. Each serves the market list: 2,786 goods, no price fields, Dangote 3X cement 50kg is on it. Live stamp `ridge-20261010-1705-d196a5b` on staging, sample and production. The unpriced-sale refusal is in that build. Administrator PINs were not changed.
