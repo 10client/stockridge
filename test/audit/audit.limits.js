@@ -102,6 +102,7 @@ runAudit('limits', async (audit, d) => {
     ['customers', '/api/customers'],
     ['stock', '/api/stock'],
     ['sales', '/api/sales'],
+    ['market', '/api/market-catalogue'],
   ];
 
   const searchProbe = async (len, label) => {

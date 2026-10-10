@@ -1702,3 +1702,47 @@ No drug name remains. First aid on the list is the pack (plaster, cotton wool, a
 The catalogue screen says so: medicines are not on this list, and the search box names yam, cement, hair, a phone and WAEC.
 
 Local: `test/unit/nigeria-market.test.js` green. Name audit clean. Live stamp `ridge-20261010-1719-6e29fe6` on staging, sample and production: 4,460 goods, no prices, no pharmacy counter, Benue yam is on the list. Administrator PINs were not changed.
+
+### P29 — full two-way probe, first audit to last (checkpoint)
+
+The suite guard passed (69). Then every audit, in runner order, against a fresh shop:
+
+| Audit | Checks |
+| --- | --- |
+| auditTrail | 12 |
+| auth | 6 |
+| branding | 7 |
+| changeOwed | 18 |
+| concurrency | 19 |
+| createFlows | 17 |
+| dashboard | 14 |
+| data | 15 |
+| deposits | 10 |
+| fulfilment | 18 |
+| http | 35 |
+| limits | 16 |
+| market | 25 |
+| money | 82 |
+| notifications | 12 |
+| platformAdmin | 10 |
+| purchaseOrders | 6 |
+| purge | 16 |
+| reference | 6 |
+| reports | 31 |
+| returns | 13 |
+| roles | 142 |
+| serials | 8 |
+| sessions | 8 |
+| staff | 29 |
+| stockTransfers | 5 |
+| stockchain | 17 |
+| sync | 36 |
+| transfers | 11 |
+| warranty | 26 |
+| wht | 36 |
+
+706 checks, 31 audits, all green after one fix.
+
+**Found and closed.** The market list read `?q=` itself. Every other search box goes through `searchTerm()`, which cuts a paste to 48 bytes before it can become a pattern the platform refuses with a 500. The market search now uses that same clamp, and the limits probe searches the market list as well as products, customers, stock and sales.
+
+Nothing was written on staging, sample or production by this probe. The clamp is local until this checkpoint is deployed.

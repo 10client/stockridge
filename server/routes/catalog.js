@@ -849,7 +849,7 @@ function mount(app, base = '/api') {
   // numbers off unless the person turning the switch said otherwise.
   app.get(`${base}/market-catalogue`, async (ctx) => {
     const page = market.search({
-      q: ctx.req.queryParam('q') || '',
+      q: searchTerm(ctx),
       category: ctx.req.queryParam('category') || '',
       limit: Math.min(pagination(ctx).limit, 80),
       offset: pagination(ctx).offset,
