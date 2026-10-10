@@ -629,6 +629,75 @@ function addTrades(api) {
     'Apple Watch Ultra 4 49mm Natural Titanium',
   ], { unit: 'piece' });
 
+  // Goods the other trades are selling that the first lists did not name.
+  // No prices. No medicines. add() skips a name already on the list.
+  // Phones are left alone.
+
+  each('NG_APPLIANCE', [
+    'Hisense chest freezer 142L', 'Hisense chest freezer 190L', 'Hisense chest freezer 217L',
+    'Hisense chest freezer 249L inverter', 'Hisense chest freezer 297L',
+    'Hisense chest freezer 500L', 'Hisense chest freezer 702L',
+    'Scanfrost chest freezer 100L', 'Scanfrost chest freezer 200L',
+    'Scanfrost chest freezer 300L inverter', 'Scanfrost chest freezer 400L inverter',
+    'Haier Thermocool double door 250L', 'Haier Thermocool double door 355L',
+    'Haier Thermocool side-by-side 510L',
+    'Syinix chest freezer 200L', 'Syinix chest freezer 220L',
+    'Bruhm chest freezer 160L inverter',
+    'Hisense air fryer 4.5L', 'Hisense air fryer 6.3L', 'Hisense air fryer 8.8L',
+    'Binatone air fryer 6.5L', 'Binatone air fryer 9L',
+    'Century rechargeable fan 12 inch', 'Century rechargeable fan 16 inch', 'Century rechargeable fan 18 inch',
+    'Binatone rechargeable fan 16 inch',
+  ], { unit: 'piece' });
+
+  each('NG_POWER', [
+    'Felicity 1.5kVA inverter', 'Felicity 3.5kVA hybrid inverter', 'Felicity 5kVA hybrid inverter',
+    'Felicity 7.5kVA hybrid inverter', 'Felicity 8kVA hybrid inverter', 'Felicity 10kVA inverter',
+    'Growatt 5kVA hybrid inverter', 'Deye 5kVA hybrid inverter',
+  ], { unit: 'piece' });
+
+  each('NG_CEMENT', [
+    'Lafarge Supaset cement 50kg', 'Lafarge Powermax cement 50kg', 'Lafarge SRC cement 50kg',
+  ], { unit: 'bag' });
+
+  each('NG_PAINT', [
+    'Crown emulsion white 4L', 'Crown emulsion white 20L',
+    'Jas emulsion white 20L', 'Elnino emulsion white 20L',
+  ], { unit: 'tin' });
+
+  each('NG_TILE', [
+    'Virony 25x40 wall tile', 'Virony 30x60 floor tile', 'Virony 40x40 floor tile',
+    'Virony 60x60 porcelain', 'Virony 60x120 porcelain', 'Virony 70x140 porcelain',
+  ], { unit: 'piece' });
+
+  each('NG_COMPUTER', [
+    'Moniepoint POS terminal', 'OPay POS terminal',
+    'Xprinter barcode printer', 'Zebra GC420T label printer',
+    'Brother PT-H105 label printer', 'Epson TM88 receipt printer',
+  ], { unit: 'piece' });
+  add('NG_SCALE', 'Honeywell barcode scanner', { brand: 'Honeywell', unit: 'piece' });
+
+  each('NG_DRINKS', [
+    'Capri-Sun 200ml',
+    'Chivita Active 1L', 'Chivita Ice Tea 1L', 'Chivita Happy Hour 1L', 'Chivita Smart Malt 33cl',
+    'Bigi Chapman 60cl', 'Bigi water 75cl', 'Bigi water 1.5L',
+    'Beta Malt 33cl', 'Chamdor 75cl', 'Fearless Red Berry 50cl',
+  ], { unit: 'bottle', expiry: true });
+  cross('NG_DRINKS', ['Star Lite', '33 Export'], ['60cl bottle', 'can', 'crate of 12'], { unit: 'bottle', age: true });
+
+  each('NG_DAIRY', [
+    'Hollandia evaporated 160g tin', 'Hollandia evaporated 410g tin',
+    'Hollandia lactose-free milk 1L',
+  ], { unit: 'tin', expiry: true });
+
+  each('NG_AGRO', [
+    'Notore urea 50kg', 'Indorama urea 50kg', 'Dangote urea 50kg',
+    'Vital Feed chick mash 25kg', 'Vital Feed broiler starter 25kg', 'Vital Feed broiler finisher 25kg',
+  ], { unit: 'bag' });
+
+  each('NG_WATER', [
+    'Pedrollo 1hp pump', 'Geepee tank 900L', 'Geepee tank 1200L', 'Geepee tank 1000 gallon',
+  ], { unit: 'piece' });
+
 }
 
 module.exports = { addTrades };

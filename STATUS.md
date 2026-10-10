@@ -1768,3 +1768,11 @@ Not added: a plain iPhone 18. Apple has not released that model. Jumia still mar
 Local: market list test and `audit.market` 25/25.
 
 Live on staging, sample and production as `ridge-20261010-1816-95adfcd`. The list is 4,702 goods. A search for iPhone 18 returns 42 named variants, all Pro, Pro Max or nothing plain. Burgundy returns 8. iPhone Duo Star White returns 4. No price field. The admin PIN was not changed.
+
+### P32 — the other trades, not more phones (checkpoint)
+
+The list is 4,785 goods. Still no prices, no medicines, and the old SKUs did not move. Phones were not added again.
+
+Added from what Nigerian shops are selling outside the phone counter: Hisense, Scanfrost, Syinix and Bruhm freezers; Hisense and Binatone air fryers; Felicity, Growatt and Deye inverters; Lafarge Supaset, Powermax and SRC; Crown, Jas and Elnino paint; Virony tiles; Moniepoint and OPay tills; Capri-Sun, Chivita Active, Hollandia evaporated milk; Notore, Indorama and Dangote urea; Pedrollo pumps and the Geepee tank sizes the ads name. A name already on the list was skipped.
+
+Local: market list test and `audit.market` 25/25. Not yet on the hosted builds.
