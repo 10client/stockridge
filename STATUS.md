@@ -1666,3 +1666,11 @@ Off, which is the new default: the counter does not show a serial box, goods rec
 Local: `audit.serials` 8/8 (including “off until the business turns them on”), `audit.createFlows` 17/17, `audit.warranty` 26/26.
 
 **Live.** `aa90e62`, stamp `ridge-20261010-1412-aa90e62`, on staging, sample and production. Migration 0009 turned the existing switch off; nothing on file was deleted. An owner turns it back on under Settings → Modules. PINs were not reset.
+
+### P26 — serial is a switch on the product; Nigerian market list has no prices (checkpoint)
+
+Serial numbers are chosen on the product, not assumed. On the catalogue, each row has **Serial off** / **Serial on**. Off, that product is sold without a number, from the catalogue through to the receipt. On, the till asks for one number per unit of that product. Turning one on, as the owner, also turns the shop switch on, so the till actually asks. Other products stay off until they are switched. A manager can mark the product; only an owner can turn the shop switch on.
+
+**Nigerian market.** Catalogue → Nigerian market is an inbuilt list of 2,786 goods sold in Nigerian markets — rice, garri, cement, phones, fabric, the pharmacy counter, and the rest. There are no prices. Adding one copies the name into the shop's catalogue at no price; the shop sets the price before it can be sold. Serial stays off on the add unless that row's switch is turned on.
+
+Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue.test.js` green. A product added with serial on is refused at goods-received once the shop uses serials, and names the missing number. A product left off is received without one. Deploy follows.

@@ -32,6 +32,7 @@ const { barcode: barcodeRule, oneOf } = require('../../domain/validation');
 const { newId } = require('../../domain/crypto');
 const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
+const market = require('../../domain/nigeriaMarket');
 
 /**
  * The catalogue columns a client may set.
@@ -837,6 +838,109 @@ function mount(app, base = '/api') {
     await db.run(`UPDATE suppliers SET ${updates.join(', ')} WHERE id = ?`, params);
     await recordFromCtx(ctx, { action: 'PRODUCT_UPDATED', entityType: 'SUPPLIER', entityId: id, before: pick(before, Object.keys(body)), after: body });
     ctx.json({ ok: true, message: `${body.name || before.name} updated.` });
+  });
+
+  // -------------------------------------------------------------------
+  // NIGERIAN MARKET — an inbuilt list, with no prices
+  // -------------------------------------------------------------------
+  // The list lives in the application, not in the shop's rows. A till that
+  // searched two thousand unpriced goods would sell them at nothing. Adding
+  // one copies it into THIS business, still with no price, and with serial
+  // numbers off unless the person turning the switch said otherwise.
+  app.get(`${base}/market-catalogue`, async (ctx) => {
+    const page = market.search({
+      q: ctx.req.queryParam('q') || '',
+      category: ctx.req.queryParam('category') || '',
+      limit: Math.min(pagination(ctx).limit, 80),
+      offset: pagination(ctx).offset,
+    });
+    ctx.json({
+      ok: true,
+      data: page.data,
+      categories: market.categories(),
+      paging: { total: page.total, limit: page.limit, offset: page.offset },
+      prices: false,
+      count: market.ITEMS.length,
+      note: 'No prices. Set a price after you add the item. A serial number stays off until you turn it on for that product.',
+    });
+  });
+
+  app.post(`${base}/market-catalogue/adopt`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('Only a manager or above can add goods from the Nigerian market.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const body = await ctx.req.json();
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const business = await resolveBusiness(db, ctx, branch || undefined);
+    const raw = Array.isArray(body.items) ? body.items : (Array.isArray(body.skus) ? body.skus.map((sku) => ({ sku, serial: body.serial })) : []);
+    if (!raw.length) throw new HttpError('Choose at least one item to add.', { status: 400, code: 'MISSING_FIELD', fields: { items: 'Required.' } });
+    if (raw.length > 40) throw new HttpError('Add up to 40 items at a time.', { status: 400, code: 'TOO_MANY', fields: { items: '40 at a time.' } });
+
+    const existing = await db.all('SELECT sku FROM products WHERE business_id = ? AND is_deleted = 0 AND sku IS NOT NULL', [String(business.id)]);
+    const have = new Set(existing.map((r) => String(r.sku).toUpperCase()));
+    const cats = await db.all('SELECT id, code FROM product_categories WHERE business_id = ? AND is_deleted = 0', [String(business.id)]);
+    const catByCode = new Map(cats.map((c) => [String(c.code), c.id]));
+
+    const added = [];
+    const already = [];
+    const missing = [];
+    for (const row of raw) {
+      const sku = String((row && row.sku) || row || '').trim().toUpperCase();
+      const item = market.get(sku);
+      if (!item) { missing.push(sku || '(blank)'); continue; }
+      if (have.has(item.sku)) { already.push(item.sku); continue; }
+      let categoryId = catByCode.get(item.category) || null;
+      if (!categoryId) {
+        categoryId = newId();
+        const name = market.categoryName(item.category);
+        await db.run(`INSERT INTO product_categories (id, business_id, code, name, sort_order, is_active, created_at, updated_at)
+                      VALUES (?,?,?,?,?,1, datetime('now'), datetime('now'))`,
+        [categoryId, String(business.id), item.category, name, catByCode.size]);
+        catByCode.set(item.category, categoryId);
+      }
+      const unit = market.UNITS[item.unit];
+      const ladder = validateLadder([{ code: unit.code, name: unit.name, pluralName: unit.plural, quantityInBase: 1, isDefaultSell: true }]);
+      if (!ladder.ok) throw new HttpError(ladder.error, { status: 500, code: ladder.code });
+      const id = newId();
+      const serial = boolField(row && row.serial, 0);
+      await db.run(`INSERT INTO products (
+          id, business_id, category_id, sku, name, brand,
+          requires_serial, tracks_variants, warranty_months, is_bulky, requires_installation,
+          has_expiry, is_age_restricted, is_fragile, is_returnable, return_window_days,
+          base_unit_name, cost_price, selling_price, reorder_level, reorder_quantity,
+          valuation_method, is_active, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,0,0,0,0,?,?,0,1,7,?,0,0,0,0,'WEIGHTED_AVG',1,?, datetime('now'), datetime('now'))`, [
+        id, String(business.id), categoryId, item.sku, item.name, item.brand,
+        serial,
+        item.expiry ? 1 : 0, item.ageRestricted ? 1 : 0,
+        unit.name.toLowerCase(), String(user.id),
+      ]);
+      const level = ladder.levels[0];
+      await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
+      [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, 1, 1]);
+      have.add(item.sku);
+      added.push({ id, sku: item.sku, name: item.name, requires_serial: serial });
+    }
+    if (!added.length && !already.length) {
+      throw new HttpError('None of those items are in the Nigerian market list.', { status: 400, code: 'NOT_IN_MARKET', fields: { items: missing.join(', ') } });
+    }
+    await recordFromCtx(ctx, {
+      action: 'PRODUCT_CREATED', entityType: 'PRODUCT', entityId: added[0] ? added[0].id : null,
+      businessId: business.id,
+      after: { source: 'nigerian-market', added: added.map((a) => a.sku), already, missing },
+    });
+    const n = added.length;
+    ctx.json({
+      ok: true,
+      added, already, missing,
+      prices: false,
+      message: n
+        ? `Added ${n} from the Nigerian market. No price yet — set a price before selling.${already.length ? ` ${already.length} already in the catalogue.` : ''}`
+        : `Already in the catalogue.${missing.length ? ` ${missing.length} not in the market list.` : ''}`,
+    }, n ? 201 : 200);
   });
 }
 

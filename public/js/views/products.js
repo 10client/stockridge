@@ -31,9 +31,10 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
-        ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · products, units, prices and warranty terms`)),
+        ui.h('p', { class: 'sub' }, 'Search your goods, or add from the Nigerian market. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
+        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openMarket() }, 'Nigerian market'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => openCreate() }, 'Add a product'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
@@ -108,7 +109,7 @@
             cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_name].filter(Boolean).join(' · ')));
             const tags = [];
             if (Number(p.tracks_variants)) tags.push('variants');
-            if (Number(p.requires_serial) && SR.state.usesSerialNumbers()) tags.push('serialised');
+            cell.appendChild(serialSwitch(p, { stop: true, after: () => load() }));
             if (Number(p.requires_installation)) tags.push('installation');
             if (Number(p.has_expiry)) tags.push('expiry');
             if (Number(p.warranty_months)) tags.push(`${p.warranty_months}m warranty`);
@@ -120,7 +121,7 @@
           { key: 'on_hand', label: 'On hand', align: 'right', render: (p) => U.qty(p.on_hand) },
           { key: 'reorder_level', label: 'Reorder at', align: 'right', render: (p) => U.qty(p.reorder_level) },
           { key: 'cost_price', label: 'Cost', align: 'right', render: (p) => U.money(p.cost_price) },
-          { key: 'selling_price', label: 'Price', align: 'right', render: (p) => ui.h('strong', {}, U.money(p.selling_price)) },
+          { key: 'selling_price', label: 'Price', align: 'right', render: (p) => Number(p.selling_price) > 0 ? ui.h('strong', {}, U.money(p.selling_price)) : ui.h('span', { class: 'hint' }, 'No price') },
           { key: 'margin_pct', label: 'Margin', align: 'right', render: (p) => {
             const m = Number(p.margin_pct);
             if (!Number.isFinite(m)) return '—';
@@ -134,8 +135,8 @@
         emptyTitle: state.q ? 'Nothing matches that search' : 'The catalogue is empty',
         emptyMessage: state.q
           ? 'Try a different word, or clear the category filter.'
-          : 'Products can be added one at a time, or the whole catalogue can be generated from the business type. Ask the owner to run provisioning from Settings.',
-        emptyAction: state.q ? null : { label: 'Add a product', run: () => openCreate() },
+          : 'Add one yourself, or pick from the Nigerian market. Prices are not included — you set them.',
+        emptyAction: state.q ? null : { label: 'Nigerian market', run: () => openMarket() },
       });
 
       host.replaceChildren();
@@ -183,6 +184,7 @@
       productForm(null).then((ok) => { if (ok) load(); });
     }
 
+    loadList = load;
     await load();
     return wrap;
   }
@@ -227,10 +229,18 @@
       ui.field({ label: 'Registration number', name: 'registration_no', span: true, hint: 'SONCAP, NAFDAC or MANCAP number. Advisory — recorded, never a blocked sale.' }));
     wrapEl.appendChild(grid);
 
+    const serialOn = editing ? Boolean(Number(base.requires_serial)) : false;
+    const serialBox = ui.h('fieldset');
+    serialBox.appendChild(ui.h('legend', {}, 'Serial number'));
+    serialBox.appendChild(ui.h('p', { class: 'hint' }, 'Off, this product is sold without a number. On, the till asks for one number per unit, from this catalogue through to the receipt.'));
+    serialBox.appendChild(ui.h('label', { class: 'check' },
+      ui.h('input', { type: 'checkbox', name: 'requires_serial', checked: serialOn }),
+      ui.h('strong', {}, 'Use a serial number on this product')));
+    wrapEl.appendChild(serialBox);
+
     const flags = ui.h('fieldset');
     flags.appendChild(ui.h('legend', {}, 'Behaviour'));
     const flagList = [
-      ['requires_serial', 'Track serial numbers', 'Marks this product as one that has a number on each unit. The counter only asks for that number when Settings → “This business uses serial numbers” is on. Off, which is the default, and the flag is recorded but not demanded.'],
       ['tracks_variants', 'Has variants', 'The same product in several sizes, colours or capacities.'],
       ['has_expiry', 'Has an expiry date', 'Batches carry an expiry and the system will refuse to receive already-expired stock.'],
       ['requires_installation', 'Needs installation', 'Selling it creates an installation job for a technician.'],
@@ -307,6 +317,8 @@
               if (!(Number(v.selling_price) >= 0)) { ui.warn('Enter a selling price.'); return; }
               const flagValues = {};
               for (const el of flags.querySelectorAll('input[type="checkbox"]')) flagValues[el.name] = el.checked ? 1 : 0;
+              const serialEl = wrapEl.querySelector('input[name="requires_serial"]');
+              flagValues.requires_serial = serialEl && serialEl.checked ? 1 : 0;
               const payload = Object.assign({
                 branch_id: SR.state.activeBranchId,
                 business_id: SR.state.activeBusinessId,
@@ -339,6 +351,10 @@
                   ? await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, payload)
                   : await SR.api.post('/api/products', payload);
                 if (result && result.barcodeWarning) ui.warn(result.barcodeWarning);
+                if (flagValues.requires_serial === 1 && !SR.state.usesSerialNumbers() && SR.state.can('OWNER')) {
+                  await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
+                  await SR.state.load({ force: true }).catch(() => {});
+                }
                 ui.ok(editing ? 'Product updated.' : `${v.name} added to the catalogue.`);
                 finish(true);
               } catch (err) {
@@ -499,13 +515,20 @@
           ui.h('p', { class: 'sub' }, [p.sku, p.brand, p.model_no, data.category ? data.category.name : p.category_name].filter(Boolean).join(' · '))),
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/products') }, 'Back'),
+          ui.h('button', { class: 'btn btn-sm', onClick: async () => {
+            try {
+              await setSerial(p, !Number(p.requires_serial));
+              ui.toast(Number(p.requires_serial) ? `${p.name} is sold without a serial number.` : `${p.name} uses a serial number. The till will ask for one per unit.`);
+              load();
+            } catch (err) { ui.apiError(err); }
+          } }, Number(p.requires_serial) ? 'Serial off' : 'Serial on'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(data).then((ok) => { if (ok) load(); }); } }, 'Edit'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label'))));
 
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
-        ui.kpi({ label: 'Selling price', value: U.money(p.selling_price), small: true }),
+        ui.kpi({ label: 'Selling price', value: Number(p.selling_price) > 0 ? U.money(p.selling_price) : 'No price', small: true }),
         ui.kpi({ label: 'Cost', value: U.money(p.cost_price), small: true }),
         ui.kpi({
           label: 'Margin',
@@ -543,7 +566,7 @@
           ['Registration', p.registration_no],
           ['Warranty', Number(p.warranty_months) ? `${p.warranty_months} months (${U.humanise(p.warranty_type || 'manufacturer')})` : 'none'],
           ['Return window', Number(p.return_window_days) ? `${p.return_window_days} days` : null],
-          ['Serial tracked', Number(p.requires_serial) ? 'yes' : 'no'],
+          ['Serial number', Number(p.requires_serial) ? 'On — the till asks for one number per unit' : 'Off'],
           ['Variants', Number(p.tracks_variants) ? 'yes' : 'no'],
           ['Expiry tracked', Number(p.has_expiry) ? 'yes' : 'no'],
           ['Needs installation', Number(p.requires_installation) ? 'yes' : 'no'],
@@ -663,6 +686,126 @@
 
     return wrap;
   }
+
+  function serialSwitch(product, { stop = false, after = null } = {}) {
+    const on = Boolean(Number(product.requires_serial));
+    return ui.h('button', {
+      class: on ? 'btn btn-sm btn-primary' : 'btn btn-sm',
+      type: 'button',
+      title: on ? 'The till asks for a serial number' : 'Sold without a serial number',
+      onClick: async (ev) => {
+        if (stop) ev.stopPropagation();
+        ev.currentTarget.disabled = true;
+        try {
+          await setSerial(product, !on);
+          ui.toast(on ? `${product.name} is sold without a serial number.` : `${product.name} uses a serial number. The till will ask for one per unit.`);
+          if (after) after();
+        } catch (err) {
+          ev.currentTarget.disabled = false;
+          ui.apiError(err);
+        }
+      },
+    }, on ? 'Serial on' : 'Serial off');
+  }
+
+  async function setSerial(product, on) {
+    const next = on ? 1 : 0;
+    await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, { requires_serial: next });
+    if (next === 1 && !SR.state.usesSerialNumbers()) {
+      if (SR.state.can('OWNER')) {
+        await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
+        await SR.state.load({ force: true }).catch(() => {});
+      } else {
+        ui.toast('Saved on this product. An owner turns serial numbers on in Settings before the till will ask.', { type: 'warn', ms: 7000 });
+      }
+    }
+  }
+
+  function openMarket() {
+    const state = { q: '', category: '', page: 0, pageSize: 40, serials: new Set() };
+    const wrap = ui.h('div', { class: 'stack' });
+    wrap.appendChild(ui.h('p', { class: 'hint' }, 'Goods sold in Nigerian markets. No prices — set the price after you add the item. Serial stays off unless you turn it on here.'));
+    const bar = ui.h('div', { class: 'row' });
+    const q = ui.h('input', { type: 'search', placeholder: 'Rice, cement, Indomie, phone…', style: { minWidth: '220px' } });
+    const cat = ui.h('select');
+    bar.appendChild(ui.h('div', { class: 'grow' }, q));
+    bar.appendChild(cat);
+    wrap.appendChild(bar);
+    const host = ui.h('div', {});
+    wrap.appendChild(host);
+    const foot = ui.h('div', { class: 'row' });
+    wrap.appendChild(foot);
+
+    async function load() {
+      host.replaceChildren(ui.skeleton(5));
+      try {
+        const data = await SR.api.get('/api/market-catalogue', {
+          query: { q: state.q || undefined, category: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize },
+        });
+        const cats = data.categories || [];
+        const current = state.category;
+        cat.replaceChildren(ui.h('option', { value: '' }, `All (${data.count || ''})`));
+        for (const c of cats) cat.appendChild(ui.h('option', { value: c.code }, `${c.name} (${c.count})`));
+        cat.value = current;
+        const rows = data.data || [];
+        const list = ui.h('div', { class: 'stack' });
+        if (!rows.length) list.appendChild(ui.h('p', { class: 'hint' }, 'Nothing matches. Try a shorter word, such as rice, fan or cement.'));
+        for (const item of rows) {
+          const serialOn = state.serials.has(item.sku);
+          const row = ui.h('div', { class: 'row', style: { alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: '1px solid var(--line)' } });
+          row.appendChild(ui.h('div', { class: 'grow' },
+            ui.h('div', { style: { fontWeight: '600' } }, item.name),
+            ui.h('div', { class: 'hint' }, [item.brand, item.categoryName, item.unitName, 'No price'].filter(Boolean).join(' · '))));
+          row.appendChild(ui.h('button', {
+            class: serialOn ? 'btn btn-sm btn-primary' : 'btn btn-sm',
+            type: 'button',
+            onClick: () => {
+              if (state.serials.has(item.sku)) state.serials.delete(item.sku);
+              else state.serials.add(item.sku);
+              load();
+            },
+          }, serialOn ? 'Serial on' : 'Serial off'));
+          row.appendChild(ui.h('button', {
+            class: 'btn btn-sm btn-primary',
+            type: 'button',
+            onClick: () => adopt([item]),
+          }, 'Add'));
+          list.appendChild(row);
+        }
+        host.replaceChildren(list);
+        const total = (data.paging && data.paging.total) || 0;
+        foot.replaceChildren(ui.pager({
+          page: state.page, pageSize: state.pageSize, total,
+          onPage: (n) => { state.page = n; load(); },
+        }));
+      } catch (err) {
+        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
+      }
+    }
+
+    async function adopt(items) {
+      try {
+        const result = await SR.api.post('/api/market-catalogue/adopt', {
+          business_id: SR.state.activeBusinessId,
+          items: items.map((item) => ({ sku: item.sku, serial: state.serials.has(item.sku) })),
+        });
+        const turnedOn = items.some((item) => state.serials.has(item.sku));
+        if (turnedOn && !SR.state.usesSerialNumbers() && SR.state.can('OWNER')) {
+          await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
+          await SR.state.load({ force: true }).catch(() => {});
+        }
+        ui.toast(result.message || 'Added.');
+        if (typeof loadList === 'function') loadList();
+      } catch (err) { ui.apiError(err); }
+    }
+
+    q.addEventListener('input', U.debounce(() => { state.q = q.value; state.page = 0; load(); }, 280));
+    cat.addEventListener('change', () => { if (cat.value === state.category) return; state.category = cat.value; state.page = 0; load(); });
+    ui.openModal({ title: 'Nigerian market', body: wrap, size: 'wide' });
+    load();
+  }
+
+  let loadList = null;
 
   SR.views = SR.views || {};
   SR.views.products = { render, productForm };

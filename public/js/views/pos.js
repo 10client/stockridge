@@ -277,6 +277,11 @@
     }
 
     function addLine(product, opts = {}) {
+      const base = Number(opts.priceOverride != null ? opts.priceOverride : product.selling_price != null ? product.selling_price : product.price || 0);
+      if (!(base > 0)) {
+        ui.warn(`${product.name} has no price. Set a price in the catalogue before selling it.`);
+        return;
+      }
       const existing = cart.lines.find((l) => String(l.productId) === String(product.id)
         && String(l.variantId || '') === String(opts.variantId || '')
         && String(l.unitCode || '') === String(opts.unitCode || ''));
