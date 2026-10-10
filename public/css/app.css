@@ -309,6 +309,42 @@ button.chip:hover { background: var(--surface-3); }
 .grid-3 { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
 .grid-4 { grid-template-columns: repeat(auto-fit, minmax(184px, 1fr)); }
 .grid-5 { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+/* A card's own bottom margin, inside a grid that already has a gap, sticks out of
+   its cell and paints over the card in the next row. The gap is the spacing.
+   min-width: 0 lets a long naira figure wrap instead of spilling into the neighbour. */
+.grid > .card,
+.grid > .kpi,
+.kpis > .kpi,
+.kpi-grid > .kpi { margin-bottom: 0; min-width: 0; }
+.kpis, .kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.report-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.report-chip {
+  text-align: left; padding: 12px 14px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--surface); color: inherit;
+  cursor: pointer; min-width: 0;
+}
+.report-chip.is-active { border-color: var(--green-700); box-shadow: 0 0 0 2px color-mix(in srgb, var(--green-700) 28%, transparent); }
+.chip-title { font-weight: 650; margin-bottom: 3px; }
+.chip-blurb { font-size: .78rem; color: var(--ink-500); line-height: 1.35; }
+.progress { height: 8px; border-radius: 5px; background: var(--surface-3); overflow: hidden; margin: 5px 0; }
+.progress-fill { height: 100%; background: var(--green-700); border-radius: 5px; }
+.progress-fill.is-warn { background: var(--amber-700); }
+.progress-fill.is-full { background: var(--red-700); }
+.progress-fill.is-good { background: var(--green-700); }
+.pre-block { background: var(--surface-3); border-radius: var(--radius-sm); padding: 10px; font-size: .78rem; overflow: auto; max-height: 280px; white-space: pre-wrap; word-break: break-word; }
+.pin-display { font-family: var(--mono); font-size: 1.6rem; letter-spacing: .28em; text-align: center; padding: 16px; border-radius: var(--radius); background: var(--surface-3); }
+.limit-row { margin: 14px 0; }
+.account-avatar { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; font-weight: 650; background: var(--surface-3); flex: none; }
+.btn-xs { min-height: 28px; padding: 0 8px; font-size: .75rem; }
+.inline-field, .row-tight { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.row-title { font-weight: 650; }
+.row-meta { font-size: .78rem; color: var(--ink-500); }
+.row-value { font-variant-numeric: tabular-nums; font-weight: 650; white-space: nowrap; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
 .row > .grow { flex: 1; min-width: 140px; }
 .stack { display: flex; flex-direction: column; gap: 12px; }
@@ -342,7 +378,7 @@ button.chip:hover { background: var(--surface-3); }
 .kpi.tone-warn .kpi-icon { color: var(--amber-700); }
 .kpi.tone-bad  .kpi-icon { color: var(--red-700); }
 .kpi.tone-info .kpi-icon { color: var(--blue-700); }
-.kpi-value { font-size: 1.42rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.kpi-value { font-size: 1.42rem; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .kpi-value.sm { font-size: 1.1rem; }
 .kpi-foot { font-size: .76rem; color: var(--ink-500); margin-top: 4px; }
 .kpi.tone-good .kpi-value { color: var(--green-700); }

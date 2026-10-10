@@ -542,17 +542,6 @@
       return map[key] || 'Part of how the app behaves.';
     }
 
-    wrap.appendChild(ui.html('<style>' +
-      '.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}' +
-      '.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.65;margin-bottom:2px}' +
-      '.kpi-value{font-size:19px;font-weight:650}' +
-      '.kpi-foot{font-size:11px;opacity:.62;margin-top:2px}' +
-      '.limit-row{margin:14px 0}.limit-row .row{align-items:baseline}' +
-      '.progress{height:8px;border-radius:5px;background:var(--line);overflow:hidden;margin:5px 0}' +
-      '.progress-fill{height:100%;background:var(--accent);border-radius:5px}' +
-      '.progress-fill.is-warn{background:#a15c00}.progress-fill.is-full{background:#b42318}' +
-      '</style>'));
-
     await load();
     return wrap;
   }

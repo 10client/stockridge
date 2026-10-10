@@ -75,7 +75,7 @@
       // ------------------------------------------------------------ who I am
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('div', { class: 'row' },
-          ui.h('div', { class: 'avatar', html: U.esc(U.initials(me.full_name || me.username || '?')) }),
+          ui.h('div', { class: 'account-avatar', html: U.esc(U.initials(me.full_name || me.username || '?')) }),
           ui.h('div', { class: 'grow' },
             ui.h('h2', {}, me.full_name || me.username),
             ui.h('p', { class: 'sub' }, `${U.titleCase(me.role || '')} · ${me.branch && me.branch.name ? me.branch.name : (me.branch_id ? 'a branch' : 'every branch')}${me.job_title ? ` · ${me.job_title}` : ''}`)),
@@ -256,11 +256,6 @@
       SR.state.clear();
       global.location.reload();
     }
-
-    wrap.appendChild(ui.html('<style>' +
-      '.avatar{width:46px;height:46px;border-radius:50%;display:grid;place-items:center;font-weight:650;background:var(--line)}' +
-      '.grow{flex:1;min-width:0}' +
-      '</style>'));
 
     await load();
     return wrap;

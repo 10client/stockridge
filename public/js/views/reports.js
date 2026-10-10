@@ -538,24 +538,6 @@
       } catch (err) { ui.apiError(err); }
     }
 
-    wrap.appendChild(ui.html('<style>' +
-      '.report-picker{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}' +
-      '.report-chip{text-align:left;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--card);cursor:pointer}' +
-      '.report-chip.is-active{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 28%,transparent)}' +
-      '.chip-title{font-weight:650;margin-bottom:3px}' +
-      '.chip-blurb{font-size:12px;opacity:.68;line-height:1.35}' +
-      '.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}' +
-      '.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.65;margin-bottom:2px}' +
-      '.kpi-value{font-size:19px;font-weight:650}' +
-      '.kpi-value.sm{font-size:15px}' +
-      '.kpi-foot{font-size:11px;opacity:.62;margin-top:2px}' +
-      '.kpi.tone-good .kpi-value{color:#1a7f37}.kpi.tone-warn .kpi-value{color:#a15c00}' +
-      '.kpi.tone-bad .kpi-value{color:#b42318}.kpi.tone-info .kpi-value{color:#0b5cad}' +
-      '.progress{height:7px;border-radius:4px;background:var(--line);overflow:hidden;margin-bottom:3px}' +
-      '.progress-fill{height:100%;background:var(--accent);border-radius:4px}' +
-      '.progress-fill.is-good{background:#1a7f37}.progress-fill.is-warn{background:#a15c00}' +
-      '</style>'));
-
     await load();
     return wrap;
   }

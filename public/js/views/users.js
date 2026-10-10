@@ -1001,14 +1001,6 @@
       } catch (err) { ui.apiError(err); }
     }
 
-    wrap.appendChild(ui.html('<style>' +
-      '.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}' +
-      '.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.65;margin-bottom:2px}' +
-      '.kpi-value{font-size:19px;font-weight:650}' +
-      '.kpi-foot{font-size:11px;opacity:.62;margin-top:2px}' +
-      '.pin-display{font-family:var(--mono,monospace);font-size:30px;letter-spacing:.28em;text-align:center;padding:16px;border-radius:12px;background:var(--line)}' +
-      '</style>'));
-
     await load();
     return wrap;
   }

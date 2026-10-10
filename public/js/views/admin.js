@@ -942,15 +942,6 @@
       } catch (err) { ui.apiError(err); }
     }
 
-    wrap.appendChild(ui.html('<style>' +
-      '.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}' +
-      '.kpi-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;opacity:.65;margin-bottom:2px}' +
-      '.kpi-value{font-size:19px;font-weight:650}' +
-      '.kpi-foot{font-size:11px;opacity:.62;margin-top:2px}' +
-      '.pre-block{background:var(--line);border-radius:10px;padding:10px;font-size:12px;overflow:auto;max-height:280px;white-space:pre-wrap;word-break:break-word}' +
-      '.mono{font-family:var(--mono,monospace)}' +
-      '</style>'));
-
     await load();
     return wrap;
   }

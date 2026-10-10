@@ -205,9 +205,8 @@
           `${U.dateTime(sale.voided_at)} — ${sale.void_reason || 'no reason recorded'}. The stock was returned and the ledger reversed; nothing was deleted.`));
       }
       if (Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED') {
-        const settle = ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => openSettle(sale) }, 'Take payment');
-        host.appendChild(ui.h('div', { class: 'alert alert-warn row' },
-          ui.h('span', { class: 'grow' }, `${U.money(sale.balance_due)} is still owed on this receipt.`), settle));
+        host.appendChild(ui.h('div', { class: 'alert alert-warn' },
+          `${U.money(sale.balance_due)} is still owed on this receipt. Take it from Actions — that is the only place this receipt is settled.`));
       }
 
       const totals = ui.h('div', { class: 'grid grid-5' },
@@ -321,7 +320,7 @@
           onClick: () => openReturn(sale, items),
         }, 'Start a return'),
         canVoid ? ui.h('button', { class: 'btn btn-danger', onClick: () => openVoid(sale) }, 'Void this sale') : null,
-        Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED' ? ui.h('button', { class: 'btn', onClick: () => openSettle(sale) }, 'Settle balance') : null));
+        Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED' ? ui.h('button', { class: 'btn btn-primary', onClick: () => openSettle(sale) }, 'Take payment') : null));
       if (!canVoid && sale.status !== 'VOIDED') {
         abody.appendChild(ui.h('div', { class: 'hint' },
           'You cannot void this sale. A void is allowed for a manager at any time, and for staff only on their own sale inside the window the owner has set.'));

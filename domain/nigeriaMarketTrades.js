@@ -496,6 +496,106 @@ function addTrades(api) {
     'Veneer sheet', 'Blockboard 18mm', 'Hardboard 3mm', 'Plywood 2x4 12mm',
     'Softwood batten', 'Hardwood batten',
   ], { unit: 'sheet' });
+  // Phones the Nigerian market is selling in 2026 that the first list did not
+  // have. Names only. A colour is included only where shops price that colour
+  // apart from the others. add() skips a name that is already on the list.
+  function handset(brand, model, stores, colours) {
+    const paints = colours && colours.length ? colours : [''];
+    for (const store of stores) {
+      for (const colour of paints) {
+        add('NG_PHONE', [brand, model, store, colour].filter(Boolean).join(' '), { brand, unit: 'piece' });
+      }
+    }
+  }
+
+  handset('Apple', 'iPhone 15 (UK used)', ['128GB', '256GB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 15 Plus (UK used)', ['128GB', '256GB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 15 Pro (UK used)', ['128GB', '256GB', '512GB'], ['Black', 'Natural']);
+  handset('Apple', 'iPhone 15 Pro Max (UK used)', ['256GB', '512GB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 16 (UK used)', ['128GB', '256GB'], ['Black', 'Pink']);
+  handset('Apple', 'iPhone 16 Plus (UK used)', ['128GB', '256GB'], ['Black']);
+  handset('Apple', 'iPhone 16 Pro (UK used)', ['128GB', '256GB', '512GB'], ['Black', 'Desert']);
+  handset('Apple', 'iPhone 16 Pro Max (UK used)', ['256GB', '512GB'], ['Black', 'Desert']);
+  handset('Apple', 'iPhone 16e', ['128GB', '256GB'], ['Black', 'White']);
+  handset('Apple', 'iPhone 17', ['256GB', '512GB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 17 Air', ['256GB', '512GB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 17 Pro', ['256GB', '512GB', '1TB'], ['Black', 'Silver']);
+  handset('Apple', 'iPhone 17 Pro Max', ['256GB', '512GB', '1TB'], ['Silver', 'Orange', 'Blue']);
+  handset('Apple', 'iPhone 17e', ['256GB', '512GB'], ['Black', 'White', 'Soft pink']);
+  handset('Apple', 'iPhone 18 Pro', ['256GB', '512GB', '1TB'], ['Black', 'Blue']);
+  handset('Apple', 'iPhone 18 Pro Max', ['256GB', '512GB', '1TB'], ['Black', 'Blue']);
+  // Announced 9 September 2026. Official retail is 23 October; Computer Village
+  // already quotes it. One name, not invented storage splits.
+  add('NG_PHONE', 'Apple iPhone Duo', { brand: 'Apple', unit: 'piece' });
+
+  handset('Samsung', 'Galaxy S24 (UK used)', ['256GB'], ['Black']);
+  handset('Samsung', 'Galaxy S25 (UK used)', ['256GB'], ['Black']);
+  handset('Samsung', 'Galaxy S26', ['256GB', '512GB'], ['Black', 'Silver']);
+  handset('Samsung', 'Galaxy S26+', ['256GB', '512GB'], ['Black']);
+  handset('Samsung', 'Galaxy S26 Ultra', ['256GB', '512GB', '1TB'], ['Black', 'Blue']);
+  handset('Samsung', 'Galaxy A06', ['64GB', '128GB'], ['Black']);
+  handset('Samsung', 'Galaxy A07', ['128GB'], ['Black']);
+  handset('Samsung', 'Galaxy A17', ['128GB', '256GB'], ['Black']);
+  handset('Samsung', 'Galaxy A37', ['128GB', '256GB'], ['Black']);
+  handset('Samsung', 'Galaxy A57', ['128GB', '256GB'], ['Black']);
+  handset('Samsung', 'Galaxy Fold 8', ['256GB', '512GB'], ['Black']);
+  handset('Samsung', 'Galaxy Fold 8 Ultra', ['512GB', '1TB'], ['Black']);
+
+  handset('Tecno', 'Camon 40', ['128GB', '256GB'], ['Black']);
+  handset('Tecno', 'Camon 50', ['256GB'], ['Black', 'Green']);
+  handset('Tecno', 'Camon 50 Pro', ['256GB'], ['Black', 'Blue']);
+  handset('Tecno', 'Camon 50 Ultra', ['256GB', '512GB'], ['Black']);
+  handset('Tecno', 'Spark 40', ['128GB', '256GB'], ['Black']);
+  handset('Tecno', 'Spark 40 Pro', ['128GB', '256GB'], ['Black']);
+  handset('Tecno', 'Spark 40 Pro+', ['256GB'], ['Black']);
+  handset('Tecno', 'POVA 7', ['128GB', '256GB'], ['Black']);
+  handset('Tecno', 'Pop 10', ['64GB', '128GB'], ['Black']);
+  handset('Tecno', 'Pop 10C', ['64GB'], ['Black']);
+
+  handset('Infinix', 'Hot 60', ['128GB', '256GB'], ['Black']);
+  handset('Infinix', 'Hot 60 Pro+', ['256GB'], ['Black']);
+  handset('Infinix', 'Hot 60i', ['128GB'], ['Black']);
+  handset('Infinix', 'Note 50', ['256GB'], ['Black']);
+  handset('Infinix', 'Note 50 Pro', ['256GB'], ['Black']);
+  handset('Infinix', 'Note 60', ['256GB'], ['Black']);
+  handset('Infinix', 'Note 60 Pro', ['256GB'], ['Black']);
+  handset('Infinix', 'Note Edge', ['256GB'], ['Black']);
+  handset('Infinix', 'Zero Flip', ['256GB', '512GB'], ['Black']);
+  handset('Infinix', 'Smart 10', ['64GB', '128GB'], ['Black']);
+  handset('Infinix', 'Smart 10 HD', ['64GB'], ['Black']);
+  handset('Infinix', 'Smart 20', ['128GB'], ['Black']);
+
+  handset('Itel', 'A90', ['64GB', '128GB'], ['Black']);
+  handset('Itel', 'A100C', ['64GB'], ['Black']);
+  handset('Itel', 'City 100', ['128GB'], ['Black']);
+  handset('Itel', 'City 200', ['128GB'], ['Black']);
+  handset('Itel', 'S25', ['128GB', '256GB'], ['Black']);
+  handset('Itel', 'S26 Ultra', ['256GB'], ['Black']);
+  handset('Itel', 'P65', ['128GB'], ['Black']);
+  handset('Itel', 'P70', ['128GB'], ['Black']);
+  handset('Itel', 'Power 70', ['128GB'], ['Black']);
+  handset('Itel', 'A200 Plus', ['128GB'], ['Black']);
+
+  handset('Xiaomi', 'Redmi 15C', ['128GB', '256GB'], ['Black']);
+  handset('Xiaomi', 'Redmi A5', ['64GB', '128GB'], ['Black']);
+  handset('Xiaomi', 'Redmi Note 14', ['128GB', '256GB'], ['Black']);
+  handset('POCO', 'C71', ['128GB'], ['Black']);
+  handset('POCO', 'C85', ['256GB'], ['Black']);
+  handset('OPPO', 'A6X', ['128GB'], ['Black']);
+  handset('Realme', 'C71', ['128GB'], ['Black']);
+  handset('Vivo', 'Y04', ['128GB'], ['Black']);
+  handset('Vivo', 'Y18', ['128GB'], ['Black']);
+
+  each('NG_ACCESSORY', [
+    'Apple AirPods 4', 'Apple AirPods Pro 2', 'Samsung Galaxy Buds 3',
+    'Oraimo FreePods 4', 'Tecno Hipods',
+  ], { unit: 'piece' });
+  each('NG_COMPUTER', [
+    'Starlink Standard kit', 'Starlink Mini kit',
+    'Apple iPad 10th generation (UK used) 64GB', 'Apple iPad 10th generation (UK used) 256GB',
+    'Samsung Galaxy Tab A9 64GB', 'Samsung Galaxy Tab A9 128GB',
+  ], { unit: 'piece' });
+
 }
 
 module.exports = { addTrades };

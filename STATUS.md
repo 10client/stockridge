@@ -1746,3 +1746,13 @@ The suite guard passed (69). Then every audit, in runner order, against a fresh 
 **Found and closed.** The market list read `?q=` itself. Every other search box goes through `searchTerm()`, which cuts a paste to 48 bytes before it can become a pattern the platform refuses with a 500. The market search now uses that same clamp, and the limits probe searches the market list as well as products, customers, stock and sales.
 
 Nothing was written on staging, sample or production by this probe. Live stamp `ridge-20261010-1753-7bd73a3` on staging, sample and production. A 200-character search of the market list answers 200 on all three, and the list is still 4,460 goods with no prices. Administrator PINs were not changed.
+
+### P30 — the 2026 phones, and one card layout (checkpoint)
+
+The market list is 4,635 goods, still with no prices and no medicines. Goods already on the list keep their SKUs.
+
+Added, without repeating a name: iPhone 15 through 17 including 17 Air, 17 Pro Max and 17e; iPhone 18 Pro and 18 Pro Max; iPhone Duo as one name, not invented storage splits; Samsung S26, S26+ , S26 Ultra, A07, A17, A37, A57, Fold 8; Tecno Camon 50 and Spark 40; Infinix Note 60, Hot 60 and Zero Flip; itel, Redmi, POCO, OPPO, Realme and Vivo models the 2026 shelves actually carry; AirPods, Galaxy Buds, Starlink kits and two tablets. The base iPhone 18 is not on the list: that model is not in shops yet.
+
+**Cards.** Sales, till, reports, accounting, plan, staff, sync and admin each pasted its own rules for the same tiles. A later screen restyled every tile, including the top-bar avatar, and a card's own margin painted over the card beneath it. The layout now lives in one stylesheet. A sale that still has a balance is settled from Actions only, not from a second button on the warning.
+
+Local: `test/unit/nigeria-market.test.js` and `audit.market` 25/25. Not yet on the hosted builds.

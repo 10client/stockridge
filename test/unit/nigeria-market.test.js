@@ -39,6 +39,18 @@ test('the Nigerian market list is thousands of goods, with no prices and no seri
   assert.equal(market.ITEMS.find((i) => i.name === 'Dangote 3X cement 50kg').sku, 'NG-02044');
   assert.equal(market.ITEMS.find((i) => i.name === 'Gas cylinder 12.5kg').sku, 'NG-02776');
   assert.equal(market.get('NG-02740'), null, 'a retired pharmacy number was given to another good');
+  for (const name of ['Apple iPhone 18 Pro 256GB Black', 'Apple iPhone Duo', 'Apple iPhone 17e 256GB Soft pink', 'Samsung Galaxy S26 Ultra 256GB Black', 'Tecno Camon 50 256GB Black']) {
+    assert.ok(market.ITEMS.some((i) => i.name === name), `${name} is not on the market list`);
+  }
+  const css = fs.readFileSync(path.join(__dirname, '../../public/css/app.css'), 'utf8');
+  assert.match(css, /\.kpis, \.kpi-grid/);
+  assert.match(css, /grid > \.card/);
+  const views = fs.readdirSync(path.join(__dirname, '../../public/js/views')).filter((f) => f.endsWith('.js'));
+  for (const file of views) {
+    const src = fs.readFileSync(path.join(__dirname, '../../public/js/views', file), 'utf8');
+    assert.equal(src.includes('.kpis{'), false, `${file} still pastes its own card layout over the shared one`);
+    assert.equal(src.includes('.kpi-value{'), false, `${file} still restyles every tile`);
+  }
 
   const trades = [
     ['NG_FRESH', 'Benue yam', 40],
