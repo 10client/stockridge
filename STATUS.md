@@ -1663,4 +1663,6 @@ Off, which is the new default: the counter does not show a serial box, goods rec
 
 **The till and the receipt.** The sale screen is one ticket: the total is the first figure, each line is name and amount, then quantity, unit and price, and a serial row only when the business uses them and that line is short a number. Taking payment shows the lines being charged, then the method, then the amount. The receipt the customer is shown is a slip — business, receipt number, date, cashier, customer, items, total, how it was paid — and the thermal text follows the same order. A serial is printed under its item only when one was captured.
 
-Local: `audit.serials` 8/8 (including “off until the business turns them on”), `audit.createFlows` 17/17, `audit.warranty` 26/26. Deploy follows.
+Local: `audit.serials` 8/8 (including “off until the business turns them on”), `audit.createFlows` 17/17, `audit.warranty` 26/26.
+
+**Live.** `aa90e62`, stamp `ridge-20261010-1412-aa90e62`, on staging, sample and production. Migration 0009 turned the existing switch off; nothing on file was deleted. An owner turns it back on under Settings → Modules. PINs were not reset.
