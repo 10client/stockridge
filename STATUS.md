@@ -1616,3 +1616,13 @@ Two screens were refusing work the operator had already done.
 **Raising a purchase order.** "Add a line", type a product, type a price, Raise → "Add at least one item with a quantity." The line was a text box. A typed name never set `product_id`, and the raise silently dropped it. Each line is now a picker: the product is on the order when it is picked from the catalogue, the button says "Raise the order · 1 line", and a typed name that was never picked is named in the refusal instead of being dropped.
 
 Driven against staging's data with the new screens: the owner form lists 16 branches and leads with "No branch — an owner reaches every branch" (not required, and it does not say add a branch); typing "iPhone 13" without picking is refused by name; picking it makes the button read "Raise the order · 1 line" and the line say "On this order". `audit.createFlows` 16/16, including an owner created with no branch filed under the business that was asked for.
+
+**Deployed, same commit `22fb1d6` on all three** (the minute differs by when each upload finished; the code does not):
+
+| environment | page names | owner form | order picker | admin/1234 |
+| --- | --- | --- | --- | --- |
+| production | ridge-20261010-0840-22fb1d6 | live | live | 200 |
+| staging | ridge-20261010-0839-22fb1d6 | live | live | 200 |
+| sample | ridge-20261010-0840-22fb1d6 | live | live | 200 |
+
+Live route, staging: an owner created with no branch answered 201 *"…created as Owner with access to every branch."* and was switched off again. A cashier with no branch is still refused `BRANCH_REQUIRED`. Production has no business yet, so adding an owner there is refused with `BUSINESS_REQUIRED` ("Choose which business this applies to") — the screen says create a business first, and does not say add a branch.
