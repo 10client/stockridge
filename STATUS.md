@@ -1673,4 +1673,6 @@ Serial numbers are chosen on the product, not assumed. On the catalogue, each ro
 
 **Nigerian market.** Catalogue → Nigerian market is an inbuilt list of 2,786 goods sold in Nigerian markets — rice, garri, cement, phones, fabric, the pharmacy counter, and the rest. There are no prices. Adding one copies the name into the shop's catalogue at no price; the shop sets the price before it can be sold. Serial stays off on the add unless that row's switch is turned on.
 
-Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue.test.js` green. A product added with serial on is refused at goods-received once the shop uses serials, and names the missing number. A product left off is received without one. Deploy follows.
+Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue.test.js` green. A product added with serial on is refused at goods-received once the shop uses serials, and names the missing number. A product left off is received without one.
+
+**Live.** `d6ac898`, stamp `ridge-20261010-1648-d6ac898`, on staging, sample and production. PINs were not reset.
