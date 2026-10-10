@@ -223,99 +223,172 @@
       }, 260));
 
       // ---- lines
+      // A LINE IS ON THE ORDER ONLY WHEN A CATALOGUE PRODUCT HAS BEEN PICKED.
+      //
+      // The line used to be a text box labelled "Product…". Typing a name and a price filled the
+      // box and moved the total, and Raise then said "Add at least one item with a quantity" —
+      // the order is built from product_id, and a typed name never set one. The line the person
+      // added did not reflect in the order they were raising. The picker below IS the line: the
+      // count on the button says how many products are actually on the order, a typed name that
+      // was never picked is named in the refusal, and it is never dropped in silence.
+      let raiseBtn = null;
       const linesCard = ui.h('div', { class: 'card' });
       linesCard.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Lines'), ui.h('div', { class: 'spacer' })));
       const linesBody = ui.h('div', { class: 'card-body stack' });
       linesCard.appendChild(linesBody);
       wrapEl.appendChild(linesCard);
+      wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Pick the product from the list under its name. A typed name and a price are not on the order until you do. Quantities are converted to the product\'s base unit when the order is saved.'));
 
       const totalsBar = ui.h('div', { class: 'alert alert-info' }, 'No lines yet.');
 
+      function onOrder(line) { return Boolean(line.product_id) && Number(line.quantity) > 0; }
+      function dangling(line) { return !line.product_id && (String(line.name || '').trim() || Number(line.expected_unit_cost) > 0); }
+
+      async function findProducts(term) {
+        try {
+          const d = await SR.api.get('/api/products', { query: SR.state.query({ q: term, limit: 8 }) });
+          return d.data || [];
+        } catch (err) {
+          if (!err.isOffline) throw err;
+          return (await SR.store.all('products', { where: (p) => !Number(p.is_deleted) }))
+            .filter((p) => String(p.name).toLowerCase().includes(term.toLowerCase()) || String(p.sku || '').toLowerCase().includes(term.toLowerCase()))
+            .slice(0, 8);
+        }
+      }
+      function adopt(line, product) {
+        line.product_id = String(product.id);
+        line.name = product.name;
+        line.pickedName = product.name;
+        line.sku = product.sku || '';
+        line.unit_code = product.default_unit_code || line.unit_code || 'PIECE';
+        if (!Number(line.expected_unit_cost)) line.expected_unit_cost = Number(product.cost_price) || 0;
+        if (!Number(line.quantity)) line.quantity = 1;
+      }
+      function paintStatus() {
+        const ready = lines.filter(onOrder).length;
+        if (raiseBtn && !raiseBtn.disabled) {
+          raiseBtn.textContent = ready ? `Raise the order · ${ready} line${ready === 1 ? '' : 's'}` : 'Raise the order';
+        }
+      }
       function paintLines() {
         linesBody.replaceChildren();
         lines.forEach((line, i) => {
-          const row = ui.h('div', { class: 'row' });
-          row.appendChild(ui.h('div', { class: 'grow' }, ui.h('label', { class: 'ctl' }, `Item ${i + 1}`),
-            ui.h('input', { value: line.name, placeholder: 'Product…', oninput: (e) => { line.name = e.target.value; } })));
-          row.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Qty'),
-            ui.h('input', { type: 'number', step: 'any', min: '0', value: String(line.quantity || ''), style: { width: '90px' }, oninput: (e) => { line.quantity = Number(e.target.value) || 0; paintTotals(); } })));
-          row.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit'),
-            ui.h('input', { value: line.unit_code || 'PIECE', style: { width: '110px' }, oninput: (e) => { line.unit_code = e.target.value.toUpperCase(); } })));
-          row.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit cost ₦'),
-            ui.h('input', { type: 'number', step: '0.01', min: '0', value: U.numInput(line.expected_unit_cost), style: { width: '120px' }, oninput: (e) => { line.expected_unit_cost = Number(e.target.value) || 0; paintTotals(); } })));
-          row.appendChild(ui.h('div', { style: { alignSelf: 'flex-end', paddingBottom: '4px' } }, ui.h('strong', {}, U.money((Number(line.quantity) || 0) * (Number(line.expected_unit_cost) || 0)))));
-          row.appendChild(ui.h('button', { class: 'btn btn-sm', style: { alignSelf: 'flex-end' }, onClick: () => { lines.splice(i, 1); paintLines(); } }, 'Remove'));
-          linesBody.appendChild(row);
+          const card = ui.h('div', { class: line.product_id ? 'po-line on-order' : 'po-line' });
+          card.appendChild(ui.h('div', { class: 'row' },
+            ui.h('strong', {}, `Item ${i + 1}`),
+            line.product_id ? ui.badge('On this order', 'badge-good') : ui.badge('Not chosen yet', 'badge-warn'),
+            ui.h('span', { class: 'spacer' }),
+            ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { lines.splice(i, 1); paintLines(); } }, 'Remove')));
+
+          const search = ui.h('input', {
+            type: 'search',
+            placeholder: 'Type a product name, SKU or barcode, then pick it from the list…',
+            value: line.name || '',
+            dataset: line.product_id ? {} : { unlinked: '1' },
+          });
+          search.setAttribute('data-line-search', '1');
+          const results = ui.h('div', { class: 'pos-results', hidden: true });
+          const hint = ui.h('div', { class: 'hint' }, line.product_id
+            ? `On this order: ${line.name}${line.sku ? ` · ${line.sku}` : ''} at ${U.money(line.expected_unit_cost)} each.`
+            : (String(line.name || '').trim()
+              ? `"${line.name}" is not on the order yet — pick it from the list. A typed name is not ordered.`
+              : 'Nothing is ordered on this line until you pick a product.'));
+          card.appendChild(search);
+          card.appendChild(results);
+          card.appendChild(hint);
+
+          search.addEventListener('input', U.debounce(async () => {
+            const term = search.value.trim();
+            line.name = search.value;
+            if (line.product_id && term !== line.pickedName) {
+              line.product_id = '';
+              card.classList.remove('on-order');
+              hint.textContent = term
+                ? `"${term}" is not on the order yet — pick it from the list. A typed name is not ordered.`
+                : 'Nothing is ordered on this line until you pick a product.';
+              search.dataset.unlinked = '1';
+              paintTotals();
+            }
+            if (term.length < 2) { results.hidden = true; results.replaceChildren(); return; }
+            let rows = [];
+            try { rows = await findProducts(term); }
+            catch (err) { results.hidden = false; results.replaceChildren(ui.h('div', { class: 'hint' }, (err && err.message) || 'The catalogue could not be searched.')); return; }
+            results.replaceChildren();
+            if (!rows.length) {
+              results.hidden = false;
+              results.appendChild(ui.h('div', { class: 'hint' }, `Nothing in this business's catalogue matches "${term}". A name that is not in the catalogue cannot be ordered.`));
+              return;
+            }
+            for (const product of rows) {
+              results.appendChild(ui.h('button', {
+                class: 'pos-hit', type: 'button',
+                onClick: () => { adopt(line, product); paintLines(); const drawn = linesBody.children[i]; if (drawn && drawn.scrollIntoView) drawn.scrollIntoView({ block: 'nearest' }); },
+              }, ui.h('div', { class: 'grow' },
+                ui.h('div', { class: 'ph-name' }, product.name),
+                ui.h('div', { class: 'ph-meta' }, [product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
+              ui.h('span', { class: 'ph-price' }, U.money(product.cost_price))));
+            }
+            results.hidden = false;
+          }, 260));
+
+          const lineTotal = ui.h('strong', {}, U.money((Number(line.quantity) || 0) * (Number(line.expected_unit_cost) || 0)));
+          const showLine = () => { lineTotal.textContent = U.money((Number(line.quantity) || 0) * (Number(line.expected_unit_cost) || 0)); };
+          const qty = ui.h('input', { type: 'number', step: 'any', min: '0', value: String(line.quantity || ''), style: { width: '90px' } });
+          qty.addEventListener('input', () => { line.quantity = Number(qty.value) || 0; showLine(); paintTotals(); });
+          const unit = ui.h('input', { value: line.unit_code || 'PIECE', style: { width: '110px' } });
+          unit.addEventListener('input', () => { line.unit_code = unit.value.toUpperCase(); });
+          const cost = ui.h('input', { type: 'number', step: '0.01', min: '0', value: U.numInput(line.expected_unit_cost), style: { width: '130px' } });
+          cost.addEventListener('input', () => { line.expected_unit_cost = Number(cost.value) || 0; showLine(); paintTotals(); });
+          card.appendChild(ui.h('div', { class: 'form-grid' },
+            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Qty'), qty),
+            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit'), unit),
+            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit cost ₦'), cost),
+            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Line'), lineTotal)));
+          linesBody.appendChild(card);
         });
-        if (!lines.length) linesBody.appendChild(ui.h('p', { class: 'hint' }, 'No lines yet. Add the items you are ordering.'));
+        if (!lines.length) linesBody.appendChild(ui.h('p', { class: 'hint' }, 'No lines yet. Add the products you are ordering.'));
+        linesBody.appendChild(ui.h('button', {
+          class: 'btn btn-sm', type: 'button',
+          onClick: () => {
+            lines.push({ product_id: '', name: '', pickedName: '', quantity: 1, unit_code: 'PIECE', expected_unit_cost: 0 });
+            paintLines();
+            const boxes = linesBody.querySelectorAll('[data-line-search]');
+            const last = boxes[boxes.length - 1];
+            if (last) last.focus();
+          },
+        }, 'Add a line'));
         paintTotals();
       }
       function paintTotals() {
-        const subtotal = U.sum(lines, (l) => (Number(l.quantity) || 0) * (Number(l.expected_unit_cost) || 0));
+        const linked = lines.filter((l) => l.product_id);
+        const unnamed = lines.filter(dangling);
+        const subtotal = U.sum(linked, (l) => (Number(l.quantity) || 0) * (Number(l.expected_unit_cost) || 0));
         const freight = Number((wrapEl.querySelector('[name="freight_total"]') || {}).value) || 0;
         const discount = Number((wrapEl.querySelector('[name="discount_total"]') || {}).value) || 0;
         const vat = (SR.state.settings && Number(SR.state.settings.vat_enabled)) ? U.round2((subtotal - discount) * (Number(SR.state.settings.vat_rate_percent) || 7.5) / 100) : 0;
+        const ready = lines.filter(onOrder).length;
         totalsBar.replaceChildren();
         totalsBar.appendChild(ui.kv([
+          ['On this order', ready ? `${ready} line${ready === 1 ? '' : 's'}` : 'nothing yet'],
           ['Subtotal', U.money(subtotal)],
           ['Freight', U.money(freight)],
           ['Discount', discount ? `−${U.money(discount)}` : null],
           ['VAT (reclaimable)', vat ? U.money(vat) : 'not applied — set a supplier TIN to record input VAT'],
           ['Order total', ui.h('strong', {}, U.money(U.round2(subtotal - discount + freight + vat)))],
         ]));
+        if (unnamed.length) {
+          totalsBar.appendChild(ui.h('div', { class: 'hint' }, unnamed.length === 1
+            ? 'One line has a name or a price but no product chosen, so it is not in this total and will not be ordered.'
+            : `${unnamed.length} lines have a name or a price but no product chosen, so they are not in this total and will not be ordered.`));
+        }
+        paintStatus();
       }
       for (const name of ['freight_total', 'discount_total']) {
         const el = wrapEl.querySelector(`[name="${name}"]`);
         if (el) el.addEventListener('input', paintTotals);
       }
-      wrapperAddButton();
-      function wrapperAddButton() {
-        const addCard = ui.h('div', { class: 'card' });
-        const body = ui.h('div', { class: 'card-body' });
-        // The product picker: search products, then fill a line with its own unit ladder.
-        const searchRow = ui.h('div', { class: 'row' });
-        const input = ui.h('input', { placeholder: 'Search the catalogue to add a line…', class: 'grow' });
-        const resultBox = ui.h('div', { class: 'pos-results', hidden: true });
-        searchRow.appendChild(ui.h('div', { class: 'grow' }, input));
-        body.appendChild(searchRow);
-        body.appendChild(resultBox);
-        body.appendChild(ui.h('div', { class: 'hint' }, 'Quantities are converted to the product\'s base unit when the order is saved, so ordering "20 cartons" and receiving 960 pieces describe the same thing.'));
-        input.addEventListener('input', U.debounce(async () => {
-          const term = input.value.trim();
-          if (term.length < 2) { resultBox.hidden = true; return; }
-          let rows = [];
-          try {
-            const d = await SR.api.get('/api/products', { query: SR.state.query({ q: term, limit: 10 }) });
-            rows = d.data || [];
-          } catch (err) {
-            rows = (await SR.store.all('products', { where: (p) => !Number(p.is_deleted) }))
-              .filter((p) => String(p.name).toLowerCase().includes(term.toLowerCase())).slice(0, 10);
-          }
-          resultBox.replaceChildren();
-          for (const p of rows) {
-            resultBox.appendChild(ui.h('button', {
-              class: 'pos-hit', type: 'button',
-              onClick: () => {
-                lines.push({
-                  product_id: String(p.id), name: p.name, quantity: 1,
-                  unit_code: p.default_unit_code || p.base_unit_name || 'PIECE',
-                  expected_unit_cost: Number(p.cost_price) || 0,
-                });
-                input.value = '';
-                resultBox.hidden = true;
-                paintLines();
-              },
-            }, ui.h('div', { class: 'grow' }, ui.h('div', { class: 'ph-name' }, p.name),
-              ui.h('div', { class: 'ph-meta' }, [p.sku, p.base_unit_name].filter(Boolean).join(' · '))),
-            ui.h('span', { class: 'ph-price' }, U.money(p.cost_price))));
-          }
-          resultBox.hidden = !rows.length;
-        }, 260));
-        body.appendChild(ui.h('button', { class: 'btn', onClick: () => { lines.push({ product_id: '', name: '', quantity: 1, unit_code: 'PIECE', expected_unit_cost: 0 }); paintLines(); } }, 'Add a blank line'));
-        addCard.appendChild(body);
-        wrapEl.appendChild(addCard);
-      }
       wrapEl.appendChild(totalsBar);
+      lines.push({ product_id: '', name: '', pickedName: '', quantity: 1, unit_code: 'PIECE', expected_unit_cost: 0 });
       paintLines();
 
       const m = ui.openModal({
@@ -324,14 +397,31 @@
         size: 'full',
         footer: [
           ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
-          ui.h('button', {
+          (raiseBtn = ui.h('button', {
             class: 'btn btn-primary',
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
               const supplierId = pickedSupplier ? pickedSupplier.id : null;
               if (!supplierId) { ui.warn('Pick a supplier from the list — the order needs somebody to send it to.'); return; }
-              const items = lines.filter((l) => l.product_id && Number(l.quantity) > 0);
-              if (!items.length) { ui.warn('Add at least one item with a quantity.'); return; }
+              const ready = lines.filter((l) => l.product_id && Number(l.quantity) > 0);
+              const unnamed = lines.filter((l) => !l.product_id && (String(l.name || '').trim() || Number(l.expected_unit_cost) > 0));
+              if (unnamed.length) {
+                const first = unnamed[0];
+                ui.warn(first.name
+                  ? `"${String(first.name).trim()}" has a name or a price, but it is not a catalogue product you picked. Pick it from the list — a typed name is not ordered, so it cannot be raised.`
+                  : 'A line has a price but no product chosen. Pick the product from the list — a price on its own is not an order.');
+                const box = wrapEl.querySelector('[data-unlinked="1"]');
+                if (box) box.focus();
+                return;
+              }
+              if (!ready.length) {
+                const chosen = lines.filter((l) => l.product_id);
+                ui.warn(chosen.length
+                  ? `${chosen[0].name} is chosen, but the quantity is empty. Set how many you are ordering.`
+                  : 'Add at least one product. Type its name, pick it from the list, then set the quantity and the price.');
+                return;
+              }
+              const items = ready;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Saving…';
               try {
@@ -357,12 +447,13 @@
               } catch (err) {
                 ui.apiError(err);
                 ev.currentTarget.disabled = false;
-                ev.currentTarget.textContent = 'Raise the order';
+                paintStatus();
               }
             },
-          }, 'Raise the order'),
+          }, 'Raise the order')),
         ],
       });
+      paintStatus();
     }
 
     await load();

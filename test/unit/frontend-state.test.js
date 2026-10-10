@@ -279,3 +279,21 @@ test('frontend: no screen dereferences a business that may not exist', () => {
     + '    use SR.state.activeBusinessName(), or test the value before reading from it',
   );
 });
+
+test('an owner does not need a branch; a cashier does', () => {
+  const state = loadState({ me: ME });
+  assert.equal(state.roleNeedsBranch('OWNER'), false, 'an owner reaches every branch — the form must not demand one');
+  assert.equal(state.roleNeedsBranch('ADMIN'), false, 'the deployment administrator is not pinned to a branch');
+  assert.equal(state.roleNeedsBranch('MANAGER'), true, 'a manager is scoped by the branch they belong to');
+  assert.equal(state.roleNeedsBranch('STAFF'), true, 'a cashier with no branch would see nothing');
+});
+
+test('a purchase-order line is not ordered until a catalogue product is picked', () => {
+  const src = fs.readFileSync(path.join(PUBLIC_DIR, 'js', 'views', 'purchase-orders.js'), 'utf8');
+  assert.ok(/A typed name is not ordered/.test(src),
+    'the raise screen no longer tells the person that a typed name was not ordered');
+  assert.ok(/On this order/.test(src),
+    'the raise screen no longer says, on the line itself, whether the product is on the order');
+  assert.equal(src.includes("ui.warn('Add at least one item with a quantity.')"), false,
+    'the old refusal is still the one a typed line hits — it drops the line and says add at least one');
+});

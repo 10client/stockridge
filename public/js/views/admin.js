@@ -336,6 +336,9 @@
               : await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, payload);
             m.close();
             ui.ok(res.message || 'Saved.');
+            // THE SHELL CACHES BRANCHES FOR FIVE MINUTES. Without this, Add someone — opened
+            // straight after this — offered an empty branch chooser and then said add a branch.
+            await SR.state.load({ force: true }).catch(() => {});
             load();
           } catch (err) { ui.apiError(err); }
         });
@@ -474,6 +477,7 @@
               });
               m.close();
               ui.ok(res.message || 'Business created and provisioned.');
+              await SR.state.load({ force: true }).catch(() => {});
               load();
             } else {
               const res = await SR.api.put(`/api/businesses/${encodeURIComponent(b.id)}`, payload);

@@ -1606,3 +1606,13 @@ so the moment asset URLs carried a stamp every jsdom walker saw "script missing"
 It now strips the query before looking on disk.
 
 `npm run verify` → **485 pass / 0 fail** · audits **30 green** · `stamp:check` green.
+
+### P23 — an owner does not need a branch, and a purchase-order line counts only when the product was picked (checkpoint)
+
+Two screens were refusing work the operator had already done.
+
+**Adding an owner.** The branch chooser was empty (the shell caches `/api/auth/me` for five minutes, and opening a branch never refreshed it — production currently has no branches at all) and the save then said add a branch, **even for an owner**. An owner reaches every branch by role; provisioning creates the proprietor with `branch_id` null. The create form now loads the live branch list, offers "No branch — an owner reaches every branch", and does not require one. A cashier or a manager with no branch still cannot be created, and if there is no branch yet the form says so and offers Open a branch, instead of an empty required select. Creating a branch or a business refreshes the shell so the next screen sees it. The role-change route no longer says "Give them a branch first — a Owner with no branch would see nothing."
+
+**Raising a purchase order.** "Add a line", type a product, type a price, Raise → "Add at least one item with a quantity." The line was a text box. A typed name never set `product_id`, and the raise silently dropped it. Each line is now a picker: the product is on the order when it is picked from the catalogue, the button says "Raise the order · 1 line", and a typed name that was never picked is named in the refusal instead of being dropped.
+
+Driven against staging's data with the new screens: the owner form lists 16 branches and leads with "No branch — an owner reaches every branch" (not required, and it does not say add a branch); typing "iPhone 13" without picking is refused by name; picking it makes the button read "Raise the order · 1 line" and the line say "On this order". `audit.createFlows` 16/16, including an owner created with no branch filed under the business that was asked for.

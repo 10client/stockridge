@@ -519,16 +519,29 @@ function mount(app, base = '/api') {
     // An explicit business_id naming a business the caller may reach is honoured
     // (see resolveBusiness). Naming one they may not reach is refused there, with
     // BUSINESS_SCOPE_VIOLATION, rather than ignored.
-    // A MANAGER or below is PINNED to the caller's own branch: the branch_id in
-    // the request is ignored rather than trusted, because that field is the sole
-    // scoping truth and letting it be set from a request would let a manager
-    // create staff they can then see the sales of, anywhere.
-    const effectiveBranch = role === 'ADMIN' ? null : (atLeast(user.role, 'OWNER') ? (branch || null) : await resolveBranch(db, ctx));
-    if (role !== 'ADMIN' && !effectiveBranch) {
-      throw new HttpError('Choose which branch this person works at. A user with no branch has no scope, so they would see nothing.', { status: 400, code: 'BRANCH_REQUIRED' });
-    }
-    if (role === 'MANAGER' && !effectiveBranch) {
-      throw new HttpError('A manager must be pinned to one branch — that pin is what makes them a manager OF somewhere.', { status: 400, code: 'BRANCH_REQUIRED' });
+    //
+    // WHO NEEDS A BRANCH. The deployment administrator is not pinned to one, and neither is an
+    // owner: an owner reaches every branch by role (domain/access.js sets allBranches for OWNER
+    // whether or not the row carries a branch_id), and provisioning creates the proprietor with
+    // branch_id null. Requiring one of an owner made the screen say "add a branch" on a
+    // deployment that had none, and on one that had them it pinned a person whose scope does
+    // not come from a pin. A cashier or a manager with no branch really would see nothing, so
+    // those two still cannot be created without one.
+    //
+    // A chosen branch is still honoured for an owner — a shop that wants the proprietor recorded
+    // against the main branch may say so — it just is not demanded. A manager creating staff is
+    // pinned to their own branch: the branch_id in the request is ignored rather than trusted,
+    // because that field is the sole scoping truth and letting it be set from a request would
+    // let a manager create staff they can then see the sales of, anywhere.
+    const branchOptional = role === 'ADMIN' || role === 'OWNER';
+    const effectiveBranch = role === 'ADMIN'
+      ? null
+      : (atLeast(user.role, 'OWNER') ? (branch || null) : await resolveBranch(db, ctx));
+    if (!branchOptional && !effectiveBranch) {
+      const said = role === 'MANAGER'
+        ? 'A manager must be pinned to one branch — that pin is what makes them a manager of somewhere.'
+        : 'Choose which branch this person works at. A cashier with no branch has no scope, so they would see nothing. An owner does not need one — an owner reaches every branch.';
+      throw new HttpError(said, { status: 400, code: 'BRANCH_REQUIRED' });
     }
 
     if (role === 'STAFF') await assertCanCreateStaff(db, settings, business.id);
@@ -694,7 +707,14 @@ function mount(app, base = '/api') {
       const newRole = valid(oneOf(body.role, [...ROLE_ORDER], { field: 'Role' }), 'role');
       if (!canChangeRole(user, target.role, newRole)) throw new HttpError(`You cannot change a ${roleLabel(target.role)} into a ${roleLabel(newRole)}.`, { status: 403, code: 'ROLE_REQUIRED' });
       if (newRole === 'ADMIN' && !atLeast(user.role, 'ADMIN')) throw new HttpError('Only an administrator can grant administrator rights.', { status: 403, code: 'ADMIN_ONLY' });
-      if (newRole !== 'ADMIN' && !target.branch_id) throw new HttpError(`${target.full_name} has no branch, so they can only be an administrator. Give them a branch first — a ${roleLabel(newRole)} with no branch would see nothing.`, { status: 400, code: 'BRANCH_REQUIRED' });
+      // AN OWNER WITH NO BRANCH SEES EVERYTHING. The old sentence — "Give them a branch first, a
+      // Owner with no branch would see nothing" — was false: allBranches is true for OWNER
+      // regardless of branch_id, which is how the proprietor is provisioned. Demanding a branch
+      // here is what kept saying "add a branch" even for the owner. A cashier or a manager still
+      // needs one, including one assigned in this same save.
+      if (newRole !== 'ADMIN' && newRole !== 'OWNER' && !target.branch_id && !body.branch_id) {
+        throw new HttpError(`${target.full_name} has no branch, so they cannot become a ${roleLabel(newRole)} yet. Give them a branch first — a cashier or a manager with no branch would see nothing. An owner does not need one.`, { status: 400, code: 'BRANCH_REQUIRED' });
+      }
       sets.push('role = ?'); params.push(newRole);
     }
     if (body.is_active !== undefined) {

@@ -140,9 +140,19 @@
     return rank(mine) > rank(wanted);
   }
 
-  /** Does a person at this role need a branch? Only the deployment administrator may have none. */
+  /**
+   * Does a person at this role need a branch?
+   *
+   * AN OWNER DOES NOT. An owner reaches every branch by role — `allBranches` is true for OWNER
+   * whether or not the row carries a branch_id — and a business is provisioned with its proprietor
+   * unpinned. Requiring a branch of an owner made the form say "add a branch" on a deployment that
+   * had none, and on one that had them it pinned a person whose scope does not come from a pin.
+   * Only a cashier or a manager is scoped by the branch they belong to. The deployment
+   * administrator is not pinned either.
+   */
   function roleNeedsBranch(role) {
-    return String(role || '').toUpperCase() !== 'ADMIN';
+    const r = String(role || '').toUpperCase();
+    return r !== 'ADMIN' && r !== 'OWNER';
   }
 
   // -------------------------------------------------------------------

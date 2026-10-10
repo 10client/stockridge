@@ -573,24 +573,33 @@
     // -------------------------------------------------------------- create
     function openCreate() {
       const form = ui.h('div', {});
-      const mine = (SR.state.branches() || []).find((b) => String(b.id) === String(SR.state.activeBranchId));
+      // WHAT THE SHELL ALREADY KNOWS, so the select is not blank while the live list is fetched.
+      // The live list is what gets drawn: a branch opened a minute ago is not in the shell yet
+      // (it caches /api/auth/me for five minutes, and opening a branch never refreshed it), which
+      // is how "add an owner" showed an empty branch chooser and then said add a branch.
+      let branchRows = (SR.state.branches() || []).slice();
+      let businessRows = (SR.state.businesses() || []).slice();
+      let listsSettled = branchRows.length > 0 || businessRows.length > 0;
+
       const branchField = ui.field({
         label: 'Branch', name: 'branch_id', required: true,
-        options: (mine ? [{ value: mine.id, label: `${mine.name} — where you work` }] : [])
-          .concat(SR.state.branches().filter((b) => !mine || String(b.id) !== String(mine.id)).map((b) => ({ value: b.id, label: b.name }))),
-        hint: 'A person only sees the figures for the branch they belong to. Owners and admins see everything.',
+        options: [{ value: '', label: 'Loading branches…' }],
+        hint: 'A cashier or a manager only sees the branch they belong to. An owner reaches every branch, so a branch is optional for them.',
       });
+      const businessField = ui.field({
+        label: 'Business', name: 'business_id',
+        options: [{ value: '', label: 'Choose the business' }],
+        hint: 'An owner belongs to a business even though they are not pinned to a branch. This is the set of books their record sits under.',
+      });
+      businessField.hidden = true;
+      const emptyNote = ui.h('div', { class: 'alert alert-warn', hidden: true });
+
       form.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Full name', name: 'full_name', required: true, placeholder: 'Chidinma Okafor' }),
         ui.field({ label: 'Username', name: 'username', required: true, hint: 'Lower case, no spaces. This is what they type on the sign-in screen.' }),
         ui.field({ label: 'Role', name: 'role', required: true, options: creatableRoles() }),
-        // THE BRANCH FIELD FOLLOWS THE ROLE, because the ROUTE does: only the deployment
-        // administrator may belong to no branch ("A user with no branch has no scope, so they
-        // would see nothing") — while the blank option used to be labelled "owner or admin
-        // only", so an owner adding a cashier and leaving it blank was refused after filling in
-        // everything else. For every other role the field is required, defaults to the branch the
-        // person creating them works at, and the blank option is not offered at all.
         branchField,
+        businessField,
         ui.field({ label: 'Job title', name: 'job_title', placeholder: 'Sales assistant' }),
         ui.field({ label: 'Phone', name: 'phone', placeholder: '0803 000 0000' }),
         ui.field({ label: 'PIN', name: 'pin', type: 'password', required: true, hint: 'Digits only. They can change it after signing in.' }),
@@ -599,43 +608,106 @@
         ui.field({ label: 'Bank', name: 'bank_name', placeholder: 'GTBank' }),
         ui.field({ label: 'Account number', name: 'bank_account_no', placeholder: '0123456789' }),
         ui.field({ label: 'Employed since', name: 'employment_started', type: 'date' })));
+      form.appendChild(emptyNote);
       form.appendChild(ui.h('div', { class: 'hint' }, 'The PIN is stored hashed. Nobody — including you — can read it back. If it is forgotten, issue a new one.'));
 
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
       const go = ui.h('button', { class: 'btn btn-primary' }, 'Add them');
       const m = ui.openModal({ title: 'Add someone to the team', body: form, footer: [cancel, go], size: 'wide' });
 
-      // THE BRANCH FIELD FOLLOWS THE ROLE AS IT IS CHOSEN — the same rule the route applies, so
-      // the form cannot offer a combination the API will refuse.
       const roleSel = form.querySelector('[name="role"]');
-      function syncBranchField() {
+      const branchSel = branchField.querySelector('select');
+      const businessSel = businessField.querySelector('select');
+
+      function branchLabel(b) {
+        return b.business_name ? `${b.name} · ${b.business_name}` : b.name;
+      }
+      function paintChoices() {
         const role = roleSel ? String(roleSel.value || '') : '';
         const needs = SR.state.roleNeedsBranch(role);
-        const sel = branchField.querySelector('select');
-        if (!sel) return;
-        const hadBlank = [...sel.options].some((o) => o.value === '');
-        if (needs && hadBlank) {
-          for (const o of [...sel.options]) if (o.value === '') o.remove();
-          sel.value = branchField.dataset.defaultBranch || sel.options[0] && sel.options[0].value || '';
-        } else if (!needs && !hadBlank) {
-          const opt = document.createElement('option');
-          opt.value = ''; opt.textContent = 'No branch — administrators are not pinned to one';
-          sel.insertBefore(opt, sel.firstChild);
-          sel.value = '';
+        const kept = branchSel.value;
+        branchSel.replaceChildren();
+        if (!needs) {
+          const blank = role === 'OWNER'
+            ? 'No branch — an owner reaches every branch'
+            : 'No branch — administrators are not pinned to one';
+          branchSel.appendChild(ui.h('option', { value: '' }, blank));
         }
+        const mineId = String(SR.state.activeBranchId || '');
+        const ordered = branchRows.slice().sort((a, b) => {
+          if (String(a.id) === mineId) return -1;
+          if (String(b.id) === mineId) return 1;
+          return String(a.name).localeCompare(String(b.name));
+        });
+        for (const b of ordered) {
+          const label = String(b.id) === mineId ? `${branchLabel(b)} — where you work` : branchLabel(b);
+          branchSel.appendChild(ui.h('option', { value: b.id }, label));
+        }
+        if (!branchSel.options.length) branchSel.appendChild(ui.h('option', { value: '' }, 'No branch yet'));
+        if ([...branchSel.options].some((o) => o.value === kept)) branchSel.value = kept;
+        else branchSel.value = needs ? (branchSel.options[0] && branchSel.options[0].value) : '';
+        branchSel.required = needs && branchRows.length > 0;
         const label = branchField.querySelector('.ctl');
-        if (label) label.textContent = needs ? 'Branch' : 'Branch (not needed for an administrator)';
+        if (label) label.textContent = needs ? 'Branch *' : 'Branch';
+
+        const keptBiz = businessSel.value;
+        businessSel.replaceChildren();
+        businessSel.appendChild(ui.h('option', { value: '' }, businessRows.length ? 'Choose the business' : 'No business yet'));
+        for (const b of businessRows) businessSel.appendChild(ui.h('option', { value: b.id }, b.name));
+        if ([...businessSel.options].some((o) => o.value === keptBiz && keptBiz)) businessSel.value = keptBiz;
+        else if (businessRows.length === 1) businessSel.value = businessRows[0].id;
+        // The business is asked only when it cannot be read off a branch: an owner or an
+        // administrator with no branch, and more than one business to sit under.
+        businessField.hidden = needs || businessRows.length <= 1;
+
+        emptyNote.replaceChildren();
+        if (!businessRows.length) {
+          emptyNote.hidden = false;
+          emptyNote.appendChild(ui.h('div', {}, 'There is no business yet. Create one first — its first branch is opened with it, and then the owner can be added. An owner is not pinned to a branch.'));
+          emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/businesses'); } }, 'Create a business'));
+        } else if (needs && !branchRows.length) {
+          emptyNote.hidden = false;
+          emptyNote.appendChild(ui.h('div', {}, 'There is no branch to choose. A cashier or a manager has to belong to one — open a branch first. An owner does not: choose Owner and they reach every branch.'));
+          emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/branches'); } }, 'Open a branch'));
+        } else {
+          emptyNote.hidden = true;
+        }
       }
-      branchField.dataset.defaultBranch = (mine && mine.id) || ((SR.state.branches() || [])[0] || {}).id || '';
-      if (roleSel) { roleSel.addEventListener('change', syncBranchField); syncBranchField(); }
+      if (roleSel) roleSel.addEventListener('change', paintChoices);
+      paintChoices();
+
+      // THE LIVE LISTS, not the shell's cache. This is what makes a branch opened a minute ago
+      // appear in the chooser instead of the form saying there isn't one.
+      Promise.all([
+        SR.api.get('/api/branches').catch(() => null),
+        SR.api.get('/api/businesses').catch(() => null),
+      ]).then(([br, bz]) => {
+        if (br && Array.isArray(br.data)) branchRows = br.data;
+        if (bz && Array.isArray(bz.data)) businessRows = bz.data;
+        listsSettled = true;
+        if (form.isConnected) paintChoices();
+      }).catch(() => {});
 
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);
         if (!v.pin || String(v.pin) !== String(v.confirm_pin)) { ui.warn('The two PINs must match.'); return; }
-        // REFUSED HERE, IN THE ROUTE'S OWN SENTENCE, rather than after a round trip — and with
-        // the field marked so the person can see what is missing.
+        if (!listsSettled) { ui.warn('Still loading the businesses and branches. One moment, then try again.'); return; }
+        if (!businessRows.length) {
+          ui.warn('Create a business first. An owner belongs to a business, even though they are not pinned to a branch.');
+          return;
+        }
         if (SR.state.roleNeedsBranch(v.role) && !v.branch_id) {
-          ui.warn('Choose the branch they work at. A user with no branch has no scope, so they would see nothing — only the deployment administrator can belong to no branch.');
+          ui.warn(branchRows.length
+            ? 'Choose the branch they work at. A cashier or a manager with no branch has no scope, so they would see nothing. An owner does not need one.'
+            : 'There is no branch yet. Open a branch first — or add them as an owner, who reaches every branch.');
+          return;
+        }
+        const chosenBranch = branchRows.find((b) => String(b.id) === String(v.branch_id));
+        const businessId = (chosenBranch && chosenBranch.business_id)
+          || v.business_id
+          || (businessRows.length === 1 ? businessRows[0].id : null);
+        if (!v.branch_id && !businessId) {
+          ui.warn('Choose which business this owner belongs to. They reach every branch, but the record has to sit under one set of books.');
           return;
         }
         await ui.withBusy(form, async () => {
@@ -645,6 +717,7 @@
               username: v.username,
               role: v.role,
               branch_id: v.branch_id || null,
+              business_id: businessId || undefined,
               job_title: v.job_title || undefined,
               phone: v.phone || undefined,
               pin: String(v.pin),
@@ -787,10 +860,10 @@
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Branch',
           name: 'branch_id',
-          options: [{ value: '', label: 'No branch (owner or admin only)' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.name }))),
+          options: [{ value: '', label: 'No branch — an owner reaches every branch' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.business_name ? `${b.name} · ${b.business_name}` : b.name }))),
           value: u.branch_id || '',
           disabled: self,
-          hint: 'This is the whole of a person\'s scope: their branch, and nobody else\'s.',
+          hint: 'A cashier or a manager only sees this branch. An owner reaches every branch whether or not one is chosen here.',
         }) : null,
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Active',
@@ -831,6 +904,24 @@
       const close = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close');
       const save = ui.h('button', { class: 'btn btn-primary' }, 'Save changes');
       const m = ui.openModal({ title: u.full_name || u.username, body: form, footer: [historyBtn, moveBtn, pinBtn, ui.h('div', { class: 'spacer' }), close, save].filter(Boolean), size: 'wide' });
+
+      // A branch opened since sign-in is not in the shell's cache, so this select showed only
+      // "No branch" and the save then said add a branch. Ask for the live list when the cache
+      // has nothing to offer.
+      if (!self && !(SR.state.branches() || []).length) {
+        SR.api.get('/api/branches').then((res) => {
+          const rows = (res && res.data) || [];
+          const sel = form.querySelector('[name="branch_id"]');
+          if (!sel || !rows.length || !form.isConnected) return;
+          const current = sel.value;
+          const blank = [...sel.options].find((o) => o.value === '');
+          sel.replaceChildren();
+          sel.appendChild(blank || ui.h('option', { value: '' }, 'No branch — an owner reaches every branch'));
+          for (const b of rows) sel.appendChild(ui.h('option', { value: b.id }, b.business_name ? `${b.name} · ${b.business_name}` : b.name));
+          if ([...sel.options].some((o) => o.value === current)) sel.value = current;
+        }).catch(() => {});
+      }
+
 
       pinBtn.addEventListener('click', async () => {
         const confirmed = await ui.confirmDialog({

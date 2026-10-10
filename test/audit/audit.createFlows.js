@@ -181,6 +181,28 @@ runAudit('createFlows', async (audit, d) => {
       `the administrator could not add a staff member: ${asAdmin.status} ${String(asAdmin.text).slice(0, 200)}`);
   });
 
+  // AN OWNER IS NOT PINNED TO A BRANCH. The proprietor is provisioned with branch_id null and
+  // reaches every branch by role. The create form used to demand a branch of them anyway, so on
+  // a deployment with no branch the chooser was empty and the save said add a branch — even for
+  // the owner. A cashier still cannot be created without one; that was asserted just above.
+  await audit.checkAsync('an owner can be added with no branch, and reaches every branch', async () => {
+    const pin = '4618';
+    const username = `auditpr${TAG.toLowerCase()}`;
+    const res = await admin.post('/api/users', {
+      full_name: `Audit Proprietor ${TAG}`, username, role: 'OWNER',
+      business_id: made.id, pin, confirm_pin: pin,
+    });
+    assert.ok(res.status < 400, `adding an owner with no branch answered ${res.status}: ${String(res.text).slice(0, 240)}`);
+    assert.ok(/every branch/i.test(String(res.json && res.json.message || '')),
+      `the message does not say an owner reaches every branch: "${res.json && res.json.message}"`);
+    const list = await admin.get('/api/users?limit=200');
+    const row = ((list.json && list.json.data) || []).find((u) => u.username === username);
+    assert.ok(row, 'the owner is not in the staff list');
+    assert.ok(row.branch_id == null, `the owner was pinned to ${row.branch_name || row.branch_id} even though none was asked for`);
+    assert.equal(String(row.business_id), String(made.id), 'the owner was filed under a different business from the one asked for');
+    assert.equal(String(row.role), 'OWNER');
+  });
+
   // ------------------------------------------------------------------
   // FRONT TO BACK — RECEIVING AN ORDER FOR A SERIAL-TRACKED PRODUCT
   // ------------------------------------------------------------------
