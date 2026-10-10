@@ -1745,4 +1745,4 @@ The suite guard passed (69). Then every audit, in runner order, against a fresh 
 
 **Found and closed.** The market list read `?q=` itself. Every other search box goes through `searchTerm()`, which cuts a paste to 48 bytes before it can become a pattern the platform refuses with a 500. The market search now uses that same clamp, and the limits probe searches the market list as well as products, customers, stock and sales.
 
-Nothing was written on staging, sample or production by this probe. The clamp is local until this checkpoint is deployed.
+Nothing was written on staging, sample or production by this probe. Live stamp `ridge-20261010-1753-7bd73a3` on staging, sample and production. A 200-character search of the market list answers 200 on all three, and the list is still 4,460 goods with no prices. Administrator PINs were not changed.
