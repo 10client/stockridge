@@ -724,9 +724,9 @@
   function openMarket() {
     const state = { q: '', category: '', page: 0, pageSize: 40, serials: new Set() };
     const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('p', { class: 'hint' }, 'Goods sold in Nigerian markets. No prices — set the price after you add the item. Serial stays off unless you turn it on here.'));
+    wrap.appendChild(ui.h('p', { class: 'hint' }, 'Goods sold across Nigerian markets — provisions, the fresh market, building materials, phones, hair, books and the other trades. Medicines are not on this list. No prices — set the price after you add the item. Serial stays off unless you turn it on here.'));
     const bar = ui.h('div', { class: 'row' });
-    const q = ui.h('input', { type: 'search', placeholder: 'Rice, cement, Indomie, phone…', style: { minWidth: '220px' } });
+    const q = ui.h('input', { type: 'search', placeholder: 'Yam, cement, hair, phone, WAEC…', style: { minWidth: '220px' } });
     const cat = ui.h('select');
     bar.appendChild(ui.h('div', { class: 'grow' }, q));
     bar.appendChild(cat);

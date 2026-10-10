@@ -9,7 +9,7 @@ const path = require('node:path');
 const market = require('../../domain/nigeriaMarket');
 
 test('the Nigerian market list is thousands of goods, with no prices and no serials', () => {
-  assert.ok(market.ITEMS.length >= 2000, `expected thousands of goods, got ${market.ITEMS.length}`);
+  assert.ok(market.ITEMS.length >= 4000, `expected the wider market list, got ${market.ITEMS.length}`);
   const skus = new Set();
   const names = new Set();
   for (const item of market.ITEMS) {
@@ -29,6 +29,36 @@ test('the Nigerian market list is thousands of goods, with no prices and no seri
   assert.equal('price' in page.data[0], false);
   const rice = market.search({ category: 'NG_RICE', limit: 1 });
   assert.ok(rice.total >= 50, 'the rice section is too thin to be a market list');
+
+  assert.equal(market.CATEGORIES.some((c) => c.code === 'NG_COUNTER'), false, 'the pharmacy counter is still on the list');
+  for (const word of ['panadol', 'paracetamol', 'ibuprofen', 'benylin']) {
+    assert.equal(market.search({ q: word, limit: 5 }).total, 0, `${word} is still on the market list`);
+  }
+  // Goods that were already on the list keep the SKU a shop may have added.
+  assert.equal(market.ITEMS.find((i) => i.name === 'Mama Gold 50kg bag').sku, 'NG-00005');
+  assert.equal(market.ITEMS.find((i) => i.name === 'Dangote 3X cement 50kg').sku, 'NG-02044');
+  assert.equal(market.ITEMS.find((i) => i.name === 'Gas cylinder 12.5kg').sku, 'NG-02776');
+  assert.equal(market.get('NG-02740'), null, 'a retired pharmacy number was given to another good');
+
+  const trades = [
+    ['NG_FRESH', 'Benue yam', 40],
+    ['NG_HAIR', 'Xpression', 40],
+    ['NG_COMPUTER', 'POS terminal', 40],
+    ['NG_MOTO', 'Bajaj Boxer', 40],
+    ['NG_TIMBER', 'plywood', 30],
+    ['NG_ELECTRICAL', 'Cutix', 40],
+    ['NG_BOOKS', 'WAEC', 40],
+    ['NG_LEATHER', 'Aba-made', 20],
+    ['NG_NYLON', 'nylon', 20],
+    ['NG_MOTOR', 'Toyota Hilux', 20],
+  ];
+  for (const [code, word, least] of trades) {
+    const page = market.search({ category: code, q: word, limit: 3 });
+    assert.ok(page.total >= 1, `${word} is not in ${code}`);
+    const section = market.categories().find((c) => c.code === code);
+    assert.ok(section && section.count >= least, `${code} has ${section && section.count}, expected at least ${least}`);
+    assert.equal('price' in page.data[0], false);
+  }
 });
 
 test('the catalogue screen toggles serial on the product, and the till refuses an unpriced item', () => {

@@ -2,15 +2,21 @@
 // =====================================================================
 // domain/nigeriaMarket.js — GOODS THE NIGERIAN MARKET ACTUALLY SELLS
 // =====================================================================
-// An inbuilt list, not a price list. A shop in Wuse, Onitsha, Kano or
-// Aba already knows these names. What it does not want from a piece of
-// software is a guessed naira figure, or a serial number it did not ask
-// for.
+// An inbuilt list, not a price list, and not a pharmacy. A shop in Wuse,
+// Onitsha, Kano, Aba, Dei-Dei or Computer Village already knows these
+// names. What it does not want from a piece of software is a guessed
+// naira figure, a serial number it did not ask for, or a drug list.
 //
-// So every row here has a name, a brand, a category and a unit, and
-// nothing else that looks like money. Serial numbers are off. The shop
-// turns a serial on, by hand, on the product it adds — and that choice
-// is what the till asks for.
+// Medicines are not on this list. A chemist is a different trade. The
+// rows here are the goods the other businesses sell: provisions, the
+// fresh market, hair and beauty, phones and computers, building
+// materials, furniture, motor and motorcycle parts, books, tailoring,
+// and the nylon and packaging every one of those shops buys.
+//
+// Every row has a name, a brand, a category and a unit, and nothing
+// else that looks like money. Serial numbers are off. The shop turns a
+// serial on, by hand, on the product it adds — and that choice is what
+// the till asks for.
 //
 // The list is built once, in a fixed order, so a SKU means the same
 // good on every deployment. It is not inserted into a business until
@@ -49,8 +55,32 @@ const CATEGORIES = Object.freeze([
   { code: 'NG_STATIONERY', name: 'Stationery' },
   { code: 'NG_MOTOR', name: 'Motor parts and lubricants' },
   { code: 'NG_AGRO', name: 'Agro inputs' },
-  { code: 'NG_COUNTER', name: 'Pharmacy counter' },
   { code: 'NG_GAS', name: 'Gas and cooking fuel' },
+  { code: 'NG_FRESH', name: 'Fresh market' },
+  { code: 'NG_HAIR', name: 'Hair, wigs and salon' },
+  { code: 'NG_BEAUTY', name: 'Makeup and fragrance' },
+  { code: 'NG_HYGIENE', name: 'First aid and hygiene' },
+  { code: 'NG_COMPUTER', name: 'Computers, printers and POS' },
+  { code: 'NG_MOTO', name: 'Motorcycles, tricycles and bicycles' },
+  { code: 'NG_TIMBER', name: 'Timber, boards and plywood' },
+  { code: 'NG_ALUMINIUM', name: 'Aluminium, glass and windows' },
+  { code: 'NG_WELD', name: 'Welding and fabrication' },
+  { code: 'NG_BAKERY', name: 'Bakery and confectionery supplies' },
+  { code: 'NG_NYLON', name: 'Nylon, packaging and takeaway' },
+  { code: 'NG_JEWELLERY', name: 'Watches, beads and jewellery' },
+  { code: 'NG_BOOKS', name: 'Books and school' },
+  { code: 'NG_SPORT', name: 'Sports goods' },
+  { code: 'NG_WORSHIP', name: 'Religious goods' },
+  { code: 'NG_WATER', name: 'Water storage and pumps' },
+  { code: 'NG_POULTRY', name: 'Poultry and livestock equipment' },
+  { code: 'NG_FISHING', name: 'Fishing gear' },
+  { code: 'NG_EVENT', name: 'Party and event supplies' },
+  { code: 'NG_SEWING', name: 'Sewing and tailoring' },
+  { code: 'NG_ELECTRICAL', name: 'Cables, switches and fittings' },
+  { code: 'NG_SECURITY', name: 'CCTV and security' },
+  { code: 'NG_SCALE', name: 'Scales and shop machines' },
+  { code: 'NG_TOY', name: 'Toys' },
+  { code: 'NG_LEATHER', name: 'Aba and Kano leather goods' },
 ]);
 
 const CATEGORY_BY_CODE = Object.freeze(Object.fromEntries(CATEGORIES.map((c) => [c.code, c])));
@@ -74,6 +104,10 @@ const UNITS = Object.freeze({
   ream: { code: 'REAM', name: 'Ream', plural: 'Reams' },
   set: { code: 'SET', name: 'Set', plural: 'Sets' },
   length: { code: 'LENGTH', name: 'Length', plural: 'Lengths' },
+  sheet: { code: 'SHEET', name: 'Sheet', plural: 'Sheets' },
+  coil: { code: 'COIL', name: 'Coil', plural: 'Coils' },
+  dozen: { code: 'DOZEN', name: 'Dozen', plural: 'Dozens' },
+  bundle: { code: 'BUNDLE', name: 'Bundle', plural: 'Bundles' },
 });
 
 function build() {
@@ -512,17 +546,10 @@ function build() {
     'Force Up herbicide 1L', 'Glyphosate 1L', 'Poultry premix 1kg',
   ], { unit: 'bag' });
 
-  // ----- pharmacy counter: the pack on the shelf, not a dose -----
-  cross('NG_COUNTER', ['Panadol', 'Emzor Paracetamol', 'M&B Paracetamol'], ['pack of 12', 'pack of 96', 'jar of 1000'], { unit: 'pack', expiry: true });
-  each('NG_COUNTER', [
-    'Ibuprofen pack of 10', 'Vitamin C 100 tablets', 'Andrews Liver Salt', 'Mist Mag',
-    'ORS sachet pack', 'Benylin cough syrup', 'Gestid antacid', 'Gaviscon sachet pack',
-    'Plaster roll', 'Cotton wool 100g', 'Crepe bandage', 'Examination gloves box',
-    'Face mask box', 'Hand sanitizer 100ml', 'Hand sanitizer 500ml',
-    'Methylated spirit 100ml', 'Iodine 30ml', 'Astymin syrup', 'Chemiron blood tonic',
-    'Orheptal blood tonic', 'Multivitamin pack', 'Antiseptic liquid 200ml',
-  ], { unit: 'pack', expiry: true });
-  each('NG_COUNTER', ['Thermometer', 'Blood pressure cuff'], { unit: 'piece' });
+  // Pharmaceuticals used to occupy the next thirty-three numbers. They are
+  // not on this list. The numbers stay empty so a gas cylinder, and every
+  // good already on the list, keeps the SKU it already had.
+  n += 33;
 
   // ----- gas and fuel -----
   each('NG_GAS', [
@@ -531,6 +558,9 @@ function build() {
     'Kerosene stove', 'Charcoal bag', 'Firewood bundle', 'Gas regulator', 'Gas hose',
     'Camping gas cartridge',
   ], { unit: 'piece' });
+
+  // Other trades, appended so nothing already on the list changes SKU.
+  require('./nigeriaMarketTrades').addTrades({ add, each, cross });
 
   return items;
 }

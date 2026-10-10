@@ -1690,3 +1690,15 @@ Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue
 **Found and left as it is.** The price a sale charges is the price on the stock batch, not a price typed onto the product afterwards. The probe set the phone's catalogue price to ₦120,000 after receiving it at ₦1,000. The sale charged ₦1,000. Paying the catalogue figure is refused as overpayment. The till shows the catalogue price. Those two figures are not the same number.
 
 **Live read.** Signed in on staging, sample and production. Each serves the market list: 2,786 goods, no price fields, Dangote 3X cement 50kg is on it. Live stamp `ridge-20261010-1705-d196a5b` on staging, sample and production. The unpriced-sale refusal is in that build. Administrator PINs were not changed.
+
+### P28 — the market list without medicines, across the other trades (checkpoint)
+
+Medicines are off the inbuilt list. The pharmacy counter is gone. A good that was already on the list keeps its SKU: Mama Gold 50kg bag is still `NG-00005`, Dangote 3X cement 50kg is still `NG-02044`, the 12.5kg gas cylinder is still `NG-02776`.
+
+The list is now 4,460 goods, still with no prices. Twenty-five trades that were missing now have a shelf: the fresh market, hair and salon, makeup, computers and POS, motorcycles and keke, timber, aluminium and glass, welding, bakery supplies, nylon and takeaway, watches and beads, books and school, sports, religious goods, water tanks and pumps, poultry equipment, fishing gear, party supplies, sewing, cables and fittings, CCTV, shop scales, toys, and Aba and Kano leather. The trades that were already there — cement, frozen food, motor parts, appliances, drinks, fabric — are thicker.
+
+No drug name remains. First aid on the list is the pack (plaster, cotton wool, a thermometer), not a medicine.
+
+The catalogue screen says so: medicines are not on this list, and the search box names yam, cement, hair, a phone and WAEC.
+
+Local: `test/unit/nigeria-market.test.js` green. Name audit clean. Not yet on the hosted builds.
