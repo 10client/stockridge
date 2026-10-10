@@ -1701,4 +1701,4 @@ No drug name remains. First aid on the list is the pack (plaster, cotton wool, a
 
 The catalogue screen says so: medicines are not on this list, and the search box names yam, cement, hair, a phone and WAEC.
 
-Local: `test/unit/nigeria-market.test.js` green. Name audit clean. Not yet on the hosted builds.
+Local: `test/unit/nigeria-market.test.js` green. Name audit clean. Live stamp `ridge-20261010-1719-6e29fe6` on staging, sample and production: 4,460 goods, no prices, no pharmacy counter, Benue yam is on the list. Administrator PINs were not changed.
