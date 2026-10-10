@@ -43,7 +43,7 @@ test('the Nigerian market list is thousands of goods, with no prices and no seri
     assert.ok(market.ITEMS.some((i) => i.name === name), `${name} is not on the market list`);
   }
   assert.equal(market.ITEMS.some((i) => /^Apple iPhone 18 \d/.test(i.name)), false, 'the plain iPhone 18 is not in shops yet');
-  for (const name of ['Hisense chest freezer 249L inverter', 'Lafarge Supaset cement 50kg', 'Virony 60x120 porcelain', 'Moniepoint POS terminal', 'Capri-Sun 200ml', 'Notore urea 50kg', 'Pedrollo 1hp pump', 'Hollandia evaporated 160g tin']) {
+  for (const name of ['Hisense chest freezer 249L inverter', 'Lafarge Supaset cement 50kg', 'Virony 60x120 porcelain', 'Moniepoint POS terminal', 'Capri-Sun 200ml', 'Notore urea 50kg', 'Pedrollo 1hp pump', 'Hollandia evaporated 160g tin', 'Dantata rice 50kg bag', 'Labana rice 50kg bag', 'Umza rice 50kg bag', 'Ibeto cement 50kg']) {
     assert.ok(market.ITEMS.some((i) => i.name === name), `${name} is not on the market list`);
     assert.equal(market.ITEMS.find((i) => i.name === name).category === 'NG_PHONE', false, `${name} was filed as a phone`);
   }

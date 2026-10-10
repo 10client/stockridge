@@ -1778,3 +1778,13 @@ Added from what Nigerian shops are selling outside the phone counter: Hisense, S
 Local: market list test and `audit.market` 25/25.
 
 Live on staging, sample and production as `ridge-20261010-1827-8ebe0e5`. The list is 4,785 goods. A search for Supaset returns the Lafarge bag. Moniepoint returns the till. No price field. The admin PIN was not changed.
+
+### P33 — Dantata and the other rice the shops name (checkpoint)
+
+The list is 4,828 goods. Still no prices, no medicines, and the old SKUs did not move.
+
+Rice was the gap. Mama Gold and Royal Stallion were already there. Missing, and now added from Jiji, Jumia, the 2026 price tables and a Facebook rice page: Dantata 50kg, Labana, Mama's Choice, Patriot, Umza, Gerawa, Elephant, Pretty Lady, Igbemo, Three Brothers, Cosrice, My Chop, Al-Hamsad, Super Champion, Tomato Kings, My Choice, Rising Sun, Fine Rice and Big Bull Diamond. A pack size is on the list only where a shop or a 2026 table names that size.
+
+Also added, from the same pass through the other trades: Ibeto and UniCem cement, Conoil Golden Super and Quatro oil, and the Hisense twin-tub machines Jumia is selling. Brands already on the list were skipped.
+
+Local: market list test and `audit.market` 25/25. Not yet on the hosted builds.

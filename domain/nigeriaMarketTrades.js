@@ -698,6 +698,60 @@ function addTrades(api) {
     'Pedrollo 1hp pump', 'Geepee tank 900L', 'Geepee tank 1200L', 'Geepee tank 1000 gallon',
   ], { unit: 'piece' });
 
+  // Rice, cement, oil and machines the shops name and the list did not.
+  // Checked against Jumia, Jiji and the market pages, including Facebook
+  // rice sellers. No prices. add() skips a name already on the list.
+  each('NG_RICE', [
+    // Jiji, Lagos: Dantata parboiled 50kg, Nigerian, stone-free.
+    'Dantata rice 50kg bag',
+    // Labana mill, Kebbi. The 2026 local-rice guide lists 5, 10, 25 and 50kg.
+    'Labana rice 5kg', 'Labana rice 10kg', 'Labana rice 25kg', 'Labana rice 50kg bag',
+    // Olam. Next Cash and Carry stocks 10kg; the 2026 price tables quote 25 and 50kg.
+    "Mama's Choice rice 10kg", "Mama's Choice rice 25kg", "Mama's Choice rice 50kg bag",
+    // Wacot's other bag. Jumia, July 2026, stocks the 50kg.
+    'Patriot rice 50kg bag',
+    // Jiji, Lekki: Big Bull Diamond, sold apart from the plain Big Bull bag.
+    'Big Bull Diamond 50kg bag',
+    // 2026 price tables quote both a 25kg and a 50kg.
+    'Gerawa rice 25kg', 'Gerawa rice 50kg bag',
+    'Elephant rice 25kg', 'Elephant rice 50kg bag',
+    'Pretty Lady rice 25kg', 'Pretty Lady rice 50kg bag',
+    // Umza, Kano, named among the 2026 local brands and on the Daleko surveys.
+    'Umza rice 50kg bag',
+    // Named on the 2026 local-rice list, or on a current Jiji or Facebook stall.
+    'Igbemo rice 25kg', 'Igbemo rice 50kg bag',
+    'Three Brothers rice 50kg bag',
+    'Cosrice 50kg bag',
+    'My Chop rice 50kg bag',
+    'Al-Hamsad rice 50kg bag',
+    'Super Champion rice 50kg bag',
+    'Tomato Kings rice 50kg bag',
+    'My Choice rice 50kg bag',
+    'Rising Sun rice 50kg bag',
+    // Fine Rice, Abuja. The brand's own Facebook page sells the packed bags.
+    'Fine Rice 50kg bag',
+  ], { unit: 'bag' });
+
+  each('NG_CEMENT', [
+    'Ibeto cement 50kg', 'UniCem cement 50kg',
+  ], { unit: 'bag' });
+
+  each('NG_MOTOR', [
+    'Conoil Golden Super SAE 40 1L', 'Conoil Golden Super SAE 40 4L',
+    'Conoil Golden Super 20W50 1L', 'Conoil Golden Super 20W50 4L',
+    'Conoil Quatro 15W40 4L',
+  ], { unit: 'bottle' });
+
+  each('NG_APPLIANCE', [
+    'Hisense twin tub washing machine 5kg',
+    'Hisense twin tub washing machine 7.5kg',
+    'Hisense twin tub washing machine 11kg',
+    'Hisense soundbar 140W', 'Hisense soundbar 480W',
+    'Hisense air fryer 5L',
+    'Century washing machine 7.8kg',
+    'Haier Thermocool top loader 10.2kg',
+  ], { unit: 'piece' });
+
 }
 
 module.exports = { addTrades };
