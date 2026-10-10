@@ -1676,3 +1676,17 @@ Serial numbers are chosen on the product, not assumed. On the catalogue, each ro
 Local: `test/unit/nigeria-market.test.js` and `test/integration/market-catalogue.test.js` green. A product added with serial on is refused at goods-received once the shop uses serials, and names the missing number. A product left off is received without one.
 
 **Live.** `d6ac898`, stamp `ridge-20261010-1648-d6ac898`, on staging, sample and production. PINs were not reset.
+
+### P27 — two-way probe of serial-on-the-product and the Nigerian market list (checkpoint)
+
+`audit.market` 25/25 and `audit.serials` 8/8, each against a fresh shop.
+
+**Front to back.** The catalogue switch writes `requires_serial`. The market screen sends the serial choice for that row and no price. The till will not ring a line whose catalogue price is zero.
+
+**Back to front.** The market list is 2,786 goods and returns no price field. A cashier cannot add from it. Adding stores the name at no price, and the serial flag only when that add turned it on. Adding the same good again does not create a second row. A fresh shop does not demand serials. A manager can mark a product and cannot turn the shop switch on. With the shop switch off, a serial-marked phone is received without a number. With it on, that phone is refused and the refusal counts; a product left off is received and sold without a number. A number captured at goods-received is the number the sale reads back.
+
+**Found and closed.** A request that skipped the till could sell an unpriced good for nothing, provided the payment was also nothing. The sale is now refused: set a price in the catalogue first.
+
+**Found and left as it is.** The price a sale charges is the price on the stock batch, not a price typed onto the product afterwards. The probe set the phone's catalogue price to ₦120,000 after receiving it at ₦1,000. The sale charged ₦1,000. Paying the catalogue figure is refused as overpayment. The till shows the catalogue price. Those two figures are not the same number.
+
+**Live read.** Signed in on staging, sample and production. Each serves the market list: 2,786 goods, no price fields, Dangote 3X cement 50kg is on it. The unpriced-sale refusal is local until this checkpoint is deployed.

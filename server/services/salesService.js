@@ -351,6 +351,21 @@ async function prepare(db, {
       ladder: ladder.ok ? ladder.ladder : ladderRows,
     });
 
+    // AN UNPRICED GOOD IS NOT A SALE. The market list and a new product both
+    // arrive with no price, and the till refuses to ring them. The same rule
+    // has to hold here, or a request that skips the till sells the item for
+    // nothing and the books record a sale that took no money.
+    const cataloguePrice = Number(product.selling_price) || 0;
+    const typedPrice = manual != null && Number.isFinite(Number(manual)) ? Number(manual) : null;
+    if (cataloguePrice <= 0 && Number(pricing.unitPrice) <= 0 && !(typedPrice > 0)) {
+      problems.push({
+        line: i,
+        code: 'NO_PRICE',
+        message: `${position}: "${product.name}" has no price. Set a price in the catalogue before selling it.`,
+      });
+      continue;
+    }
+
     // ---- authority to charge a manual price
     if (pricing.source === 'MANUAL') {
       const priceCheck = canDiscount(settings, user, { discountPct: 0 });
