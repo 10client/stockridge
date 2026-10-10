@@ -1755,4 +1755,4 @@ Added, without repeating a name: iPhone 15 through 17 including 17 Air, 17 Pro M
 
 **Cards.** Sales, till, reports, accounting, plan, staff, sync and admin each pasted its own rules for the same tiles. A later screen restyled every tile, including the top-bar avatar, and a card's own margin painted over the card beneath it. The layout now lives in one stylesheet. A sale that still has a balance is settled from Actions only, not from a second button on the warning.
 
-Local: `test/unit/nigeria-market.test.js` and `audit.market` 25/25. Not yet on the hosted builds.
+Local: `test/unit/nigeria-market.test.js` and `audit.market` 25/25. Live on staging, sample and production as `ridge-20261010-1809-b4bd63a`. A search for iPhone 18 Pro returns 13 named variants; iPhone Duo returns one. The list is 4,635 goods and still has no price field. The admin PIN was not changed.
