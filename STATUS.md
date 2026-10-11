@@ -1790,3 +1790,13 @@ Also added, from the same pass through the other trades: Ibeto and UniCem cement
 Local: market list test and `audit.market` 25/25.
 
 Live on staging, sample and production as `ridge-20261010-1833-d358a27`. The list is 4,828 goods. A search for Dantata returns the 50kg bag. No price field. The admin PIN was not changed.
+
+### P34 — the Nigerian market comes with the deployment (checkpoint)
+
+The goods are no longer only a list the shop has to add one by one. `schema/migrations/0010_nigerian_market.sql` (named nigerian market) plants all 4,828 as shared catalogue rows. `business_id` is empty, so they belong to the deployment, not to a demo business. A fresh install applies this file with the other migrations, and the goods are already there. No prices. No medicines. No extra administrator. SKUs did not move: Mama Gold 50kg bag is still NG-00005, Dangote 3X cement 50kg is still NG-02044.
+
+A shop's own goods sort before that shared list, so the till still finds a priced product on the first page. Once a shop adds its own copy of a good, the shared row with the same SKU is hidden. A scan prefers the shop's copy. The inventory report includes a shared good only after that shop has stocked it, so the 4,828 unstocked names do not flood the report. A first sync can pull the whole list.
+
+Local: market list test 3/3, the seed test 7/7, `audit.market` 25/25, `audit.dashboard` 14/14, `audit.money` 82/82. A fresh local database had 4,828 shared goods, none priced, none owned by a business, and one unit each.
+
+Not yet applied to staging, sample or production. Do not edit `0010` after it has been applied. Do not reset the admin PIN.

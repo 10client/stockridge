@@ -230,8 +230,12 @@ function mount(app, base = '/api') {
 
     const products = await db.all(
       `SELECT p.id, p.name, p.sku, p.base_unit_name, p.cost_price, p.selling_price, p.reorder_level
-         FROM products p WHERE p.is_deleted = 0 ${biz ? 'AND p.business_id = ?' : ''} ORDER BY p.name`,
-      biz ? [biz] : [],
+         FROM products p WHERE p.is_deleted = 0 ${biz ? `AND (p.business_id = ? OR (
+           p.business_id IS NULL AND EXISTS (
+             SELECT 1 FROM stock_batches sb
+             WHERE sb.product_id = p.id AND sb.business_id = ? AND sb.is_deleted = 0
+           )))` : ''} ORDER BY p.name`,
+      biz ? [biz, biz] : [],
     );
 
     const onHand = await db.all(
@@ -373,11 +377,17 @@ function mount(app, base = '/api') {
         LEFT JOIN sales s ON ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ?
               ${branch ? 'AND s.branch_id = ?' : ''}
         LEFT JOIN sale_items si ON si.sale_id = s.id AND si.product_id = p.id AND si.is_deleted = 0
-        WHERE p.is_deleted = 0 ${biz ? 'AND p.business_id = ?' : ''}
+        WHERE p.is_deleted = 0 ${biz ? `AND (p.business_id = ? OR (
+          p.business_id IS NULL AND EXISTS (
+            SELECT 1 FROM stock_batches sb
+            WHERE sb.product_id = p.id AND sb.business_id = ? AND sb.is_deleted = 0
+          )))` : ''}
         GROUP BY p.id`,
     // Bind order follows the placeholder order: the on_hand subquery's branch
-    // filter, then the sales join's dates and branch, then the outer business id.
-    (branch ? [String(branch.id)] : []).concat([from, to], branch ? [String(branch.id)] : [], biz ? [biz] : []));
+    // filter, then the sales join's dates and branch, then the outer business
+    // id twice — once for the shop's own goods, once for a shared good this
+    // shop has actually stocked. Unstocked market rows stay off the report.
+    (branch ? [String(branch.id)] : []).concat([from, to], branch ? [String(branch.id)] : [], biz ? [biz, biz] : []));
 
     let data = rows.map((r) => {
       const sold = round2(Number(r.units_sold));

@@ -8,6 +8,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const market = require('../../domain/nigeriaMarket');
 
+test('the Nigerian-market migration plants the same goods, with no price', () => {
+  const sql = fs.readFileSync(path.join(__dirname, '../../schema/migrations/0010_nigerian_market.sql'), 'utf8');
+  assert.match(sql, /^-- nigerian market/m);
+  assert.equal((sql.match(/'ng-NG-\d{5}'/g) || []).length, market.ITEMS.length * 2, 'each good needs its product id and the unit that points at it');
+  assert.equal((sql.match(/'ngu-NG-\d{5}'/g) || []).length, market.ITEMS.length, 'each good needs one base unit');
+  assert.equal((sql.match(/, 0, 0, 'WEIGHTED_AVG', 1\)/g) || []).length, market.ITEMS.length, 'a row was given a price');
+  assert.equal(sql.includes('NG_PHARM'), false, 'a pharmacy category was written into the migration');
+  assert.ok(sql.includes("'Dantata rice 50kg bag'"), 'Dantata rice is not in the migration');
+  assert.ok(sql.includes("'NG-00005'"), 'Mama Gold must keep NG-00005');
+  for (const statement of sql.split(/;\n/)) {
+    const body = statement.replace(/--[^\n]*/g, '').trim();
+    if (!body) continue;
+    assert.ok(Buffer.byteLength(body, 'utf8') < 100000, `a statement is ${Buffer.byteLength(body, 'utf8')} bytes, over the D1 100KB limit`);
+  }
+});
+
 test('the Nigerian market list is thousands of goods, with no prices and no serials', () => {
   assert.ok(market.ITEMS.length >= 4000, `expected the wider market list, got ${market.ITEMS.length}`);
   const skus = new Set();

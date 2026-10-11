@@ -92,6 +92,25 @@ function mount(app, base = '/api') {
       const like = `%${search}%`;
       params.push(like, like, like, like, like);
     }
+    // The Nigerian-market migration plants the same SKU as a shared row. Once
+    // a shop the caller can see has added its own copy, the list must not show
+    // both — a second Mama Gold is how a till rings the unpriced one. An owner
+    // reaches every business, so for them the copy can belong to any shop.
+    const ownerIds = businessId ? [String(businessId)] : (scope.businessIds ? [...scope.businessIds] : null);
+    if (ownerIds && ownerIds.length) {
+      where.push(`NOT (p.business_id IS NULL AND EXISTS (
+        SELECT 1 FROM products own
+        WHERE own.is_deleted = 0 AND own.sku = p.sku AND own.sku IS NOT NULL
+          AND own.business_id IN (${ownerIds.map(() => '?').join(',')})
+      ))`);
+      params.push(...ownerIds);
+    } else if (!scope.businessIds) {
+      where.push(`NOT (p.business_id IS NULL AND EXISTS (
+        SELECT 1 FROM products own
+        WHERE own.is_deleted = 0 AND own.sku = p.sku AND own.sku IS NOT NULL
+          AND own.business_id IS NOT NULL
+      ))`);
+    }
 
     // On-hand stock is a correlated subquery rather than a join, because a join
     // over stock_batches would multiply product rows by batch count and then need
@@ -130,7 +149,10 @@ function mount(app, base = '/api') {
       ${lowStock && branch ? '' : ''}
       WHERE ${where.join(' AND ')}
       ${lowStock ? 'AND COALESCE((' + stockExpr + '), 0) <= p.reorder_level' : ''}
-      ORDER BY p.name ASC
+      -- The shop's own goods first. The shared market list is thousands of
+      -- unpriced names; sorting those first would hide a priced product on
+      -- the first page of the till and of every audit that sells one.
+      ORDER BY (p.business_id IS NULL), p.name ASC
       LIMIT ? OFFSET ?`,
     [...(branch ? [String(branch.id)] : []), ...params, ...(lowStock && branch ? [String(branch.id)] : []), limit, offset]);
 
@@ -533,9 +555,16 @@ function mount(app, base = '/api') {
       // Fall back to SKU, because a lot of Nigerian stock arrives with the
       // shop's own printed label rather than a manufacturer barcode, and the
       // cashier types the SKU into the same field.
+      // The shared market row and the shop's own copy can share a SKU. The
+      // shop's row wins, or a scan sells the unpriced master instead of the
+      // good this branch priced.
+      const scanBiz = branch && branch.business_id ? String(branch.business_id) : null;
       const bySku = await db.first(`SELECT p.*, c.name AS category_name FROM products p
           LEFT JOIN product_categories c ON c.id = p.category_id
-          WHERE (p.sku = ? OR p.registration_no = ?) AND p.is_deleted = 0 AND p.is_active = 1`, [code.toUpperCase(), code.toUpperCase()]);
+          WHERE (p.sku = ? OR p.registration_no = ?) AND p.is_deleted = 0 AND p.is_active = 1
+            ${scanBiz ? 'AND (p.business_id IS NULL OR p.business_id = ?)' : ''}
+          ORDER BY (p.business_id IS NULL) ASC
+          LIMIT 1`, scanBiz ? [code.toUpperCase(), code.toUpperCase(), scanBiz] : [code.toUpperCase(), code.toUpperCase()]);
       if (!bySku) throw new HttpError(`Nothing in your catalogue matches “${code}”. Check the barcode, or add the product under Products.`, { status: 404, code: 'SCAN_NOT_FOUND' });
       return ctx.json({ ok: true, matchedBy: 'SKU', ...(await productPayload(db, bySku, branch, scope)) });
     }
@@ -558,6 +587,23 @@ function mount(app, base = '/api') {
     const where = ['c.is_deleted = 0']; const params = [];
     if (businessId) { where.push('(c.business_id = ? OR c.business_id IS NULL)'); params.push(String(businessId)); }
     else if (scope.businessIds) { where.push('(c.business_id IS NULL OR c.business_id IN (' + [...scope.businessIds].map(() => '?').join(',') + '))'); params.push(...scope.businessIds); }
+    // One "Rice" in the dropdown. The shared market category stays until a shop
+    // the caller can see has its own category with the same code.
+    const ownerIds = businessId ? [String(businessId)] : (scope.businessIds ? [...scope.businessIds] : null);
+    if (ownerIds && ownerIds.length) {
+      where.push(`NOT (c.business_id IS NULL AND EXISTS (
+        SELECT 1 FROM product_categories own
+        WHERE own.is_deleted = 0 AND own.code = c.code
+          AND own.business_id IN (${ownerIds.map(() => '?').join(',')})
+      ))`);
+      params.push(...ownerIds);
+    } else if (!scope.businessIds) {
+      where.push(`NOT (c.business_id IS NULL AND EXISTS (
+        SELECT 1 FROM product_categories own
+        WHERE own.is_deleted = 0 AND own.code = c.code
+          AND own.business_id IS NOT NULL
+      ))`);
+    }
     const rows = await db.all(`SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0) AS product_count
       FROM product_categories c WHERE ${where.join(' AND ')} ORDER BY c.sort_order, c.name`, params);
     ctx.json({ ok: true, data: rows });

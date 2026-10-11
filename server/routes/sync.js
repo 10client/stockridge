@@ -566,8 +566,10 @@ function mount(app, base = '/api') {
     // variants, units and barcodes is a few hundred rows, but an unbounded pull
     // on a slow connection is how a device gives up mid-download and ends up
     // with a half-populated mirror.
+    // The Nigerian-market migration plants 4,828 shared goods. A cap of 5,000
+    // would cut the tail of that list once a shop also has its own catalogue.
     const fullSync = !since;
-    const perTableLimit = fullSync ? Number(body.limit) || 5000 : Number(body.limit) || 2000;
+    const perTableLimit = fullSync ? Number(body.limit) || 12000 : Number(body.limit) || 2000;
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())

@@ -58,7 +58,16 @@ test('the D1 seed SQL applies to a fresh schema and leaves exactly one administr
     assert.equal(Number(users[0].is_active), 1);
 
     assert.equal(Number(await db.scalar('SELECT COUNT(*) FROM businesses WHERE is_deleted = 0')), 0, 'no demo business');
-    assert.equal(Number(await db.scalar('SELECT COUNT(*) FROM products WHERE is_deleted = 0')), 0, 'no demo catalogue');
+    // The Nigerian-market migration plants shared goods. They belong to no
+    // business and carry no price. A demo catalogue would be rows owned by a
+    // business that the seed invented.
+    const { ITEMS } = require('../../domain/nigeriaMarket');
+    const shared = Number(await db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL AND is_deleted = 0'));
+    const owned = Number(await db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NOT NULL AND is_deleted = 0'));
+    const priced = Number(await db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL AND (selling_price <> 0 OR cost_price <> 0)'));
+    assert.equal(owned, 0, 'no demo catalogue');
+    assert.equal(shared, ITEMS.length, 'the Nigerian-market migration must plant every shared good');
+    assert.equal(priced, 0, 'the shared catalogue must not invent a price');
     assert.equal(Number(await db.scalar('SELECT COUNT(*) FROM sales')), 0, 'no demo sales');
     assert.equal(Number(await db.scalar('SELECT COUNT(*) FROM branches WHERE is_deleted = 0')), 0, 'no demo branch');
 
