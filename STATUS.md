@@ -1799,4 +1799,4 @@ A shop's own goods sort before that shared list, so the till still finds a price
 
 Local: market list test 3/3, the seed test 7/7, `audit.market` 25/25, `audit.dashboard` 14/14, `audit.money` 82/82. A fresh local database had 4,828 shared goods, none priced, none owned by a business, and one unit each.
 
-Not yet applied to staging, sample or production. Do not edit `0010` after it has been applied. Do not reset the admin PIN.
+Live on staging, sample and production as `ridge-20261011-1110-d589dc1`. The migration `0010_nigerian_market.sql` is applied on all three databases. Each holds 4,828 shared goods, none priced, each with one unit. Dantata rice 50kg bag is `NG-04819` and Mama Gold 50kg bag is still `NG-00005`. Production has no client business, so those shared goods are the catalogue. Staging and sample still show the shop's own priced goods first. The existing administrator still signs in. The PIN was not changed. Do not edit `0010` now that it has been applied.
