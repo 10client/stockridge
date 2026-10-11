@@ -1809,4 +1809,6 @@ An owner (and anyone who can reach more than one business) switches from the sid
 
 Naming a business narrows the dashboard and its summary together, and the sales list and the customer book. Naming nothing is still the group. A named shop wins over a stale business id. A cashier who names another business is refused.
 
-Local: business-focus and frontend-state tests passed. `audit.dashboard` 15/15, including the new switch check. `audit.money` 82/82, so a named shop's sales list is still only that shop. Not deployed yet. The admin PIN was not changed. Do not edit `0010`.
+Local: business-focus and frontend-state tests passed. `audit.dashboard` 15/15, including the new switch check. `audit.money` 82/82, so a named shop's sales list is still only that shop.
+
+Live on staging, sample and production as `ridge-20261011-1134-b53d64d`. Staging version `3a6ed289-6f59-457d-9d50-cc3b94d47ca8`, sample `bd0feaec-c08c-4dc4-9f8c-7989f225e7cb`, production `5090b074-f75a-4da7-a2f1-6552d03c45a7`. No migration was applied. The goods list is unchanged. The admin PIN was not changed. Do not edit `0010`.
