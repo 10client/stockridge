@@ -219,6 +219,7 @@
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
               if (!v.name) { ui.warn('A supplier needs a name.'); return; }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               try {
                 await SR.api.post('/api/suppliers', Object.assign(v, {

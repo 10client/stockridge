@@ -330,6 +330,71 @@ test('frontend: no screen dereferences a business that may not exist', () => {
   );
 });
 
+test('state: switching business does not guess a shop, and a shop picks its business', async () => {
+  const state = loadState({
+    me: {
+      user: { id: 'u4', username: 'owner', role: 'OWNER', fullName: 'Owner' },
+      scope: { role: 'OWNER', allBusinesses: true, allBranches: true, businessIds: null, branchIds: null },
+      businesses: [{ id: 'b1', name: 'One' }, { id: 'b2', name: 'Two' }],
+      branches: [
+        { id: 'br1', business_id: 'b1', name: 'Only shop' },
+        { id: 'br2', business_id: 'b2', name: 'Other shop' },
+      ],
+      settings: { business_name: 'Ridge' }, featureLabels: {}, vertical: null,
+    },
+  });
+  await state.load({ force: true });
+  assert.equal(state.query().business_id, 'b1', 'until they switch, the shell is in a business and says so');
+  assert.equal(state.query().branch_id, undefined, 'the shell does not guess the only shop of that business');
+
+  const switched = state.setBusiness('b2');
+  assert.equal(switched.ok, true);
+  assert.equal(state.activeBusiness().id, 'b2');
+  assert.equal(state.activeBranchId, null, 'the shop of the old business was left in place');
+  assert.equal(state.query().business_id, 'b2');
+  assert.equal(state.query().branch_id, undefined, 'the new business has a shop, and it was guessed');
+
+  const followed = state.setBranch('br1');
+  assert.equal(followed.ok, true);
+  assert.equal(state.activeBranchId, 'br1');
+  assert.equal(state.activeBusinessId, 'b1', 'picking a shop of another business left the business where it was');
+  assert.equal(state.query().business_id, 'b1');
+  assert.equal(state.query().branch_id, 'br1');
+
+  const all = state.setBusiness(null, { all: true });
+  assert.equal(all.ok, true);
+  assert.equal(state.activeBusinessId, null);
+  assert.equal(state.activeBranchId, null, 'All businesses left a shop selected, so the group is not the group');
+  assert.equal(state.query().business_id, undefined);
+  assert.equal(state.query().branch_id, undefined);
+  assert.equal(state.activeBusinessName(), 'All businesses');
+  assert.equal(state.canSwitchBusiness(), true);
+  // Reload persistence goes through localStorage. This harness does not wire that
+  // global, so the sentinel is asserted by the write the switch makes: a later
+  // load in a browser reads '__all__' and stays on the group. See resolveActive.
+
+  const refused = state.setBusiness('nope');
+  assert.equal(refused.ok, false, 'a business they cannot reach was accepted');
+  assert.equal(state.activeBusinessId, null);
+});
+
+test('state: one business is not a switch, and a pinned user cannot stand in the group', async () => {
+  const state = loadState({
+    me: {
+      user: { id: 'u5', username: 'cashier', role: 'STAFF', fullName: 'Ada', branch: { id: 'br1', name: 'Main' }, business: { id: 'b1', name: 'One' } },
+      scope: { role: 'STAFF', allBusinesses: false, allBranches: false, businessIds: ['b1'], branchIds: ['br1'], pinnedBranchId: 'br1' },
+      businesses: [{ id: 'b1', name: 'One' }],
+      branches: [{ id: 'br1', business_id: 'b1', name: 'Main' }],
+      settings: {}, featureLabels: {}, vertical: null,
+    },
+  });
+  await state.load({ force: true });
+  assert.equal(state.canSwitchBusiness(), false);
+  assert.equal(state.setBusiness(null, { all: true }).ok, false);
+  assert.equal(state.activeBusinessId, 'b1');
+  assert.equal(state.activeBranchId, 'br1');
+});
+
 test('an owner does not need a branch; a cashier does', () => {
   const state = loadState({ me: ME });
   assert.equal(state.roleNeedsBranch('OWNER'), false, 'an owner reaches every branch — the form must not demand one');

@@ -125,6 +125,11 @@
          belongs to the branch named here, and a cashier who cannot see which
          shop they are ringing sales into is a cashier who will ring them into
          the wrong one. -->
+    <button class="chip chip-business" id="business-chip" type="button" title="Switch business" hidden>
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M3 8h18v12H3zM8 8V6a2 2 0 012-2h4a2 2 0 012 2v2M3 13h18" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      <span id="business-chip-name">—</span>
+    </button>
+
     <button class="chip chip-branch" id="branch-chip" type="button" title="Switch branch">
       <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 20V9l8-6 8 6v11" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M9 20v-6h6v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
       <span id="branch-chip-name">—</span>
@@ -159,7 +164,10 @@
   <!-- Sidebar ---------------------------------------------------- -->
   <nav id="sidenav" class="sidenav" aria-label="Main navigation">
     <div class="sidenav-head">
-      <span class="sidenav-business" id="nav-business">—</span>
+      <button type="button" class="sidenav-switch" id="business-switch" aria-haspopup="dialog" title="Switch business">
+        <span class="sidenav-business" id="nav-business">—</span>
+        <small id="business-switch-hint" hidden>Switch business</small>
+      </button>
       <button class="icon-btn icon-btn-sm" id="nav-close" aria-label="Close navigation">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>

@@ -20,6 +20,10 @@
 
   const ACTIVE_BRANCH_KEY = 'sr.activeBranch';
   const ACTIVE_BUSINESS_KEY = 'sr.activeBusiness';
+  // A remembered id of null is "nothing stored yet", which resolveActive treats as
+  // "pick one". All businesses has to survive a reload, so it is a sentinel, not
+  // a missing key. Business ids are hex blobs; this value is not one of them.
+  const ALL_BUSINESSES = '__all__';
   const CACHE_TTL_MS = 5 * 60 * 1000;
 
   const listeners = new Map();
@@ -213,10 +217,30 @@
    * it must never be able to fail the page it introduces.
    */
   function activeBusinessName(fallback = 'No business yet') {
+    if (!state.activeBusinessId && businesses().length > 1) return 'All businesses';
     const b = activeBusiness();
     if (b && b.name) return b.name;
     const settings = state.settings || {};
     return settings.business_name || fallback;
+  }
+
+  function canSwitchBusiness() {
+    return businesses().length > 1;
+  }
+
+  /**
+   * The branch chip is a control when there is a shop to choose, and also when
+   * a business switch cleared the shop and refused to guess one. A pinned user
+   * has no choice. A business with one shop that is already selected does not
+   * pretend there is a second.
+   */
+  function canSwitchBranch() {
+    if (!canSeeAllBranches()) return false;
+    const pinned = state.user && state.user.branch && state.user.branch.id;
+    if (pinned && branches().some((b) => String(b.id) === String(pinned))) return false;
+    const choices = state.activeBusinessId ? branchesFor(state.activeBusinessId) : branches();
+    if (!state.activeBranchId && choices.length >= 1) return true;
+    return choices.length > 1;
   }
 
   /**
@@ -227,6 +251,18 @@
    * because guessing is how stock gets received into the wrong shop — but the
    * choice is REMEMBERED per device so a counter till does not re-ask all day.
    */
+  function alignBusinessToBranch(branchId, { persist = true, silent = false } = {}) {
+    if (!branchId) return false;
+    const branch = branches().find((b) => String(b.id) === String(branchId));
+    if (!branch || !branch.business_id) return false;
+    if (!businesses().some((b) => String(b.id) === String(branch.business_id))) return false;
+    if (String(state.activeBusinessId) === String(branch.business_id)) return false;
+    state.activeBusinessId = String(branch.business_id);
+    if (persist) writeLocal(ACTIVE_BUSINESS_KEY, state.activeBusinessId);
+    if (!silent) emit('business', { businessId: state.activeBusinessId, business: activeBusiness() });
+    return true;
+  }
+
   function setBranch(branchId, { persist = true, silent = false } = {}) {
     const id = branchId ? String(branchId) : null;
     if (id && !branches().some((b) => String(b.id) === id)) {
@@ -236,32 +272,57 @@
     }
     state.activeBranchId = id;
     if (persist) writeLocal(ACTIVE_BRANCH_KEY, id);
+    // A shop belongs to one business. Picking it is also picking that business,
+    // so the two ids cannot disagree on the next request.
+    const moved = alignBusinessToBranch(id, { persist, silent });
     if (!silent) emit('branch', { branchId: id, branch: activeBranch() });
-    return { ok: true };
+    return { ok: true, businessMoved: moved };
   }
 
-  function setBusiness(businessId, { persist = true, silent = false } = {}) {
+  function setBusiness(businessId, { persist = true, silent = false, all = false } = {}) {
+    if (all) {
+      if (businesses().length < 2) {
+        return { ok: false, reason: 'There is only one business to work in.' };
+      }
+      const pinned = state.user && state.user.branch && state.user.branch.id;
+      if (pinned && branches().some((b) => String(b.id) === String(pinned))) {
+        return { ok: false, reason: 'You are pinned to one shop, so the books stay with that business.' };
+      }
+      state.activeBusinessId = null;
+      state.activeBranchId = null;
+      if (persist) {
+        writeLocal(ACTIVE_BUSINESS_KEY, ALL_BUSINESSES);
+        writeLocal(ACTIVE_BRANCH_KEY, null);
+      }
+      if (!silent) {
+        emit('business', { businessId: null, business: null, all: true });
+        emit('branch', { branchId: null, branch: null });
+      }
+      return { ok: true, all: true };
+    }
     const id = businessId ? String(businessId) : null;
     if (id && !businesses().some((b) => String(b.id) === id)) {
       return { ok: false, reason: 'That business is not one you have access to.' };
     }
     state.activeBusinessId = id;
     if (persist) writeLocal(ACTIVE_BUSINESS_KEY, id);
-    // The branch belongs to a business; switching legal entity must not leave
-    // the app pointing at a branch of the old one.
+    // The branch belongs to a business. Switching legal entity must not leave
+    // the app pointing at a shop of the old one, and it must not guess a shop
+    // of the new one — including the case where the new one has only one.
     const forBiz = branchesFor(id);
-    const stillValid = forBiz.some((b) => String(b.id) === String(state.activeBranchId));
+    const stillValid = id && forBiz.some((b) => String(b.id) === String(state.activeBranchId));
+    let branchCleared = false;
     if (!stillValid) {
       const pinned = state.user && state.user.branch && state.user.branch.id;
-      const ownerChooses = canSeeAllBranches() && !pinned && branches().length > 1;
-      const next = pinned && forBiz.some((b) => String(b.id) === String(pinned))
-        ? pinned
-        : (ownerChooses ? null : (forBiz.length === 1 ? forBiz[0].id : null));
-      state.activeBranchId = next ? String(next) : null;
-      writeLocal(ACTIVE_BRANCH_KEY, state.activeBranchId);
+      const pinFits = pinned && forBiz.some((b) => String(b.id) === String(pinned));
+      const next = pinFits ? String(pinned) : null;
+      branchCleared = Boolean(state.activeBranchId) && !next;
+      state.activeBranchId = next;
+      if (persist) writeLocal(ACTIVE_BRANCH_KEY, state.activeBranchId);
+      if (!silent) emit('branch', { branchId: state.activeBranchId, branch: activeBranch() });
     }
     if (!silent) emit('business', { businessId: id, business: activeBusiness() });
-    return { ok: true };
+    return { ok: true, branchCleared };
   }
 
   // -------------------------------------------------------------------
@@ -315,12 +376,24 @@
     const pinned = state.user && state.user.branch && state.user.branch.id;
     const rememberedBusiness = readLocal(ACTIVE_BUSINESS_KEY);
     const rememberedBranch = readLocal(ACTIVE_BRANCH_KEY);
+    const pinHolds = pinned && branches().some((b) => String(b.id) === String(pinned));
+    const bizIds = businesses().map((b) => String(b.id));
+
+    // All businesses is a choice, not a missing one. A remembered shop must not
+    // pull them back into that shop's business on the next load, or the group
+    // view can never survive a reload. A pin still wins: a pinned user has no
+    // group to stand in.
+    if (rememberedBusiness === ALL_BUSINESSES && bizIds.length > 1 && !pinHolds) {
+      state.activeBusinessId = null;
+      state.activeBranchId = null;
+      return;
+    }
+    const rememberedBiz = rememberedBusiness === ALL_BUSINESSES ? null : rememberedBusiness;
 
     // Business: the remembered one if it is still reachable, else the only one,
     // else the first, else nothing (a multi-entity owner picks).
-    const bizIds = businesses().map((b) => String(b.id));
-    if (rememberedBusiness && bizIds.includes(String(rememberedBusiness))) {
-      state.activeBusinessId = String(rememberedBusiness);
+    if (rememberedBiz && bizIds.includes(String(rememberedBiz))) {
+      state.activeBusinessId = String(rememberedBiz);
     } else if (state.user && state.user.business && bizIds.includes(String(state.user.business.id))) {
       state.activeBusinessId = String(state.user.business.id);
     } else if (bizIds.length === 1) {
@@ -405,6 +478,7 @@
     canSeeAllBranches, can, usesSerialNumbers,
     feature, featureLabel,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,
+    canSwitchBusiness, canSwitchBranch,
     setBranch, setBusiness, query,
     saveCart, loadCart, clearCart,
   });

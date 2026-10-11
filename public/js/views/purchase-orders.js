@@ -422,6 +422,7 @@
                 return;
               }
               const items = ready;
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Saving…';
               try {

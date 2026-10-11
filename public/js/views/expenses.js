@@ -302,6 +302,7 @@
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
               if (!(Number(v.amount) > 0)) { ui.warn('Enter the amount.'); return; }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               if (!v.description || String(v.description).trim().length < 4) { ui.warn('Describe what this was actually for.'); return; }
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Recording…';

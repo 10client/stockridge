@@ -39,8 +39,14 @@ function mount(app, base = '/api') {
     // The scope decides who may see the group. An owner sees it until they name a
     // branch; naming one is a switch, not a request to widen. A client cannot ask
     // to see a branch they cannot reach.
-    const isOwnerView = scope.allBusinesses;
-    const business = isOwnerView ? null : await resolveBusiness(db, ctx);
+    // THE GROUP UNTIL THEY NAME SOMETHING. An owner reaches every business, so
+    // resolving "their" business here used to ignore ?business_id= and keep the
+    // group under a heading that named one entity. Naming a business is a switch.
+    // Naming nothing is still the group — the shell's default must not become a
+    // guess, which is why an unnamed owner stays GROUP even when they have one
+    // remembered business the client did not send. A named branch is a fact, and
+    // its business wins over a stale business_id.
+    const isOwnerView = Boolean(scope.allBusinesses);
     const branch = await resolveBranch(db, ctx, { required: false });
 
     // BRANCH TOTALS ONLY AFTER A SWITCH. An owner reaches every branch, so the row on their
@@ -57,6 +63,15 @@ function mount(app, base = '/api') {
     const focusBranchId = named.branchId || (!scope.allBranches && branch ? String(branch.id) : null);
     const useBranch = focusBranchId;
     const focused = focusBranchId && branch && String(branch.id) === String(focusBranchId) ? branch : null;
+    let business = null;
+    if (!isOwnerView) {
+      business = await resolveBusiness(db, ctx, focused || null);
+    } else if (focused && focused.business_id) {
+      business = await resolveBusiness(db, ctx, focused, { required: false });
+    } else if (ctx.req.queryParam('business_id')) {
+      business = await resolveBusiness(db, ctx, null, { required: false });
+    }
+    const isGroup = isOwnerView && !focusBranchId && !business;
 
     const scopeClause = (alias) => {
       const where = []; const params = [];
@@ -244,7 +259,7 @@ function mount(app, base = '/api') {
     // shop's takings on the group screen is what "branch totals" were doing before a switch.
     let byBranch = null;
     let byBusiness = null;
-    if (!focusBranchId && isOwnerView) {
+    if (isGroup) {
         const businesses = await db.all('SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name');
         byBusiness = [];
         for (const biz of businesses) {
@@ -288,7 +303,7 @@ function mount(app, base = '/api') {
       // literal below then OVERWROTE, so the date silently vanished and esbuild
       // warned about a duplicate key that nobody had read.
       date: today,
-      view: focusBranchId ? 'BRANCH' : (isOwnerView ? 'GROUP' : (scope.allBranches ? 'BUSINESS' : 'ALL_ACCESSIBLE')),
+      view: focusBranchId ? 'BRANCH' : (business ? (scope.allBranches ? 'BUSINESS' : 'ALL_ACCESSIBLE') : (isOwnerView ? 'GROUP' : 'ALL_ACCESSIBLE')),
       scope: {
         business: business ? business.name : 'All businesses',
         branch: focused ? focused.name : 'All branches',
@@ -383,23 +398,30 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const scope = ctx.get('scope');
-    // Same rule as the full dashboard: an owner who has not named a branch is the group.
-    // resolveBranch would otherwise answer with their pinned row, and the summary would
-    // disagree with the screen it summarises.
+    // Same rule as the full dashboard. An owner who has named nothing is the group.
+    // A named business narrows this card to that business, and a named branch wins,
+    // so the summary and the screen it summarises cannot disagree about the day.
     const named = ctx.req.queryParam('branch_id');
     const branch = (named || (scope && !scope.allBranches))
       ? await resolveBranch(db, ctx, { required: false })
       : null;
+    let business = null;
+    if (!branch && scope && !scope.allBusinesses) {
+      business = await resolveBusiness(db, ctx, null, { required: false });
+    } else if (!branch && ctx.req.queryParam('business_id')) {
+      business = await resolveBusiness(db, ctx, null, { required: false });
+    }
     const today = watToday();
-    const sc = branch ? 'AND s.branch_id = ?' : '';
-    const params = branch ? [today, String(branch.id)] : [today];
+    const focusSql = branch ? 'AND s.branch_id = ?' : (business ? 'AND s.business_id = ?' : '');
+    const focusParam = branch ? [String(branch.id)] : (business ? [String(business.id)] : []);
     const t = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross FROM sales s
-        WHERE ${COUNTS} AND date(s.sold_at) = ? ${sc}`, params);
+        WHERE ${COUNTS} AND date(s.sold_at) = ? ${focusSql}`, [today, ...focusParam]);
+    const stockSql = branch ? 'AND sb.branch_id = ?' : (business ? 'AND sb.business_id = ?' : '');
     const lowCount = await db.scalar(`SELECT COUNT(*) FROM (
         SELECT sb.product_id FROM stock_batches sb JOIN products p ON p.id = sb.product_id
-        WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${branch ? 'AND sb.branch_id = ?' : ''}
+        WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${stockSql}
         GROUP BY sb.product_id HAVING p.reorder_level > 0 AND SUM(sb.quantity - sb.quantity_reserved) <= p.reorder_level)`,
-    branch ? [String(branch.id)] : []);
+    focusParam);
     ctx.json({
       ok: true, today,
       salesToday: Number(t.count) || 0,

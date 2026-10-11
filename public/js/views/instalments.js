@@ -327,6 +327,7 @@
               const v = ui.readFormStrings(wrapEl);
               if (!customer) { ui.warn('Pick the customer from the list — a plan has to be attached to a named person.'); return; }
               if (!(Number(v.principal) >= 1)) { ui.warn('Enter the amount being financed.'); return; }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Opening…';
               try {
@@ -445,6 +446,7 @@
               if (!product) { ui.warn('Pick the item being held, from the catalogue.'); return; }
               if (!customer) { ui.warn('Pick the customer the item is held for.'); return; }
               if (!(Number(v.deposit_amount) > 0)) { ui.warn('Enter the deposit taken.'); return; }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               try {
                 const result = await SR.api.post('/api/deposits', {

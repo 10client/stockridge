@@ -124,6 +124,12 @@
     infoCard.appendChild(infoBody);
     right.appendChild(infoCard);
 
+    if (!SR.state.activeBranchId && SR.state.canSeeAllBranches()) {
+      wrap.appendChild(ui.h('div', { class: 'alert alert-warn' },
+        ui.h('strong', {}, 'Pick a shop before you sell. '),
+        'Switching business does not guess one, and a sale has to belong to a shop.',
+        ui.h('button', { class: 'btn btn-sm', type: 'button', style: { marginLeft: '8px' }, onClick: () => { if (SR.app.openBranchPicker) SR.app.openBranchPicker(); } }, 'Choose a shop')));
+    }
     wrap.appendChild(grid);
     // The view host is replaced by the returned node, so this must be returned
     // AFTER any awaited work that touches the DOM.

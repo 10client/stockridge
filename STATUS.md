@@ -1800,3 +1800,13 @@ A shop's own goods sort before that shared list, so the till still finds a price
 Local: market list test 3/3, the seed test 7/7, `audit.market` 25/25, `audit.dashboard` 14/14, `audit.money` 82/82. A fresh local database had 4,828 shared goods, none priced, none owned by a business, and one unit each.
 
 Live on staging, sample and production as `ridge-20261011-1110-d589dc1`. The migration `0010_nigerian_market.sql` is applied on all three databases. Each holds 4,828 shared goods, none priced, each with one unit. Dantata rice 50kg bag is `NG-04819` and Mama Gold 50kg bag is still `NG-00005`. Production has no client business, so those shared goods are the catalogue. Staging and sample still show the shop's own priced goods first. The existing administrator still signs in. The PIN was not changed. Do not edit `0010` now that it has been applied.
+
+### P35 — the side nav scrolls, and an owner can switch business (checkpoint)
+
+The side nav is locked to the viewport. The item list scrolls; the business name and Sign out stay put. The login screen is not clipped, and the offline and subscription bars stay on top of the page rather than under a hidden overflow.
+
+An owner (and anyone who can reach more than one business) switches from the side nav and from a chip in the top bar. All businesses is the group, and it is a real choice: the shell otherwise always sends a business, so the group would never appear. Switching business does not guess a shop. Picking a shop enters that shop's business, so the two cannot disagree. A new product, customer, expense or receipt will not be filed while All businesses is selected.
+
+Naming a business narrows the dashboard and its summary together, and the sales list and the customer book. Naming nothing is still the group. A named shop wins over a stale business id. A cashier who names another business is refused.
+
+Local: business-focus and frontend-state tests passed. `audit.dashboard` 15/15, including the new switch check. `audit.money` 82/82, so a named shop's sales list is still only that shop. Not deployed yet. The admin PIN was not changed. Do not edit `0010`.

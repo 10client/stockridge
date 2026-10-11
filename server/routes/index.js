@@ -24,6 +24,7 @@
 // =====================================================================
 
 const { authRequired } = require('../middleware/auth');
+const { HttpError } = require('../lib/http');
 const { getSettings, DEFAULT_SETTINGS, assertSubscriptionActive} = require('../../domain/planLimits');
 
 const health = require('./health');
@@ -204,6 +205,34 @@ function buildRoutes(app, env = {}) {
     ctx.env = makeEnv(ctx);
     if (isPublicPath(ctx.method, ctx.path)) return next();
     await authRequired({ secret: ctx.env.JWT_SECRET || ctx.env.jwtSecret })(ctx, next);
+  });
+
+  // THE BUSINESS THE CALLER IS WORKING IN.
+  //
+  // An owner reaches every business, so the security scope adds no business
+  // clause at all. The shell still sends ?business_id= once they have picked
+  // one, and a list that ignores it shows every business's books under that
+  // name. The focus is recorded here, once, and scopeFilter applies it to every
+  // list that already uses the security clause. A named branch wins: the branch
+  // is a fact, and filtering by a stale business_id as well would empty the
+  // list. A business they cannot reach is a 403, the same refusal a write gets,
+  // not a quiet answer of their own rows under the name they asked for.
+  app.use('/api/*', async (ctx, next) => {
+    if (isPublicPath(ctx.method, ctx.path)) return next();
+    const scope = ctx.get('scope');
+    if (!scope) return next();
+    const requested = ctx.req.queryParam('business_id');
+    const namedBranch = ctx.req.queryParam('branch_id');
+    const branchOptOut = String(ctx.req.queryParam('branch_scope') || '').toLowerCase() === 'all';
+    if (requested && (!namedBranch || branchOptOut)) {
+      const id = String(requested);
+      const reachable = scope.allBusinesses || (scope.businessIds && scope.businessIds.has(id));
+      if (!reachable) {
+        throw new HttpError('That business is outside your access.', { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
+      }
+      scope.focusBusinessId = id;
+    }
+    return next();
   });
 
   // Refresh the settings row per request. It is one indexed read of a single

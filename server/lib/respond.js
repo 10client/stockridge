@@ -158,7 +158,11 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id', fa
   // branch, and it is the answer. Two or more, and the refusal below stands, because
   // guessing there would post stock or cash against the wrong shop.
   if (!branchId) {
-    const f = scopeFilter(scope, { alias: 'b' });
+    // Focus is the business they are working in. It is not a count of the shops
+    // they can reach. Counting with it on would treat "this business has one
+    // shop" as "you only have one shop" and post the sale there without them
+    // naming it — the guess the business switch is written not to make.
+    const f = scopeFilter(scope, { alias: 'b', ignoreFocus: true });
     const reachable = await db.all(
       `SELECT b.id FROM branches b WHERE b.is_deleted = 0 AND b.is_active = 1${f.sql ? ` AND ${f.sql}` : ''} LIMIT 2`,
       f.params,
@@ -392,7 +396,7 @@ function assertRowAccess(scope, row, label = 'That record') {
  * product or a vendor-level setting has no branch and must not vanish from a
  * cashier's product search. That is the same reasoning the audit log uses.
  */
-function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '', businessViaBranches = false } = {}) {
+function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '', businessViaBranches = false, ignoreFocus = false } = {}) {
   const b = alias ? `${alias}.${branchColumn}` : branchColumn;
   const s = alias ? `${alias}.${businessColumn}` : businessColumn;
   const clauses = [];
@@ -419,6 +423,25 @@ function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'busi
       clauses.push(`(${s} IS NULL OR ${s} IN (${ids.map(() => '?').join(',')}))`);
     }
     params.push(...ids);
+  }
+  // THE BUSINESS THEY ARE WORKING IN, not the businesses they are allowed to see.
+  // scopeFilter above is the security rule. An owner is allowed to see every
+  // business, so that rule adds nothing, and a list that stopped there answered
+  // the group under a heading that named one business. The shell sends
+  // ?business_id= once a business is chosen; this clause is what makes the
+  // sales list, the customer book and the till list follow it. NULL stays in,
+  // because a shared catalogue row and a deployment-wide alert have no business
+  // and must not vanish. A named branch is a fact and is applied by branchFilter
+  // instead — the middleware does not set focus when a branch is also named, so
+  // the two filters cannot empty the list by disagreeing.
+  if (!ignoreFocus && scope && scope.focusBusinessId) {
+    const focus = String(scope.focusBusinessId);
+    if (businessViaBranches) {
+      clauses.push(`(${b} IS NULL OR ${b} IN (SELECT id FROM branches WHERE business_id = ? AND is_deleted = 0))`);
+    } else {
+      clauses.push(`(${s} IS NULL OR ${s} = ?)`);
+    }
+    params.push(focus);
   }
   return { sql: clauses.length ? clauses.join(' AND ') : '', params };
 }

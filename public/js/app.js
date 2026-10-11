@@ -357,22 +357,39 @@
     const brandName = settings.business_name || 'StockRidge';
     const active = SR.state.activeBusiness();
     const name = (active && active.name) || (user && user.business && user.business.name) || brandName;
+    const working = SR.state.activeBusinessName(name);
+    const canBiz = SR.state.canSwitchBusiness();
+    const canBranch = SR.state.canSwitchBranch();
 
     setText('brand-name', brandName);
-    setText('brand-sub', name);
-    setText('nav-business', active ? active.name : '');
+    setText('brand-sub', working);
+    setText('nav-business', working);
+    setText('business-chip-name', working);
     setText('user-initials', U.initials(user && user.fullName));
     setText('menu-name', (user && user.fullName) || '—');
     setText('menu-meta', user ? `${user.roleLabel || user.role}${user.branch ? ` · ${user.branch.name}` : ''}` : '—');
     setText('branch-chip-name', SR.state.activeBranchName());
     setText('build-tag', `v${SR.APP_VERSION}`);
+    const bizSwitch = document.getElementById('business-switch');
+    const bizHint = document.getElementById('business-switch-hint');
+    if (bizSwitch) {
+      bizSwitch.classList.toggle('is-switch', canBiz);
+      bizSwitch.disabled = !canBiz;
+      bizSwitch.title = canBiz ? 'Switch business' : (working || 'Business');
+    }
+    if (bizHint) bizHint.hidden = !canBiz;
+    const bizChip = document.getElementById('business-chip');
+    if (bizChip) {
+      bizChip.hidden = !canBiz;
+      bizChip.disabled = !canBiz;
+      bizChip.title = canBiz ? 'Switch business' : working;
+    }
     // The branch chip is only a control when there is a choice to make.
     const chip = document.getElementById('branch-chip');
     if (chip) {
-      const multiple = SR.state.branches().length > 1 && SR.state.canSeeAllBranches();
-      chip.disabled = !multiple;
-      chip.title = multiple ? 'Switch branch' : 'You are pinned to this branch';
-      chip.style.cursor = multiple ? 'pointer' : 'default';
+      chip.disabled = !canBranch;
+      chip.title = canBranch ? 'Switch branch' : 'You are pinned to this branch';
+      chip.style.cursor = canBranch ? 'pointer' : 'default';
     }
   }
 
@@ -821,11 +838,21 @@
   // -------------------------------------------------------------------
   // BRANCH SWITCHER
   // -------------------------------------------------------------------
+  function branchLabel(branch) {
+    const biz = SR.state.businesses().find((b) => String(b.id) === String(branch.business_id));
+    const bizName = branch.business_name || (biz && biz.name) || '';
+    return `${bizName} · ${branch.city || ''} ${branch.state || ''}${branch.is_active ? '' : ' · INACTIVE'}`.replace(/^\s*·\s*/, '').trim();
+  }
+
   function openBranchPicker() {
     const body = ui.h('div', {});
-    body.appendChild(ui.h('p', { class: 'hint' }, 'Every number on every screen belongs to the branch you pick here. Stock, cash and reports do not mix between shops. An owner starts on all branches; branch totals appear only after a switch.'));
+    const inOne = SR.state.activeBusiness();
+    body.appendChild(ui.h('p', { class: 'hint' }, inOne
+      ? `Shops of ${inOne.name}. Stock, cash and a sale belong to one shop. Another business is on the business switch.`
+      : 'Picking a shop also enters that shop\'s business, so the two cannot disagree.'));
     const list = ui.h('div', { class: 'stack' });
     const pinned = SR.state.user && SR.state.user.branch && SR.state.user.branch.id;
+    const choices = inOne ? SR.state.branchesFor(inOne.id) : SR.state.branches();
     if (SR.state.canSeeAllBranches() && !pinned) {
       const onAll = !SR.state.activeBranchId;
       const all = ui.h('button', {
@@ -836,7 +863,8 @@
           if (!res.ok) { ui.warn(res.reason); return; }
           m.close();
           paintIdentity();
-          ui.ok('Now working across all branches.');
+          const bizNow = SR.state.activeBusiness();
+          ui.ok(bizNow ? `Now working across every shop of ${bizNow.name}.` : 'Now working across all branches.');
           render();
         },
       });
@@ -846,7 +874,7 @@
       if (onAll) all.appendChild(ui.badge('Current', 'badge-good'));
       list.appendChild(all);
     }
-    for (const branch of SR.state.branches()) {
+    for (const branch of choices) {
       const isActive = String(branch.id) === String(SR.state.activeBranchId);
       const row = ui.h('button', {
         class: `nav-item ${isActive ? 'is-active' : ''}`,
@@ -862,12 +890,86 @@
       });
       row.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
         ui.h('strong', {}, branch.name),
-        ui.h('div', { class: 'hint' }, `${branch.business_name || ''} · ${branch.city || ''} ${branch.state || ''}${branch.is_active ? '' : ' · INACTIVE'}`)));
+        ui.h('div', { class: 'hint' }, branchLabel(branch))));
       if (isActive) row.appendChild(ui.badge('Current', 'badge-good'));
       list.appendChild(row);
     }
     body.appendChild(list);
     const m = ui.openModal({ title: 'Which branch?', body, size: 'narrow' });
+  }
+
+  /**
+   * A new record has to belong to one business. All businesses is a read of the
+   * group; filing a product or a customer there would land on whichever entity
+   * the server guessed. Refuse that, and open the switch so the choice is made.
+   */
+  function guardWorkingBusiness() {
+    if (SR.state.activeBusinessId) return true;
+    if (!SR.state.canSwitchBusiness()) return true;
+    ui.warn('Pick a business first. All businesses is the group, and a new record has to belong to one.');
+    openBusinessPicker();
+    return false;
+  }
+
+  function openBusinessPicker() {
+    if (!SR.state.canSwitchBusiness()) {
+      ui.info('You only reach one business.');
+      return;
+    }
+    const body = ui.h('div', {});
+    body.appendChild(ui.h('p', { class: 'hint' }, 'Switching business changes the books on every screen: sales, customers, stock and the dashboard. It does not guess a shop. If the shop you were in belongs to another business, you pick the next shop yourself. All businesses is the group, with no shop chosen.'));
+    const list = ui.h('div', { class: 'stack' });
+    const onAll = !SR.state.activeBusinessId;
+    const pinned = SR.state.user && SR.state.user.branch && SR.state.user.branch.id;
+    if (!pinned) {
+      const all = ui.h('button', {
+        class: `nav-item ${onAll ? 'is-active' : ''}`,
+        type: 'button',
+        style: { justifyContent: 'flex-start' },
+        onClick: () => {
+          const res = SR.state.setBusiness(null, { all: true });
+          if (!res.ok) { ui.warn(res.reason); return; }
+          m.close();
+          closeNav();
+          paintIdentity();
+          ui.ok('Now working across all businesses.');
+          render();
+        },
+      });
+      all.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
+        ui.h('strong', {}, 'All businesses'),
+        ui.h('div', { class: 'hint' }, 'Group totals. Pick a business below to work in its books.')));
+      if (onAll) all.appendChild(ui.badge('Current', 'badge-good'));
+      list.appendChild(all);
+    }
+    for (const biz of SR.state.businesses()) {
+      const isActive = String(biz.id) === String(SR.state.activeBusinessId);
+      const shops = SR.state.branchesFor(biz.id);
+      const row = ui.h('button', {
+        class: `nav-item ${isActive ? 'is-active' : ''}`,
+        type: 'button',
+        style: { justifyContent: 'flex-start' },
+        onClick: () => {
+          const hadBranch = SR.state.activeBranchId;
+          const res = SR.state.setBusiness(biz.id);
+          if (!res.ok) { ui.warn(res.reason); return; }
+          m.close();
+          closeNav();
+          paintIdentity();
+          ui.ok(hadBranch && !SR.state.activeBranchId
+            ? `Now working in ${biz.name}. Pick a shop before you sell or count stock — none was guessed.`
+            : `Now working in ${biz.name}.`);
+          render();
+        },
+      });
+      row.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
+        ui.h('strong', {}, biz.name),
+        ui.h('div', { class: 'hint' }, `${shops.length} shop${shops.length === 1 ? '' : 's'}${Number(biz.is_active) === 0 ? ' · INACTIVE' : ''}`)));
+      if (isActive) row.appendChild(ui.badge('Current', 'badge-good'));
+      list.appendChild(row);
+    }
+    body.appendChild(list);
+    const m = ui.openModal({ title: 'Which business?', body, size: 'narrow' });
   }
 
   // -------------------------------------------------------------------
@@ -966,9 +1068,13 @@
     document.getElementById('theme-toggle').addEventListener('click', () => SR.theme.toggle());
     document.getElementById('login-theme').addEventListener('click', () => SR.theme.toggle());
     document.getElementById('branch-chip').addEventListener('click', () => {
-      if (SR.state.branches().length > 1 && SR.state.canSeeAllBranches()) openBranchPicker();
+      if (SR.state.canSwitchBranch()) openBranchPicker();
       else ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another branch.`);
     });
+    const businessChip = document.getElementById('business-chip');
+    if (businessChip) businessChip.addEventListener('click', () => openBusinessPicker());
+    const businessSwitch = document.getElementById('business-switch');
+    if (businessSwitch) businessSwitch.addEventListener('click', () => openBusinessPicker());
     document.getElementById('queue-chip').addEventListener('click', () => navigate('/sync'));
     document.getElementById('bell-btn').addEventListener('click', (ev) => { ev.stopPropagation(); toggleBell(); });
     document.getElementById('bell-read-all').addEventListener('click', (ev) => { ev.stopPropagation(); void markAllRead(); });
@@ -1077,6 +1183,7 @@
     ROUTES, ICONS, icon, iconPath,
     boot, render, navigate, matchRoute, allowed,
     showLogin, showShell, paintIdentity, paintLoginBrand, buildNav, setActiveNav, closeNav,
+    openBranchPicker, openBusinessPicker, guardWorkingBusiness,
     updateBell, openBell, closeBell, markAllRead,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
     updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,

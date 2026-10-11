@@ -162,14 +162,18 @@
         // The server's scope is the truth. The chip can say a branch while the figures
         // are still the group — that is the bug this subtitle used to repeat.
         const scopeBranch = data.scope && data.scope.branch;
-        sub.textContent = `${scopeBranch || SR.state.activeBranchName()} · ${period}`;
+        const scopeBusiness = data.scope && data.scope.business;
+        sub.textContent = [scopeBusiness, scopeBranch || SR.state.activeBranchName(), period].filter(Boolean).join(' · ');
       }
       if (SR.state.canSeeAllBranches()) {
         const scopeBranch = data.scope && data.scope.branch;
+        const scopeBusiness = data.scope && data.scope.business;
         const onABranch = scopeBranch && scopeBranch !== 'All branches';
-        host.appendChild(ui.h('p', { class: 'hint' }, onABranch
-          ? `These figures are ${scopeBranch} only.`
-          : 'These figures are every branch together. Switch to a branch to see that shop\'s totals.'));
+        const onABusiness = scopeBusiness && scopeBusiness !== 'All businesses';
+        let hint = 'These figures are every business together. Switch business to work in one.';
+        if (onABranch) hint = `These figures are ${scopeBranch} only.`;
+        else if (onABusiness) hint = `These figures are ${scopeBusiness}, every shop together. Switch business for another, or pick a shop for that shop's totals.`;
+        host.appendChild(ui.h('p', { class: 'hint' }, hint));
       }
 
       const today = data.today || {};

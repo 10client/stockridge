@@ -314,6 +314,7 @@
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
               if (!v.name) { ui.warn('A product needs a name.'); return; }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               if (!(Number(v.selling_price) >= 0)) { ui.warn('Enter a selling price.'); return; }
               const flagValues = {};
               for (const el of flags.querySelectorAll('input[type="checkbox"]')) flagValues[el.name] = el.checked ? 1 : 0;
@@ -784,6 +785,7 @@
     }
 
     async function adopt(items) {
+      if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
       try {
         const result = await SR.api.post('/api/market-catalogue/adopt', {
           business_id: SR.state.activeBusinessId,

@@ -600,6 +600,12 @@ function mount(app, base = '/api') {
     // "this branch's transfer", which is the same rule the scope clause above uses.
     const nbf = await branchFilter(db, ctx, { alias: 't', column: 'from_branch_id', also: ['to_branch_id'], nullMeansEveryBranch: false });
     if (nbf.sql) { where.push(nbf.sql); params.push(...nbf.params); }
+    // A transfer is visible to either end. Working in one business keeps a
+    // transfer that touches that business, and hides one that touches neither.
+    if (scope.focusBusinessId) {
+      where.push('(t.from_business_id = ? OR t.to_business_id = ?)');
+      params.push(String(scope.focusBusinessId), String(scope.focusBusinessId));
+    }
     // AN UNKNOWN STATUS IS REFUSED, NOT ANSWERED WITH AN EMPTY LIST. A filter that silently
     // matches nothing reads as "there are none", which is the opposite of "you asked for
     // something that does not exist" — and that is how a screen ends up telling a shop it has

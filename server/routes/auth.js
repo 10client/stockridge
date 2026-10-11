@@ -147,9 +147,12 @@ function mount(app, base = '/api/auth', makeEnv = null) {
       [...(scope.businessIds || [])]);
 
     const branches = scope.allBranches
-      ? await db.all('SELECT id, business_id, name, code, branch_type, city, state, is_active FROM branches WHERE is_deleted = 0 ORDER BY name')
-      : await db.all(`SELECT id, business_id, name, code, branch_type, city, state, is_active FROM branches
-          WHERE is_deleted = 0 AND id IN (${[...(scope.branchIds || [])].map(() => '?').join(',') || "''"}) ORDER BY name`,
+      ? await db.all(`SELECT b.id, b.business_id, b.name, b.code, b.branch_type, b.city, b.state, b.is_active, biz.name AS business_name
+          FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id
+          WHERE b.is_deleted = 0 ORDER BY b.name`)
+      : await db.all(`SELECT b.id, b.business_id, b.name, b.code, b.branch_type, b.city, b.state, b.is_active, biz.name AS business_name
+          FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id
+          WHERE b.is_deleted = 0 AND b.id IN (${[...(scope.branchIds || [])].map(() => '?').join(',') || "''"}) ORDER BY b.name`,
       [...(scope.branchIds || [])]);
 
     const profile = user.business_profile_code ? describeProfile(getProfileOrDefault(user.business_profile_code)) : null;

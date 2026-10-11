@@ -252,6 +252,82 @@ runAudit('dashboard', async (audit, d) => {
     audit.note(`group stock ${money(group.stock.atCost)} / branch stock ${money(one.stock.atCost)}; group today ${money(group.today.gross)} / branch today ${money(one.today.gross)}`);
   });
 
+  await audit.checkAsync('naming a business narrows the books, and naming nothing stays the group', async () => {
+    const firstId = String(branch.business_id || '');
+    assert.ok(firstId, 'the branch the sale was rung on names no business');
+    const group = await dash(owner);
+    assert.equal(String(group.view), 'GROUP', 'an unnamed owner stopped being the group');
+    assert.equal(String(group.scope && group.scope.branch), 'All branches');
+
+    const home = await dash(owner, `?business_id=${encodeURIComponent(firstId)}`);
+    assert.equal(String(home.view), 'BUSINESS', `naming the business is still view ${home.view}`);
+    assert.equal(String(home.scope && home.scope.branch), 'All branches', 'naming a business guessed a shop');
+    assert.notEqual(String(home.scope && home.scope.business), 'All businesses', 'the business switch changed the figures but not the name');
+    assert.equal(round2(Number(home.today.gross)), round2(Number(group.today.gross)),
+      `naming the only business that has traded dropped or mixed the takings: group ${money(group.today.gross)}, named ${money(home.today.gross)}`);
+    assert.ok(!home.byBusiness || home.byBusiness.length <= 1, 'a business view still lists every other business');
+
+    const homeSum = await owner.get(`/api/dashboard/summary?business_id=${encodeURIComponent(firstId)}`);
+    assert.equal(homeSum.status, 200, `the summary answered ${homeSum.status}`);
+    assert.equal(round2(Number(homeSum.json.grossToday)), round2(Number(home.today.gross)),
+      'the summary and the dashboard disagree about the business that was named');
+
+    if (!d.admin) {
+      audit.note('no administrator seat, so a second business was not opened');
+      return;
+    }
+    const created = await d.admin.post('/api/businesses', {
+      name: `Dash Switch ${Date.now().toString(36)}`,
+      profile_code: 'GENERAL_RETAIL',
+      branch: { name: 'Dash Switch Shop', city: 'Abuja', state: 'FCT' },
+    });
+    assert.ok(created.status < 400, `opening a second business answered ${created.status}: ${String(created.text).slice(0, 220)}`);
+    const secondId = String(created.json.id);
+
+    const other = await dash(owner, `?business_id=${encodeURIComponent(secondId)}`);
+    assert.equal(String(other.view), 'BUSINESS', `the other business is view ${other.view}`);
+    assert.equal(String(other.scope && other.scope.branch), 'All branches', 'switching business guessed a shop');
+    assert.equal(round2(Number(other.today.gross)), 0, `the other business shows ${money(other.today.gross)} it did not take`);
+    assert.ok(Number(other.stock && other.stock.atCost) <= 0.01, 'the other business shows stock it does not hold');
+
+    const otherSum = await owner.get(`/api/dashboard/summary?business_id=${encodeURIComponent(secondId)}`);
+    assert.equal(otherSum.status, 200);
+    assert.equal(round2(Number(otherSum.json.grossToday)), 0, 'the summary still reports the group after the switch');
+
+    const stillGroup = await dash(owner);
+    assert.equal(String(stillGroup.view), 'GROUP', 'an unnamed request stopped being the group once a second business existed');
+
+    const foreignSales = await owner.get(`/api/sales?business_id=${encodeURIComponent(secondId)}&limit=50`);
+    assert.equal(foreignSales.status, 200, `the sales list answered ${foreignSales.status}: ${String(foreignSales.text).slice(0, 180)}`);
+    const leaked = ((foreignSales.json && foreignSales.json.data) || []).filter((row) => String(row.business_id) !== secondId);
+    assert.equal(leaked.length, 0, `the other business's sales list includes ${leaked.length} receipt(s) from somewhere else`);
+    assert.equal(round2(Number(foreignSales.json.summary && foreignSales.json.summary.revenue)), 0,
+      'the sales summary above that list is not the list');
+    const homeSales = await owner.get(`/api/sales?business_id=${encodeURIComponent(firstId)}&limit=50`);
+    const homeRows = (homeSales.json && homeSales.json.data) || [];
+    assert.ok(homeRows.some((row) => String(row.branch_id) === String(branch.id)),
+      'naming the business the sale was rung in dropped that sale from the sales list');
+
+    const foreignCustomers = await owner.get(`/api/customers?business_id=${encodeURIComponent(secondId)}&limit=50`);
+    assert.equal(foreignCustomers.status, 200, `the customer list answered ${foreignCustomers.status}`);
+    const leakedCustomers = ((foreignCustomers.json && foreignCustomers.json.data) || [])
+      .filter((row) => row.business_id && String(row.business_id) !== secondId);
+    assert.equal(leakedCustomers.length, 0, 'the customer list for the other business includes somebody else\'s customers');
+
+    const mixed = await dash(owner, `?branch_id=${encodeURIComponent(branch.id)}&business_id=${encodeURIComponent(secondId)}`);
+    assert.equal(String(mixed.view), 'BRANCH', 'a named branch lost to a stale business_id');
+    assert.equal(String(mixed.scope && mixed.scope.branch), String(branch.name));
+    assert.ok(Number(mixed.today.gross) > 0, 'the shop the sale was rung on shows no takings when a stale business_id is also sent');
+
+    if (cashier) {
+      const refused = await cashier.get(`/api/dashboard?business_id=${encodeURIComponent(secondId)}`);
+      assert.equal(refused.status, 403, `a cashier named another business and the dashboard answered ${refused.status}`);
+      const refusedSales = await cashier.get(`/api/sales?business_id=${encodeURIComponent(secondId)}&limit=5`);
+      assert.equal(refusedSales.status, 403, `a cashier named another business and the sales list answered ${refusedSales.status}`);
+    }
+    audit.note(`group ${money(group.today.gross)} / named business ${money(home.today.gross)} / other business ${money(other.today.gross)}`);
+  });
+
   await audit.checkAsync('the summary agrees with the full dashboard it summarises', async () => {
     const full = await dash(owner);
     const res = await owner.get('/api/dashboard/summary');

@@ -84,8 +84,18 @@
       }).catch((err) => ui.apiError(err));
     }
 
+    function shopRequired() {
+      if (SR.state.activeBranchId || !SR.state.canSeeAllBranches()) return false;
+      filtersHost.replaceChildren();
+      host.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body stack' },
+        ui.h('p', {}, 'Stock belongs to a shop. Switching business does not guess one.'),
+        ui.h('button', { class: 'btn btn-primary', type: 'button', onClick: () => { if (SR.app.openBranchPicker) SR.app.openBranchPicker(); } }, 'Choose a shop'))));
+      return true;
+    }
+
     async function load() {
       filtersHost.replaceChildren();
+      if (shopRequired()) return;
       host.replaceChildren(ui.skeleton(6));
       if (state.tab === 'valuation') return renderValuation();
       if (state.tab === 'expiring') return renderExpiring();
@@ -653,6 +663,7 @@
                   return;
                 }
               }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Recording…';
               try {

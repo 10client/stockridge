@@ -1379,6 +1379,10 @@ function mount(app, base = '/api') {
       const ids = [...scope.branchIds];
       where.push(`(a.branch_id IS NULL OR a.branch_id IN (${ids.map(() => '?').join(',')}))`); params.push(...ids);
     }
+    if (scope.focusBusinessId) {
+      where.push('(a.business_id IS NULL OR a.business_id = ?)');
+      params.push(String(scope.focusBusinessId));
+    }
     const action = ctx.req.queryParam('action');
     if (action) { where.push('a.action = ?'); params.push(String(action).toUpperCase()); }
     const userId = ctx.req.queryParam('user_id');
