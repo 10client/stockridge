@@ -1862,3 +1862,5 @@ The sequential probe of the live screens failed two reads. The dashboard asked a
 The rest of the screen list answered. Stock, the current till and the safe ask for a branch when the owner has not named one. With a branch named, those three answered 200. That is the shop-choice guard, not a failure.
 
 Local: the three read checks passed. The old dashboard column is refused by SQLite. The new column is accepted. No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`.
+
+Live on staging, sample and production as `ridge-20261012-1448-bed5151`. Staging version `60dce82d-9a0d-4812-b1a2-896635262fa4`, sample `c0a76756-979b-4d27-8f49-35d97bc9438c`, production `3fbba07b-569e-4dec-8a72-3fb2aa360cba`. No migration was applied. Each still reports 13 migrations. Staging is ready with 3 businesses. Sample is ready with 2. Production is still awaiting the first business. The dashboard and the hire book answered 200 on all three, including a status filter. The admin PIN was not changed.
