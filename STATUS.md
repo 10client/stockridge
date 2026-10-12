@@ -1834,3 +1834,5 @@ A shop that sells provisions and also sells fabrics posts those as separate cate
 New business types: Sell and lease, Provisions and fabrics, plus the earlier event rental, equipment rental and leasing types. Shared market goods are not priced and cannot be marked for hire.
 
 Local: the four new sale-path checks passed (hire, mixed sale and lease, provisions and fabrics, alphabetical category). A cash sale, a void, and the seeded-catalogue sweep still pass. `0011_trade_modes.sql` is written and not yet applied to the live databases. Do not edit `0001` or `0010`. Do not reset the admin PIN.
+
+Live on staging, sample and production as `ridge-20261012-1348-87f54e7`. Staging version `dd1b7aff-6ddb-4329-967c-d23dcb47ab6f`, sample `c2a09d50-a64c-491f-9537-983e5807afae`, production `624d8b34-1f7e-4758-a369-387d6186c6ee`. `0011_trade_modes.sql` is applied on all three. Each reports 11 migrations. Production still has no client business, which is the handover state. The admin PIN was not changed. Do not edit `0001` or `0010`.
