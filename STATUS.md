@@ -1854,3 +1854,11 @@ PharmaRidge browser probes named in the dump are mapped in `docs/pharmaridge-tes
 Live on staging, sample and production as `ridge-20261012-1423-d434dcf`. Staging version `9b712a76-1a66-4a4e-9596-8d396bbb4594`, sample `4b06928c-8410-420a-8437-e4dbcc0d265f`, production `d4f2e562-13ba-4901-bb9a-c68bd4559f81`. `0012_pharma_supermarket.sql` and `0013_nafdac_catalog.sql` are applied on all three. Each reports 13 migrations and 6,801 Greenbook rows. A Greenbook ingredient that contains a semicolon survived the load. Staging is ready with 3 businesses. Sample is ready with 2. Production is still awaiting the first business, which is the handover state. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`. Do not put pharmacy goods into the shared market list.
 
 The sale route was missing its import of `resolveProfile`. That is restored, so a sale through the counter can read the business type again.
+
+### P39 — sequential probe reads (local checkpoint)
+
+The sequential probe of the live screens failed two reads. The dashboard asked an agreement for `deposit_amount`. That column belongs to a till hold and an instalment plan. An agreement holds `deposit_held`. The hire book called `ctx.req.query('status')`. The request adapter returned a map from a getter, so the call threw "query is not a function" on both backends. Every other list already uses `queryParam`.
+
+The rest of the screen list answered. Stock, the current till and the safe ask for a branch when the owner has not named one. With a branch named, those three answered 200. That is the shop-choice guard, not a failure.
+
+Local: the three read checks passed. The old dashboard column is refused by SQLite. The new column is accepted. No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`.

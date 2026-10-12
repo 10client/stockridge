@@ -142,7 +142,13 @@ class Context {
       get method() { return self.method; },
       get path() { return self.path; },
       get url() { return self.url.toString(); },
-      get query() { return Object.fromEntries(parsed.searchParams.entries()); },
+      // A function, not a map. The header of this file, and the hire book, call
+      // `query('status')`. A getter that returned the map made that call throw
+      // "query is not a function" on both backends. No name returns the map.
+      query(name) {
+        if (name === undefined) return Object.fromEntries(parsed.searchParams.entries());
+        return parsed.searchParams.get(name);
+      },
       param(name) {
         if (name === undefined) return { ...self._params };
         return self._params[name] === undefined ? null : self._params[name];

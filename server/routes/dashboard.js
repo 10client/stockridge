@@ -313,7 +313,7 @@ function mount(app, base = '/api') {
       commitmentParams,
     );
     const dueBack = await db.all(
-      `SELECT a.id, a.kind, a.ends_on, a.deposit_amount, c.name AS customer_name
+      `SELECT a.id, a.kind, a.ends_on, a.deposit_held, c.name AS customer_name
          FROM asset_agreements a
          LEFT JOIN customers c ON c.id = a.customer_id
         WHERE a.is_deleted = 0 AND a.status = 'OUT' AND a.ends_on <= ? ${commitmentWhere}

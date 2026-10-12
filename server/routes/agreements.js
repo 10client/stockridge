@@ -18,7 +18,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const filter = scopeFilter(scope, { alias: 'a' });
-    const status = strField(ctx.req.query('status'), { field: 'Status', maxLength: 20 });
+    const status = strField(ctx.req.queryParam('status'), { field: 'Status', maxLength: 20 });
     const where = ['a.is_deleted = 0'];
     const params = [];
     if (filter.sql) { where.push(filter.sql); params.push(...filter.params); }
