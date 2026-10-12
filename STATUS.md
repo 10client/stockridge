@@ -1850,3 +1850,7 @@ Local: pharmacy unit tests passed. The Greenbook integration test passed (6,801 
 `0012_pharma_supermarket.sql` and `0013_nafdac_catalog.sql` are written and not yet applied to the live databases. Do not edit them once they are applied. Do not reset the admin PIN. Do not put pharmacy goods into `0010`.
 
 PharmaRidge browser probes named in the dump are mapped in `docs/pharmaridge-test-map.md`. The pharmacy and supermarket rules from that dump are replicated here. The browser probes are the next stage, not claimed as done.
+
+Live on staging, sample and production as `ridge-20261012-1423-d434dcf`. Staging version `9b712a76-1a66-4a4e-9596-8d396bbb4594`, sample `4b06928c-8410-420a-8437-e4dbcc0d265f`, production `d4f2e562-13ba-4901-bb9a-c68bd4559f81`. `0012_pharma_supermarket.sql` and `0013_nafdac_catalog.sql` are applied on all three. Each reports 13 migrations and 6,801 Greenbook rows. A Greenbook ingredient that contains a semicolon survived the load. Staging is ready with 3 businesses. Sample is ready with 2. Production is still awaiting the first business, which is the handover state. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`. Do not put pharmacy goods into the shared market list.
+
+The sale route was missing its import of `resolveProfile`. That is restored, so a sale through the counter can read the business type again.
