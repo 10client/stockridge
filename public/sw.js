@@ -46,6 +46,7 @@ const SHELL = [
   '/js/views/dashboard.js?v=ridge-20261012-1245-89c56e9',
   '/js/views/pos.js?v=ridge-20261012-1245-89c56e9',
   '/js/views/sales.js?v=ridge-20261012-1245-89c56e9',
+  '/js/views/hire-book.js',
   '/js/views/products.js?v=ridge-20261012-1245-89c56e9',
   '/js/views/stock.js?v=ridge-20261012-1245-89c56e9',
   '/js/views/stocktake.js?v=ridge-20261012-1245-89c56e9',

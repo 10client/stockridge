@@ -45,6 +45,16 @@ const glService = require('../services/glService');
  * Monday is replayed on Tuesday by code that may have been updated in between.
  * Refusing one spelling would strand queued sales.
  */
+function modesFor(business) {
+  if (!business) return null;
+  let overrides = {};
+  if (business.profile_overrides_json) {
+    try { overrides = JSON.parse(business.profile_overrides_json) || {}; } catch { overrides = {}; }
+  }
+  const profile = resolveProfile(business.profile_code, overrides);
+  return profile && profile.tradeModes ? profile.tradeModes : null;
+}
+
 function normaliseLine(raw, index) {
   if (!raw || typeof raw !== 'object') return null;
   const productId = raw.product_id || raw.productId;
@@ -59,6 +69,18 @@ function normaliseLine(raw, index) {
     discountReason: raw.discount_reason || raw.discountReason || null,
     manualPrice: raw.manual_price != null || raw.manualPrice != null ? Number(raw.manual_price ?? raw.manualPrice) : null,
     notes: raw.notes || null,
+    channel: raw.channel ? String(raw.channel).toUpperCase() : null,
+    startsOn: raw.starts_on || raw.startsOn || null,
+    endsOn: raw.ends_on || raw.endsOn || null,
+    periods: raw.periods != null ? Number(raw.periods) : (raw.months != null ? Number(raw.months) : null),
+    months: raw.months != null ? Number(raw.months) : (raw.periods != null ? Number(raw.periods) : null),
+    rate: raw.rate != null ? Number(raw.rate) : null,
+    deposit: raw.deposit != null ? Number(raw.deposit) : null,
+    collect: raw.collect || null,
+    venue: raw.venue || null,
+    continuation: Boolean(raw.continuation),
+    buyout: Boolean(raw.buyout),
+    agreementId: raw.agreement_id || raw.agreementId || null,
     serialNumbers: Array.isArray(raw.serial_numbers || raw.serialNumbers)
       ? (raw.serial_numbers || raw.serialNumbers).map((s) => String(s).trim()).filter(Boolean)
       : (raw.serial_number || raw.serialNumber ? [String(raw.serial_number || raw.serialNumber).trim()] : []),
@@ -263,6 +285,8 @@ async function buildEngineParams(db, ctx, body, { forComplete }) {
     manualPriceOverrides: body.manual_price_overrides && typeof body.manual_price_overrides === 'object' ? body.manual_price_overrides : {},
     walkInName: strField(body.walk_in_name || body.walkInName || body.customer_name, { field: 'Customer name', maxLength: 160 }),
     walkInPhone: strField(body.walk_in_phone || body.walkInPhone || body.customer_phone, { field: 'Customer phone', maxLength: 40 }),
+    tradeModes: modesFor(business),
+    releaseAgreementId: body.release_agreement_id || body.releaseAgreementId || null,
   };
 
   if (forComplete) {

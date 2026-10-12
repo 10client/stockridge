@@ -1822,3 +1822,15 @@ The market list API is still there. The screen no longer calls it.
 Local: market list test 2/2, including the new name-order check. `audit.market` 25/25. The Nigerian-market unit test passed.
 
 Live on staging, sample and production as `ridge-20261012-1245-89c56e9`. Staging version `1cb75308-480d-4f6e-917f-29f90d113539`, sample `46bec76b-4325-49d9-b245-3b64b7d11684`, production `15c50335-0853-4cb7-b978-96532bfc6adb`. No migration was applied. The goods list is unchanged. The admin PIN was not changed. Do not edit `0010`.
+
+### P37 — categories, sell-and-lease, and category sales (checkpoint)
+
+A new category is filed by name among the categories the shop already has. The catalogue has an Add a category action. The list and the product form are alphabetical, including after the add.
+
+A shop can sell some goods and lease others on the same receipt. The sold unit leaves stock and is retail income. The leased unit stays on the books. The first month is lease income. The deposit is held, not earned, and is not in the sale total. Voiding a hire reverses hire income, not retail income.
+
+A shop that sells provisions and also sells fabrics posts those as separate category sales. The revenue lines in the ledger carry the category, so the profit-and-loss category view and the dashboard category card read the books, not a till guess.
+
+New business types: Sell and lease, Provisions and fabrics, plus the earlier event rental, equipment rental and leasing types. Shared market goods are not priced and cannot be marked for hire.
+
+Local: the four new sale-path checks passed (hire, mixed sale and lease, provisions and fabrics, alphabetical category). A cash sale, a void, and the seeded-catalogue sweep still pass. `0011_trade_modes.sql` is written and not yet applied to the live databases. Do not edit `0001` or `0010`. Do not reset the admin PIN.

@@ -34,6 +34,7 @@
         ui.h('p', { class: 'sub' }, 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
@@ -48,19 +49,42 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    // Categories arrive with the list; load them once.
-    (async () => {
+    function byName(rows) {
+      return rows.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+    }
+    async function fillCategories() {
       try {
         const data = await SR.api.get('/api/categories', { query: SR.state.query() });
-        const rows = data.data || [];
+        const rows = byName(data.data || []);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, `${c.name}${c.product_count ? ` (${c.product_count})` : ''}`));
+        return rows;
       } catch (err) {
-        const rows = await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) });
+        const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) }));
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, c.name));
+        return rows;
       }
-    })();
+    }
+    fillCategories();
+
+    async function addCategory() {
+      const name = await ui.promptDialog({
+        title: 'Add a category',
+        label: 'Category name',
+        required: true,
+        hint: 'It is filed alphabetically with the categories this shop already has. Provisions, fabrics, drinks — each keeps its place.',
+      });
+      if (!name) return;
+      try {
+        const created = await SR.api.post('/api/categories', {
+          name,
+          business_id: SR.state.activeBusinessId,
+        });
+        await fillCategories();
+        ui.ok(created.message || `“${created.name}” added.`);
+      } catch (err) { ui.apiError(err); }
+    }
 
     qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; state.highlightId = null; load(); }, 320));
 
@@ -233,13 +257,17 @@
     const base = product || {};
     const grid = ui.h('div', { class: 'form-grid' },
       ui.field({ label: 'Name', name: 'name', value: base.name || '', required: true, span: true, placeholder: 'e.g. Hisense 1.5HP Split Air Conditioner' }),
-      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', options: [{ value: '', label: '— none —' }].concat(categories.map((c) => ({ value: String(c.id), label: c.name }))) }),
+      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', options: [{ value: '', label: '— none —' }].concat(categories.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: c.name }))) }),
       ui.field({ label: 'Brand', name: 'brand', value: base.brand || '' }),
       ui.field({ label: 'Model number', name: 'model_no', value: base.model_no || '' }),
       ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: 'Left blank, one is suggested from the name.' }),
       ui.field({ label: 'Base unit name', name: 'base_unit_name', value: base.base_unit_name || 'PIECE', hint: 'The smallest unit you would sell. Everything else is a multiple of it.' }),
       ui.field({ label: 'Cost price (₦)', name: 'cost_price', type: 'number', step: '0.01', min: '0', value: base.cost_price != null ? U.numInput(base.cost_price) : '' }),
       ui.field({ label: 'Selling price (₦)', name: 'selling_price', type: 'number', step: '0.01', min: '0', value: base.selling_price != null ? U.numInput(base.selling_price) : '', required: true }),
+      ui.field({ label: 'Hire rate per day (₦)', name: 'hire_price_per_day', type: 'number', step: '0.01', min: '0', value: base.hire_price_per_day != null ? U.numInput(base.hire_price_per_day) : '', hint: 'What one unit costs for one day out. Leave blank if it is not hired.' }),
+      ui.field({ label: 'Hire deposit each (₦)', name: 'hire_deposit', type: 'number', step: '0.01', min: '0', value: base.hire_deposit != null ? U.numInput(base.hire_deposit) : '', hint: 'Held, not earned. Returned when the goods come back undamaged.' }),
+      ui.field({ label: 'Lease rent per month (₦)', name: 'lease_price_per_month', type: 'number', step: '0.01', min: '0', value: base.lease_price_per_month != null ? U.numInput(base.lease_price_per_month) : '' }),
+      ui.field({ label: 'Lease deposit each (₦)', name: 'lease_deposit', type: 'number', step: '0.01', min: '0', value: base.lease_deposit != null ? U.numInput(base.lease_deposit) : '' }),
       ui.field({ label: 'Minimum margin %', name: 'min_margin_pct', type: 'number', step: '0.1', min: '0', value: base.min_margin_pct != null ? U.numInput(base.min_margin_pct) : '', hint: 'A header on the POS warns below this. It does not block the sale.' }),
       ui.field({ label: 'Reorder level', name: 'reorder_level', type: 'number', step: 'any', min: '0', value: base.reorder_level != null ? U.numInput(base.reorder_level) : '' }),
       ui.field({ label: 'Reorder quantity', name: 'reorder_quantity', type: 'number', step: 'any', min: '0', value: base.reorder_quantity != null ? U.numInput(base.reorder_quantity) : '' }),
@@ -268,6 +296,8 @@
       ['requires_installation', 'Needs installation', 'Selling it creates an installation job for a technician.'],
       ['is_bulky', 'Bulky item', 'Affects delivery planning.'],
       ['is_fragile', 'Fragile', 'Warns at goods-out.'],
+      ['offers_hire', 'Available for hire', 'Goes out for days and comes back. Stock is not sold.'],
+      ['offers_lease', 'Available for lease', 'Goes out for months. Rent is income. The asset stays yours until a buyout.'],
       ['is_returnable', 'Returnable', 'A customer may return it inside the window.'],
       ['is_active', 'Active', 'Turn off to hide it from the POS without deleting its history.'],
     ];
@@ -354,6 +384,10 @@
                 base_unit_name: v.base_unit_name || 'PIECE',
                 cost_price: v.cost_price === null ? 0 : Number(v.cost_price),
                 selling_price: Number(v.selling_price),
+                hire_price_per_day: v.hire_price_per_day === null || v.hire_price_per_day === '' ? null : Number(v.hire_price_per_day),
+                hire_deposit: v.hire_deposit === null || v.hire_deposit === '' ? null : Number(v.hire_deposit),
+                lease_price_per_month: v.lease_price_per_month === null || v.lease_price_per_month === '' ? null : Number(v.lease_price_per_month),
+                lease_deposit: v.lease_deposit === null || v.lease_deposit === '' ? null : Number(v.lease_deposit),
                 min_margin_pct: v.min_margin_pct === null ? null : Number(v.min_margin_pct),
                 reorder_level: v.reorder_level === null ? 0 : Number(v.reorder_level),
                 reorder_quantity: v.reorder_quantity === null ? null : Number(v.reorder_quantity),

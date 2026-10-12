@@ -291,6 +291,7 @@ function buildRoutes(app, env = {}) {
   catalog.mount(app, '/api');
   stock.mount(app, '/api');
   sales.mount(app, '/api');
+  agreements.mount(app, '/api');
   till.mount(app, '/api');
   customers.mount(app, '/api');
   finance.mount(app, '/api');

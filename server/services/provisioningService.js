@@ -152,6 +152,23 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
           reorderBase, reorderBase > 0 ? round2(reorderBase * 4) : 0,
           'WEIGHTED_AVG',
         ]);
+        if (seed.hire || seed.lease || seed.sale === false) {
+          tx.queue(`UPDATE products SET
+              offers_sale = ?, offers_hire = ?, offers_lease = ?,
+              hire_price_per_day = ?, lease_price_per_month = ?,
+              hire_deposit = ?, lease_deposit = ?,
+              updated_at = datetime('now')
+            WHERE id = ?`, [
+            seed.sale === false ? 0 : 1,
+            seed.hire ? 1 : 0,
+            seed.lease ? 1 : 0,
+            seed.hireRate != null ? round2(seed.hireRate) : null,
+            seed.leaseRate != null ? round2(seed.leaseRate) : null,
+            seed.hireDeposit != null ? round2(seed.hireDeposit) : null,
+            seed.leaseDeposit != null ? round2(seed.leaseDeposit) : null,
+            productId,
+          ]);
+        }
 
         // ---- unit ladder (derived above, shared with products.base_unit_name)
         const baseUnitName = baseUnitNameFor(profile, seed);

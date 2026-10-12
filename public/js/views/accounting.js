@@ -193,7 +193,11 @@
       if ((data.byCategory || []).length) {
         stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
           ui.h('h2', {}, 'Revenue by product category'),
-          ui.bars((data.byCategory || []).map((c) => ({ label: c.category || c.name || 'Uncategorised', value: c.revenue || c.amount || 0 })), { format: (v) => U.money(v) }))));
+          ui.h('p', { class: 'sub' }, 'Category sales, from the ledger. Provisions and fabrics are separate lines because they were posted that way.'),
+          ui.bars((data.byCategory || []).map((c) => ({
+            label: c.category_name || c.category || c.name || 'Uncategorised',
+            value: c.revenue_net_of_vat != null ? c.revenue_net_of_vat : (c.revenue || c.amount || 0),
+          })), { format: (v) => U.money(v) }))));
       }
       host.replaceChildren(stack);
     }

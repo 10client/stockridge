@@ -63,8 +63,33 @@ const PRODUCT_FIELDS = {
   dimensions_cm: (v) => strField(v, { field: 'Dimensions', maxLength: 60 }),
   return_window_days: (v) => numField(v, { field: 'Return window', min: 0, max: 365, whole: true, fallback: 7 }),
   valuation_method: (v) => valid(oneOf(v, ['WEIGHTED_AVG', 'FIFO'], { field: 'Valuation method', required: false }), 'valuation_method') || 'WEIGHTED_AVG',
+  hire_price_per_day: (v) => (v == null || v === '' ? null : numField(v, { field: 'Hire rate', min: 0 })),
+  hire_deposit: (v) => (v == null || v === '' ? null : numField(v, { field: 'Hire deposit', min: 0 })),
+  lease_price_per_month: (v) => (v == null || v === '' ? null : numField(v, { field: 'Lease rate', min: 0 })),
+  lease_deposit: (v) => (v == null || v === '' ? null : numField(v, { field: 'Lease deposit', min: 0 })),
 };
-const PRODUCT_FLAGS = ['requires_serial', 'tracks_variants', 'is_bulky', 'requires_installation', 'has_expiry', 'is_age_restricted', 'is_fragile', 'is_returnable', 'is_active'];
+const PRODUCT_FLAGS = ['requires_serial', 'tracks_variants', 'is_bulky', 'requires_installation', 'has_expiry', 'is_age_restricted', 'is_fragile', 'is_returnable', 'is_active', 'offers_sale', 'offers_hire', 'offers_lease'];
+
+/**
+ * A new category is not appended. It is given the place its name has among
+ * the categories this business already has, and the sort numbers are rewritten
+ * so a screen that still orders by sort_order agrees with one that orders by name.
+ */
+async function fileCategoriesAlphabetically(db, businessId) {
+  const rows = await db.all(
+    `SELECT id, name FROM product_categories
+      WHERE business_id = ? AND is_deleted = 0
+      ORDER BY name COLLATE NOCASE, code`,
+    [String(businessId)],
+  );
+  for (let i = 0; i < rows.length; i += 1) {
+    await db.run(
+      `UPDATE product_categories SET sort_order = ?, updated_at = datetime('now') WHERE id = ?`,
+      [i + 1, rows[i].id],
+    );
+  }
+  return rows;
+}
 
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
@@ -134,6 +159,8 @@ function mount(app, base = '/api') {
              p.is_bulky, p.requires_installation, p.has_expiry, p.is_fragile, p.is_returnable,
              p.base_unit_name, p.cost_price, p.selling_price, p.reorder_level, p.reorder_quantity,
              p.min_margin_pct, p.valuation_method, p.is_active, p.updated_at,
+             p.offers_sale, p.offers_hire, p.offers_lease,
+             p.hire_price_per_day, p.hire_deposit, p.lease_price_per_month, p.lease_deposit,
              c.name AS category_name, c.code AS category_code,
              -- The unit a screen should sell or buy in, as a CODE. base_unit_name
              -- is the WORD a receipt prints (unit, piece, metre), which is not
@@ -259,15 +286,7 @@ function mount(app, base = '/api') {
    * created" — a capability that reaches a customer as a screen they cannot fill
    * in. These two endpoints are how it is created and cleared.
    *
-   * WRITE IT, OR CLEAR IT — there is no third verb. An override is a whole
-   * pricing decision for one product in one branch, so a partial update would
-   * leave `pack_price` from a previous decision standing next to a new per-piece
-   * price, which is how a branch ends up quietly selling cartons below cost.
-   */
-  app.put(`${base}/products/:id/price-override`, async (ctx) => {
-    const db = ctx.env.DB || ctx.env.db;
-    const user = ctx.get('user');
-    const allowed = canEditPrices(ctx.get('settings'), user);
+   * WRITE IT, OR CLEAR IT — there is no third verb. An ovest allowed = canEditPrices(ctx.get('settings'), user);
     if (!allowed.allowed) throw new HttpError(allowed.reason, { status: 403, code: 'PRICE_EDIT_NOT_ALLOWED' });
 
     const id = String(ctx.req.param('id'));
@@ -491,6 +510,9 @@ function mount(app, base = '/api') {
     // price has found the easiest theft route in retail: sell to a friend at
     // cost. The permission is OWNER-set and the change is audited with its
     // before-and-after values.
+    if (!before.business_id && (fields.offers_hire || fields.offers_lease || fields.hire_price_per_day || fields.lease_price_per_month)) {
+      throw new HttpError('The shared market list is not priced and is not for hire. Copy the product into this business before setting a hire or a lease.', { status: 400, code: 'SHARED_GOODS_NOT_HIREABLE' });
+    }
     const priceChanged = fields.selling_price !== undefined && round2(Number(fields.selling_price)) !== round2(Number(before.selling_price));
     if (priceChanged) {
       const allowed = canEditPrices(ctx.get('settings'), ctx.get('user'));
@@ -636,7 +658,7 @@ function mount(app, base = '/api') {
       ))`);
     }
     const rows = await db.all(`SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0) AS product_count
-      FROM product_categories c WHERE ${where.join(' AND ')} ORDER BY c.sort_order, c.name`, params);
+      FROM product_categories c WHERE ${where.join(' AND ')} ORDER BY c.name COLLATE NOCASE, c.code`, params);
     ctx.json({ ok: true, data: rows });
   });
 
@@ -654,12 +676,23 @@ function mount(app, base = '/api') {
     if (dupe) throw new HttpError(`A category coded “${code}” already exists for this business.`, { status: 409, code: 'DUPLICATE_CATEGORY' });
 
     const id = newId();
-    const sort = Number(await db.scalar('SELECT COALESCE(MAX(sort_order),0) + 1 FROM product_categories WHERE business_id = ?', [String(business.id)])) || 0;
+    const cleanName = String(name).slice(0, 120);
     await db.run(`INSERT INTO product_categories (id, business_id, code, name, parent_id, sort_order, is_active, created_at, updated_at)
-                  VALUES (?,?,?,?,?,?,1, datetime('now'), datetime('now'))`,
-    [id, String(business.id), code, String(name).slice(0, 120), body.parent_id ? String(body.parent_id) : null, sort]);
-    await recordFromCtx(ctx, { action: 'CATEGORY_CREATED', entityType: 'CATEGORY', entityId: id, businessId: business.id, after: { code, name } });
-    ctx.json({ ok: true, id, code, name }, 201);
+                  VALUES (?,?,?,?,?,0,1, datetime('now'), datetime('now'))`,
+    [id, String(business.id), code, cleanName, body.parent_id ? String(body.parent_id) : null]);
+    const filed = await fileCategoriesAlphabetically(db, business.id);
+    const index = filed.findIndex((row) => row.id === id);
+    const before = index > 0 ? filed[index - 1].name : null;
+    const after = index >= 0 && index < filed.length - 1 ? filed[index + 1].name : null;
+    const message = before && after
+      ? `“${cleanName}” filed alphabetically, after ${before} and before ${after}.`
+      : before
+        ? `“${cleanName}” filed alphabetically, after ${before}.`
+        : after
+          ? `“${cleanName}” filed alphabetically, before ${after}.`
+          : `“${cleanName}” is the first category on this business.`;
+    await recordFromCtx(ctx, { action: 'CATEGORY_CREATED', entityType: 'CATEGORY', entityId: id, businessId: business.id, after: { code, name: cleanName } });
+    ctx.json({ ok: true, id, code, name: cleanName, before, after, message }, 201);
   });
 
   // -------------------------------------------------------------------
@@ -694,7 +727,7 @@ function mount(app, base = '/api') {
    * Set a wholesale tier.
    *
    * A tier is a (price list, product, unit, min_quantity) row. Several tiers per
-   * product are how "5+ cartons at ₦X, 20+ at ₦Y" is expressed, and the sale
+   * product are how "5+ cartons at NGN X, 20+ at NGN Y" is expressed, and the sale
    * engine picks the highest min_quantity the order actually reaches.
    */
   app.post(`${base}/price-lists/:id/items`, async (ctx) => {
@@ -1077,4 +1110,4 @@ function pick(obj, keys) {
   return out;
 }
 
-module.exports = { mount };
+module.exports = { mount, fileCategoriesAlphabetically };

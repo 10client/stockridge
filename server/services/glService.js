@@ -73,6 +73,7 @@ const CHART_OF_ACCOUNTS = Object.freeze([
   { code: '2110', name: 'Withholding Tax Payable', type: 'LIABILITY', side: 'CREDIT', control: true },
   { code: '2200', name: 'Customer Deposits & Layaway', type: 'LIABILITY', side: 'CREDIT', control: true },
   { code: '2210', name: 'Change Owed Liability', type: 'LIABILITY', side: 'CREDIT', control: true },
+  { code: '2220', name: 'Hire and lease deposits held', type: 'LIABILITY', side: 'CREDIT', control: true },
   { code: '2300', name: 'Staff Wages Payable', type: 'LIABILITY', side: 'CREDIT', control: false },
 
   { code: '3000', name: "Owner's Capital", type: 'EQUITY', side: 'CREDIT', control: false },
@@ -81,6 +82,9 @@ const CHART_OF_ACCOUNTS = Object.freeze([
 
   { code: '4000', name: 'Sales Revenue', type: 'REVENUE', side: 'CREDIT', control: true },
   { code: '4010', name: 'Wholesale Revenue', type: 'REVENUE', side: 'CREDIT', control: true },
+  { code: '4020', name: 'Hire income', type: 'REVENUE', side: 'CREDIT', control: true },
+  { code: '4030', name: 'Lease income', type: 'REVENUE', side: 'CREDIT', control: true },
+  { code: '4040', name: 'Late return and damage', type: 'REVENUE', side: 'CREDIT', control: true },
   { code: '4100', name: 'Delivery & Installation Income', type: 'REVENUE', side: 'CREDIT', control: true },
   { code: '4200', name: 'Sales Returns & Allowances', type: 'REVENUE', side: 'DEBIT', control: true },
   { code: '4300', name: 'Discounts Allowed', type: 'REVENUE', side: 'DEBIT', control: true },
@@ -269,10 +273,11 @@ function buildEntry({ businessId, branchId = null, entryDate = null, sourceType,
  * shows revenue with no cost and every month looks enormously profitable
  * right up to the moment the owner counts the cash.
  */
-function postSaleStatements({ saleId, business, branch, totals, vat, payments, lines, isCredit, balanceDue, changeOwed, user, receiptNo, accountIds, customer }) {
+function postSaleStatements({ saleId, business, branch, totals, vat, payments, lines, isCredit, balanceDue, changeOwed, user, receiptNo, accountIds, customer, depositApplied = 0 }) {
   const statements = [];
-  const revenueAccount = String(totals && totals.saleType || '').toUpperCase() === 'WHOLESALE' ? '4010' : '4000';
+  const { splitRevenue } = require('../../domain/trade');
   const netRevenue = round2(totals.subtotal - totals.discountAmount - vat.vatAmount);
+  const revenueParts = splitRevenue(lines, totals && totals.saleType, netRevenue);
 
   const assetLegs = [];
   const byMethod = {};
@@ -290,9 +295,29 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
   if (isCredit && balanceDue > 0 && !assetLegs.some((l) => l.accountCode === '1200')) {
     assetLegs.push({ accountCode: '1200', debit: balanceDue, description: `Credit extended to ${customer ? customer.name : 'customer'}` });
   }
+  // A buyout paid partly from the deposit already held. That deposit was
+  // credited to 2220 when it was taken. Applying it debits 2220. It is not
+  // a second receipt of cash.
+  if (Number(depositApplied) > 0) {
+    assetLegs.push({ accountCode: '2220', debit: round2(Number(depositApplied)), description: `Deposit applied to receipt ${receiptNo}` });
+  }
+  const incomeLines = revenueParts.length
+    ? revenueParts.map((part) => ({
+      accountCode: part.accountCode,
+      credit: part.amount,
+      categoryId: part.categoryId || null,
+      description: [
+        part.channel === 'HIRE' ? 'Hire fee'
+          : part.channel === 'LEASE' ? 'Lease rent'
+            : part.channel === 'WHOLESALE' ? 'Wholesale' : 'Retail',
+        part.categoryName,
+        `receipt ${receiptNo}`,
+      ].filter(Boolean).join(', '),
+    }))
+    : [{ accountCode: '4000', credit: Math.max(0, netRevenue), description: `Sales, receipt ${receiptNo}` }];
   const saleLines = [
     ...assetLegs.filter((l) => l.debit > 0 || l.credit > 0),
-    { accountCode: revenueAccount, credit: Math.max(0, netRevenue), description: `Sales, receipt ${receiptNo}` },
+    ...incomeLines,
   ];
   if (vat.vatAmount > 0) saleLines.push({ accountCode: '2100', credit: vat.vatAmount, description: `VAT at ${vat.vatRatePercent}% extracted from inclusive prices` });
   if (totals.deliveryFee > 0) saleLines.push({ accountCode: '4100', credit: totals.deliveryFee, description: 'Delivery & installation charge' });
@@ -314,9 +339,9 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
     });
   }
 
-  // Per-category revenue detail is carried on the COGS lines below (which
-  // take categoryId) and on sale_items.category_id, so v_revenue_by_category
-  // and the department report can be produced without re-joining sales.
+  // Each income line carries the category, so a shop that sells provisions
+  // and fabrics can read those takings off the ledger, not only off the
+  // till. Cost lines below carry the same category.
 
   statements.push(...buildEntry({
     businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
@@ -324,8 +349,11 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
   }));
 
   // COGS and inventory relief, per line so the category axis is preserved.
+  // A hire or a lease does not relieve inventory. The asset is still ours.
   const cogsLines = [];
   for (const line of lines || []) {
+    const channel = String(line.channel || '').toUpperCase();
+    if (channel === 'HIRE' || channel === 'LEASE') continue;
     if (line.totalCost <= 0) continue;
     cogsLines.push({ accountCode: '5000', debit: line.totalCost, categoryId: line.categoryId, description: `${line.productName} — cost of sale` });
   }
@@ -341,12 +369,21 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
   // Discounts allowed, shown separately so gross margin before discount is
   // recoverable. A discount buried inside revenue cannot be reported on.
   if (totals.discountAmount > 0) {
+    const discountParts = splitRevenue(lines, totals && totals.saleType, totals.discountAmount);
+    const discountCredits = discountParts.length
+      ? discountParts.map((part) => ({
+        accountCode: part.accountCode,
+        credit: part.amount,
+        categoryId: part.categoryId || null,
+        description: `Discount grossed back${part.categoryName ? `, ${part.categoryName}` : ''}`,
+      }))
+      : [{ accountCode: '4000', credit: totals.discountAmount, description: 'Revenue reduced by discount' }];
     statements.push(...buildEntry({
       businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
       description: `Discounts allowed, receipt ${receiptNo}`, accountIds,
       lines: [
         { accountCode: '4300', debit: totals.discountAmount, description: 'Discounts allowed' },
-        { accountCode: revenueAccount, credit: totals.discountAmount, description: 'Revenue reduced by discount' },
+        ...discountCredits,
       ],
     }));
   }
@@ -365,15 +402,28 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
  */
 function reverseSaleStatements({ sale, items, business, branch, user, reason, accountIds, sourceType = 'SALE_RETURN' }) {
   const statements = [];
-  const revenueAccount = String(sale.sale_type || '').toUpperCase() === 'WHOLESALE' ? '4010' : '4000';
+  const { splitRevenue } = require('../../domain/trade');
   const netRevenue = round2(Number(sale.subtotal) - Number(sale.discount_amount) - Number(sale.vat_amount));
+  const revenueParts = splitRevenue(items, sale.sale_type, netRevenue);
   const amount = round2(Number(sale.amount_paid) || 0);
 
   const lines = [];
   if (amount > 0) lines.push({ accountCode: '1000', credit: amount, description: `Refund of receipt ${sale.receipt_no}` });
   const balance = round2(Number(sale.balance_due) || 0);
   if (balance > 0) lines.push({ accountCode: '1200', credit: balance, description: 'Credit sale reversed — receivable removed' });
-  if (netRevenue > 0) lines.push({ accountCode: revenueAccount, debit: netRevenue, description: `Revenue reversed: ${reason}` });
+  if (netRevenue > 0) {
+    const reversals = revenueParts.length
+      ? revenueParts
+      : [{ accountCode: String(sale.sale_type || '').toUpperCase() === 'WHOLESALE' ? '4010' : '4000', amount: netRevenue, categoryId: null, categoryName: null }];
+    for (const part of reversals) {
+      lines.push({
+        accountCode: part.accountCode,
+        debit: part.amount,
+        categoryId: part.categoryId || null,
+        description: `Revenue reversed${part.categoryName ? `, ${part.categoryName}` : ''}: ${reason}`,
+      });
+    }
+  }
   if (Number(sale.vat_amount) > 0) lines.push({ accountCode: '2100', debit: round2(Number(sale.vat_amount)), description: 'VAT reversed — no longer collectible' });
   if (Number(sale.discount_amount) > 0) lines.push({ accountCode: '4300', credit: round2(Number(sale.discount_amount)), description: 'Discount reversed' });
 
@@ -943,10 +993,43 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
   return rows.map((r) => ({ ...r, revenue_net_of_vat: round2(Number(r.revenue_net_of_vat) || 0) }));
 }
 
+/**
+ * A security deposit taken or given back.
+ *
+ * It is not income. Taking it debits the drawer and credits the liability.
+ * Giving it back is the reverse. Applying it to damage credits late-and-damage
+ * income and clears the liability. The description says which, because the
+ * source type stays SALE — the schema's list does not grow a word per feature.
+ */
+function postHeldDeposit({ business, branch, agreementId, amount, method, user, description, accountIds, releasing = false, toIncome = false }) {
+  const { methodAccount } = require('../../domain/trade');
+  const value = round2(Number(amount) || 0);
+  if (value <= 0) return [];
+  const cash = methodAccount(method);
+  const lines = toIncome
+    ? [
+      { accountCode: '2220', debit: value, description: description || 'Deposit applied to damage or a late return' },
+      { accountCode: '4040', credit: value, description: description || 'Late return and damage' },
+    ]
+    : releasing
+      ? [
+        { accountCode: '2220', debit: value, description: description || 'Deposit returned' },
+        { accountCode: cash, credit: value, description: description || 'Deposit paid back' },
+      ]
+      : [
+        { accountCode: cash, debit: value, description: description || 'Deposit received' },
+        { accountCode: '2220', credit: value, description: description || 'Deposit held, not income' },
+      ];
+  return buildEntry({
+    businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: agreementId,
+    description: description || 'Hire or lease deposit', postedBy: user && user.id, accountIds, lines,
+  });
+}
+
 module.exports = {
   CHART_OF_ACCOUNTS, ACCOUNT_BY_CODE, CASH_ACCOUNTS, EXPENSE_CATEGORY_ACCOUNTS, ADJUSTMENT_ACCOUNTS,
   seedChartStatements, loadAccountCodes, buildEntry,
-  postSaleStatements, reverseSaleStatements, postPurchaseReceiptStatements,
+  postSaleStatements, reverseSaleStatements, postPurchaseReceiptStatements, postHeldDeposit,
   postExpenseStatements, postAdjustmentStatements, postTransferStatements,
   postIntercompanyTransferStatements, postBankingStatements,
   postCashMoveStatements, postCashOverShortStatements, postCashPayoutStatements, postCashAgainstAccountStatements,

@@ -982,3 +982,165 @@ test('integration: the whole seeded catalogue can be sold without breaking the b
     await assertBooksBalance(world, `${profileCode} after selling the whole catalogue`);
   }
 });
+
+test('integration: a hire keeps the stock, holds the deposit, and earns only the fee', async (t) => {
+  const world = await makeWorld({ profileCode: 'EVENT_RENTAL', vat: false });
+  t.after(world.cleanup);
+
+  const chair = await findProduct(world, (p) => p.sku === 'ER-CH-001');
+  assert.equal(Number(chair.offers_hire), 1);
+  assert.equal(Number(chair.offers_sale), 0);
+  const batch = await receiveStock(world, chair, { quantity: 10, costPrice: 2500, sellingPrice: 4500 });
+  const start = watToday();
+  const end = addDays(start, 1);
+
+  await assert.rejects(
+    () => salesService.complete(world.db, {
+      branch: world.branch, business: world.business, user: world.cashier, settings: world.settings,
+      lines: [{ productId: chair.id, quantity: 1, unitCode: 'PIECE', channel: 'RETAIL' }],
+      payments: [{ method: 'CASH', amount: 4500 }],
+      tillSessionId: world.tillId,
+      tradeModes: ['HIRE', 'RETAIL', 'WHOLESALE'],
+    }),
+    (e) => {
+      assert.equal(e.code, 'SALE_PREPARATION_FAILED');
+      assert.match(e.message, /not sold/i);
+      return true;
+    },
+  );
+
+  const result = await salesService.complete(world.db, {
+    branch: world.branch, business: world.business, user: world.cashier, settings: world.settings,
+    lines: [{
+      productId: chair.id, quantity: 2, unitCode: 'PIECE', channel: 'HIRE',
+      startsOn: start, endsOn: end,
+    }],
+    payments: [{ method: 'CASH', amount: 1800 }],
+    tillSessionId: world.tillId,
+    walkInName: 'Ada Okonkwo', walkInPhone: '08031234567',
+    tradeModes: ['HIRE', 'RETAIL', 'WHOLESALE'],
+  });
+
+  assert.equal(result.totals.total, 800, 'two chairs, two days, 200 a day — the deposit is not in the sale');
+  assert.equal(result.depositHeld, 1000);
+  const left = await world.db.first('SELECT quantity FROM stock_batches WHERE id = ?', [batch.id]);
+  assert.equal(Number(left.quantity), 10, 'a hire does not take the chairs off the books');
+  const agreement = await world.db.first('SELECT * FROM asset_agreements WHERE sale_id = ?', [result.saleId]);
+  assert.equal(agreement.status, 'OUT');
+  assert.equal(Number(agreement.deposit_held), 1000);
+  assert.equal(agreement.kind, 'HIRE');
+  const hireIncome = await world.db.first(`SELECT SUM(l.credit) - SUM(l.debit) AS net
+    FROM gl_journal_lines l JOIN gl_accounts a ON a.id = l.account_id
+    WHERE a.code = '4020' AND a.business_id = ?`, [world.businessId]);
+  assert.equal(Number(hireIncome.net), 800);
+  const held = await world.db.first(`SELECT SUM(l.credit) - SUM(l.debit) AS net
+    FROM gl_journal_lines l JOIN gl_accounts a ON a.id = l.account_id
+    WHERE a.code = '2220' AND a.business_id = ?`, [world.businessId]);
+  assert.equal(Number(held.net), 1000, 'the deposit is a liability, not income');
+  await assertBooksBalance(world, 'after a hire');
+
+  await salesService.voidSale(world.db, {
+    saleId: result.saleId, user: world.manager, settings: world.settings, reason: 'Customer cancelled the booking',
+  });
+  const cancelled = await world.db.first('SELECT status FROM asset_agreements WHERE id = ?', [agreement.id]);
+  assert.equal(cancelled.status, 'CANCELLED');
+  const hireAfterVoid = await world.db.first(`SELECT SUM(l.credit) - SUM(l.debit) AS net
+    FROM gl_journal_lines l JOIN gl_accounts a ON a.id = l.account_id
+    WHERE a.code = '4020' AND a.business_id = ?`, [world.businessId]);
+  assert.equal(Number(hireAfterVoid.net), 0, 'voiding a hire reverses hire income, not retail income');
+  await assertBooksBalance(world, 'after voiding the hire');
+});
+
+test('integration: one receipt can sell one good and lease another, and the books keep them apart', async (t) => {
+  const world = await makeWorld({ profileCode: 'SELL_AND_LEASE', vat: false });
+  t.after(world.cleanup);
+  const freezer = await findProduct(world, (p) => p.sku === 'SL-SL-001');
+  const generator = await findProduct(world, (p) => p.sku === 'SL-LS-001');
+  const freezerBatch = await receiveStock(world, freezer, { quantity: 2, costPrice: 145000, sellingPrice: 215000 });
+  const generatorBatch = await receiveStock(world, generator, { quantity: 1, costPrice: 280000, sellingPrice: 420000 });
+  const customerId = newId();
+  await world.db.run(`INSERT INTO customers (id, business_id, branch_id, customer_type, name, phone, is_active, created_at, updated_at)
+    VALUES (?,?,?, 'BUSINESS', 'Ngozi Ade', '08031112233', 1, datetime('now'), datetime('now'))`,
+  [customerId, world.businessId, world.branchId]);
+  const customer = await world.db.first('SELECT * FROM customers WHERE id = ?', [customerId]);
+  const start = watToday();
+
+  const result = await salesService.complete(world.db, {
+    branch: world.branch, business: world.business, user: world.cashier, settings: world.settings,
+    customer,
+    lines: [
+      { productId: freezer.id, quantity: 1, unitCode: 'PIECE', channel: 'RETAIL' },
+      { productId: generator.id, quantity: 1, unitCode: 'PIECE', channel: 'LEASE', startsOn: start, periods: 3 },
+    ],
+    payments: [{ method: 'CASH', amount: 215000 + 45000 + 80000 }],
+    tillSessionId: world.tillId,
+    tradeModes: ['RETAIL', 'LEASE', 'WHOLESALE'],
+  });
+
+  assert.equal(result.totals.total, 260000, 'the sale price plus the first month of rent, and not the deposit');
+  assert.equal(result.depositHeld, 80000);
+  assert.equal(Number((await world.db.first('SELECT quantity FROM stock_batches WHERE id = ?', [freezerBatch.id])).quantity), 1);
+  assert.equal(Number((await world.db.first('SELECT quantity FROM stock_batches WHERE id = ?', [generatorBatch.id])).quantity), 1, 'the leased generator is still ours');
+  const byAccount = await world.db.all(`SELECT a.code, SUM(l.credit) - SUM(l.debit) AS net
+    FROM gl_journal_lines l JOIN gl_accounts a ON a.id = l.account_id
+    WHERE a.business_id = ? AND a.code IN ('4000','4030','2220')
+    GROUP BY a.code`, [world.businessId]);
+  const net = Object.fromEntries(byAccount.map((row) => [row.code, Number(row.net)]));
+  assert.equal(net['4000'], 215000, 'the freezer is retail income');
+  assert.equal(net['4030'], 45000, 'the first month is lease income');
+  assert.equal(net['2220'], 80000, 'the deposit is held, not earned');
+  const categorised = await world.db.all(`SELECT a.code, c.name AS category_name, SUM(l.credit) AS credit
+    FROM gl_journal_lines l
+    JOIN gl_accounts a ON a.id = l.account_id
+    LEFT JOIN product_categories c ON c.id = l.category_id
+    WHERE a.business_id = ? AND a.account_type = 'REVENUE' AND l.credit > 0
+    GROUP BY a.code, c.name`, [world.businessId]);
+  assert.ok(categorised.some((row) => row.code === '4000' && row.category_name === 'Goods for sale'));
+  assert.ok(categorised.some((row) => row.code === '4030' && row.category_name === 'Goods on lease'));
+  await assertBooksBalance(world, 'after a mixed sale and lease');
+});
+
+test('integration: provisions and fabrics are separate category sales in the ledger', async (t) => {
+  const world = await makeWorld({ profileCode: 'PROVISIONS_FABRICS', vat: false });
+  t.after(world.cleanup);
+  const rice = await findProduct(world, (p) => p.sku === 'PF-PR-003');
+  const ankara = await findProduct(world, (p) => p.sku === 'PF-FB-001');
+  await receiveStock(world, rice, { quantity: 4, costPrice: 62000, sellingPrice: 78000 });
+  await receiveStock(world, ankara, { quantity: 6, costPrice: 4500, sellingPrice: 8500 });
+
+  const result = await salesService.complete(world.db, {
+    branch: world.branch, business: world.business, user: world.cashier, settings: world.settings,
+    lines: [
+      { productId: rice.id, quantity: 1, unitCode: 'PIECE' },
+      { productId: ankara.id, quantity: 2, unitCode: 'PIECE' },
+    ],
+    payments: [{ method: 'CASH', amount: 78000 + 17000 }],
+    tillSessionId: world.tillId,
+    tradeModes: ['RETAIL', 'WHOLESALE'],
+  });
+  assert.equal(result.totals.total, 95000);
+
+  const byCategory = await glService.revenueByCategory(world.db, { businessId: world.businessId });
+  const named = Object.fromEntries(byCategory.map((row) => [row.category_name, row.revenue_net_of_vat]));
+  assert.equal(named.Provisions, 78000);
+  assert.equal(named.Fabrics, 17000);
+  await assertBooksBalance(world, 'after a provisions and fabrics sale');
+});
+
+test('integration: a new category is filed alphabetically among the ones already there', async (t) => {
+  const world = await makeWorld({ profileCode: 'PROVISIONS_FABRICS' });
+  t.after(world.cleanup);
+  const { fileCategoriesAlphabetically } = require('../../server/routes/catalog');
+  const id = newId();
+  await world.db.run(`INSERT INTO product_categories (id, business_id, code, name, sort_order, is_active, created_at, updated_at)
+    VALUES (?,?, 'DRINKS', 'Drinks', 99, 1, datetime('now'), datetime('now'))`, [id, world.businessId]);
+  const filed = await fileCategoriesAlphabetically(world.db, world.businessId);
+  const names = filed.map((row) => row.name);
+  assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })));
+  const drinks = names.indexOf('Drinks');
+  assert.ok(drinks > names.indexOf('Fabrics') ? false : drinks < names.indexOf('Household') || drinks < names.indexOf('Provisions'));
+  assert.ok(names.indexOf('Drinks') < names.indexOf('Fabrics'), `Drinks should sit before Fabrics, got ${names.join(', ')}`);
+  assert.ok(names.indexOf('Drinks') > -1);
+  const order = await world.db.first('SELECT sort_order FROM product_categories WHERE id = ?', [id]);
+  assert.equal(Number(order.sort_order), drinks + 1);
+});

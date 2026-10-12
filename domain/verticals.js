@@ -271,6 +271,21 @@ const CUSTOMER_CLASS_SETS = Object.freeze({
     { code: 'CONTRACTOR', name: 'Contractor', discountPct: 10, creditAllowed: true, termsDays: 30, defaultCreditLimit: 5000000 },
     { code: 'DEVELOPER', name: 'Developer / Project', discountPct: 15, creditAllowed: true, termsDays: 60, defaultCreditLimit: 20000000 },
   ],
+  // A walk-in buying ribbon, a family booking chairs for Saturday, and a
+  // planner who takes fifty cartons and two hundred chairs on seven-day terms.
+  EVENT: [
+    { code: 'WALK_IN', name: 'Walk-in', discountPct: 0, creditAllowed: false, termsDays: 0 },
+    { code: 'RETAIL', name: 'Regular customer', discountPct: 0, creditAllowed: false, termsDays: 0 },
+    { code: 'PLANNER', name: 'Event planner', discountPct: 5, creditAllowed: true, termsDays: 7, defaultCreditLimit: 500000 },
+    { code: 'WHOLESALE', name: 'Wholesale', discountPct: 8, creditAllowed: true, termsDays: 14, defaultCreditLimit: 1000000 },
+  ],
+  // A lessee is not a walk-in. The term is the relationship.
+  LEASE_LED: [
+    { code: 'WALK_IN', name: 'Walk-in', discountPct: 0, creditAllowed: false, termsDays: 0 },
+    { code: 'RETAIL', name: 'Cash customer', discountPct: 0, creditAllowed: false, termsDays: 0 },
+    { code: 'LESSEE', name: 'Lessee', discountPct: 0, creditAllowed: true, termsDays: 7, defaultCreditLimit: 1000000 },
+    { code: 'CORPORATE', name: 'Corporate lessee', discountPct: 5, creditAllowed: true, termsDays: 30, defaultCreditLimit: 5000000 },
+  ],
 });
 
 // ---------------------------------------------------------------------
@@ -297,6 +312,9 @@ const EXPENSE_CATEGORY_SETS = Object.freeze({
   GENERAL: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'TRANSPORT_LOGISTICS', 'SECURITY', 'CLEANING', 'MARKETING', 'REPAIRS_MAINTENANCE', 'BANK_CHARGES', 'INTERNET_AIRTIME', 'MISC'],
   RETAIL_HEAVY: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'TRANSPORT_LOGISTICS', 'SECURITY', 'CLEANING', 'MARKETING', 'REPAIRS_MAINTENANCE', 'BANK_CHARGES', 'INTERNET_AIRTIME', 'PACKAGING_MATERIALS', 'SHRINKAGE', 'MISC'],
   PROJECT_HEAVY: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'TRANSPORT_LOGISTICS', 'SECURITY', 'CLEANING', 'MARKETING', 'REPAIRS_MAINTENANCE', 'BANK_CHARGES', 'INTERNET_AIRTIME', 'SITE_EXPENSES', 'EQUIPMENT_HIRE', 'LOADERS_PORTERS', 'MISC'],
+  // A yard that sends goods out and brings them back. The shop's own rent is
+  // still RENT. EQUIPMENT_HIRE here is money paid to somebody else.
+  HIRE_YARD: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'TRANSPORT_LOGISTICS', 'SECURITY', 'CLEANING', 'REPAIRS_MAINTENANCE', 'BANK_CHARGES', 'LOADERS_PORTERS', 'EQUIPMENT_HIRE', 'SHRINKAGE', 'MISC'],
 });
 
 // =====================================================================
@@ -314,6 +332,7 @@ const PROFILES = Object.freeze({
   // anti-money-laundering rules.
   ELECTRONICS: {
     code: 'ELECTRONICS',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Electronics, Appliances & Gadgets',
     blurb: 'Phones, laptops, TVs, fridges, generators, solar and accessories — serialised, warrantied, variant-heavy.',
     baseUnit: 'unit',
@@ -387,6 +406,7 @@ const PROFILES = Object.freeze({
   // and forestry/CITES paperwork for imported hardwood.
   FURNITURE: {
     code: 'FURNITURE',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Furniture & Home Furnishings',
     blurb: 'Showroom and made-to-order furniture — fabric and size variants, bulky delivery, assembly and long layaway.',
     baseUnit: 'piece',
@@ -455,6 +475,7 @@ const PROFILES = Object.freeze({
   // This is the "provision store that grew into a distributor" profile.
   WHOLESALE_RETAIL: {
     code: 'WHOLESALE_RETAIL',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Wholesale & Retail General Merchandise',
     blurb: 'Provisions, FMCG, drinks, household goods — carton and pallet trading with wholesale price tiers and expiry control.',
     baseUnit: 'piece',
@@ -524,6 +545,7 @@ const PROFILES = Object.freeze({
   // cables and steel are all conformity-assessed products in Nigeria.
   BUILDING_MATERIALS: {
     code: 'BUILDING_MATERIALS',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Building Materials & Hardware',
     blurb: 'Cement, steel, tiles, paint, cable, plumbing — measured sales, contractor credit terms and site delivery.',
     baseUnit: 'piece',
@@ -586,12 +608,206 @@ const PROFILES = Object.freeze({
   },
 
   // -------------------------------------------------------------------
+  // EVENT_RENTAL — chairs, canopies and tables go out and come back.
+  // Ribbon, balloons and plates are sold. A planner may also take cartons.
+  // -------------------------------------------------------------------
+  EVENT_RENTAL: {
+    code: 'EVENT_RENTAL',
+    tradeModes: Object.freeze(['HIRE', 'RETAIL', 'WHOLESALE']),
+    label: 'Event rental',
+    blurb: 'Hire chairs, tables and canopies for a date, and sell the decorations and drinks on the same job. The hired goods stay yours. The deposit is held, not earned.',
+    baseUnit: 'piece',
+    defaultLadder: LADDERS.EACH_ONLY,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      bulkyDelivery: true, wholesalePricing: true, commissionTracking: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'TRADING_PERMIT', 'FIRE_CERT']),
+    registrationAuthorities: Object.freeze(['SON']),
+    variantAxes: Object.freeze([
+      { name: 'Colour', options: ['White', 'Gold', 'Black', 'Clear'] },
+    ]),
+    customerClasses: CUSTOMER_CLASS_SETS.EVENT,
+    expenseCategories: EXPENSE_CATEGORY_SETS.HIRE_YARD,
+    returnReasons: Object.freeze(['DEFECTIVE', 'DAMAGED_IN_TRANSIT', 'WRONG_ITEM', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 0,
+    categories: Object.freeze([
+      { code: 'CHAIRS', name: 'Chairs' },
+      { code: 'TABLES', name: 'Tables' },
+      { code: 'CANOPIES', name: 'Canopies and tents' },
+      { code: 'LINEN', name: 'Linen and covers' },
+      { code: 'DECOR_SALE', name: 'Decorations for sale' },
+      { code: 'CONSUMABLES', name: 'Consumables' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'White plastic chair', sku: 'ER-CH-001', category: 'CHAIRS', cost: 2500, price: 4500, reorder: 50, hire: true, hireRate: 200, hireDeposit: 500, sale: false },
+      { name: 'Chiavari chair gold', sku: 'ER-CH-002', category: 'CHAIRS', cost: 8500, price: 14000, reorder: 20, hire: true, hireRate: 800, hireDeposit: 2000, sale: false },
+      { name: 'Round banquet table', sku: 'ER-TB-001', category: 'TABLES', cost: 18000, price: 28000, reorder: 10, hire: true, hireRate: 1500, hireDeposit: 3000, sale: false },
+      { name: 'Canopy 10 by 10', sku: 'ER-CP-001', category: 'CANOPIES', cost: 45000, price: 75000, reorder: 4, hire: true, hireRate: 8000, hireDeposit: 15000, sale: false, bulky: true },
+      { name: 'Table cover white', sku: 'ER-LN-001', category: 'LINEN', cost: 1800, price: 3500, reorder: 30, hire: true, hireRate: 300, hireDeposit: 500, sale: true },
+      { name: 'Balloon garland pack', sku: 'ER-DC-001', category: 'DECOR_SALE', cost: 4500, price: 9000, reorder: 12, sale: true },
+      { name: 'Paper plates pack of 50', sku: 'ER-CS-001', category: 'CONSUMABLES', cost: 1200, price: 2200, reorder: 40, sale: true },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // EQUIPMENT_RENTAL — a generator or a mixer goes out for days, or on
+  // a monthly lease, and a worn unit can still be sold.
+  // -------------------------------------------------------------------
+  EQUIPMENT_RENTAL: {
+    code: 'EQUIPMENT_RENTAL',
+    tradeModes: Object.freeze(['HIRE', 'LEASE', 'RETAIL']),
+    label: 'Equipment rental',
+    blurb: 'Hire a generator for a site day, lease one for a term, or sell a unit that has done its time. The hired and leased units stay on your books until they are sold.',
+    baseUnit: 'unit',
+    defaultLadder: LADDERS.EACH_ONLY,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      serialTracking: true, bulkyDelivery: true, commissionTracking: true, batchTracking: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'TRADING_PERMIT', 'SONCAP_DEALER']),
+    registrationAuthorities: Object.freeze(['SON']),
+    variantAxes: Object.freeze([
+      { name: 'Capacity', options: ['2.5kVA', '5kVA', '10kVA'] },
+    ]),
+    customerClasses: CUSTOMER_CLASS_SETS.EVENT,
+    expenseCategories: EXPENSE_CATEGORY_SETS.HIRE_YARD,
+    returnReasons: Object.freeze(['DEFECTIVE', 'DAMAGED_IN_TRANSIT', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 0,
+    categories: Object.freeze([
+      { code: 'POWER', name: 'Generators and power' },
+      { code: 'SITE_TOOLS', name: 'Site tools' },
+      { code: 'ACCESS', name: 'Scaffold and access' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Generator 5kVA', sku: 'EQ-PW-001', category: 'POWER', cost: 280000, price: 420000, reorder: 2, serial: true, bulky: true, hire: true, lease: true, hireRate: 15000, leaseRate: 180000, hireDeposit: 50000, leaseDeposit: 100000, sale: true },
+      { name: 'Concrete mixer', sku: 'EQ-ST-001', category: 'SITE_TOOLS', cost: 185000, price: 275000, reorder: 2, serial: true, bulky: true, hire: true, hireRate: 8000, hireDeposit: 25000, sale: true },
+      { name: 'Scaffold frame', sku: 'EQ-AC-001', category: 'ACCESS', cost: 22000, price: 35000, reorder: 20, hire: true, hireRate: 500, hireDeposit: 2000, sale: false },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // LEASING — the asset stays the lessor's for the term. Rent is a
+  // schedule. Buyout, if there is one, is the only sale.
+  // -------------------------------------------------------------------
+  LEASING: {
+    code: 'LEASING',
+    tradeModes: Object.freeze(['LEASE']),
+    label: 'Leasing',
+    blurb: 'A generator, a freezer or a till, out for months. Rent is income as it falls due. The deposit is held. The asset is sold only if the customer buys it at the end.',
+    baseUnit: 'unit',
+    defaultLadder: LADDERS.EACH_ONLY,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      serialTracking: true, bulkyDelivery: true, commissionTracking: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'SCUML']),
+    registrationAuthorities: Object.freeze(['SON']),
+    variantAxes: Object.freeze([
+      { name: 'Capacity', options: ['Small', 'Medium', 'Large'] },
+    ]),
+    customerClasses: CUSTOMER_CLASS_SETS.LEASE_LED,
+    expenseCategories: EXPENSE_CATEGORY_SETS.HIRE_YARD,
+    returnReasons: Object.freeze(['DEFECTIVE', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 0,
+    categories: Object.freeze([
+      { code: 'POWER_LEASE', name: 'Power equipment' },
+      { code: 'COLD_LEASE', name: 'Cold equipment' },
+      { code: 'OFFICE_LEASE', name: 'Office equipment' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Generator 10kVA on lease', sku: 'LS-PW-001', category: 'POWER_LEASE', cost: 640000, price: 980000, reorder: 1, serial: true, bulky: true, lease: true, sale: false, leaseRate: 85000, leaseDeposit: 200000, buyout: 700000 },
+      { name: 'Chest freezer 300L on lease', sku: 'LS-CL-001', category: 'COLD_LEASE', cost: 210000, price: 320000, reorder: 2, serial: true, bulky: true, lease: true, sale: false, leaseRate: 28000, leaseDeposit: 60000, buyout: 240000 },
+      { name: 'Desktop till on lease', sku: 'LS-OF-001', category: 'OFFICE_LEASE', cost: 85000, price: 140000, reorder: 3, serial: true, lease: true, sale: false, leaseRate: 12000, leaseDeposit: 25000, buyout: 90000 },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // SELL_AND_LEASE — one shop, two movements. A freezer is sold. A
+  // generator goes out on a term and stays on the books. The same receipt
+  // can carry both, and the ledger keeps them apart.
+  // -------------------------------------------------------------------
+  SELL_AND_LEASE: {
+    code: 'SELL_AND_LEASE',
+    tradeModes: Object.freeze(['RETAIL', 'LEASE', 'WHOLESALE']),
+    label: 'Sell and lease',
+    blurb: 'Some goods are sold. Some are leased for a term and stay yours until the customer buys them. One shop, both ways, each with its own entry in the books.',
+    baseUnit: 'unit',
+    defaultLadder: LADDERS.EACH_ONLY,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      serialTracking: true, bulkyDelivery: true, wholesalePricing: true, commissionTracking: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'TRADING_PERMIT', 'SONCAP_DEALER']),
+    registrationAuthorities: Object.freeze(['SON']),
+    variantAxes: Object.freeze([{ name: 'Capacity', options: ['Small', 'Medium', 'Large'] }]),
+    customerClasses: CUSTOMER_CLASS_SETS.LEASE_LED,
+    expenseCategories: EXPENSE_CATEGORY_SETS.HIRE_YARD,
+    returnReasons: Object.freeze(['DEFECTIVE', 'DAMAGED_IN_TRANSIT', 'OTHER']),
+    defaultWarrantyMonths: 12,
+    defaultReturnWindowDays: 7,
+    categories: Object.freeze([
+      { code: 'FOR_SALE', name: 'Goods for sale' },
+      { code: 'ON_LEASE', name: 'Goods on lease' },
+      { code: 'EITHER', name: 'Sale or lease' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Chest freezer 200L', sku: 'SL-SL-001', category: 'FOR_SALE', cost: 145000, price: 215000, reorder: 2, serial: true, bulky: true, sale: true },
+      { name: 'Generator 5kVA on lease', sku: 'SL-LS-001', category: 'ON_LEASE', cost: 280000, price: 420000, reorder: 1, serial: true, bulky: true, lease: true, sale: false, leaseRate: 45000, leaseDeposit: 80000 },
+      { name: 'Standing fan', sku: 'SL-EI-001', category: 'EITHER', cost: 18000, price: 32000, reorder: 6, sale: true, lease: true, leaseRate: 4000, leaseDeposit: 8000 },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // PROVISIONS_FABRICS — one shop, two sides of the floor. Rice and milk
+  // are not the same takings as ankara. Category sales are a ledger fact,
+  // not only a till total.
+  // -------------------------------------------------------------------
+  PROVISIONS_FABRICS: {
+    code: 'PROVISIONS_FABRICS',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
+    label: 'Provisions and fabrics',
+    blurb: 'A shop that sells provisions and also sells fabrics. Each category’s sales are posted on their own line in the books, so the owner can see which side of the shop earned the day.',
+    baseUnit: 'piece',
+    defaultLadder: LADDERS.EACH_ONLY,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      expiryTracking: true, batchTracking: true, wholesalePricing: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'TRADING_PERMIT', 'NAFDAC_PREMISES']),
+    registrationAuthorities: Object.freeze(['NAFDAC', 'SON']),
+    variantAxes: Object.freeze([{ name: 'Pack', options: ['Retail', 'Bag'] }]),
+    customerClasses: CUSTOMER_CLASS_SETS.RETAIL_LED,
+    expenseCategories: EXPENSE_CATEGORY_SETS.RETAIL_HEAVY,
+    returnReasons: Object.freeze(['DEFECTIVE', 'WRONG_ITEM', 'CUSTOMER_CHANGE_OF_MIND', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 3,
+    categories: Object.freeze([
+      { code: 'PROVISIONS', name: 'Provisions' },
+      { code: 'FABRICS', name: 'Fabrics' },
+      { code: 'HOUSEHOLD', name: 'Household' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Peak Milk tin 400g', sku: 'PF-PR-001', category: 'PROVISIONS', cost: 650, price: 950, reorder: 24, expiry: true },
+      { name: 'Golden Penny Semovita 10kg', sku: 'PF-PR-002', category: 'PROVISIONS', cost: 9800, price: 12500, reorder: 10 },
+      { name: 'Parboiled rice 50kg', sku: 'PF-PR-003', category: 'PROVISIONS', cost: 62000, price: 78000, reorder: 8 },
+      { name: 'Ankara 6 yards', sku: 'PF-FB-001', category: 'FABRICS', cost: 4500, price: 8500, reorder: 12 },
+      { name: 'Lace 5 yards', sku: 'PF-FB-002', category: 'FABRICS', cost: 12000, price: 18500, reorder: 6 },
+      { name: 'Washing soap bar', sku: 'PF-HH-001', category: 'HOUSEHOLD', cost: 180, price: 350, reorder: 48 },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
   // GENERAL_RETAIL — the blank, fully-configurable profile
   // -------------------------------------------------------------------
   // Exists so a deployment is never forced into a vertical that does not
   // fit. Everything is on, every category is the client's to define.
   GENERAL_RETAIL: {
     code: 'GENERAL_RETAIL',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE', 'HIRE', 'LEASE']),
     label: 'General Retail (fully configurable)',
     blurb: 'No assumptions. Every module available; you define your own categories, units and compliance records.',
     baseUnit: 'piece',
@@ -682,6 +898,15 @@ function resolveProfile(code, overrides) {
   if (typeof overrides.baseUnit === 'string') out.baseUnit = overrides.baseUnit;
   if (Number.isFinite(overrides.defaultWarrantyMonths)) out.defaultWarrantyMonths = overrides.defaultWarrantyMonths;
   if (Number.isFinite(overrides.defaultReturnWindowDays)) out.defaultReturnWindowDays = overrides.defaultReturnWindowDays;
+  // An owner can add hire to a furniture shop, or drop wholesale from a
+  // general shop, without changing the category tree. The set replaces,
+  // it does not merge: the screen is asking "which of these does this
+  // business actually do", and a merge would turn a mode back on that
+  // the owner had switched off.
+  if (Array.isArray(overrides.tradeModes)) {
+    const { normaliseModes } = require('./trade');
+    out.tradeModes = Object.freeze(normaliseModes(overrides.tradeModes, base.tradeModes));
+  }
   return out;
 }
 
@@ -707,6 +932,7 @@ function describeProfile(code) {
     name: p.label,
     blurb: p.blurb,
     baseUnit: p.baseUnit,
+    tradeModes: Array.isArray(p.tradeModes) ? p.tradeModes : ['RETAIL'],
     enabledFeatures: FEATURE_FLAGS.filter((f) => p.features[f]),
     disabledFeatures: FEATURE_FLAGS.filter((f) => !p.features[f]),
     categoryCount: p.categories.length,

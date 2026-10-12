@@ -335,6 +335,16 @@
           })), { format: (v) => (data.topProducts[0] && data.topProducts[0].revenue != null ? U.money(v) : U.qty(v)) })));
         cols.appendChild(card);
       }
+      if (Array.isArray(data.categorySales) && data.categorySales.length) {
+        const card = ui.h('div', { class: 'card' });
+        card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Category sales this period')));
+        card.appendChild(ui.h('div', { class: 'card-body' },
+          ui.bars(data.categorySales.slice(0, 8).map((c) => ({
+            label: String(c.category || 'Uncategorised').slice(0, 34),
+            value: c.revenue,
+          })), { format: U.money, tone: 'b2' })));
+        cols.appendChild(card);
+      }
 
       // BY BUSINESS AND BY BRANCH: the money is under `today`/`period`, not at the top
       // level — the bars were reading `b.revenue || b.gross`, so every bar was zero.

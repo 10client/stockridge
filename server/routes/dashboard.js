@@ -182,6 +182,14 @@ function mount(app, base = '/api') {
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
         WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
         GROUP BY si.product_id ORDER BY revenue DESC LIMIT 8`, [from, to, ...sc.params]);
+    const categorySales = await db.all(`SELECT COALESCE(c.name, 'Uncategorised') AS category_name,
+          COALESCE(SUM(si.line_total),0) AS revenue, COALESCE(SUM(si.line_total - si.vat_amount),0) AS net,
+          COUNT(DISTINCT s.id) AS sales
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        LEFT JOIN product_categories c ON c.id = si.category_id
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
+        GROUP BY si.category_id ORDER BY revenue DESC LIMIT 8`, [from, to, ...sc.params]);
     const topStaff = await db.all(`SELECT u.id, u.full_name, COUNT(s.id) AS sales, COALESCE(SUM(s.total),0) AS revenue
         FROM sales s JOIN users u ON u.id = s.salesperson_id
         WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
@@ -295,6 +303,31 @@ function mount(app, base = '/api') {
     const myTill = await db.first("SELECT * FROM till_sessions WHERE branch_id = ? AND user_id = ? AND status = 'OPEN' AND is_deleted = 0 ORDER BY opened_at DESC LIMIT 1",
       [String(branch ? branch.id : user.branch_id), String(user.id)]);
 
+    const commitmentScope = [];
+    const commitmentParams = [];
+    if (useBranch) { commitmentScope.push('a.branch_id = ?'); commitmentParams.push(useBranch); }
+    else if (business) { commitmentScope.push('a.business_id = ?'); commitmentParams.push(String(business.id)); }
+    const commitmentWhere = commitmentScope.length ? `AND ${commitmentScope.join(' AND ')}` : '';
+    const outNow = await db.scalar(
+      `SELECT COUNT(*) FROM asset_agreements a WHERE a.is_deleted = 0 AND a.status = 'OUT' ${commitmentWhere}`,
+      commitmentParams,
+    );
+    const dueBack = await db.all(
+      `SELECT a.id, a.kind, a.ends_on, a.deposit_amount, c.name AS customer_name
+         FROM asset_agreements a
+         LEFT JOIN customers c ON c.id = a.customer_id
+        WHERE a.is_deleted = 0 AND a.status = 'OUT' AND a.ends_on <= ? ${commitmentWhere}
+        ORDER BY a.ends_on ASC LIMIT 8`,
+      [today, ...commitmentParams],
+    );
+    if (dueBack.length) {
+      actions.push({
+        key: 'due_back', severity: 'WARN', count: dueBack.length,
+        label: `${dueBack.length} hire or lease agreement(s) due back`,
+        route: '/hire-book',
+      });
+    }
+
     ctx.json({
       ok: true,
       generatedAt: watNow(),
@@ -365,7 +398,20 @@ function mount(app, base = '/api') {
       },
 
       topProducts: topProducts.map((r) => ({ ...r, units: round2(Number(r.units)), revenue: round2(Number(r.revenue)), margin: round2(Number(r.margin)) })),
+      categorySales: categorySales.map((r) => ({ category: r.category_name, revenue: round2(Number(r.revenue)), net: round2(Number(r.net)), sales: Number(r.sales) || 0 })),
       topStaff: topStaff.map((r) => ({ ...r, revenue: round2(Number(r.revenue)) })),
+
+      commitments: {
+        outNow: Number(outNow) || 0,
+        dueBack: dueBack.map((row) => ({
+          id: row.id,
+          kind: row.kind,
+          endsOn: row.ends_on,
+          overdue: String(row.ends_on) < today,
+          deposit: round2(Number(row.deposit_held) || 0),
+          customer: row.customer_name || 'Walk-in',
+        })),
+      },
 
       cash: {
         safeBalance: round2(Number(safe.balance)),

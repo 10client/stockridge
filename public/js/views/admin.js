@@ -424,12 +424,7 @@
         const profileSel = ui.field({
           label: 'What kind of business is it',
           name: 'profile_code',
-          options: [
-            { value: 'ELECTRONICS', label: 'Electronics, appliances & gadgets' },
-            { value: 'FURNITURE', label: 'Furniture & home' },
-            { value: 'GENERAL_RETAIL', label: 'Wholesale & general merchandise' },
-            { value: 'BUILDING_MATERIALS', label: 'Building materials & hardware' },
-          ],
+          options: profileOptions,
         });
         form.appendChild(ui.h('div', { class: 'form-grid' }, profileSel));
         form.appendChild(ui.h('h2', {}, 'First branch'));

@@ -60,7 +60,8 @@ const { computeSaleLine, computeSaleTotals, resolveUnitPrice, marginWarnings } =
 const { extractVatFromInclusive } = require('../../domain/nigerianTax');
 const { creditDecision } = require('../../domain/credit');
 const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = require('../../domain/planLimits');
-const { minutesBetween, addMonths, watNow, utcToWat, watToUtc, parseTimestamp } = require('../../domain/time');
+const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp } = require('../../domain/time');
+const trade = require('../../domain/trade');
 const { atLeast } = require('../../domain/roles');
 const { computeRowHash } = require('../../domain/hashChain');
 const { HttpError } = require('../lib/http');
@@ -226,6 +227,8 @@ async function prepare(db, {
   lines, user, settings, saleType = 'RETAIL', tillSessionId = null,
   discountAmount = 0, discountReason = null, deliveryFee = 0, deliveryRequired = false,
   deliveryAddress = null, notes = null, manualPriceOverrides = {},
+  tradeModes = null, releaseAgreementId = null,
+  walkInName = null, walkInPhone = null,
 }) {
   if (!branch) throw err('Choose which branch this sale belongs to.', 'BRANCH_REQUIRED');
   if (!Array.isArray(lines) || !lines.length) throw err('A sale needs at least one item.', 'EMPTY_SALE');
@@ -247,6 +250,27 @@ async function prepare(db, {
 
   const vatEnabled = Boolean(Number(settings.vat_enabled));
   const vatRatePercent = Number(settings.vat_rate_percent) || 0;
+  const today = watToday();
+  const commitmentRows = productIds.length
+    ? await db.all(
+      `SELECT l.product_id, l.variant_id, l.quantity_in_base, a.id AS agreement_id, a.starts_on, a.ends_on
+         FROM asset_agreement_lines l
+         JOIN asset_agreements a ON a.id = l.agreement_id
+        WHERE l.product_id IN (${productIds.map(() => '?').join(',')})
+          AND l.is_deleted = 0 AND a.is_deleted = 0
+          AND a.status = 'OUT'`,
+      productIds,
+    )
+    : [];
+  const openCommitments = commitmentRows
+    .filter((row) => String(row.agreement_id) !== String(releaseAgreementId || ''))
+    .map((row) => ({
+      productId: String(row.product_id),
+      variantId: row.variant_id ? String(row.variant_id) : '',
+      start: row.starts_on,
+      end: row.ends_on,
+      quantity: Number(row.quantity_in_base) || 0,
+    }));
 
   // Group batches by product+variant so FIFO selection sees only the
   // relevant pool. Including another variant's batch would let a 2-seater
@@ -263,6 +287,7 @@ async function prepare(db, {
   const problems = [];
   const warnings = [];
   const batchConsumption = new Map(); // batchId -> qty already promised to an earlier line
+  const cartHolds = []; // promises this cart has already made, so a second line sees them
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -281,8 +306,18 @@ async function prepare(db, {
       problems.push({ line: i, code: 'VARIANT_NOT_FOUND', message: `${position}: that variant of "${product.name}" does not exist.` });
       continue;
     }
-    if (Number(product.tracks_variants) && !variant) {
+    if (Number(product.tracks_variants) && !variant && !line.continuation) {
       problems.push({ line: i, code: 'VARIANT_REQUIRED', message: `${position}: "${product.name}" comes in variants — choose the specific one (colour, size or finish) the customer is buying.` });
+      continue;
+    }
+
+    const channel = trade.channelOf(line, saleType);
+    const arrangement = trade.assertArrangement({
+      channel, modes: tradeModes, product,
+      buyout: Boolean(line.buyout), continuation: Boolean(line.continuation),
+    });
+    if (!arrangement.ok) {
+      problems.push({ line: i, code: arrangement.code, message: `${position}: ${arrangement.error}` });
       continue;
     }
 
@@ -312,44 +347,122 @@ async function prepare(db, {
       continue;
     }
 
-    // ---- stock availability, FIFO across the batches for this product/variant
+    // ---- stock availability
+    // A sale consumes a unit forever. A hire or a lease only promises it for
+    // a window, and two windows that do not overlap can share the same unit.
+    // A continuation (the next month's rent, or a buyout of a unit already
+    // out) does not take a second unit.
     const key = batchKey(product.id, variant ? variant.id : null);
-    const pool = (batchesByKey.get(key) || []).map((b) => {
-      const promised = batchConsumption.get(String(b.id)) || 0;
-      return { ...b, quantity: roundTo(Number(b.quantity) - promised, 4) };
-    });
-    const selection = selectBatchesFifo(pool, conversion.baseQuantity);
-    if (!selection.ok) {
-      const available = pool.reduce((a, b) => a + Math.max(0, Number(b.quantity) - Number(b.quantity_reserved || 0)), 0);
-      const name = variant ? `${product.name} (${variant.name})` : product.name;
-      problems.push({
-        line: i,
-        code: 'INSUFFICIENT_STOCK',
-        message: `${position}: only ${roundTo(available, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${available === 1 ? '' : 's'} of "${name}" is available at this branch, and this line needs ${roundTo(conversion.baseQuantity, 2).toLocaleString('en-NG')}. ${selection.shortfallBase > 0 ? `Short by ${roundTo(selection.shortfallBase, 2).toLocaleString('en-NG')}.` : ''} Transfer stock in, or sell what is on the shelf.`,
-        available,
-        required: conversion.baseQuantity,
-        shortfall: selection.shortfallBase,
+    const originalBatches = batchesByKey.get(key) || [];
+    const variantKey = variant ? String(variant.id) : '';
+    const sameAsset = (row) => row.productId === String(product.id) && String(row.variantId || '') === variantKey;
+    const intervals = openCommitments.filter(sameAsset).concat(cartHolds.filter(sameAsset));
+    const originalOnHand = originalBatches.reduce((a, b) => a + Number(b.quantity || 0), 0);
+    const reservedNow = originalBatches.reduce((a, b) => a + Number(b.quantity_reserved || 0), 0);
+    const holding = trade.holdsStock(channel) && !line.continuation && !line.buyout;
+    let span = null;
+    let selection = { ok: true, picks: [] };
+    if (line.continuation) {
+      selection = { ok: true, picks: [] };
+    } else if (holding) {
+      span = trade.windowFor(line, { today });
+      if (!span.ok) {
+        problems.push({ line: i, code: span.code, message: `${position}: ${span.error}` });
+        continue;
+      }
+      const free = trade.fleetFree({ onHand: originalOnHand, reserved: reservedNow, intervals, start: span.start, end: span.end });
+      if (free + 1e-9 < conversion.baseQuantity) {
+        const name = variant ? `${product.name} (${variant.name})` : product.name;
+        problems.push({
+          line: i, code: 'NOT_FREE_FOR_THOSE_DATES',
+          message: `${position}: only ${roundTo(free, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${free === 1 ? '' : 's'} of "${name}" is free from ${span.start} to ${span.end}, and this line needs ${roundTo(conversion.baseQuantity, 2).toLocaleString('en-NG')}. Another booking already has them, or they are held on layaway.`,
+          available: free, required: conversion.baseQuantity,
+        });
+        continue;
+      }
+      cartHolds.push({ productId: String(product.id), variantId: variantKey, start: span.start, end: span.end, quantity: conversion.baseQuantity });
+    } else {
+      const free = trade.fleetFree({ onHand: originalOnHand, reserved: reservedNow, intervals, start: today, end: trade.FOREVER });
+      const pool = originalBatches.map((b) => {
+        const promised = batchConsumption.get(String(b.id)) || 0;
+        return { ...b, quantity: roundTo(Number(b.quantity) - promised, 4) };
       });
-      continue;
-    }
-    for (const pick of selection.picks) {
-      batchConsumption.set(String(pick.batch.id), roundTo((batchConsumption.get(String(pick.batch.id)) || 0) + pick.quantityBase, 4));
+      selection = selectBatchesFifo(pool, conversion.baseQuantity);
+      const name = variant ? `${product.name} (${variant.name})` : product.name;
+      if (free + 1e-9 < conversion.baseQuantity) {
+        const booked = trade.peakInWindow(intervals, today, trade.FOREVER);
+        problems.push({
+          line: i, code: booked > 0 ? 'HELD_FOR_A_BOOKING' : 'INSUFFICIENT_STOCK',
+          message: booked > 0
+            ? `${position}: ${roundTo(booked, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${booked === 1 ? '' : 's'} of "${name}" is already promised on a hire or a lease. Selling this line would leave a booking short. ${roundTo(free, 2).toLocaleString('en-NG')} can still be sold.`
+            : `${position}: only ${roundTo(free, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${free === 1 ? '' : 's'} of "${name}" is available at this branch, and this line needs ${roundTo(conversion.baseQuantity, 2).toLocaleString('en-NG')}. Transfer stock in, or sell what is on the shelf.`,
+          available: free, required: conversion.baseQuantity,
+        });
+        continue;
+      }
+      if (!selection.ok) {
+        const available = pool.reduce((a, b) => a + Math.max(0, Number(b.quantity) - Number(b.quantity_reserved || 0)), 0);
+        problems.push({
+          line: i, code: 'INSUFFICIENT_STOCK',
+          message: `${position}: only ${roundTo(available, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${available === 1 ? '' : 's'} of "${name}" is available at this branch, and this line needs ${roundTo(conversion.baseQuantity, 2).toLocaleString('en-NG')}. Transfer stock in, or sell what is on the shelf.`,
+          available, required: conversion.baseQuantity, shortfall: selection.shortfallBase,
+        });
+        continue;
+      }
+      for (const pick of selection.picks) {
+        batchConsumption.set(String(pick.batch.id), roundTo((batchConsumption.get(String(pick.batch.id)) || 0) + pick.quantityBase, 4));
+      }
+      cartHolds.push({ productId: String(product.id), variantId: variantKey, start: today, end: trade.FOREVER, quantity: conversion.baseQuantity });
     }
 
     // ---- price
+    // Hire and lease are priced per day or per month, not at the shelf price.
+    // The line quantity stays the number of units (so stock math is right).
+    // The unit price is the fee for the window, so quantity times price is
+    // what the customer pays for the use, and the deposit is not in it.
     const override = overrides.get(`${product.id}|${variant ? variant.id : ''}`) || overrides.get(`${product.id}|`);
     const manual = manualPriceOverrides[i] != null ? manualPriceOverrides[i] : (line.manualPrice != null ? line.manualPrice : null);
-    const pricing = resolveUnitPrice({
-      product, variant,
-      batch: selection.picks[0] ? selection.picks[0].batch : null,
-      override,
-      priceListItems,
-      customer,
-      unitCode,
-      quantity: Number(line.quantity),
-      manualPrice: manual,
-      ladder: ladder.ok ? ladder.ladder : ladderRows,
-    });
+    let pricing;
+    let holdRate = null;
+    let holdDeposit = 0;
+    if (holding || (line.continuation && trade.holdsStock(channel))) {
+      const catalogue = trade.catalogueRate(product, channel);
+      const typed = line.rate != null ? Number(line.rate) : (manual != null ? Number(manual) : null);
+      const rate = typed != null && Number.isFinite(typed) ? typed : catalogue;
+      if (!(rate > 0)) {
+        problems.push({
+          line: i, code: 'NO_RATE',
+          message: `${position}: "${product.name}" has no ${channel === 'LEASE' ? 'monthly rent' : 'daily hire rate'}. Set it in the catalogue before booking it out.`,
+        });
+        continue;
+      }
+      if (typed != null && Math.abs(typed - catalogue) > 0.009 && catalogue > 0) {
+        const priceCheck = canDiscount(settings, user, { discountPct: 0 });
+        if (!priceCheck.allowed && String(user.role).toUpperCase() !== 'MANAGER' && String(user.role).toUpperCase() !== 'OWNER') {
+          problems.push({ line: i, code: 'MANUAL_PRICE_NOT_ALLOWED', message: `${position}: only a manager or the owner can charge a rate other than the one in the catalogue.` });
+          continue;
+        }
+      }
+      const periods = line.continuation ? 1 : span.periods;
+      const collect = line.collect || line.collectTerm;
+      const fee = trade.openingFee({ channel, rate, quantity: Number(line.quantity), periods, collect });
+      holdRate = rate;
+      holdDeposit = line.continuation ? 0 : trade.catalogueDeposit(product, channel, Number(line.quantity));
+      if (line.deposit != null && Number.isFinite(Number(line.deposit))) holdDeposit = round2(Number(line.deposit));
+      pricing = { unitPrice: Number(line.quantity) > 0 ? Math.round((fee / Number(line.quantity)) * 100) / 100 : fee, source: typed != null && catalogue > 0 && Math.abs(typed - catalogue) > 0.009 ? 'MANUAL' : 'BATCH', priceListId: null };
+    } else {
+      pricing = resolveUnitPrice({
+        product, variant,
+        batch: selection.picks[0] ? selection.picks[0].batch : null,
+        override,
+        priceListItems,
+        customer,
+        unitCode,
+        quantity: Number(line.quantity),
+        manualPrice: manual,
+        ladder: ladder.ok ? ladder.ladder : ladderRows,
+      });
+    }
 
     // AN UNPRICED GOOD IS NOT A SALE. The market list and a new product both
     // arrive with no price, and the till refuses to ring them. The same rule
@@ -357,7 +470,7 @@ async function prepare(db, {
     // nothing and the books record a sale that took no money.
     const cataloguePrice = Number(product.selling_price) || 0;
     const typedPrice = manual != null && Number.isFinite(Number(manual)) ? Number(manual) : null;
-    if (cataloguePrice <= 0 && Number(pricing.unitPrice) <= 0 && !(typedPrice > 0)) {
+    if (!holding && !line.continuation && cataloguePrice <= 0 && Number(pricing.unitPrice) <= 0 && !(typedPrice > 0)) {
       problems.push({
         line: i,
         code: 'NO_PRICE',
@@ -389,7 +502,7 @@ async function prepare(db, {
       discountPct: line.discountPct != null ? line.discountPct : null,
       // Cost is the FIFO-weighted cost of the batches actually consumed, not
       // the product's last-known average: this sale is consuming THESE units.
-      costPerBaseUnit: selection.picks.reduce((a, p) => a + p.quantityBase * p.costPerBaseUnit, 0) / selection.picks.reduce((a, p) => a + p.quantityBase, 0),
+      costPerBaseUnit: holding || !selection.picks.length ? 0 : selection.picks.reduce((a, p) => a + p.quantityBase * p.costPerBaseUnit, 0) / selection.picks.reduce((a, p) => a + p.quantityBase, 0),
       vatEnabled, vatRatePercent,
     });
     if (!computed.ok) {
@@ -460,9 +573,34 @@ async function prepare(db, {
       }
     }
 
+    if (holding || (line.continuation && trade.holdsStock(channel))) {
+      computed.totalCost = 0;
+      computed.costPriceSnapshot = 0;
+      computed.margin = computed.revenueNetOfVat;
+      computed.marginPct = computed.revenueNetOfVat > 0 ? 100 : 0;
+    }
+    const holdNote = span
+      ? (channel === 'HIRE'
+        ? `Hire ${span.start} to ${span.end} (${span.periods} day${span.periods === 1 ? '' : 's'}) at ${holdRate} a day. Deposit is held separately.`
+        : `Lease from ${span.start} to ${span.end} (${span.periods} month${span.periods === 1 ? '' : 's'}) at ${holdRate} a month. Deposit is held separately.`)
+      : (line.notes || null);
     resolvedLines.push({
       ...computed,
       index: i,
+      channel,
+      hold: Boolean(holding),
+      continuation: Boolean(line.continuation),
+      buyout: Boolean(line.buyout),
+      startsOn: span ? span.start : null,
+      endsOn: span ? span.end : null,
+      periods: span ? span.periods : null,
+      periodUnit: span ? span.periodUnit : null,
+      rate: holdRate,
+      deposit: holdDeposit,
+      collect: line.collect || null,
+      venue: line.venue || null,
+      agreementId: line.agreementId || line.agreement_id || null,
+      notes: holdNote || line.notes || null,
       product, variant,
       picks: selection.picks.map((p) => ({ batchId: String(p.batch.id), quantityBase: p.quantityBase, costPerBaseUnit: p.costPerBaseUnit, expiry: p.batch.expiry_date || null })),
       serialRows,
@@ -495,12 +633,25 @@ async function prepare(db, {
   // read used to render live totals and warnings as the cart changes, and
   // the payment legs do not exist yet at that point.
   const isCredit = ['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(String(saleType).toUpperCase());
+  const depositDue = round2(resolvedLines.reduce((a, l) => a + Number(l.deposit || 0), 0));
+  if (resolvedLines.some((l) => l.channel === 'HIRE' && !l.continuation)) {
+    const named = (customer && customer.name) || walkInName;
+    const phone = (customer && customer.phone) || walkInPhone;
+    if (!named || !phone) {
+      throw err('A hire needs the customer’s name and a phone number. The goods have to come back to somebody.', 'HIRE_NEEDS_CONTACT', 400);
+    }
+  }
+  if (resolvedLines.some((l) => l.channel === 'LEASE' && !l.continuation) && !customer) {
+    throw err('A lease needs a customer on the books. A walk-in name is not enough for a term.', 'LEASE_NEEDS_CUSTOMER', 400);
+  }
 
   return {
     ok: true,
     branch, business,
     customer, customerClass,
     saleType: String(saleType).toUpperCase(),
+    tradeMix: trade.describeMix(resolvedLines.map((l) => l.channel)),
+    depositDue,
     lines: resolvedLines,
     totals,
     warnings,
@@ -524,7 +675,7 @@ async function prepare(db, {
  * three places (prepare, complete, and the offline-queue replay validation),
  * and three copies of fiddly rules is three chances to get one wrong.
  */
-function validatePayments({ payments, totals, saleType, isCredit, settings, user, customer, creditInfo, changeOwed = 0 }) {
+function validatePayments({ payments, totals, saleType, isCredit, settings, user, customer, creditInfo, changeOwed = 0, depositHeld = 0 }) {
   const legs = Array.isArray(payments) ? payments.filter((p) => p && Number(p.amount) > 0) : [];
   const out = [];
   let sum = 0;
@@ -613,6 +764,10 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
   }
 
   const owed = round2(Math.max(0, Number(changeOwed) || 0));
+  // A hire or lease deposit is cash the till must take, and it is not part of
+  // the sale total. The expected cash is the bill, plus the deposit, plus any
+  // change the till is holding back. The deposit is not change and not revenue.
+  const held = round2(Math.max(0, Number(depositHeld) || 0));
   const tolerance = 0.005;
   const advisories = [];
 
@@ -642,7 +797,7 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
     // A non-credit sale may not carry a credit leg at all (enforced above), so
     // everything received is real money and must cover the total plus whatever
     // change the till owes back.
-    const expected = round2(totals.total + owed);
+    const expected = round2(totals.total + held + owed);
     if (cashSum + tolerance < expected) {
       throw err(
         `This sale totals \u20a6${totals.total.toLocaleString('en-NG')}${owed > 0 ? ` plus \u20a6${owed.toLocaleString('en-NG')} change owed` : ''} but only \u20a6${cashSum.toLocaleString('en-NG')} of payment is recorded \u2014 \u20a6${round2(expected - cashSum).toLocaleString('en-NG')} short. Add the remaining payment, or record it as a credit sale if the customer is paying later.`,
@@ -668,7 +823,8 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
     paid: round2(Math.min(cashSum, totals.total)),
     tendered: round2(cashSum),
     creditLeg: creditSum,
-    changeOwed: round2(Math.max(0, cashSum - totals.total)),
+    depositHeld: held,
+    changeOwed: round2(Math.max(0, cashSum - totals.total - held)),
     // What the customer still owes: for a credit sale, the total less the real
     // money taken. This is the figure the debtor ledger posts, so the two can
     // never disagree.
@@ -799,6 +955,8 @@ async function complete(db, params) {
     notes = null, tillSessionId = null, manualPriceOverrides = {},
     creditOverrideReason = null, changeOwedAmount = 0,
     deviceId = null, soldAt = null,
+    tradeModes = null, releaseAgreementId = null,
+    walkInName = null, walkInPhone = null,
   } = params;
 
   // Resolved before anything else: which till this sale belongs to depends on
@@ -809,6 +967,7 @@ async function complete(db, params) {
     branch, business, customer, customerClass, priceLists, lines, user, settings,
     saleType, tillSessionId, discountAmount, discountReason, deliveryFee,
     deliveryRequired, deliveryAddress, notes, manualPriceOverrides,
+    tradeModes, releaseAgreementId, walkInName, walkInPhone,
   });
 
   const totals = prepared.totals;
@@ -870,6 +1029,7 @@ async function complete(db, params) {
 
   const paymentResult = validatePayments({
     payments, totals, saleType: prepared.saleType, isCredit, settings, user, customer, creditInfo, changeOwed,
+    depositHeld: prepared.depositDue || 0,
   });
 
   // ---- till check
@@ -936,11 +1096,15 @@ async function complete(db, params) {
     for (const serialRow of line.serialRows) {
       const serialNo = String(serialRow.serial_no);
       if (serialChains.has(serialNo)) continue;
-      const warrantyMonths = Number(line.product.warranty_months) || 0;
+      const holdingSerial = trade.holdsStock(line.channel) && !line.buyout;
+      const eventType = holdingSerial ? 'STATUS_CHANGE' : 'SOLD';
+      const warrantyMonths = holdingSerial ? 0 : (Number(line.product.warranty_months) || 0);
       const prevHash = await serialHeadHash(db, serialNo);
-      const note = `Sold on receipt ${receiptNo}`;
+      const note = holdingSerial
+        ? `${line.channel === 'LEASE' ? 'Leased' : 'Hired'} on receipt ${receiptNo}. Still ours.`
+        : `Sold on receipt ${receiptNo}`;
       const rowHash = await computeRowHash(prevHash, {
-        ...serialEventFields({ serial_no: serialNo, event_type: 'SOLD', branch_id: branch.id, notes: note }),
+        ...serialEventFields({ serial_no: serialNo, event_type: eventType, branch_id: branch.id, notes: note }),
         // The sale id is not yet known (it is generated inside the
         // transaction), so it is NOT part of the hash. Hashing an id that
         // does not exist yet would make the chain unreproducible by a
@@ -951,7 +1115,9 @@ async function complete(db, params) {
         prevHash,
         rowHash,
         note,
-        warrantyStart,
+        eventType,
+        toStatus: holdingSerial ? 'RESERVED' : 'SOLD',
+        warrantyStart: holdingSerial ? null : warrantyStart,
         warrantyEnd: warrantyMonths > 0 ? addMonths(warrantyStart, warrantyMonths) : null,
       });
     }
@@ -967,8 +1133,8 @@ async function complete(db, params) {
         sale_type, salesperson_id, status, subtotal, discount_amount, order_discount_amount, discount_reason,
         vat_enabled, vat_rate_percent, vat_amount, total, amount_paid, balance_due,
         cash_tendered, change_given, payment_method, currency_code, due_date,
-        delivery_required, delivery_address, delivery_fee, notes, sold_at, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+        delivery_required, delivery_address, delivery_fee, notes, trade_mix, sold_at, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
       saleId, String(business.id), String(branch.id), till ? String(till.id) : null, receiptNo,
       customer ? String(customer.id) : null,
       customer ? customer.name : (params.walkInName || null),
@@ -995,6 +1161,7 @@ async function complete(db, params) {
       latePosting
         ? `${notes ? notes + ' | ' : ''}Late posting: recorded ${sold.minutesBack >= 1440 ? Math.floor(sold.minutesBack / 1440) + ' day(s)' : sold.minutesBack + ' minute(s)'} after the sale, against a till that was already counted.`
         : (notes || null),
+      prepared.tradeMix || null,
       sold.sql,
     ]);
 
@@ -1004,9 +1171,9 @@ async function complete(db, params) {
       tx.queue(`INSERT INTO sale_items (
           id, sale_id, product_id, variant_id, batch_id, category_id, product_name, sku, serial_no,
           unit_code, quantity, quantity_in_base, unit_price, price_source, price_list_id,
-          discount_amount, discount_reason, vat_amount, line_total, cost_price_snapshot, margin, margin_pct, notes,
+          discount_amount, discount_reason, vat_amount, line_total, cost_price_snapshot, margin, margin_pct, notes, channel,
           created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
         itemId, saleId, String(line.productId), line.variantId ? String(line.variantId) : null,
         line.picks[0] ? line.picks[0].batchId : null,
         line.categoryId ? String(line.categoryId) : null,
@@ -1015,7 +1182,7 @@ async function complete(db, params) {
         line.unitCode, line.quantity, line.quantityInBase, line.unitPrice, line.priceSource,
         line.priceListId ? String(line.priceListId) : null,
         line.discountAmount, line.discountReason || null, line.vatAmount, line.lineTotal,
-        line.costPriceSnapshot, line.margin, line.marginPct, line.notes || null,
+        line.costPriceSnapshot, line.margin, line.marginPct, line.notes || null, line.channel || 'RETAIL',
       ]);
 
       // Stock decrement, one row per batch consumed.
@@ -1034,15 +1201,19 @@ async function complete(db, params) {
       // (quantity_reserved <= quantity) with a message that names a constraint
       // rather than the reason. Guarding on what is actually SELLABLE makes the
       // invariant local to the statement that needs it.
-      for (const pick of line.picks) {
-        tx.queue(
-          `UPDATE stock_batches
-              SET quantity = quantity - ?,
-                  status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END,
-                  updated_at = datetime('now')
-            WHERE id = ? AND is_deleted = 0 AND quantity - quantity_reserved >= ?`,
-          [pick.quantityBase, pick.quantityBase, pick.batchId, pick.quantityBase],
-        );
+      // A hire or a lease does not take the unit off the books. The agreement
+      // is what says it is promised. A sale, including a buyout, does.
+      if (!trade.holdsStock(line.channel) || line.buyout) {
+        for (const pick of line.picks) {
+          tx.queue(
+            `UPDATE stock_batches
+                SET quantity = quantity - ?,
+                    status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END,
+                    updated_at = datetime('now')
+              WHERE id = ? AND is_deleted = 0 AND quantity - quantity_reserved >= ?`,
+            [pick.quantityBase, pick.quantityBase, pick.batchId, pick.quantityBase],
+          );
+        }
       }
 
       // Serials: mark sold, start the warranty clock, and chain an event.
@@ -1053,13 +1224,13 @@ async function complete(db, params) {
         if (!chain) continue; // no chain prepared (should not happen); skip rather than break the chain
 
         tx.queue(`UPDATE serial_numbers SET
-            status = 'SOLD', branch_id = ?, sale_id = ?, customer_id = ?,
+            status = ?, branch_id = ?, sale_id = ?, customer_id = ?,
             sold_at = ?,
             warranty_starts_at = ?, warranty_ends_at = ?,
             updated_at = datetime('now')
           WHERE id = ? AND is_deleted = 0 AND status IN ('IN_STOCK','RESERVED')`, [
-          String(branch.id), saleId, customer ? String(customer.id) : null,
-          sold.sql, chain.warrantyStart, chain.warrantyEnd, String(serialRow.id),
+          chain.toStatus || 'SOLD', String(branch.id), saleId, customer ? String(customer.id) : null,
+          chain.toStatus === 'SOLD' ? sold.sql : null, chain.warrantyStart, chain.warrantyEnd, String(serialRow.id),
         ]);
 
         tx.queue(`INSERT INTO sale_serials (id, sale_id, sale_item_id, serial_id, serial_no, branch_id, created_at)
@@ -1071,11 +1242,83 @@ async function complete(db, params) {
             id, serial_id, serial_no, event_type, from_status, to_status, branch_id,
             reference_type, reference_id, actor_id, customer_id, notes, prev_hash, row_hash, created_at)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`, [
-          chain.eventId, String(serialRow.id), serialNo, 'SOLD', serialRow.status, 'SOLD', String(branch.id),
+          chain.eventId, String(serialRow.id), serialNo, chain.eventType || 'SOLD', serialRow.status, chain.toStatus || 'SOLD', String(branch.id),
           'SALE', saleId, String(user.id), customer ? String(customer.id) : null,
           chain.note, chain.prevHash, chain.rowHash,
         ]);
       }
+    }
+
+    // ---- agreements
+    // One agreement per kind and window. A mixed cart with chairs for
+    // Saturday and a generator for a month is two agreements, both tied
+    // to this receipt so the money and the promise can be found together.
+    const groups = new Map();
+    for (const line of prepared.lines) {
+      if (!line.hold || !line.startsOn) continue;
+      const key = `${line.channel}|${line.startsOn}|${line.endsOn}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(line);
+    }
+    const agreementIds = [];
+    for (const group of groups.values()) {
+      const head = group[0];
+      const agreementId = newId();
+      agreementIds.push(agreementId);
+      const deposit = round2(group.reduce((a, l) => a + Number(l.deposit || 0), 0));
+      const fee = round2(group.reduce((a, l) => a + Number(l.lineTotal || 0), 0));
+      tx.queue(`INSERT INTO asset_agreements (
+          id, business_id, branch_id, customer_id, customer_name, customer_phone, sale_id,
+          kind, status, starts_on, ends_on, periods, period_unit, fee_total,
+          deposit_due, deposit_held, deposit_method, venue, notes, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,'OUT',?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+        agreementId, String(business.id), String(branch.id),
+        customer ? String(customer.id) : null,
+        customer ? customer.name : (params.walkInName || null),
+        customer ? customer.phone : (params.walkInPhone || null),
+        saleId,
+        head.channel === 'LEASE' ? 'LEASE' : 'HIRE',
+        head.startsOn, head.endsOn, head.periods || 1, head.periodUnit || (head.channel === 'LEASE' ? 'MONTH' : 'DAY'),
+        fee, deposit, deposit, dominantMethod(paymentResult.legs),
+        head.venue || null, notes || null, String(user.id),
+      ]);
+      group.forEach((line) => {
+        tx.queue(`INSERT INTO asset_agreement_lines (
+            id, agreement_id, product_id, variant_id, product_name, sku, quantity, quantity_in_base,
+            unit_code, rate, deposit, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`, [
+          newId(), agreementId, String(line.productId), line.variantId ? String(line.variantId) : null,
+          line.productName, line.sku || null, line.quantity, line.quantityInBase, line.unitCode || null,
+          line.rate || 0, line.deposit || 0,
+        ]);
+      });
+      tx.queue(`INSERT INTO asset_agreement_schedule (
+          id, agreement_id, period_no, due_on, amount, status, paid_at, sale_id, created_at, updated_at)
+        VALUES (?,?,1,?,?,'PAID', datetime('now'), ?, datetime('now'), datetime('now'))`, [
+        newId(), agreementId, head.startsOn, fee, saleId,
+      ]);
+      if (deposit > 0) {
+        const depositStatements = glService.postHeldDeposit({
+          business, branch, agreementId, amount: deposit,
+          method: dominantMethod(paymentResult.legs), user, accountIds,
+          description: `Deposit held on receipt ${receiptNo}. This is not income.`,
+        });
+        for (const statement of depositStatements) tx.queue(statement.sql, statement.params);
+      }
+    }
+    for (const line of prepared.lines) {
+      if (!line.continuation || !line.agreementId) continue;
+      tx.queue(`INSERT INTO asset_agreement_schedule (
+          id, agreement_id, period_no, due_on, amount, status, paid_at, sale_id, created_at, updated_at)
+        SELECT ?, ?, COALESCE(MAX(period_no), 0) + 1, ?, ?, 'PAID', datetime('now'), ?, datetime('now'), datetime('now')
+          FROM asset_agreement_schedule WHERE agreement_id = ?`, [
+        newId(), String(line.agreementId), sold.day, line.lineTotal, saleId, String(line.agreementId),
+      ]);
+    }
+    for (const line of prepared.lines) {
+      if (!line.buyout || !line.agreementId) continue;
+      tx.queue(`UPDATE asset_agreements SET status = 'BOUGHT_OUT', bought_out_sale_id = ?, updated_at = datetime('now')
+                WHERE id = ? AND status = 'OUT' AND is_deleted = 0`, [saleId, String(line.agreementId)]);
     }
 
     // ---- payment legs
@@ -1190,8 +1433,18 @@ async function complete(db, params) {
     }
 
     // ---- general ledger
+    // The deposit cash is journaled on its own, to the liability. If it also
+    // rode in on this sale's payment legs, the revenue entry would debit cash
+    // it does not credit, and the books would not balance.
+    let depositLeft = round2(prepared.depositDue || 0);
+    const revenueLegs = paymentResult.legs.map((leg) => {
+      if (depositLeft <= 0 || leg.method === 'CREDIT') return leg;
+      const take = Math.min(Number(leg.amount) || 0, depositLeft);
+      depositLeft = round2(depositLeft - take);
+      return { ...leg, amount: round2((Number(leg.amount) || 0) - take) };
+    }).filter((leg) => Number(leg.amount) > 0);
     const glStatements = glService.postSaleStatements({
-      saleId, business, branch, totals, vat, payments: paymentResult.legs,
+      saleId, business, branch, totals, vat, payments: revenueLegs,
       lines: prepared.lines, isCredit, balanceDue: paymentResult.balanceDue,
       changeOwed, user, receiptNo, customer, accountIds,
     });
@@ -1260,6 +1513,9 @@ async function complete(db, params) {
       // discovering a shortfall they did not cause.
       latePosting,
       backdated: sold.backdated,
+      agreementIds,
+      depositHeld: round2(prepared.depositDue || 0),
+      tradeMix: prepared.tradeMix || null,
     };
   });
 }
@@ -1424,6 +1680,23 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
   const customer = sale.customer_id ? await db.first('SELECT * FROM customers WHERE id = ?', [String(sale.customer_id)]) : null;
   const till = sale.till_session_id ? await db.first('SELECT * FROM till_sessions WHERE id = ?', [String(sale.till_session_id)]) : null;
   const accountIds = await glService.loadAccountCodes(db, sale.business_id);
+  const openedHere = await db.all(
+    'SELECT * FROM asset_agreements WHERE sale_id = ? AND is_deleted = 0',
+    [String(saleId)],
+  );
+  const boughtHere = await db.all(
+    'SELECT id FROM asset_agreements WHERE bought_out_sale_id = ? AND is_deleted = 0',
+    [String(saleId)],
+  );
+  if (boughtHere.length) {
+    throw err('This receipt bought goods out of a lease. The buyout has to be undone from the hire book before the receipt can be voided.', 'BUYOUT_NOT_VOIDABLE', 409);
+  }
+  if (openedHere.some((row) => row.status === 'RETURNED' || row.status === 'BOUGHT_OUT')) {
+    throw err('Goods on this receipt have already come back, or been bought. A void would pretend they were never out.', 'AGREEMENT_ALREADY_CLOSED', 409);
+  }
+  const depositBack = round2(openedHere
+    .filter((row) => row.status === 'OUT')
+    .reduce((sum, row) => sum + (Number(row.deposit_held) || 0), 0));
 
   return db.transaction(async (tx) => {
     tx.queue(`UPDATE sales SET status = 'VOIDED', voided_at = datetime('now'), voided_by = ?, void_reason = ?, updated_at = datetime('now') WHERE id = ?`,
@@ -1472,7 +1745,7 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
           sale_count = MAX(0, sale_count - 1),
           void_count = void_count + 1,
           updated_at = datetime('now')
-        WHERE id = ?`, [Number(sale.total), Number(sale.total), String(till.id)]);
+        WHERE id = ?`, [Number(sale.total), round2(Number(sale.total) + depositBack), String(till.id)]);
     } else if (till && till.status === 'CLOSED') {
       // A void against a CLOSED till cannot silently rewrite a reconciled
       // day. It is allowed (the goods genuinely came back) but recorded so
@@ -1484,6 +1757,20 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
 
     for (const s of glService.reverseSaleStatements({ sale, items, business: { id: sale.business_id }, branch: { id: sale.branch_id }, user, reason, accountIds })) {
       tx.queue(s.sql, s.params);
+    }
+    for (const agreement of openedHere) {
+      if (agreement.status !== 'OUT') continue;
+      tx.queue(`UPDATE asset_agreements SET status = 'CANCELLED', updated_at = datetime('now') WHERE id = ? AND status = 'OUT'`, [String(agreement.id)]);
+      if (Number(agreement.deposit_held) > 0) {
+        const branchRow = { id: sale.branch_id };
+        const businessRow = { id: sale.business_id };
+        for (const s of glService.postHeldDeposit({
+          business: businessRow, branch: branchRow, agreementId: agreement.id,
+          amount: agreement.deposit_held, method: agreement.deposit_method || 'CASH',
+          user, accountIds, releasing: true,
+          description: `Deposit returned because receipt ${sale.receipt_no} was voided.`,
+        })) tx.queue(s.sql, s.params);
+      }
     }
 
     return { ok: true, saleId: String(saleId), receiptNo: sale.receipt_no, restoredStock: restoreStock, itemsReversed: items.length };

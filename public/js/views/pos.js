@@ -282,15 +282,121 @@
       return { code, factor };
     }
 
-    function addLine(product, opts = {}) {
-      const base = Number(opts.priceOverride != null ? opts.priceOverride : product.selling_price != null ? product.selling_price : product.price || 0);
+    function linePayload(l) {
+      return {
+        product_id: l.productId,
+        variant_id: l.variantId,
+        quantity: Number(l.quantity),
+        unit_code: l.unitCode,
+        unit_price: Number(l.unitPrice),
+        line_discount: Number(l.lineDiscount || 0),
+        channel: l.channel || undefined,
+        starts_on: l.startsOn || undefined,
+        ends_on: l.endsOn || undefined,
+        periods: l.periods || undefined,
+        months: l.channel === 'LEASE' ? l.periods : undefined,
+        rate: l.rate != null ? Number(l.rate) : undefined,
+        deposit: l.depositEach != null ? U.round2(Number(l.depositEach) * Number(l.quantity || 0)) : undefined,
+        serial_numbers: l.serialNumbers && l.serialNumbers.length ? l.serialNumbers : undefined,
+      };
+    }
+
+    function todayIso() {
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    }
+
+    async function askArrangement(product) {
+      const hire = Number(product.offers_hire) === 1;
+      const lease = Number(product.offers_lease) === 1;
+      const sale = product.offers_sale == null || Number(product.offers_sale) === 1;
+      if (!hire && !lease) return { channel: 'RETAIL' };
+      const choices = [];
+      if (sale && Number(product.selling_price) > 0) choices.push('SALE');
+      if (hire) choices.push('HIRE');
+      if (lease) choices.push('LEASE');
+      let channel = choices[0];
+      if (choices.length > 1) {
+        const picked = await ui.promptDialog({
+          title: product.name,
+          label: `How is this going out? Type ${choices.join(', ')}`,
+          value: choices[0],
+          required: true,
+        });
+        if (!picked) return null;
+        channel = String(picked).trim().toUpperCase();
+        if (!choices.includes(channel) && channel !== 'SALE') {
+          ui.warn(`Type one of ${choices.join(', ')}.`);
+          return null;
+        }
+        if (channel === 'SALE') channel = 'RETAIL';
+      }
+      if (channel !== 'HIRE' && channel !== 'LEASE') return { channel: 'RETAIL' };
+      const start = await ui.promptDialog({
+        title: channel === 'HIRE' ? 'Hire dates' : 'Lease start',
+        label: 'Starts on (YYYY-MM-DD)',
+        value: todayIso(),
+        required: true,
+      });
+      if (!start) return null;
+      const endLabel = channel === 'HIRE' ? 'Back on (YYYY-MM-DD)' : 'Months (whole number)';
+      const end = await ui.promptDialog({
+        title: channel === 'HIRE' ? 'Hire dates' : 'Lease term',
+        label: endLabel,
+        value: channel === 'HIRE' ? start : '1',
+        required: true,
+      });
+      if (!end) return null;
+      const rate = channel === 'HIRE' ? Number(product.hire_price_per_day) : Number(product.lease_price_per_month);
+      const eachDeposit = channel === 'HIRE' ? Number(product.hire_deposit) || 0 : Number(product.lease_deposit) || 0;
+      if (!(rate > 0)) {
+        ui.warn(`${product.name} has no ${channel === 'HIRE' ? 'daily hire rate' : 'monthly rent'}. Set it in the catalogue first.`);
+        return null;
+      }
+      let periods = 1;
+      let endsOn = end;
+      if (channel === 'LEASE') {
+        periods = Math.max(1, Math.round(Number(end) || 1));
+        const parts = String(start).split('-').map(Number);
+        const dt = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+        dt.setUTCMonth(dt.getUTCMonth() + periods);
+        dt.setUTCDate(dt.getUTCDate() - 1);
+        const pad = (n) => String(n).padStart(2, '0');
+        endsOn = `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}`;
+      } else {
+        const a = new Date(`${start}T00:00:00Z`);
+        const b = new Date(`${end}T00:00:00Z`);
+        periods = Math.round((b - a) / 86400000) + 1;
+        if (!(periods > 0)) {
+          ui.warn('The return date has to be on or after the start date.');
+          return null;
+        }
+      }
+      return {
+        channel,
+        startsOn: start,
+        endsOn,
+        periods,
+        rate,
+        deposit: eachDeposit,
+        unitPrice: channel === 'LEASE' ? rate : U.round2(rate * periods),
+      };
+    }
+
+    async function addLine(product, opts = {}) {
+      const arrangement = opts.arrangement || await askArrangement(product);
+      if (!arrangement) return;
+      const hiring = arrangement.channel === 'HIRE' || arrangement.channel === 'LEASE';
+      const base = Number(opts.priceOverride != null ? opts.priceOverride : hiring ? arrangement.unitPrice : product.selling_price != null ? product.selling_price : product.price || 0);
       if (!(base > 0)) {
         ui.warn(`${product.name} has no price. Set a price in the catalogue before selling it.`);
         return;
       }
-      const existing = cart.lines.find((l) => String(l.productId) === String(product.id)
+      const existing = !hiring && cart.lines.find((l) => String(l.productId) === String(product.id)
         && String(l.variantId || '') === String(opts.variantId || '')
-        && String(l.unitCode || '') === String(opts.unitCode || ''));
+        && String(l.unitCode || '') === String(opts.unitCode || '')
+        && (l.channel || 'RETAIL') === 'RETAIL');
       // CATALOGUE PRICES ARE PER BASE UNIT. A line sold by the carton is priced
       // per carton: 48 bottles of water at ₦300 is ₦14,400, not ₦300. The server
       // has always resolved it that way (resolveUnitPrice multiplies by the ladder
@@ -300,8 +406,9 @@
         ? { code: opts.unitCode, factor: Number(opts.factor) > 0 ? Number(opts.factor) : 1 }
         : sellUnit(product, opts.units);
       const basePrice = Number(opts.priceOverride != null ? opts.priceOverride
+        : hiring ? arrangement.unitPrice
         : product.selling_price != null ? product.selling_price : product.price || 0);
-      const price = U.round2(basePrice * sell.factor);
+      const price = hiring ? U.round2(basePrice) : U.round2(basePrice * sell.factor);
       if (existing && !opts.serialNo) {
         existing.quantity = Number(existing.quantity) + 1;
       } else {
@@ -329,6 +436,12 @@
           // to speak the same language as the quantity box beside it.
           onHandBase: product.on_hand != null ? Number(product.on_hand) : null,
           maxQuantity: product.on_hand != null ? Number(product.on_hand) / sell.factor : null,
+          channel: arrangement.channel || 'RETAIL',
+          startsOn: arrangement.startsOn || null,
+          endsOn: arrangement.endsOn || null,
+          periods: arrangement.periods || null,
+          rate: arrangement.rate || null,
+          depositEach: hiring ? U.round2(arrangement.deposit || 0) : 0,
         });
       }
       save();
@@ -667,8 +780,10 @@
       // charging 7.5% more than the price on the shelf.
       const vat = vatEnabled && vatRate > 0 ? U.round2(total * (vatRate / (100 + vatRate))) : 0;
       const net = U.round2(total - vat);
+      const deposit = U.round2(cart.lines.reduce((a, l) => a + Number(l.depositEach || 0) * Number(l.quantity || 0), 0));
       const paid = U.round2(cart.payments.reduce((a, p) => a + Number(p.amount || 0), 0));
-      return { subtotal, delivery, discount, total, vat, net, vatRate, vatEnabled, paid, balance: U.round2(total - paid) };
+      const collect = U.round2(total + deposit);
+      return { subtotal, delivery, discount, total, deposit, collect, vat, net, vatRate, vatEnabled, paid, balance: U.round2(collect - paid) };
     }
 
     function paintTotals() {
@@ -686,7 +801,7 @@
       const method = dominantMethod();
       if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
       const pay = document.getElementById('pos-complete');
-      if (pay) pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.total)}` : 'Take payment';
+      if (pay) pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Take payment';
     }
 
     function paintInfo() {
@@ -724,11 +839,9 @@
           sale_type: cart.saleType,
           discount_amount: t.discount,
           delivery_fee: t.delivery,
-          lines: cart.lines.map((l) => ({
-            product_id: l.productId, variant_id: l.variantId,
-            quantity: Number(l.quantity), unit_code: l.unitCode,
-            unit_price: Number(l.unitPrice), line_discount: Number(l.lineDiscount || 0),
-          })),
+          lines: cart.lines.map((l) => linePayload(l)),
+          walk_in_name: cart.customerName || null,
+          walk_in_phone: cart.customerPhone || null,
         }, { timeoutMs: 9000 });
         if (seq !== previewSeq) return;
         showPreviewWarnings(result);
@@ -1086,15 +1199,7 @@
         credit_override_reason: (creditReasonInput && creditReasonInput.value.trim()) || cart.creditOverrideReason || null,
         manual_price_overrides: cart.manualPriceOverrides,
         payments: cart.payments.map((p) => ({ method: p.method, amount: Number(p.amount), reference: p.reference || null })),
-        lines: cart.lines.map((l) => ({
-          product_id: l.productId,
-          variant_id: l.variantId,
-          quantity: Number(l.quantity),
-          unit_code: l.unitCode,
-          unit_price: Number(l.unitPrice),
-          line_discount: Number(l.lineDiscount || 0),
-          serial_numbers: l.serialNumbers && l.serialNumbers.length ? l.serialNumbers : undefined,
-        })),
+        lines: cart.lines.map((l) => linePayload(l)),
       };
 
       const online = SR.api.isOnline();
