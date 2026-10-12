@@ -22,6 +22,81 @@
 
   const PAGE_SIZE = 50;
 
+  async function openGreenbook() {
+    const q = await ui.promptDialog({
+      title: 'NAFDAC Greenbook',
+      label: 'Name, ingredient or registration number',
+      required: true,
+      hint: 'This searches the reference catalogue. It does not add a price, and it does not put the row on the shared market list.',
+    });
+    if (!q) return;
+    let data;
+    try {
+      data = await SR.api.get('/api/nafdac', { query: { q, limit: 20 } });
+    } catch (err) {
+      ui.apiError(err);
+      return;
+    }
+    const rows = data.data || [];
+    if (!rows.length) { ui.warn('Nothing in the Greenbook matches that.'); return; }
+    const list = ui.h('div', { class: 'stack' });
+    for (const row of rows) {
+      const adopt = ui.h('button', { class: 'btn btn-sm' }, 'Copy into this shop');
+      adopt.addEventListener('click', async () => {
+        const price = await ui.promptDialog({
+          title: row.product_name,
+          label: 'Selling price (₦)',
+          required: true,
+          hint: 'The Greenbook is not priced. This price is yours.',
+        });
+        if (!price) return;
+        try {
+          const result = await SR.api.post(`/api/nafdac/${encodeURIComponent(row.id)}/adopt`, {
+            selling_price: Number(price),
+            business_id: SR.state.activeBusinessId,
+            branch_id: SR.state.activeBranchId,
+          });
+          ui.ok(result.message || 'Copied into this catalogue.');
+          m.close();
+          SR.app.navigate('/products');
+        } catch (err) {
+          ui.apiError(err);
+        }
+      });
+      list.appendChild(ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '12px' } },
+        ui.h('div', {},
+          ui.h('strong', {}, row.product_name),
+          ui.h('div', { class: 'hint' }, [row.nafdac_reg_no, row.dispensing_type, Number(row.is_controlled) ? 'controlled' : null, row.strength].filter(Boolean).join(' · '))),
+        adopt));
+    }
+    const m = ui.openModal({ title: 'Greenbook matches', body: list, size: 'wide' });
+  }
+
+  async function openRegister() {
+    let data;
+    try {
+      data = await SR.api.get('/api/pharmacy/register', { query: SR.state.query({ limit: 50 }) });
+    } catch (err) {
+      ui.apiError(err);
+      return;
+    }
+    const rows = data.data || [];
+    const body = rows.length
+      ? ui.renderTable({
+        columns: [
+          { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+          { key: 'entry_type', label: 'Entry' },
+          { key: 'product_name', label: 'Product' },
+          { key: 'quantity_dispensed', label: 'Qty', align: 'right' },
+          { key: 'buyer_name', label: 'Buyer' },
+          { key: 'buyer_phone', label: 'Phone' },
+        ],
+        rows,
+      })
+      : ui.h('p', {}, 'No controlled medicine has been dispensed at this shop yet.');
+    ui.openModal({ title: 'Controlled register', body, size: 'wide' });
+  }
+
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Catalogue');
@@ -34,6 +109,8 @@
         ui.h('p', { class: 'sub' }, 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => openGreenbook() }, 'NAFDAC Greenbook'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => openRegister() }, 'Controlled register'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
@@ -276,7 +353,18 @@
         label: 'Warranty type', name: 'warranty_type', value: base.warranty_type || '',
         options: [{ value: '', label: '— none —' }, { value: 'MANUFACTURER', label: 'Manufacturer' }, { value: 'SELLER', label: 'Seller' }, { value: 'EXTENDED', label: 'Extended' }, { value: 'NONE', label: 'No warranty' }],
       }),
-      ui.field({ label: 'Registration number', name: 'registration_no', span: true, hint: 'SONCAP, NAFDAC or MANCAP number. Advisory — recorded, never a blocked sale.' }));
+      ui.field({ label: 'Registration number', name: 'registration_no', span: true, hint: 'SONCAP, NAFDAC or MANCAP number. Advisory — recorded, never a blocked sale.' }),
+      ui.field({
+        label: 'Dispensing class',
+        name: 'dispensing_class',
+        value: base.dispensing_class || '',
+        options: [
+          { value: '', label: 'Not a medicine' },
+          { value: 'OTC', label: 'OTC — sold without a prescription' },
+          { value: 'POM', label: 'POM — prescription required' },
+        ],
+        hint: 'Leave this blank for everything that is not a medicine.',
+      }));
     wrapEl.appendChild(grid);
 
     const serialOn = editing ? Boolean(Number(base.requires_serial)) : false;
@@ -299,6 +387,7 @@
       ['offers_hire', 'Available for hire', 'Goes out for days and comes back. Stock is not sold.'],
       ['offers_lease', 'Available for lease', 'Goes out for months. Rent is income. The asset stays yours until a buyout.'],
       ['is_returnable', 'Returnable', 'A customer may return it inside the window.'],
+      ['is_controlled', 'Controlled medicine', 'The till asks for the buyer’s name and phone, and the sale is written into the register.'],
       ['is_active', 'Active', 'Turn off to hide it from the POS without deleting its history.'],
     ];
     for (const [name, label, hint] of flagList) {
@@ -393,6 +482,7 @@
                 reorder_quantity: v.reorder_quantity === null ? null : Number(v.reorder_quantity),
                 warranty_months: v.warranty_months === null ? null : Number(v.warranty_months),
                 warranty_type: v.warranty_type || null,
+                dispensing_class: v.dispensing_class || null,
                 units: ladder.map((l, i) => ({
                   code: l.code || (i === 0 ? 'PIECE' : `UNIT_${i}`),
                   name: l.name || l.code || `Unit ${i + 1}`,
@@ -621,6 +711,8 @@
           ['Category', data.category ? data.category.name : p.category_name],
           ['Brand', p.brand], ['Model', p.model_no],
           ['Registration', p.registration_no],
+          ['Dispensing', p.dispensing_class || 'not a medicine'],
+          ['Controlled', Number(p.is_controlled) ? 'yes — buyer name and phone required' : 'no'],
           ['Warranty', Number(p.warranty_months) ? `${p.warranty_months} months (${U.humanise(p.warranty_type || 'manufacturer')})` : 'none'],
           ['Return window', Number(p.return_window_days) ? `${p.return_window_days} days` : null],
           ['Serial number', Number(p.requires_serial) ? 'On — the till asks for one number per unit' : 'Off'],

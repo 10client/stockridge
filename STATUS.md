@@ -1836,3 +1836,17 @@ New business types: Sell and lease, Provisions and fabrics, plus the earlier eve
 Local: the four new sale-path checks passed (hire, mixed sale and lease, provisions and fabrics, alphabetical category). A cash sale, a void, and the seeded-catalogue sweep still pass. `0011_trade_modes.sql` is written and not yet applied to the live databases. Do not edit `0001` or `0010`. Do not reset the admin PIN.
 
 Live on staging, sample and production as `ridge-20261012-1348-87f54e7`. Staging version `dd1b7aff-6ddb-4329-967c-d23dcb47ab6f`, sample `c2a09d50-a64c-491f-9537-983e5807afae`, production `624d8b34-1f7e-4758-a369-387d6186c6ee`. `0011_trade_modes.sql` is applied on all three. Each reports 11 migrations. Production still has no client business, which is the handover state. The admin PIN was not changed. Do not edit `0001` or `0010`.
+
+### P38 — pharmaceutical and supermarket verticals (local checkpoint)
+
+Pharmaceutical and supermarket are business types, not rows in the shared market list. A new pharmacy or supermarket is provisioned with its own categories, starter catalogue and rules. The NAFDAC Greenbook is a reference catalogue of 6,801 rows in `0013_nafdac_catalog.sql`. It is not priced. A shop copies a row into its own catalogue. `0010` was not edited. `0001` and `0011` were not edited.
+
+A prescription-only product cannot be sold without the prescriber's name. A controlled medicine also needs the buyer's name and phone. An empty object does not count. The dispense is written into a register. A void adds a VOID row and does not delete the dispense. Stock past its expiry date cannot be sold. A supermarket's aisles file in name order, and provisions and drinks post as separate category sales.
+
+The catalogue has a NAFDAC Greenbook search and a controlled register. The till asks for the prescriber, and for the buyer when the medicine is controlled.
+
+Local: pharmacy unit tests passed. The Greenbook integration test passed (6,801 rows, Dolburg refused without a prescription, accepted with a prescriber and a buyer, the second dispense links the hash, a void appends VOID, an OTC line needs no prescription). The supermarket test passed (alphabetical aisles, provisions and drinks as separate category sales, expired stock refused). The existing sale-path suite still passed, including hire, mixed sale-and-lease, and provisions-and-fabrics. The admin PIN was not changed.
+
+`0012_pharma_supermarket.sql` and `0013_nafdac_catalog.sql` are written and not yet applied to the live databases. Do not edit them once they are applied. Do not reset the admin PIN. Do not put pharmacy goods into `0010`.
+
+PharmaRidge browser probes named in the dump are mapped in `docs/pharmaridge-test-map.md`. The pharmacy and supermarket rules from that dump are replicated here. The browser probes are the next stage, not claimed as done.

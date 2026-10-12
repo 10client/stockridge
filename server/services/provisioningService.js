@@ -152,6 +152,21 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
           reorderBase, reorderBase > 0 ? round2(reorderBase * 4) : 0,
           'WEIGHTED_AVG',
         ]);
+        if (seed.dispensing || seed.controlled || seed.nafdacReg) {
+          tx.queue(`UPDATE products SET
+              dispensing_class = ?,
+              is_controlled = ?,
+              registration_no = COALESCE(?, registration_no),
+              nafdac_catalog_id = (SELECT id FROM nafdac_catalog WHERE nafdac_reg_no = ? LIMIT 1),
+              updated_at = datetime('now')
+            WHERE id = ?`, [
+            seed.dispensing || null,
+            seed.controlled ? 1 : 0,
+            seed.nafdacReg || null,
+            seed.nafdacReg || null,
+            productId,
+          ]);
+        }
         if (seed.hire || seed.lease || seed.sale === false) {
           tx.queue(`UPDATE products SET
               offers_sale = ?, offers_hire = ?, offers_lease = ?,

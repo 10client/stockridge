@@ -50,6 +50,7 @@ const PRODUCT_FIELDS = {
   model_no: (v) => strField(v, { field: 'Model number', maxLength: 120 }),
   description: (v) => strField(v, { field: 'Description', maxLength: 2000 }),
   registration_no: (v) => strField(v, { field: 'Registration number', maxLength: 80 }),
+  dispensing_class: (v) => (v == null || v === '' ? null : valid(oneOf(String(v).toUpperCase(), ['OTC', 'POM'], { field: 'Dispensing class' }), 'dispensing_class')),
   category_id: (v) => strField(v, { field: 'Category', maxLength: 64 }),
   base_unit_name: (v) => strField(v, { field: 'Base unit', maxLength: 40 }) || 'piece',
   warranty_months: (v) => numField(v, { field: 'Warranty months', min: 0, max: 360, whole: true }),
@@ -68,7 +69,7 @@ const PRODUCT_FIELDS = {
   lease_price_per_month: (v) => (v == null || v === '' ? null : numField(v, { field: 'Lease rate', min: 0 })),
   lease_deposit: (v) => (v == null || v === '' ? null : numField(v, { field: 'Lease deposit', min: 0 })),
 };
-const PRODUCT_FLAGS = ['requires_serial', 'tracks_variants', 'is_bulky', 'requires_installation', 'has_expiry', 'is_age_restricted', 'is_fragile', 'is_returnable', 'is_active', 'offers_sale', 'offers_hire', 'offers_lease'];
+const PRODUCT_FLAGS = ['requires_serial', 'tracks_variants', 'is_bulky', 'requires_installation', 'has_expiry', 'is_age_restricted', 'is_fragile', 'is_returnable', 'is_active', 'offers_sale', 'offers_hire', 'offers_lease', 'is_controlled'];
 
 /**
  * A new category is not appended. It is given the place its name has among
@@ -161,6 +162,7 @@ function mount(app, base = '/api') {
              p.min_margin_pct, p.valuation_method, p.is_active, p.updated_at,
              p.offers_sale, p.offers_hire, p.offers_lease,
              p.hire_price_per_day, p.hire_deposit, p.lease_price_per_month, p.lease_deposit,
+             p.dispensing_class, p.is_controlled, p.nafdac_catalog_id, p.registration_no,
              c.name AS category_name, c.code AS category_code,
              -- The unit a screen should sell or buy in, as a CODE. base_unit_name
              -- is the WORD a receipt prints (unit, piece, metre), which is not
@@ -447,6 +449,12 @@ function mount(app, base = '/api') {
       fields.weight_kg == null ? null : Number(fields.weight_kg), fields.dimensions_cm || null,
       fields.valuation_method || 'WEIGHTED_AVG', String(user.id),
     ]);
+    if (fields.dispensing_class || fields.is_controlled) {
+      await db.run(
+        `UPDATE products SET dispensing_class = ?, is_controlled = ?, updated_at = datetime('now') WHERE id = ?`,
+        [fields.dispensing_class || null, fields.is_controlled ? 1 : 0, id],
+      );
+    }
 
     // Every product gets a base unit, or it cannot be sold: the sale engine
     // refuses a product with no ladder rather than guessing one.
@@ -512,6 +520,9 @@ function mount(app, base = '/api') {
     // before-and-after values.
     if (!before.business_id && (fields.offers_hire || fields.offers_lease || fields.hire_price_per_day || fields.lease_price_per_month)) {
       throw new HttpError('The shared market list is not priced and is not for hire. Copy the product into this business before setting a hire or a lease.', { status: 400, code: 'SHARED_GOODS_NOT_HIREABLE' });
+    }
+    if (!before.business_id && (fields.dispensing_class || fields.is_controlled)) {
+      throw new HttpError('The shared market list is not a dispensary. Copy the product into this business before marking it as a medicine.', { status: 400, code: 'SHARED_GOODS_NOT_DISPENSABLE' });
     }
     const priceChanged = fields.selling_price !== undefined && round2(Number(fields.selling_price)) !== round2(Number(before.selling_price));
     if (priceChanged) {
@@ -1051,6 +1062,91 @@ function mount(app, base = '/api') {
         ? `Added ${n} from the Nigerian market. No price yet — set a price before selling.${already.length ? ` ${already.length} already in the catalogue.` : ''}`
         : `Already in the catalogue.${missing.length ? ` ${missing.length} not in the market list.` : ''}`,
     }, n ? 201 : 200);
+  });
+
+  // -------------------------------------------------------------------
+  // NAFDAC GREENBOOK — reference rows, not shop stock
+  // -------------------------------------------------------------------
+  app.get(`${base}/nafdac`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const q = String(ctx.req.queryParam('q') || '').trim().toLowerCase();
+    if (q.length < 2) throw new HttpError('Type at least two characters of a name, an ingredient, or a NAFDAC number.', { status: 400, code: 'QUERY_TOO_SHORT' });
+    const limit = Math.min(50, Math.max(1, Number(ctx.req.queryParam('limit')) || 20));
+    const like = `%${q.replace(/[%_]/g, '')}%`;
+    const rows = await db.all(
+      `SELECT id, nafdac_reg_no, product_name, ingredient_name, strength, dosage_form, manufacturer,
+              pack_size, category, base_unit, is_controlled, dispensing_type, registration_expiry
+         FROM nafdac_catalog
+        WHERE search_blob LIKE ? OR lower(nafdac_reg_no) LIKE ? OR lower(product_name) LIKE ?
+        ORDER BY product_name COLLATE NOCASE, id
+        LIMIT ?`,
+      [like, like, like, limit],
+    );
+    ctx.json({ ok: true, data: rows, count: rows.length });
+  });
+
+  app.post(`${base}/nafdac/:id/adopt`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const body = await ctx.req.json().catch(() => ({}));
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const business = await resolveBusiness(db, ctx, branch || undefined);
+    if (!business || !business.id) throw new HttpError('Choose a business before copying a Greenbook row into the catalogue.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    const catalogId = Number(ctx.req.param('id'));
+    const row = await db.first('SELECT * FROM nafdac_catalog WHERE id = ?', [catalogId]);
+    if (!row) throw new HttpError('That Greenbook row does not exist.', { status: 404, code: 'NAFDAC_NOT_FOUND' });
+    const existing = await db.first(
+      'SELECT id, name, sku FROM products WHERE business_id = ? AND nafdac_catalog_id = ? AND is_deleted = 0 ORDER BY id LIMIT 1',
+      [String(business.id), catalogId],
+    );
+    if (existing) {
+      ctx.json({ ok: true, id: existing.id, already: true, message: `${existing.name} is already in this catalogue.` });
+      return;
+    }
+    const price = numField(body.selling_price, { field: 'Selling price', min: 0 });
+    const cost = body.cost_price == null || body.cost_price === '' ? 0 : numField(body.cost_price, { field: 'Cost price', min: 0 });
+    if (!(price > 0)) throw new HttpError('Set a selling price when you copy a Greenbook row. The Greenbook itself is not priced.', { status: 400, code: 'PRICE_REQUIRED' });
+    const id = newId();
+    const sku = `NAF-${String(row.nafdac_reg_no || 'ROW').replace(/[^A-Za-z0-9]+/g, '').slice(0, 16)}-${catalogId}`.slice(0, 40);
+    await db.run(`INSERT INTO products (
+        id, business_id, sku, name, brand, registration_no, base_unit_name,
+        has_expiry, cost_price, selling_price, dispensing_class, is_controlled, nafdac_catalog_id,
+        valuation_method, is_active, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,'WEIGHTED_AVG',1,?, datetime('now'), datetime('now'))`, [
+      id, String(business.id), sku, row.product_name, row.manufacturer || null, row.nafdac_reg_no || null,
+      row.base_unit || 'unit', round2(cost), round2(price),
+      row.dispensing_type || 'OTC', Number(row.is_controlled) ? 1 : 0, catalogId, String(user.id),
+    ]);
+    await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at)
+                  VALUES (?,?,0,?,?,?,1,1,1, datetime('now'), datetime('now'))`, [
+      newId(), id, 'PIECE', row.base_unit || 'Piece', `${row.base_unit || 'Piece'}s`,
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PRODUCT_CREATED', entityType: 'PRODUCT', entityId: id, businessId: business.id,
+      after: { source: 'nafdac', nafdac_reg_no: row.nafdac_reg_no, name: row.product_name },
+    });
+    ctx.json({ ok: true, id, message: `${row.product_name} is in this catalogue. It is not on the shared market list.` }, 201);
+  });
+
+  app.get(`${base}/pharmacy/register`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const scope = ctx.get('scope');
+    const scoped = scopeFilter(scope, { alias: 'r' });
+    const where = ['r.is_deleted = 0'];
+    const bind = [];
+    if (scoped.sql) { where.push(scoped.sql); bind.push(...scoped.params); }
+    const branchId = ctx.req.queryParam('branch_id');
+    if (branchId) { where.push('r.branch_id = ?'); bind.push(String(branchId)); }
+    const rows = await db.all(
+      `SELECT r.*, p.name AS product_name, p.sku
+         FROM controlled_substance_register r
+         LEFT JOIN products p ON p.id = r.product_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY r.created_at DESC, r.id DESC
+        LIMIT 200`,
+      bind,
+    );
+    ctx.json({ ok: true, data: rows, count: rows.length });
   });
 }
 

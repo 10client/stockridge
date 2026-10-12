@@ -552,7 +552,7 @@ test('geofence: (0,0) is recognised as an uninitialised GPS fix, not a place', (
 
 // ---------------------------------------------------------------------
 test('verticals: the shipped profiles include hire and lease, and an unknown code is NOT one of them', () => {
-  assert.deepEqual([...verticals.PROFILE_CODES].sort(), ['BUILDING_MATERIALS', 'ELECTRONICS', 'EQUIPMENT_RENTAL', 'EVENT_RENTAL', 'FURNITURE', 'GENERAL_RETAIL', 'LEASING', 'PROVISIONS_FABRICS', 'SELL_AND_LEASE', 'WHOLESALE_RETAIL']);
+  assert.deepEqual([...verticals.PROFILE_CODES].sort(), ['BUILDING_MATERIALS', 'ELECTRONICS', 'EQUIPMENT_RENTAL', 'EVENT_RENTAL', 'FURNITURE', 'GENERAL_RETAIL', 'LEASING', 'PHARMACEUTICAL', 'PROVISIONS_FABRICS', 'SELL_AND_LEASE', 'SUPERMARKET', 'WHOLESALE_RETAIL']);
   assert.equal(verticals.DEFAULT_PROFILE_CODE, 'GENERAL_RETAIL');
 
   // `getProfile` used to answer GENERAL_RETAIL for ANY string, which made the
@@ -580,6 +580,9 @@ test('verticals: each profile switches on only what its trade needs', () => {
   assert.equal(verticals.getProfile('FURNITURE').features.bulkyDelivery, true);
   assert.equal(verticals.getProfile('BUILDING_MATERIALS').features.measuredSales, true);
   assert.equal(verticals.getProfile('WHOLESALE_RETAIL').features.expiryTracking, true);
+  assert.equal(verticals.getProfile('PHARMACEUTICAL').features.dispensing, true);
+  assert.equal(verticals.getProfile('SUPERMARKET').features.expiryTracking, true);
+  assert.equal(verticals.getProfile('ELECTRONICS').features.dispensing, false);
   assert.equal(verticals.getProfile('FURNITURE').features.expiryTracking, false);
   // The generic profile assumes nothing and enables everything.
   assert.deepEqual(verticals.getProfile('GENERAL_RETAIL').features, verticals.ALL_FEATURES_ON);

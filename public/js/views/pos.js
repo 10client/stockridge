@@ -298,6 +298,8 @@
         rate: l.rate != null ? Number(l.rate) : undefined,
         deposit: l.depositEach != null ? U.round2(Number(l.depositEach) * Number(l.quantity || 0)) : undefined,
         serial_numbers: l.serialNumbers && l.serialNumbers.length ? l.serialNumbers : undefined,
+        prescription: l.prescription || undefined,
+        controlled_kyc: l.controlledKyc || undefined,
       };
     }
 
@@ -384,16 +386,59 @@
       };
     }
 
+    async function askDispense(product) {
+      const pom = String(product.dispensing_class || '') === 'POM';
+      const controlled = Number(product.is_controlled) === 1;
+      if (!pom && !controlled) return {};
+      const out = {};
+      if (pom) {
+        const prescriber = await ui.promptDialog({
+          title: product.name,
+          label: 'Prescriber name',
+          required: true,
+          hint: 'This is prescription-only. It cannot leave the counter without the prescriber’s name.',
+        });
+        if (!prescriber) return null;
+        const patient = await ui.promptDialog({
+          title: product.name,
+          label: 'Patient name (optional)',
+          required: false,
+        });
+        if (patient === null) return null;
+        out.prescription = { prescriber_name: String(prescriber).trim(), patient_name: patient ? String(patient).trim() : null };
+      }
+      if (controlled) {
+        const buyer = await ui.promptDialog({
+          title: product.name,
+          label: 'Buyer name',
+          required: true,
+          hint: 'A controlled medicine is written into the register. Name and phone are required.',
+        });
+        if (!buyer) return null;
+        const phone = await ui.promptDialog({
+          title: product.name,
+          label: 'Buyer phone',
+          required: true,
+        });
+        if (!phone) return null;
+        out.controlledKyc = { buyer_name: String(buyer).trim(), buyer_phone: String(phone).trim() };
+      }
+      return out;
+    }
+
     async function addLine(product, opts = {}) {
       const arrangement = opts.arrangement || await askArrangement(product);
       if (!arrangement) return;
+      const dispense = opts.dispense || await askDispense(product);
+      if (!dispense) return;
       const hiring = arrangement.channel === 'HIRE' || arrangement.channel === 'LEASE';
       const base = Number(opts.priceOverride != null ? opts.priceOverride : hiring ? arrangement.unitPrice : product.selling_price != null ? product.selling_price : product.price || 0);
       if (!(base > 0)) {
         ui.warn(`${product.name} has no price. Set a price in the catalogue before selling it.`);
         return;
       }
-      const existing = !hiring && cart.lines.find((l) => String(l.productId) === String(product.id)
+      const marked = String(product.dispensing_class || '') === 'POM' || Number(product.is_controlled) === 1;
+      const existing = !hiring && !marked && cart.lines.find((l) => String(l.productId) === String(product.id)
         && String(l.variantId || '') === String(opts.variantId || '')
         && String(l.unitCode || '') === String(opts.unitCode || '')
         && (l.channel || 'RETAIL') === 'RETAIL');
@@ -442,6 +487,8 @@
           periods: arrangement.periods || null,
           rate: arrangement.rate || null,
           depositEach: hiring ? U.round2(arrangement.deposit || 0) : 0,
+          prescription: dispense.prescription || null,
+          controlledKyc: dispense.controlledKyc || null,
         });
       }
       save();

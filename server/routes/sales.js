@@ -30,6 +30,7 @@ const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, l
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
+const { resolveProfile } = require('../../domain/verticals');
 const salesService = require('../services/salesService');
 const glService = require('../services/glService');
 
@@ -85,6 +86,19 @@ function normaliseLine(raw, index) {
       ? (raw.serial_numbers || raw.serialNumbers).map((s) => String(s).trim()).filter(Boolean)
       : (raw.serial_number || raw.serialNumber ? [String(raw.serial_number || raw.serialNumber).trim()] : []),
     measurements: raw.measurements && typeof raw.measurements === 'object' ? raw.measurements : (raw.measures && typeof raw.measures === 'object' ? raw.measures : null),
+    prescription: raw.prescription && typeof raw.prescription === 'object' ? {
+      prescriber_name: raw.prescription.prescriber_name || raw.prescription.prescriberName || null,
+      prescriber_pcn_or_mdcn_no: raw.prescription.prescriber_pcn_or_mdcn_no || raw.prescription.prescriber_no || null,
+      patient_name: raw.prescription.patient_name || raw.prescription.patientName || null,
+      patient_phone: raw.prescription.patient_phone || raw.prescription.patientPhone || null,
+      dosage_notes: raw.prescription.dosage_notes || raw.prescription.dosageNotes || null,
+    } : null,
+    controlledKyc: (raw.controlled_kyc || raw.controlledKyc) && typeof (raw.controlled_kyc || raw.controlledKyc) === 'object' ? {
+      buyer_name: (raw.controlled_kyc || raw.controlledKyc).buyer_name || (raw.controlled_kyc || raw.controlledKyc).buyerName || null,
+      buyer_phone: (raw.controlled_kyc || raw.controlledKyc).buyer_phone || (raw.controlled_kyc || raw.controlledKyc).buyerPhone || null,
+      buyer_id_type: (raw.controlled_kyc || raw.controlledKyc).buyer_id_type || (raw.controlled_kyc || raw.controlledKyc).buyerIdType || null,
+      buyer_id_number: (raw.controlled_kyc || raw.controlledKyc).buyer_id_number || (raw.controlled_kyc || raw.controlledKyc).buyerIdNumber || null,
+    } : null,
   };
   if (!Number.isFinite(line.quantity) || line.quantity <= 0) {
     // Caught here rather than in the engine so the error names the LINE, which
@@ -553,9 +567,15 @@ function mount(app, base = '/api') {
           ORDER BY je.entry_no, a.code`, [id]),
     ]);
 
+    const [prescriptions, controlledRegister] = await Promise.all([
+      db.all('SELECT * FROM prescriptions WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at, id', [id]).catch(() => []),
+      db.all('SELECT * FROM controlled_substance_register WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at, id', [id]).catch(() => []),
+    ]);
+
     ctx.json({
       ok: true, sale, items, payments,
       delivery, debtorLedger, warranties: warranty, serials, changeOwed: changeOwedRows,
+      prescriptions, controlledRegister,
       journal: gl,
       totals: {
         subtotal: Number(sale.subtotal), discount: Number(sale.discount_amount) + Number(sale.order_discount_amount || 0),

@@ -361,7 +361,7 @@
         ui.h('p', { class: 'sub' }, 'Each business is a separate legal entity with its own books, its own catalogue and its own staff. One deployment can hold several.')),
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('ADMIN') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openBusiness() }, 'Create a business') : null,
-        SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openProfiles() }, 'The four verticals') : null)));
+        SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openProfiles() }, 'The verticals') : null)));
 
     const host = ui.h('div', {});
     wrap.appendChild(host);
@@ -487,7 +487,7 @@
 
     async function openProfiles() {
       const body = ui.h('div', {}, ui.skeleton(4));
-      const m = ui.openModal({ title: 'The four verticals', body, size: 'wide' });
+      const m = ui.openModal({ title: 'The verticals', body, size: 'wide' });
       try {
         const data = await SR.api.get('/api/catalogue/profiles', { query: SR.state.query({}) });
         const list = data.data || data.profiles || [];

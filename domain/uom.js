@@ -310,10 +310,15 @@ function describeReceipt({ quantity, unitCode, ladder, measure = null }) {
  * is subtracted, because it is already spoken for by a layaway or an open
  * delivery job.
  */
-function selectBatchesFifo(batches, requiredBaseQty) {
+function selectBatchesFifo(batches, requiredBaseQty, options = {}) {
+  const asOf = options && options.asOf ? String(options.asOf).slice(0, 10) : null;
   const available = (batches || [])
     .filter((b) => !b.is_deleted && b.status === 'ACTIVE')
     .filter((b) => (Number(b.quantity) || 0) - (Number(b.quantity_reserved) || 0) > 0)
+    // A dated batch is unsellable once the date has passed. Callers that do
+    // not pass asOf keep the old behaviour, so a unit test of sort order is
+    // not also a test of the calendar.
+    .filter((b) => !asOf || !b.expiry_date || String(b.expiry_date).slice(0, 10) >= asOf)
     .sort((a, b) => {
       // Expiry first when both carry one: sell the stock that will go off.
       const ea = a.expiry_date ? Date.parse(a.expiry_date) : Number.POSITIVE_INFINITY;

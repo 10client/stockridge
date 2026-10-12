@@ -62,6 +62,7 @@ const { creditDecision } = require('../../domain/credit');
 const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = require('../../domain/planLimits');
 const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp } = require('../../domain/time');
 const trade = require('../../domain/trade');
+const pharmacy = require('../../domain/pharmacy');
 const { atLeast } = require('../../domain/roles');
 const { computeRowHash } = require('../../domain/hashChain');
 const { HttpError } = require('../lib/http');
@@ -75,6 +76,65 @@ const PAYMENT_METHODS = Object.freeze([
 
 function err(message, code = 'SALE_INVALID', status = 400) {
   return new HttpError(message, { status, code });
+}
+
+async function controlledHeadHash(db, branchId) {
+  const table = await db.first("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'controlled_substance_register'");
+  if (!table) return null;
+  const row = await db.first(
+    `SELECT entry_hash FROM controlled_substance_register
+      WHERE branch_id = ? AND is_deleted = 0
+      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    [String(branchId)],
+  );
+  return row ? row.entry_hash : null;
+}
+
+async function queueDispense(tx, { line, saleId, itemId, user, branch, business, prevHash }) {
+  let prescriptionId = null;
+  if (line.dispense && line.dispense.prescription) {
+    prescriptionId = tx.idFor(`rx-${line.index}`);
+    const rx = line.dispense.prescription;
+    tx.queue(`INSERT INTO prescriptions (
+        id, business_id, branch_id, sale_id, sale_item_id, product_id,
+        prescriber_name, prescriber_pcn_or_mdcn_no, patient_name, patient_phone, dosage_notes,
+        recorded_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+      prescriptionId, String(business.id), String(branch.id), String(saleId), String(itemId), String(line.productId),
+      rx.prescriber_name, rx.prescriber_pcn_or_mdcn_no, rx.patient_name, rx.patient_phone, rx.dosage_notes,
+      String(user.id),
+    ]);
+  }
+  if (!line.dispense || !line.dispense.kyc) return prevHash;
+  const kyc = line.dispense.kyc;
+  const fields = {
+    entry_type: 'DISPENSE',
+    business_id: String(business.id),
+    branch_id: String(branch.id),
+    product_id: String(line.productId),
+    quantity_dispensed: Number(line.quantityInBase),
+    buyer_name: kyc.buyer_name,
+    buyer_phone: kyc.buyer_phone,
+    buyer_id_type: kyc.buyer_id_type,
+    buyer_id_number: kyc.buyer_id_number,
+    dispensed_by: String(user.id),
+    sale_id: String(saleId),
+    sale_item_id: String(itemId),
+    prescription_id: prescriptionId,
+    notes: null,
+  };
+  const entryHash = await computeRowHash(prevHash, fields);
+  tx.queue(`INSERT INTO controlled_substance_register (
+      id, business_id, branch_id, sale_id, sale_item_id, product_id, entry_type,
+      quantity_dispensed, buyer_name, buyer_phone, buyer_id_type, buyer_id_number,
+      prescription_id, dispensed_by, notes, prev_hash, entry_hash, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`, [
+    tx.idFor(`ctl-${line.index}`),
+    fields.business_id, fields.branch_id, fields.sale_id, fields.sale_item_id, fields.product_id, fields.entry_type,
+    fields.quantity_dispensed, fields.buyer_name, fields.buyer_phone, fields.buyer_id_type, fields.buyer_id_number,
+    fields.prescription_id, fields.dispensed_by, fields.notes, prevHash, entryHash,
+  ]);
+  return entryHash;
 }
 
 // ---------------------------------------------------------------------
@@ -321,6 +381,18 @@ async function prepare(db, {
       continue;
     }
 
+    // A continuation is not a new dispense. Everything else that leaves the
+    // shelf is, including a hire of a marked product. Unmarked goods skip this.
+    let dispense = null;
+    if (!line.continuation) {
+      try {
+        dispense = pharmacy.assertDispense(product, line);
+      } catch (e) {
+        if (e.code === 'PRESCRIPTION_REQUIRED' || e.code === 'CONTROLLED_KYC_REQUIRED') throw err(e.message, e.code);
+        throw e;
+      }
+    }
+
     const ladderRows = ladders.get(String(product.id)) || [
       // A product with no configured ladder falls back to a single base unit
       // rather than refusing the sale: better to sell in pieces than to stop
@@ -387,7 +459,7 @@ async function prepare(db, {
         const promised = batchConsumption.get(String(b.id)) || 0;
         return { ...b, quantity: roundTo(Number(b.quantity) - promised, 4) };
       });
-      selection = selectBatchesFifo(pool, conversion.baseQuantity);
+      selection = selectBatchesFifo(pool, conversion.baseQuantity, { asOf: today });
       const name = variant ? `${product.name} (${variant.name})` : product.name;
       if (free + 1e-9 < conversion.baseQuantity) {
         const booked = trade.peakInWindow(intervals, today, trade.FOREVER);
@@ -401,7 +473,19 @@ async function prepare(db, {
         continue;
       }
       if (!selection.ok) {
-        const available = pool.reduce((a, b) => a + Math.max(0, Number(b.quantity) - Number(b.quantity_reserved || 0)), 0);
+        const isExpired = (b) => b.expiry_date && String(b.expiry_date).slice(0, 10) < today;
+        const freeOf = (b) => Math.max(0, Number(b.quantity) - Number(b.quantity_reserved || 0));
+        const expiredFree = pool.reduce((a, b) => a + (isExpired(b) ? freeOf(b) : 0), 0);
+        const sellable = pool.reduce((a, b) => a + (isExpired(b) ? 0 : freeOf(b)), 0);
+        if (expiredFree > 0 && sellable <= 0) {
+          problems.push({
+            line: i, code: 'EXPIRED_STOCK',
+            message: `${position}: "${name}" on the shelf is past its expiry date and cannot be sold. Receive a fresh batch.`,
+            available: 0, required: conversion.baseQuantity,
+          });
+          continue;
+        }
+        const available = sellable;
         problems.push({
           line: i, code: 'INSUFFICIENT_STOCK',
           message: `${position}: only ${roundTo(available, 2).toLocaleString('en-NG')} ${product.base_unit_name || 'unit'}${available === 1 ? '' : 's'} of "${name}" is available at this branch, and this line needs ${roundTo(conversion.baseQuantity, 2).toLocaleString('en-NG')}. Transfer stock in, or sell what is on the shelf.`,
@@ -601,6 +685,7 @@ async function prepare(db, {
       venue: line.venue || null,
       agreementId: line.agreementId || line.agreement_id || null,
       notes: holdNote || line.notes || null,
+      dispense,
       product, variant,
       picks: selection.picks.map((p) => ({ batchId: String(p.batch.id), quantityBase: p.quantityBase, costPerBaseUnit: p.costPerBaseUnit, expiry: p.batch.expiry_date || null })),
       serialRows,
@@ -1068,7 +1153,7 @@ async function complete(db, params) {
     [String(branch.id), soldUtc, soldUtc]);
     if (!till || till.status !== 'OPEN') latePosting = true;
   } else {
-    till = await db.first("SELECT * FROM till_sessions WHERE branch_id = ? AND status = 'OPEN' AND is_deleted = 0", [String(branch.id)]);
+    till = await db.first("SELECT * FROM till_sessions WHERE branch_id = ? AND status = 'OPEN' AND is_deleted = 0 ORDER BY opened_at DESC LIMIT 1", [String(branch.id)]);
     if (!till) latePosting = true;
   }
 
@@ -1123,8 +1208,13 @@ async function complete(db, params) {
     }
   }
 
+  const controlledHead = prepared.lines.some((l) => l.dispense && (l.dispense.prescription || l.dispense.kyc))
+    ? await controlledHeadHash(db, branch.id)
+    : null;
+
   return db.transaction(async (tx) => {
     const saleId = tx.idFor('sale');
+    let controlledPrev = controlledHead;
     const vat = vatEnabledTotals(totals, settings);
 
     // ---- sales header
@@ -1184,6 +1274,12 @@ async function complete(db, params) {
         line.discountAmount, line.discountReason || null, line.vatAmount, line.lineTotal,
         line.costPriceSnapshot, line.margin, line.marginPct, line.notes || null, line.channel || 'RETAIL',
       ]);
+
+      if (line.dispense && (line.dispense.prescription || line.dispense.kyc)) {
+        controlledPrev = await queueDispense(tx, {
+          line, saleId, itemId, user, branch, business, prevHash: controlledPrev,
+        });
+      }
 
       // Stock decrement, one row per batch consumed.
       //
@@ -1698,9 +1794,54 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
     .filter((row) => row.status === 'OUT')
     .reduce((sum, row) => sum + (Number(row.deposit_held) || 0), 0));
 
+  const registerTable = await db.first("SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'controlled_substance_register'");
+  const registerRows = registerTable
+    ? await db.all(
+      `SELECT * FROM controlled_substance_register
+        WHERE sale_id = ? AND entry_type = 'DISPENSE' AND is_deleted = 0
+        ORDER BY created_at, id`,
+      [String(saleId)],
+    )
+    : [];
+  const voidHead = registerRows.length ? await controlledHeadHash(db, sale.branch_id) : null;
+
   return db.transaction(async (tx) => {
     tx.queue(`UPDATE sales SET status = 'VOIDED', voided_at = datetime('now'), voided_by = ?, void_reason = ?, updated_at = datetime('now') WHERE id = ?`,
       [String(user.id), String(reason).slice(0, 500), String(saleId)]);
+
+    // The register is append-only. A void adds a VOID row. It does not delete
+    // the dispense, because a deleted row is a register nobody can audit.
+    let voidPrev = voidHead;
+    for (const row of registerRows) {
+      const fields = {
+        entry_type: 'VOID',
+        business_id: String(row.business_id),
+        branch_id: String(row.branch_id),
+        product_id: String(row.product_id),
+        quantity_dispensed: Number(row.quantity_dispensed),
+        buyer_name: row.buyer_name,
+        buyer_phone: row.buyer_phone,
+        buyer_id_type: row.buyer_id_type || null,
+        buyer_id_number: row.buyer_id_number || null,
+        dispensed_by: String(user.id),
+        sale_id: String(saleId),
+        sale_item_id: row.sale_item_id ? String(row.sale_item_id) : null,
+        prescription_id: row.prescription_id || null,
+        notes: String(reason).slice(0, 500),
+      };
+      const entryHash = await computeRowHash(voidPrev, fields);
+      tx.queue(`INSERT INTO controlled_substance_register (
+          id, business_id, branch_id, sale_id, sale_item_id, product_id, entry_type,
+          quantity_dispensed, buyer_name, buyer_phone, buyer_id_type, buyer_id_number,
+          prescription_id, dispensed_by, notes, prev_hash, entry_hash, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`, [
+        tx.idFor(`void-ctl-${row.id}`),
+        fields.business_id, fields.branch_id, fields.sale_id, fields.sale_item_id, fields.product_id, fields.entry_type,
+        fields.quantity_dispensed, fields.buyer_name, fields.buyer_phone, fields.buyer_id_type, fields.buyer_id_number,
+        fields.prescription_id, fields.dispensed_by, fields.notes, voidPrev, entryHash,
+      ]);
+      voidPrev = entryHash;
+    }
 
     if (restoreStock) {
       for (const item of items) {

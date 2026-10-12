@@ -68,6 +68,8 @@ const FEATURE_FLAGS = Object.freeze([
   'serialTracking', 'warranty', 'variants', 'expiryTracking', 'bulkyDelivery',
   'installation', 'measuredSales', 'wholesalePricing', 'instalments', 'layaway',
   'batchTracking', 'quarantine', 'recalls', 'commissionTracking', 'fragileHandling',
+  // Prescription and controlled-medicine gates. Off unless the profile sells drugs.
+  'dispensing',
 ]);
 
 const ALL_FEATURES_ON = Object.freeze(FEATURE_FLAGS.reduce((acc, f) => { acc[f] = true; return acc; }, {}));
@@ -87,6 +89,13 @@ const LADDERS = Object.freeze({
     { code: 'PIECE', name: 'Piece', plural: 'Pieces', quantityInBase: 1 },
     { code: 'PACK', name: 'Pack', plural: 'Packs', quantityInBase: 6 },
     { code: 'CARTON', name: 'Carton', plural: 'Cartons', quantityInBase: 48, isDefaultSell: true },
+  ],
+  // A pharmacy counter sells one tablet, a strip, or a pack. The levels ascend,
+  // so the ladder validator accepts them. Liquids use EACH_ONLY instead.
+  PHARMA: [
+    { code: 'TABLET', name: 'Tablet', plural: 'Tablets', quantityInBase: 1, isDefaultSell: true },
+    { code: 'STRIP', name: 'Strip', plural: 'Strips', quantityInBase: 10 },
+    { code: 'PACK', name: 'Pack', plural: 'Packs', quantityInBase: 100 },
   ],
   ELECTRONICS: [
     { code: 'PIECE', name: 'Unit', plural: 'Units', quantityInBase: 1, isDefaultSell: true },
@@ -228,6 +237,8 @@ const COMPLIANCE_FIELDS = Object.freeze({
   QUARRY_PERMIT: { type: 'QUARRY_PERMIT', label: 'Quarry / Aggregate Permit', expires: true, hint: 'For sand, granite and aggregate dealers' },
   NCC_TYPE_APPROVAL: { type: 'NCC_TYPE_APPROVAL', label: 'NCC Type Approval', expires: true, hint: 'Nigerian Communications Commission approval for radio equipment' },
   SCUML: { type: 'SCUML', label: 'SCUML Certificate', expires: true, hint: 'EFCC Special Control Unit Against Money Laundering — required for dealers in high-value goods' },
+  PCN: { type: 'PCN', label: 'PCN Premises Licence', expires: true, hint: 'Pharmacists Council of Nigeria premises licence' },
+  SUPERINTENDENT: { type: 'SUPERINTENDENT', label: 'Superintendent Pharmacist', expires: true, hint: 'The pharmacist named on the premises licence' },
 });
 
 // ---------------------------------------------------------------------
@@ -797,6 +808,106 @@ const PROFILES = Object.freeze({
       { name: 'Ankara 6 yards', sku: 'PF-FB-001', category: 'FABRICS', cost: 4500, price: 8500, reorder: 12 },
       { name: 'Lace 5 yards', sku: 'PF-FB-002', category: 'FABRICS', cost: 12000, price: 18500, reorder: 6 },
       { name: 'Washing soap bar', sku: 'PF-HH-001', category: 'HOUSEHOLD', cost: 180, price: 350, reorder: 48 },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // PHARMACEUTICAL — a dispensary. Prescription and controlled rules
+  // apply only to products this profile marks. The Greenbook is a
+  // reference catalogue the shop copies from. It is not the shared
+  // Nigerian-market list, and it is not priced.
+  // Starter prices below are placeholders the shop replaces.
+  // -------------------------------------------------------------------
+  PHARMACEUTICAL: {
+    code: 'PHARMACEUTICAL',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
+    label: 'Pharmaceutical',
+    blurb: 'A dispensary. OTC sells over the counter. POM needs a prescriber. A controlled medicine needs the buyer’s name and phone, written into a register that a void cannot erase.',
+    baseUnit: 'tablet',
+    defaultLadder: LADDERS.PHARMA,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      expiryTracking: true, batchTracking: true, wholesalePricing: true,
+      quarantine: true, recalls: true, dispensing: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'NAFDAC_PREMISES', 'PCN', 'SUPERINTENDENT', 'TRADING_PERMIT', 'FIRE_CERT']),
+    registrationAuthorities: Object.freeze(['NAFDAC']),
+    variantAxes: Object.freeze([{ name: 'Strength', options: ['Standard'] }]),
+    customerClasses: CUSTOMER_CLASS_SETS.RETAIL_LED,
+    expenseCategories: EXPENSE_CATEGORY_SETS.RETAIL_HEAVY,
+    returnReasons: Object.freeze(['DEFECTIVE', 'WRONG_ITEM', 'RECALL', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 0,
+    categories: Object.freeze([
+      { code: 'ALIMENTARY', name: 'Alimentary' },
+      { code: 'ANALGESICS', name: 'Analgesics' },
+      { code: 'ANTIPARASITIC', name: 'Antiparasitic' },
+      { code: 'CARDIOVASCULAR', name: 'Cardiovascular' },
+      { code: 'CONTROLLED', name: 'Controlled medicines' },
+      { code: 'DERMATOLOGY', name: 'Dermatology' },
+      { code: 'INJECTIONS', name: 'Injections' },
+      { code: 'RESPIRATORY', name: 'Respiratory' },
+      { code: 'VITAMINS', name: 'Vitamins and supplements' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Aciguard Antacid Suspension', sku: 'PH-OTC-001', category: 'ALIMENTARY', cost: 900, price: 1600, reorder: 12, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: '04-4753' },
+      { name: 'Albendazole 200', sku: 'PH-OTC-002', category: 'ANTIPARASITIC', cost: 850, price: 1500, reorder: 12, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: 'A11-100325' },
+      { name: 'Chemiron Vitamin C Syrup', sku: 'PH-OTC-003', category: 'VITAMINS', cost: 700, price: 1300, reorder: 10, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: 'A11-100356' },
+      { name: 'Cika Ketoconazole Cream', sku: 'PH-OTC-004', category: 'DERMATOLOGY', cost: 650, price: 1200, reorder: 8, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: 'A11-100354' },
+      { name: 'Apitol Caplets', sku: 'PH-OTC-005', category: 'RESPIRATORY', cost: 400, price: 900, reorder: 20, expiry: true, dispensing: 'OTC', nafdacReg: 'A11-100260' },
+      { name: 'Cafekris', sku: 'PH-OTC-006', category: 'ANALGESICS', cost: 350, price: 800, reorder: 24, expiry: true, dispensing: 'OTC', nafdacReg: 'A11-100335' },
+      { name: 'Amikacin Injection', sku: 'PH-POM-001', category: 'INJECTIONS', cost: 1800, price: 3200, reorder: 6, expiry: true, ladder: 'EACH_ONLY', dispensing: 'POM', nafdacReg: 'BA-0906' },
+      { name: 'Amlodipine Tablets', sku: 'PH-POM-002', category: 'CARDIOVASCULAR', cost: 500, price: 1100, reorder: 20, expiry: true, dispensing: 'POM', nafdacReg: 'A11-0275' },
+      { name: 'Dolburg 50', sku: 'PH-CTL-001', category: 'CONTROLLED', cost: 1200, price: 2400, reorder: 4, expiry: true, dispensing: 'POM', controlled: true, nafdacReg: 'A4-9351' },
+      { name: 'Alpent Injection', sku: 'PH-CTL-002', category: 'CONTROLLED', cost: 2000, price: 3800, reorder: 4, expiry: true, ladder: 'EACH_ONLY', dispensing: 'POM', controlled: true, nafdacReg: 'B4-3655' },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // SUPERMARKET — retail-led, expiry and carton ladders, many aisles.
+  // Not a dispensary unless a product is marked. Starter prices are
+  // placeholders. Pharmacy goods are not added to the shared market list.
+  // -------------------------------------------------------------------
+  SUPERMARKET: {
+    code: 'SUPERMARKET',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
+    label: 'Supermarket',
+    blurb: 'A retail floor with aisles. Provisions, drinks, household and frozen goods carry expiry and sell by the piece, the pack or the carton. Category sales stay separate in the books.',
+    baseUnit: 'piece',
+    defaultLadder: LADDERS.FMCG,
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      expiryTracking: true, batchTracking: true, wholesalePricing: true,
+      quarantine: true, recalls: true, dispensing: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'NAFDAC_PREMISES', 'TRADING_PERMIT', 'FIRE_CERT']),
+    registrationAuthorities: Object.freeze(['NAFDAC', 'SON']),
+    variantAxes: Object.freeze([{ name: 'Pack', options: ['Retail', 'Family'] }]),
+    customerClasses: CUSTOMER_CLASS_SETS.RETAIL_LED,
+    expenseCategories: EXPENSE_CATEGORY_SETS.RETAIL_HEAVY,
+    returnReasons: Object.freeze(['DEFECTIVE', 'WRONG_ITEM', 'DAMAGED_IN_TRANSIT', 'CUSTOMER_CHANGE_OF_MIND', 'RECALL', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 3,
+    categories: Object.freeze([
+      { code: 'BABY', name: 'Baby care' },
+      { code: 'DRINKS', name: 'Drinks' },
+      { code: 'FROZEN', name: 'Frozen' },
+      { code: 'HOUSEHOLD', name: 'Household' },
+      { code: 'PERSONAL_CARE', name: 'Personal care' },
+      { code: 'PROVISIONS', name: 'Provisions' },
+      { code: 'SNACKS', name: 'Snacks' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Peak evaporated milk 160g', sku: 'SM-PR-001', category: 'PROVISIONS', cost: 450, price: 750, reorder: 24, expiry: true },
+      { name: 'Golden Penny sugar 1kg', sku: 'SM-PR-002', category: 'PROVISIONS', cost: 900, price: 1400, reorder: 20, expiry: true, ladder: 'EACH_ONLY' },
+      { name: 'Indomie chicken flavour 70g', sku: 'SM-SN-001', category: 'SNACKS', cost: 150, price: 280, reorder: 48, expiry: true },
+      { name: 'Hollandia yoghurt 1L', sku: 'SM-DR-001', category: 'DRINKS', cost: 800, price: 1300, reorder: 12, expiry: true, ladder: 'EACH_ONLY' },
+      { name: 'Coca-Cola 50cl', sku: 'SM-DR-002', category: 'DRINKS', cost: 200, price: 400, reorder: 48 },
+      { name: 'Morning Fresh 500ml', sku: 'SM-HH-001', category: 'HOUSEHOLD', cost: 600, price: 1100, reorder: 12, ladder: 'EACH_ONLY' },
+      { name: 'Dettol soap bar', sku: 'SM-PC-001', category: 'PERSONAL_CARE', cost: 250, price: 500, reorder: 24 },
+      { name: 'Pampers size 3', sku: 'SM-BB-001', category: 'BABY', cost: 3500, price: 5200, reorder: 6, ladder: 'EACH_ONLY' },
+      { name: 'Frozen chicken drumsticks 1kg', sku: 'SM-FZ-001', category: 'FROZEN', cost: 2800, price: 4200, reorder: 10, expiry: true, ladder: 'EACH_ONLY' },
+      { name: 'Cabin biscuit', sku: 'SM-SN-002', category: 'SNACKS', cost: 200, price: 400, reorder: 24, expiry: true },
     ]),
   },
 

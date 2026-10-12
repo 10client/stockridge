@@ -189,6 +189,8 @@
       const payments = data.payments || sale.payments || [];
       const journal = data.journal || [];
       const serials = data.serials || [];
+      const prescriptions = data.prescriptions || [];
+      const controlledRegister = data.controlledRegister || [];
 
       const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
@@ -216,6 +218,33 @@
         ui.kpi({ label: 'VAT included', value: U.money(sale.vat_amount), small: true }),
         ui.kpi({ label: 'Status', value: U.humanise(sale.status), small: true }));
       host.appendChild(totals);
+      if (prescriptions.length) {
+        host.appendChild(ui.dataCard({
+          title: 'Prescription',
+          table: ui.renderTable({
+            columns: [
+              { key: 'prescriber_name', label: 'Prescriber' },
+              { key: 'patient_name', label: 'Patient' },
+              { key: 'dosage_notes', label: 'Notes' },
+            ],
+            rows: prescriptions,
+          }),
+        }));
+      }
+      if (controlledRegister.length) {
+        host.appendChild(ui.dataCard({
+          title: 'Controlled register',
+          table: ui.renderTable({
+            columns: [
+              { key: 'entry_type', label: 'Entry' },
+              { key: 'buyer_name', label: 'Buyer' },
+              { key: 'buyer_phone', label: 'Phone' },
+              { key: 'quantity_dispensed', label: 'Qty', align: 'right' },
+            ],
+            rows: controlledRegister,
+          }),
+        }));
+      }
 
       const cols = ui.h('div', { class: 'grid grid-2' });
 
