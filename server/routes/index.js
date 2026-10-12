@@ -46,6 +46,7 @@ const compliance = require('./compliance');
 const sync = require('./sync');
 const dataManagement = require('./dataManagement');
 const changeOwed = require('./changeOwed');
+const agreements = require('./agreements');
 const userTransfers = require('./userTransfers');
 
 /**
