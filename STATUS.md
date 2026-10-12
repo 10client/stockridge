@@ -1812,3 +1812,13 @@ Naming a business narrows the dashboard and its summary together, and the sales 
 Local: business-focus and frontend-state tests passed. `audit.dashboard` 15/15, including the new switch check. `audit.money` 82/82, so a named shop's sales list is still only that shop.
 
 Live on staging, sample and production as `ridge-20261011-1134-b53d64d`. Staging version `3a6ed289-6f59-457d-9d50-cc3b94d47ca8`, sample `bd0feaec-c08c-4dc4-9f8c-7989f225e7cb`, production `5090b074-f75a-4da7-a2f1-6552d03c45a7`. No migration was applied. The goods list is unchanged. The admin PIN was not changed. Do not edit `0010`.
+
+### P36 — the catalogue files a new product by name (checkpoint)
+
+The Nigerian market button is gone. Those goods are already in the catalogue, so a second list was only a way to add a copy. The catalogue screen now asks for name order. A product just added is opened on the page where that name sits, and the row is marked. The till and the audits still ask for the list without that sort, so a priced shop product stays on the first page of those callers.
+
+The market list API is still there. The screen no longer calls it.
+
+Local: market list test 2/2, including the new name-order check. `audit.market` 25/25. The Nigerian-market unit test passed.
+
+Live on staging, sample and production as `ridge-20261012-1245-89c56e9`. Staging version `1cb75308-480d-4f6e-917f-29f90d113539`, sample `46bec76b-4325-49d9-b245-3b64b7d11684`, production `15c50335-0853-4cb7-b978-96532bfc6adb`. No migration was applied. The goods list is unchanged. The admin PIN was not changed. Do not edit `0010`.
