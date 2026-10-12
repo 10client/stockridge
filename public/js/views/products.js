@@ -25,16 +25,15 @@
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Catalogue');
-    const state = { page: 0, pageSize: PAGE_SIZE, q: ctx.query.q || '', category: '', low: false };
+    const state = { page: 0, pageSize: PAGE_SIZE, q: ctx.query.q || '', category: '', low: false, highlightId: null };
 
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
-        ui.h('p', { class: 'sub' }, 'Search your goods, or add from the Nigerian market. Serial stays off until you turn it on for that product.')),
+        ui.h('p', { class: 'sub' }, 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openMarket() }, 'Nigerian market'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => openCreate() }, 'Add a product'),
+        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
@@ -42,7 +41,7 @@
     const qInput = ui.h('input', { type: 'search', placeholder: 'Name, SKU, brand or model…', style: { minWidth: '210px' } });
     qInput.value = state.q;
     toolbar.firstElementChild.appendChild(ui.h('div', { class: 'grow' }, qInput));
-    const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; load(); } });
+    const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; state.highlightId = null; load(); } });
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), catSel));
     wrap.appendChild(toolbar);
 
@@ -63,7 +62,7 @@
       }
     })();
 
-    qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; load(); }, 320));
+    qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; state.highlightId = null; load(); }, 320));
 
     async function rowsFromMirror() {
       const needle = state.q.toLowerCase();
@@ -90,7 +89,7 @@
       let data; let offline = false;
       try {
         data = await SR.api.get('/api/products', {
-          query: SR.state.query({ q: state.q || undefined, category_id: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize }),
+          query: SR.state.query({ sort: 'name', q: state.q || undefined, category_id: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize }),
         });
       } catch (err) {
         if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } })); return; }
@@ -132,11 +131,12 @@
         ],
         rows,
         onRowClick: (p) => SR.app.navigate(`/products/${p.id}`),
+        rowClass: (p) => (state.highlightId && String(p.id) === String(state.highlightId) ? 'is-placed' : ''),
         emptyTitle: state.q ? 'Nothing matches that search' : 'The catalogue is empty',
         emptyMessage: state.q
           ? 'Try a different word, or clear the category filter.'
-          : 'Add one yourself, or pick from the Nigerian market. Prices are not included — you set them.',
-        emptyAction: state.q ? null : { label: 'Nigerian market', run: () => openMarket() },
+          : 'Add a product. It is filed alphabetically with the rest of this list. Prices are not included — you set them.',
+        emptyAction: state.q ? null : { label: 'Add a product', run: () => openCreate() },
       });
 
       host.replaceChildren();
@@ -147,8 +147,8 @@
         table,
         pager: ui.pager({
           page: state.page, pageSize: paging.limit || state.pageSize, total,
-          onPage: (p) => { state.page = p; load(); },
-          onSize: (n) => { state.pageSize = n; state.page = 0; load(); },
+          onPage: (p) => { state.page = p; state.highlightId = null; load(); },
+          onSize: (n) => { state.pageSize = n; state.page = 0; state.highlightId = null; load(); },
         }),
       }));
     }
@@ -158,7 +158,7 @@
         await SR.exporter.list({
           filename: 'catalogue',
           path: '/api/products',
-          query: SR.state.query({ q: state.q || undefined }),
+          query: SR.state.query({ sort: 'name', q: state.q || undefined }),
           mirrorTable: 'products',
           columns: [
             { key: 'name', label: 'Product' }, { key: 'sku', label: 'SKU' },
@@ -181,10 +181,32 @@
 
     // ---------------- create ----------------
     function openCreate() {
-      productForm(null).then((ok) => { if (ok) load(); });
+      productForm(null).then((ok) => { if (ok && ok.id) placeInList(ok); else if (ok) load(); });
     }
 
-    loadList = load;
+    async function placeInList(product) {
+      state.q = '';
+      qInput.value = '';
+      state.category = '';
+      if (catSel) catSel.value = '';
+      state.highlightId = product.id;
+      state.page = 0;
+      try {
+        const probe = await SR.api.get('/api/products', {
+          query: SR.state.query({ sort: 'name', locate: product.id, limit: 1, offset: 0 }),
+        });
+        const index = probe.located && Number.isFinite(Number(probe.located.index)) ? Number(probe.located.index) : 0;
+        state.page = Math.floor(index / state.pageSize);
+      } catch (err) {
+        if (err && err.isOffline) {
+          const rows = await rowsFromMirror();
+          const index = rows.findIndex((p) => String(p.id) === String(product.id));
+          state.page = index >= 0 ? Math.floor(index / state.pageSize) : 0;
+        }
+      }
+      await load();
+    }
+
     await load();
     return wrap;
   }
@@ -356,8 +378,8 @@
                   await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
                   await SR.state.load({ force: true }).catch(() => {});
                 }
-                ui.ok(editing ? 'Product updated.' : `${v.name} added to the catalogue.`);
-                finish(true);
+                ui.ok(editing ? 'Product updated.' : `${v.name} is in the catalogue, in alphabetical order.`);
+                finish({ id: (result && result.id) || (product && product.id), name: v.name });
               } catch (err) {
                 ui.apiError(err);
                 ev.currentTarget.disabled = false;
@@ -721,93 +743,6 @@
       }
     }
   }
-
-  function openMarket() {
-    const state = { q: '', category: '', page: 0, pageSize: 40, serials: new Set() };
-    const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('p', { class: 'hint' }, 'Goods sold across Nigerian markets — provisions, the fresh market, building materials, phones, hair, books and the other trades. Medicines are not on this list. No prices — set the price after you add the item. Serial stays off unless you turn it on here.'));
-    const bar = ui.h('div', { class: 'row' });
-    const q = ui.h('input', { type: 'search', placeholder: 'Yam, cement, hair, phone, WAEC…', style: { minWidth: '220px' } });
-    const cat = ui.h('select');
-    bar.appendChild(ui.h('div', { class: 'grow' }, q));
-    bar.appendChild(cat);
-    wrap.appendChild(bar);
-    const host = ui.h('div', {});
-    wrap.appendChild(host);
-    const foot = ui.h('div', { class: 'row' });
-    wrap.appendChild(foot);
-
-    async function load() {
-      host.replaceChildren(ui.skeleton(5));
-      try {
-        const data = await SR.api.get('/api/market-catalogue', {
-          query: { q: state.q || undefined, category: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize },
-        });
-        const cats = data.categories || [];
-        const current = state.category;
-        cat.replaceChildren(ui.h('option', { value: '' }, `All (${data.count || ''})`));
-        for (const c of cats) cat.appendChild(ui.h('option', { value: c.code }, `${c.name} (${c.count})`));
-        cat.value = current;
-        const rows = data.data || [];
-        const list = ui.h('div', { class: 'stack' });
-        if (!rows.length) list.appendChild(ui.h('p', { class: 'hint' }, 'Nothing matches. Try a shorter word, such as rice, fan or cement.'));
-        for (const item of rows) {
-          const serialOn = state.serials.has(item.sku);
-          const row = ui.h('div', { class: 'row', style: { alignItems: 'center', gap: '8px', padding: '8px 0', borderBottom: '1px solid var(--line)' } });
-          row.appendChild(ui.h('div', { class: 'grow' },
-            ui.h('div', { style: { fontWeight: '600' } }, item.name),
-            ui.h('div', { class: 'hint' }, [item.brand, item.categoryName, item.unitName, 'No price'].filter(Boolean).join(' · '))));
-          row.appendChild(ui.h('button', {
-            class: serialOn ? 'btn btn-sm btn-primary' : 'btn btn-sm',
-            type: 'button',
-            onClick: () => {
-              if (state.serials.has(item.sku)) state.serials.delete(item.sku);
-              else state.serials.add(item.sku);
-              load();
-            },
-          }, serialOn ? 'Serial on' : 'Serial off'));
-          row.appendChild(ui.h('button', {
-            class: 'btn btn-sm btn-primary',
-            type: 'button',
-            onClick: () => adopt([item]),
-          }, 'Add'));
-          list.appendChild(row);
-        }
-        host.replaceChildren(list);
-        const total = (data.paging && data.paging.total) || 0;
-        foot.replaceChildren(ui.pager({
-          page: state.page, pageSize: state.pageSize, total,
-          onPage: (n) => { state.page = n; load(); },
-        }));
-      } catch (err) {
-        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
-      }
-    }
-
-    async function adopt(items) {
-      if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
-      try {
-        const result = await SR.api.post('/api/market-catalogue/adopt', {
-          business_id: SR.state.activeBusinessId,
-          items: items.map((item) => ({ sku: item.sku, serial: state.serials.has(item.sku) })),
-        });
-        const turnedOn = items.some((item) => state.serials.has(item.sku));
-        if (turnedOn && !SR.state.usesSerialNumbers() && SR.state.can('OWNER')) {
-          await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
-          await SR.state.load({ force: true }).catch(() => {});
-        }
-        ui.toast(result.message || 'Added.');
-        if (typeof loadList === 'function') loadList();
-      } catch (err) { ui.apiError(err); }
-    }
-
-    q.addEventListener('input', U.debounce(() => { state.q = q.value; state.page = 0; load(); }, 280));
-    cat.addEventListener('change', () => { if (cat.value === state.category) return; state.category = cat.value; state.page = 0; load(); });
-    ui.openModal({ title: 'Nigerian market', body: wrap, size: 'wide' });
-    load();
-  }
-
-  let loadList = null;
 
   SR.views = SR.views || {};
   SR.views.products = { render, productForm };

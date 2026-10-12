@@ -74,6 +74,12 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
+    // sort=name is the catalogue screen. Everything else keeps owned goods
+    // first so a priced row is still on page one.
+    const sortByName = String(ctx.req.queryParam('sort') || '') === 'name';
+    const orderSql = sortByName
+      ? "LOWER(p.name) ASC, LOWER(IFNULL(p.sku, '')) ASC, p.id ASC"
+      : '(p.business_id IS NULL), p.name ASC';
     const search = searchTerm(ctx);
     const businessId = ctx.req.queryParam('business_id');
     const categoryId = ctx.req.queryParam('category_id');
@@ -149,20 +155,45 @@ function mount(app, base = '/api') {
       ${lowStock && branch ? '' : ''}
       WHERE ${where.join(' AND ')}
       ${lowStock ? 'AND COALESCE((' + stockExpr + '), 0) <= p.reorder_level' : ''}
-      -- The shop's own goods first. The shared market list is thousands of
+      -- Default: the shop's own goods first. The shared market list is thousands of
       -- unpriced names; sorting those first would hide a priced product on
       -- the first page of the till and of every audit that sells one.
-      ORDER BY (p.business_id IS NULL), p.name ASC
+      -- The catalogue screen asks for sort=name, which files a new product
+      -- among those names instead of in a block ahead of them.
+      ORDER BY ${orderSql}
       LIMIT ? OFFSET ?`,
     [...(branch ? [String(branch.id)] : []), ...params, ...(lowStock && branch ? [String(branch.id)] : []), limit, offset]);
 
     const total = await db.scalar(`SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')}`, params);
-    ctx.json(listResponse(rows.map((r) => ({
+    // locate tells the catalogue which page a name just landed on, using the
+    // same filter and the same name order as the list above.
+    let located = null;
+    const locateId = ctx.req.queryParam('locate');
+    if (locateId && sortByName) {
+      const target = await db.first(
+        `SELECT p.id, p.name, p.sku FROM products p WHERE p.id = ? AND ${where.join(' AND ')}`,
+        [String(locateId), ...params],
+      );
+      if (target) {
+        const index = await db.scalar(
+          `SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')} AND (
+             LOWER(p.name) < LOWER(?)
+             OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) < LOWER(?))
+             OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
+           )`,
+          [...params, target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
+        );
+        located = { id: target.id, index: Number(index) || 0, name: target.name };
+      }
+    }
+    const body = listResponse(rows.map((r) => ({
       ...r,
       on_hand: round2(Number(r.on_hand) || 0),
       low_stock: Number(r.reorder_level) > 0 && Number(r.on_hand) <= Number(r.reorder_level),
       margin_pct: Number(r.selling_price) > 0 ? round2(((Number(r.selling_price) - Number(r.cost_price)) / Number(r.selling_price)) * 100) : null,
-    })), { limit, offset }, total));
+    })), { limit, offset }, total);
+    if (located) body.located = located;
+    ctx.json(body);
   });
 
   app.get(`${base}/products/:id`, async (ctx) => {

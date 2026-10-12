@@ -99,6 +99,9 @@ test('the catalogue screen toggles serial on the product, and the till refuses a
   const pos = fs.readFileSync(path.join(__dirname, '../../public/js/views/pos.js'), 'utf8');
   assert.match(products, /Serial off/);
   assert.match(products, /Use a serial number on this product/);
-  assert.match(products, /\/api\/market-catalogue/);
+  assert.doesNotMatch(products, /Nigerian market/, 'the catalogue still offers a separate Nigerian market button');
+  assert.doesNotMatch(products, /\/api\/market-catalogue/, 'the catalogue still opens the market list instead of the goods already on it');
+  assert.match(products, /sort: 'name'/, 'the catalogue does not ask for alphabetical order');
+  assert.match(products, /locate: product\.id/, 'adding a product does not open the page where that name belongs');
   assert.match(pos, /has no price/);
 });

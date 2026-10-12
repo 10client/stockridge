@@ -9,13 +9,15 @@
 //   when the shop has also turned serials on, the till and the goods receipt
 //   ask for one number per unit.
 //
-//   The Nigerian market list is names, not prices. Adding one copies the name
-//   into this shop with no price and with serial off, unless the person adding
-//   it turned the switch on for that row.
+//   The Nigerian market list is names, not prices. Those names are already in
+//   the catalogue, so the screen no longer has a separate market button. A new
+//   product is filed by name among that list. Adding through the API still
+//   copies a name with no price, and serial stays off unless that add said
+//   otherwise.
 //
-// FRONT TO BACK  the catalogue screen has the switch and the market list, and
-//                what it sends is what the server stores and what a later sale
-//                is refused or accepted on.
+// FRONT TO BACK  the catalogue screen has the serial switch and alphabetical
+//                order, and what it sends is what the server stores and what a
+//                later sale is refused or accepted on.
 // BACK TO FRONT  a refusal names the product and the missing count; a number
 //                that was captured is the number the sale reads back; a price
 //                that was never set is not invented; a role that cannot add
@@ -44,7 +46,7 @@ runAudit('market', async (audit, d) => {
 
   audit.section('The screen the operator actually uses');
 
-  await audit.checkAsync('the catalogue turns serial on or off on the product, and opens the market list', async () => {
+  await audit.checkAsync('the catalogue turns serial on or off on the product, and files a new product by name', async () => {
     const products = codeOnly(fs.readFileSync(path.join(ROOT, 'public/js/views/products.js'), 'utf8'));
     const pos = codeOnly(fs.readFileSync(path.join(ROOT, 'public/js/views/pos.js'), 'utf8'));
     const state = codeOnly(fs.readFileSync(path.join(ROOT, 'public/js/state.js'), 'utf8'));
@@ -55,8 +57,10 @@ runAudit('market', async (audit, d) => {
     assert.match(products, /Serial off/, 'the catalogue no longer has a Serial off switch');
     assert.match(products, /Use a serial number on this product/, 'the product form no longer says what the serial switch does');
     assert.match(products, /requires_serial: next/, 'the switch no longer writes requires_serial');
-    assert.match(products, /\/api\/market-catalogue/, 'the catalogue no longer asks for the Nigerian market list');
-    assert.match(products, /serial: state\.serials\.has\(item\.sku\)/, 'adding from the market no longer sends the serial choice for that row');
+    assert.doesNotMatch(products, /Nigerian market/, 'the catalogue still has a Nigerian market button');
+    assert.doesNotMatch(products, /openMarket/, 'the catalogue still opens a separate market list');
+    assert.match(products, /sort: 'name'/, 'the catalogue does not ask for alphabetical order');
+    assert.match(products, /locate: product\.id/, 'adding a product does not open the page where that name belongs');
     assert.match(state, /function usesSerialNumbers\(\)/, 'the till no longer has one place that decides whether serials are on');
     assert.match(pos, /usesSerialNumbers\(\)/, 'the till no longer reads the shop serial switch');
     assert.match(pos, /has no price/, 'the till will ring an item that has no price');

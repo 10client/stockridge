@@ -143,3 +143,36 @@ test('the market list has no prices, and adding a good copies it without one', a
     void phone;
   });
 });
+
+test('a new product is filed by name in the catalogue, and the default list still leads with a priced row', async () => {
+  await withShop(async ({ call, token, businessId }) => {
+    const make = async (name) => {
+      const res = await call('POST', '/api/products', {
+        token,
+        body: { business_id: businessId, name, selling_price: 250, cost_price: 100 },
+      });
+      assert.equal(res.status, 201, res.text.slice(0, 240));
+      return res.json.id;
+    };
+    const aaa = await make('Aaa Qqsortprobe');
+    const zzz = await make('Zzz Qqsortprobe');
+
+    const plain = await call('GET', '/api/products?limit=5', { token });
+    assert.equal(plain.status, 200, plain.text.slice(0, 200));
+    assert.ok(plain.json.data[0] && plain.json.data[0].business_id, 'the default list no longer leads with an owned product');
+
+    const filed = await call('GET', '/api/products?sort=name&q=Qqsortprobe&limit=10', { token });
+    assert.equal(filed.status, 200, filed.text.slice(0, 200));
+    const names = (filed.json.data || []).map((row) => row.name);
+    assert.deepEqual(names, ['Aaa Qqsortprobe', 'Zzz Qqsortprobe']);
+
+    const early = await call('GET', `/api/products?sort=name&locate=${encodeURIComponent(aaa)}&limit=1`, { token });
+    const late = await call('GET', `/api/products?sort=name&locate=${encodeURIComponent(zzz)}&limit=1`, { token });
+    assert.equal(early.status, 200, early.text.slice(0, 200));
+    assert.ok(early.json.located && late.json.located, 'locate did not say where the new name sits');
+    assert.ok(early.json.located.index < late.json.located.index, `${early.json.located.index} is not before ${late.json.located.index}`);
+    const page = Math.floor(late.json.located.index / 50);
+    const onPage = await call('GET', `/api/products?sort=name&limit=50&offset=${page * 50}`, { token });
+    assert.ok((onPage.json.data || []).some((row) => row.id === zzz), 'the name is not on the page locate pointed at');
+  });
+});
