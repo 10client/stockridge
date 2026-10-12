@@ -181,6 +181,24 @@
   }
   function featureLabel(key) { return state.featureLabels[key] || key; }
 
+  /**
+   * Is this module part of the business currently on screen?
+   *
+   * A group view has no single business, so a module shows only when every
+   * business the caller can reach uses it. Otherwise a hire book would sit
+   * in the navigation of a pharmacy, and the Greenbook would sit in a
+   * furniture shop.
+   */
+  function moduleOn(name) {
+    const rows = businesses().filter((b) => b && b.modules);
+    if (state.activeBusinessId) {
+      const focused = rows.find((b) => String(b.id) === String(state.activeBusinessId));
+      return Boolean(focused && focused.modules[name]);
+    }
+    if (!rows.length) return false;
+    return rows.every((b) => b.modules[name]);
+  }
+
   // -------------------------------------------------------------------
   // active business / branch
   // -------------------------------------------------------------------
@@ -476,7 +494,7 @@
     rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager, canManageUser,
     canCreateRole, roleNeedsBranch,
     canSeeAllBranches, can, usesSerialNumbers,
-    feature, featureLabel,
+    feature, featureLabel, moduleOn,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,
     canSwitchBusiness, canSwitchBranch,
     setBranch, setBusiness, query,

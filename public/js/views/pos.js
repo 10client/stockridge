@@ -31,6 +31,13 @@
   const U = SR.util;
 
   const TYPES = ['RETAIL', 'WHOLESALE', 'CREDIT', 'INSTALMENT', 'LAYAWAY', 'EXCHANGE'];
+  function saleTypes() {
+    return TYPES.filter((type) => {
+      if (type === 'WHOLESALE') return SR.state.moduleOn('wholesale');
+      if (type === 'INSTALMENT' || type === 'LAYAWAY') return SR.state.moduleOn('instalments');
+      return true;
+    });
+  }
   const METHODS = ['CASH', 'POS_TERMINAL', 'BANK_TRANSFER', 'MOBILE_MONEY', 'USSD', 'CHEQUE', 'INSTALMENT', 'DEPOSIT'];
   const METHOD_LABEL = {
     CASH: 'Cash', POS_TERMINAL: 'Card / POS', BANK_TRANSFER: 'Transfer',
@@ -310,8 +317,8 @@
     }
 
     async function askArrangement(product) {
-      const hire = Number(product.offers_hire) === 1;
-      const lease = Number(product.offers_lease) === 1;
+      const hire = Number(product.offers_hire) === 1 && SR.state.moduleOn('hire');
+      const lease = Number(product.offers_lease) === 1 && SR.state.moduleOn('lease');
       const sale = product.offers_sale == null || Number(product.offers_sale) === 1;
       if (!hire && !lease) return { channel: 'RETAIL' };
       const choices = [];
@@ -1004,17 +1011,17 @@
     function openMeta() {
       const wrapEl = ui.h('div', {});
       const grids = ui.h('div', { class: 'form-grid' },
-        ui.field({ label: 'Sale type', name: 'saleType', value: cart.saleType, options: TYPES.map((t) => ({ value: t, label: U.humanise(t) })) }),
+        ui.field({ label: 'Sale type', name: 'saleType', value: saleTypes().includes(cart.saleType) ? cart.saleType : 'RETAIL', options: saleTypes().map((t) => ({ value: t, label: U.humanise(t) })) }),
         ui.field({ label: 'Order discount (₦)', name: 'discountAmount', type: 'number', step: '0.01', min: '0', value: cart.discountAmount || 0 }),
         ui.field({ label: 'Discount reason', name: 'discountReason', value: cart.discountReason || '', span: true, hint: 'Recorded with the sale. A discount with no reason is the first thing an auditor asks about.' }),
-        ui.field({ label: 'Delivery fee (₦)', name: 'deliveryFee', type: 'number', step: '0.01', min: '0', value: cart.deliveryFee || 0 }),
-        ui.field({ label: 'Delivery address', name: 'deliveryAddress', value: cart.deliveryAddress || '', span: true }),
+        SR.state.moduleOn('deliveries') ? ui.field({ label: 'Delivery fee (₦)', name: 'deliveryFee', type: 'number', step: '0.01', min: '0', value: cart.deliveryFee || 0 }) : null,
+        SR.state.moduleOn('deliveries') ? ui.field({ label: 'Delivery address', name: 'deliveryAddress', value: cart.deliveryAddress || '', span: true }) : null,
         ui.field({ label: 'Notes', name: 'notes', type: 'textarea', value: cart.notes || '', span: true }));
       wrapEl.appendChild(grids);
       const delivery = ui.h('label', { class: 'check' },
         Object.assign(ui.h('input', { type: 'checkbox', checked: Boolean(cart.deliveryRequired) }), {}),
         ui.h('span', {}, 'This sale needs delivery and a delivery job'));
-      wrapEl.appendChild(delivery);
+      if (SR.state.moduleOn('deliveries')) wrapEl.appendChild(delivery);
       const custRow = ui.h('div', { class: 'row', style: { marginTop: '12px' } },
         ui.h('span', { class: 'badge badge-info' }, cart.customerName || 'Walk-in'),
         ui.h('button', {
@@ -1038,10 +1045,10 @@
               cart.saleType = v.saleType || 'RETAIL';
               cart.discountAmount = Number(v.discountAmount) || 0;
               cart.discountReason = v.discountReason || null;
-              cart.deliveryFee = Number(v.deliveryFee) || 0;
-              cart.deliveryAddress = v.deliveryAddress || null;
+              cart.deliveryFee = SR.state.moduleOn('deliveries') ? (Number(v.deliveryFee) || 0) : 0;
+              cart.deliveryAddress = SR.state.moduleOn('deliveries') ? (v.deliveryAddress || null) : null;
               cart.notes = v.notes || null;
-              cart.deliveryRequired = delivery.querySelector('input').checked;
+              cart.deliveryRequired = SR.state.moduleOn('deliveries') && delivery.querySelector('input').checked;
               save(); paint();
               m.close();
             },

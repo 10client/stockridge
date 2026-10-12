@@ -57,8 +57,10 @@
         ui.h('button', { class: 'btn btn-sm', onClick: () => printCurrent() }, 'Print'))));
 
     // ------------------------------------------------------------- picker
+    const reports = REPORTS.filter(([key]) => key !== 'commission' || SR.state.moduleOn('commission'));
+    if (!reports.some(([key]) => key === state.report)) state.report = 'sales';
     const picker = ui.h('div', { class: 'report-picker' });
-    for (const [key, label, blurb] of REPORTS) {
+    for (const [key, label, blurb] of reports) {
       picker.appendChild(ui.h('button', {
         class: `report-chip ${state.report === key ? 'is-active' : ''}`,
         onClick: () => { state.report = key; renderPicker(); load(); },
@@ -66,7 +68,7 @@
     }
     wrap.appendChild(picker);
     function renderPicker() {
-      [...picker.children].forEach((b, i) => b.classList.toggle('is-active', REPORTS[i][0] === state.report));
+      [...picker.children].forEach((b, i) => b.classList.toggle('is-active', reports[i][0] === state.report));
     }
 
     // ------------------------------------------------------------- toolbar

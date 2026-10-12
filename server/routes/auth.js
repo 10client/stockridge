@@ -36,11 +36,26 @@ const { hashPin, verifyPin } = require('../../domain/crypto');
 const { pin, username: usernameRule } = require('../../domain/validation');
 const { navigationFor, roleLabel, atLeast } = require('../../domain/roles');
 const { FEATURE_LABELS, planUsage } = require('../../domain/planLimits');
-const { getProfileOrDefault, describeProfile } = require('../../domain/verticals');
+const { getProfileOrDefault, describeProfile, resolveProfile } = require('../../domain/verticals');
+const { modulesFor } = require('../../domain/modules');
 const { requireField } = require('../lib/respond');
 
 function clientIp(ctx) {
   return ctx.req.header('CF-Connecting-IP') || ctx.req.header('X-Forwarded-For') || ctx.req.header('X-Real-IP') || null;
+}
+
+function businessForClient(row) {
+  let overrides = null;
+  if (row.profile_overrides_json) {
+    try { overrides = JSON.parse(row.profile_overrides_json); } catch (e) { overrides = null; }
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    profile_code: row.profile_code,
+    is_active: row.is_active,
+    modules: modulesFor(resolveProfile(row.profile_code, overrides)),
+  };
 }
 
 function mount(app, base = '/api/auth', makeEnv = null) {
@@ -140,11 +155,12 @@ function mount(app, base = '/api/auth', makeEnv = null) {
     const scope = ctx.get('scope');
     const settings = ctx.get('settings');
 
-    const businesses = scope.allBusinesses
-      ? await db.all('SELECT id, name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name')
-      : await db.all(`SELECT id, name, profile_code, is_active FROM businesses
+    const businessRows = scope.allBusinesses
+      ? await db.all('SELECT id, name, profile_code, profile_overrides_json, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name')
+      : await db.all(`SELECT id, name, profile_code, profile_overrides_json, is_active FROM businesses
           WHERE is_deleted = 0 AND id IN (${[...(scope.businessIds || [])].map(() => '?').join(',') || "''"}) ORDER BY name`,
       [...(scope.businessIds || [])]);
+    const businesses = businessRows.map(businessForClient);
 
     const branches = scope.allBranches
       ? await db.all(`SELECT b.id, b.business_id, b.name, b.code, b.branch_type, b.city, b.state, b.is_active, biz.name AS business_name

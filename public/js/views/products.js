@@ -22,56 +22,6 @@
 
   const PAGE_SIZE = 50;
 
-  async function openGreenbook() {
-    const q = await ui.promptDialog({
-      title: 'NAFDAC Greenbook',
-      label: 'Name, ingredient or registration number',
-      required: true,
-      hint: 'This searches the reference catalogue. It does not add a price, and it does not put the row on the shared market list.',
-    });
-    if (!q) return;
-    let data;
-    try {
-      data = await SR.api.get('/api/nafdac', { query: { q, limit: 20 } });
-    } catch (err) {
-      ui.apiError(err);
-      return;
-    }
-    const rows = data.data || [];
-    if (!rows.length) { ui.warn('Nothing in the Greenbook matches that.'); return; }
-    const list = ui.h('div', { class: 'stack' });
-    for (const row of rows) {
-      const adopt = ui.h('button', { class: 'btn btn-sm' }, 'Copy into this shop');
-      adopt.addEventListener('click', async () => {
-        const price = await ui.promptDialog({
-          title: row.product_name,
-          label: 'Selling price (₦)',
-          required: true,
-          hint: 'The Greenbook is not priced. This price is yours.',
-        });
-        if (!price) return;
-        try {
-          const result = await SR.api.post(`/api/nafdac/${encodeURIComponent(row.id)}/adopt`, {
-            selling_price: Number(price),
-            business_id: SR.state.activeBusinessId,
-            branch_id: SR.state.activeBranchId,
-          });
-          ui.ok(result.message || 'Copied into this catalogue.');
-          m.close();
-          SR.app.navigate('/products');
-        } catch (err) {
-          ui.apiError(err);
-        }
-      });
-      list.appendChild(ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '12px' } },
-        ui.h('div', {},
-          ui.h('strong', {}, row.product_name),
-          ui.h('div', { class: 'hint' }, [row.nafdac_reg_no, row.dispensing_type, Number(row.is_controlled) ? 'controlled' : null, row.strength].filter(Boolean).join(' · '))),
-        adopt));
-    }
-    const m = ui.openModal({ title: 'Greenbook matches', body: list, size: 'wide' });
-  }
-
   async function openRegister() {
     let data;
     try {
@@ -106,17 +56,22 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
-        ui.h('p', { class: 'sub' }, 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
+        ui.h('p', { class: 'sub' }, SR.state.moduleOn('nafdac')
+          ? 'The catalogue is in alphabetical order. Search also looks in the NAFDAC Greenbook. A match that is not in this shop yet is added the same way as any other product, and you set the price. It is not put on the shared market list.'
+          : 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => openGreenbook() }, 'NAFDAC Greenbook'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => openRegister() }, 'Controlled register'),
+        SR.state.moduleOn('dispensing') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openRegister() }, 'Controlled register') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
-    const qInput = ui.h('input', { type: 'search', placeholder: 'Name, SKU, brand or model…', style: { minWidth: '210px' } });
+    const qInput = ui.h('input', {
+      type: 'search',
+      placeholder: SR.state.moduleOn('nafdac') ? 'Name, SKU, ingredient or NAFDAC number…' : 'Name, SKU, brand or model…',
+      style: { minWidth: '210px' },
+    });
     qInput.value = state.q;
     toolbar.firstElementChild.appendChild(ui.h('div', { class: 'grow' }, qInput));
     const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; state.highlightId = null; load(); } });
@@ -209,7 +164,8 @@
             cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_name].filter(Boolean).join(' · ')));
             const tags = [];
             if (Number(p.tracks_variants)) tags.push('variants');
-            cell.appendChild(serialSwitch(p, { stop: true, after: () => load() }));
+            const serial = serialSwitch(p, { stop: true, after: () => load() });
+            if (serial) cell.appendChild(serial);
             if (Number(p.requires_installation)) tags.push('installation');
             if (Number(p.has_expiry)) tags.push('expiry');
             if (Number(p.warranty_months)) tags.push(`${p.warranty_months}m warranty`);
@@ -252,6 +208,41 @@
           onSize: (n) => { state.pageSize = n; state.page = 0; state.highlightId = null; load(); },
         }),
       }));
+      if (SR.state.moduleOn('nafdac') && String(state.q || '').trim().length >= 2 && !offline) {
+        host.appendChild(await greenbookCard(state.q));
+      }
+    }
+
+    async function greenbookCard(q) {
+      let data;
+      try {
+        data = await SR.api.get('/api/nafdac', { query: SR.state.query({ q, limit: 12 }) });
+      } catch (err) {
+        return ui.h('div', { class: 'alert alert-warn' }, err.message || 'The Greenbook could not be searched.');
+      }
+      const rows = data.data || [];
+      if (!rows.length) return ui.h('p', { class: 'hint' }, 'Nothing in the NAFDAC Greenbook matches that.');
+      const table = ui.renderTable({
+        columns: [
+          { key: 'product_name', label: 'Greenbook product', className: 'wrap', render: (row) => ui.h('div', {},
+            ui.h('div', { style: { fontWeight: '600' } }, row.product_name),
+            ui.h('div', { class: 'hint' }, [row.nafdac_reg_no, row.ingredient_name, row.strength, row.dispensing_type, Number(row.is_controlled) ? 'controlled' : null].filter(Boolean).join(' · '))) },
+          { key: 'manufacturer', label: 'Maker' },
+          { key: 'x', label: '', render: (row) => row.adopted_id
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/products/${row.adopted_id}`) }, 'Open')
+            : ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => addFromGreenbook(row) }, 'Add') },
+        ],
+        rows,
+        emptyTitle: 'Nothing in the Greenbook',
+      });
+      const card = ui.dataCard({ title: 'NAFDAC Greenbook', table });
+      return ui.h('div', { class: 'stack' },
+        ui.h('p', { class: 'hint' }, 'Not priced. Add works like any other product: you set the price, and the row stays off the shared market list.'),
+        card);
+    }
+
+    function addFromGreenbook(row) {
+      productForm(null, { greenbook: row }).then((ok) => { if (ok && ok.id) placeInList(ok); else if (ok) load(); });
     }
 
     async function exportList() {
@@ -315,7 +306,8 @@
   // -------------------------------------------------------------------
   // CREATE / EDIT FORM
   // -------------------------------------------------------------------
-  async function productForm(product) {
+  async function productForm(product, options = {}) {
+    const greenbook = options.greenbook || null;
     const editing = Boolean(product);
     let categories = [];
     let units = [];
@@ -331,30 +323,58 @@
     }
 
     const wrapEl = ui.h('div', {});
-    const base = product || {};
-    const grid = ui.h('div', { class: 'form-grid' },
+    const base = product || (greenbook ? {
+      name: greenbook.product_name,
+      brand: greenbook.manufacturer || '',
+      registration_no: greenbook.nafdac_reg_no || '',
+      base_unit_name: greenbook.base_unit || 'Piece',
+      dispensing_class: greenbook.dispensing_type || 'OTC',
+      is_controlled: Number(greenbook.is_controlled) ? 1 : 0,
+      has_expiry: 1,
+      is_active: 1,
+    } : {});
+    if (greenbook) {
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This comes from the NAFDAC Greenbook. Set your own price. It is added to this shop only, not to the shared market list.'));
+    }
+    const fields = [
       ui.field({ label: 'Name', name: 'name', value: base.name || '', required: true, span: true, placeholder: 'e.g. Hisense 1.5HP Split Air Conditioner' }),
       ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', options: [{ value: '', label: '— none —' }].concat(categories.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: c.name }))) }),
       ui.field({ label: 'Brand', name: 'brand', value: base.brand || '' }),
       ui.field({ label: 'Model number', name: 'model_no', value: base.model_no || '' }),
-      ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: 'Left blank, one is suggested from the name.' }),
+      ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: greenbook ? 'Left blank, one is taken from the NAFDAC number.' : 'Left blank, one is suggested from the name.' }),
       ui.field({ label: 'Base unit name', name: 'base_unit_name', value: base.base_unit_name || 'PIECE', hint: 'The smallest unit you would sell. Everything else is a multiple of it.' }),
       ui.field({ label: 'Cost price (₦)', name: 'cost_price', type: 'number', step: '0.01', min: '0', value: base.cost_price != null ? U.numInput(base.cost_price) : '' }),
       ui.field({ label: 'Selling price (₦)', name: 'selling_price', type: 'number', step: '0.01', min: '0', value: base.selling_price != null ? U.numInput(base.selling_price) : '', required: true }),
-      ui.field({ label: 'Hire rate per day (₦)', name: 'hire_price_per_day', type: 'number', step: '0.01', min: '0', value: base.hire_price_per_day != null ? U.numInput(base.hire_price_per_day) : '', hint: 'What one unit costs for one day out. Leave blank if it is not hired.' }),
-      ui.field({ label: 'Hire deposit each (₦)', name: 'hire_deposit', type: 'number', step: '0.01', min: '0', value: base.hire_deposit != null ? U.numInput(base.hire_deposit) : '', hint: 'Held, not earned. Returned when the goods come back undamaged.' }),
-      ui.field({ label: 'Lease rent per month (₦)', name: 'lease_price_per_month', type: 'number', step: '0.01', min: '0', value: base.lease_price_per_month != null ? U.numInput(base.lease_price_per_month) : '' }),
-      ui.field({ label: 'Lease deposit each (₦)', name: 'lease_deposit', type: 'number', step: '0.01', min: '0', value: base.lease_deposit != null ? U.numInput(base.lease_deposit) : '' }),
+    ];
+    if (SR.state.moduleOn('hire')) {
+      fields.push(
+        ui.field({ label: 'Hire rate per day (₦)', name: 'hire_price_per_day', type: 'number', step: '0.01', min: '0', value: base.hire_price_per_day != null ? U.numInput(base.hire_price_per_day) : '', hint: 'What one unit costs for one day out. Leave blank if it is not hired.' }),
+        ui.field({ label: 'Hire deposit each (₦)', name: 'hire_deposit', type: 'number', step: '0.01', min: '0', value: base.hire_deposit != null ? U.numInput(base.hire_deposit) : '', hint: 'Held, not earned. Returned when the goods come back undamaged.' }),
+      );
+    }
+    if (SR.state.moduleOn('lease')) {
+      fields.push(
+        ui.field({ label: 'Lease rent per month (₦)', name: 'lease_price_per_month', type: 'number', step: '0.01', min: '0', value: base.lease_price_per_month != null ? U.numInput(base.lease_price_per_month) : '' }),
+        ui.field({ label: 'Lease deposit each (₦)', name: 'lease_deposit', type: 'number', step: '0.01', min: '0', value: base.lease_deposit != null ? U.numInput(base.lease_deposit) : '' }),
+      );
+    }
+    fields.push(
       ui.field({ label: 'Minimum margin %', name: 'min_margin_pct', type: 'number', step: '0.1', min: '0', value: base.min_margin_pct != null ? U.numInput(base.min_margin_pct) : '', hint: 'A header on the POS warns below this. It does not block the sale.' }),
       ui.field({ label: 'Reorder level', name: 'reorder_level', type: 'number', step: 'any', min: '0', value: base.reorder_level != null ? U.numInput(base.reorder_level) : '' }),
       ui.field({ label: 'Reorder quantity', name: 'reorder_quantity', type: 'number', step: 'any', min: '0', value: base.reorder_quantity != null ? U.numInput(base.reorder_quantity) : '' }),
-      ui.field({ label: 'Warranty (months)', name: 'warranty_months', type: 'number', step: '1', min: '0', value: base.warranty_months != null ? U.numInput(base.warranty_months) : '' }),
-      ui.field({
-        label: 'Warranty type', name: 'warranty_type', value: base.warranty_type || '',
-        options: [{ value: '', label: '— none —' }, { value: 'MANUFACTURER', label: 'Manufacturer' }, { value: 'SELLER', label: 'Seller' }, { value: 'EXTENDED', label: 'Extended' }, { value: 'NONE', label: 'No warranty' }],
-      }),
-      ui.field({ label: 'Registration number', name: 'registration_no', span: true, hint: 'SONCAP, NAFDAC or MANCAP number. Advisory — recorded, never a blocked sale.' }),
-      ui.field({
+    );
+    if (SR.state.moduleOn('warranty')) {
+      fields.push(
+        ui.field({ label: 'Warranty (months)', name: 'warranty_months', type: 'number', step: '1', min: '0', value: base.warranty_months != null ? U.numInput(base.warranty_months) : '' }),
+        ui.field({
+          label: 'Warranty type', name: 'warranty_type', value: base.warranty_type || '',
+          options: [{ value: '', label: '— none —' }, { value: 'MANUFACTURER', label: 'Manufacturer' }, { value: 'SELLER', label: 'Seller' }, { value: 'EXTENDED', label: 'Extended' }, { value: 'NONE', label: 'No warranty' }],
+        }),
+      );
+    }
+    fields.push(ui.field({ label: 'Registration number', name: 'registration_no', value: base.registration_no || '', span: true, hint: greenbook ? 'The NAFDAC number. Recorded with the product.' : 'SONCAP, NAFDAC or MANCAP number. Advisory — recorded, never a blocked sale.' }));
+    if (SR.state.moduleOn('dispensing')) {
+      fields.push(ui.field({
         label: 'Dispensing class',
         name: 'dispensing_class',
         value: base.dispensing_class || '',
@@ -365,6 +385,8 @@
         ],
         hint: 'Leave this blank for everything that is not a medicine.',
       }));
+    }
+    const grid = ui.h('div', { class: 'form-grid' }, fields);
     wrapEl.appendChild(grid);
 
     const serialOn = editing ? Boolean(Number(base.requires_serial)) : false;
@@ -374,25 +396,28 @@
     serialBox.appendChild(ui.h('label', { class: 'check' },
       ui.h('input', { type: 'checkbox', name: 'requires_serial', checked: serialOn }),
       ui.h('strong', {}, 'Use a serial number on this product')));
-    wrapEl.appendChild(serialBox);
+    if (SR.state.moduleOn('serials')) wrapEl.appendChild(serialBox);
 
     const flags = ui.h('fieldset');
     flags.appendChild(ui.h('legend', {}, 'Behaviour'));
     const flagList = [
-      ['tracks_variants', 'Has variants', 'The same product in several sizes, colours or capacities.'],
-      ['has_expiry', 'Has an expiry date', 'Batches carry an expiry and the system will refuse to receive already-expired stock.'],
-      ['requires_installation', 'Needs installation', 'Selling it creates an installation job for a technician.'],
-      ['is_bulky', 'Bulky item', 'Affects delivery planning.'],
-      ['is_fragile', 'Fragile', 'Warns at goods-out.'],
-      ['offers_hire', 'Available for hire', 'Goes out for days and comes back. Stock is not sold.'],
-      ['offers_lease', 'Available for lease', 'Goes out for months. Rent is income. The asset stays yours until a buyout.'],
-      ['is_returnable', 'Returnable', 'A customer may return it inside the window.'],
-      ['is_controlled', 'Controlled medicine', 'The till asks for the buyer’s name and phone, and the sale is written into the register.'],
-      ['is_active', 'Active', 'Turn off to hide it from the POS without deleting its history.'],
-    ];
+      ['tracks_variants', 'Has variants', 'The same product in several sizes, colours or capacities.', 'variants'],
+      ['has_expiry', 'Has an expiry date', 'Batches carry an expiry and the system will refuse to receive already-expired stock.', 'expiry'],
+      ['requires_installation', 'Needs installation', 'Selling it creates an installation job for a technician.', 'installation'],
+      ['is_bulky', 'Bulky item', 'Affects delivery planning.', 'bulky'],
+      ['is_fragile', 'Fragile', 'Warns at goods-out.', 'fragile'],
+      ['offers_hire', 'Available for hire', 'Goes out for days and comes back. Stock is not sold.', 'hire'],
+      ['offers_lease', 'Available for lease', 'Goes out for months. Rent is income. The asset stays yours until a buyout.', 'lease'],
+      ['is_returnable', 'Returnable', 'A customer may return it inside the window.', null],
+      ['is_controlled', 'Controlled medicine', 'The till asks for the buyer’s name and phone, and the sale is written into the register.', 'dispensing'],
+      ['is_active', 'Active', 'Turn off to hide it from the POS without deleting its history.', null],
+    ].filter((row) => !row[3] || SR.state.moduleOn(row[3]));
     for (const [name, label, hint] of flagList) {
+      const checked = editing || greenbook
+        ? (name === 'is_active' && base[name] == null ? true : Boolean(Number(base[name])))
+        : (name === 'is_active');
       const row = ui.h('label', { class: 'check', style: { marginBottom: '8px', alignItems: 'flex-start' } },
-        ui.h('input', { type: 'checkbox', name, checked: editing ? Boolean(Number(base[name])) : (name === 'is_active' ? true : false) }),
+        ui.h('input', { type: 'checkbox', name, checked }),
         ui.h('div', {}, ui.h('strong', {}, label), ui.h('div', { class: 'hint' }, hint)));
       flags.appendChild(row);
     }
@@ -444,7 +469,7 @@
       let settled = false;
       const finish = (v) => { if (settled) return; settled = true; resolve(v); m.close(); };
       const m = ui.openModal({
-        title: editing ? `Edit ${base.name}` : 'Add a product',
+        title: editing ? `Edit ${base.name}` : (greenbook ? `Add ${greenbook.product_name}` : 'Add a product'),
         body: wrapEl,
         size: 'wide',
         onClose: () => finish(false),
@@ -460,7 +485,8 @@
               const flagValues = {};
               for (const el of flags.querySelectorAll('input[type="checkbox"]')) flagValues[el.name] = el.checked ? 1 : 0;
               const serialEl = wrapEl.querySelector('input[name="requires_serial"]');
-              flagValues.requires_serial = serialEl && serialEl.checked ? 1 : 0;
+              if (serialEl) flagValues.requires_serial = serialEl.checked ? 1 : 0;
+              const moneyOrNull = (value) => (value === null || value === '' || value === undefined ? null : Number(value));
               const payload = Object.assign({
                 branch_id: SR.state.activeBranchId,
                 business_id: SR.state.activeBusinessId,
@@ -471,18 +497,11 @@
                 sku: v.sku || null,
                 registration_no: v.registration_no || null,
                 base_unit_name: v.base_unit_name || 'PIECE',
-                cost_price: v.cost_price === null ? 0 : Number(v.cost_price),
+                cost_price: v.cost_price === null || v.cost_price === '' ? 0 : Number(v.cost_price),
                 selling_price: Number(v.selling_price),
-                hire_price_per_day: v.hire_price_per_day === null || v.hire_price_per_day === '' ? null : Number(v.hire_price_per_day),
-                hire_deposit: v.hire_deposit === null || v.hire_deposit === '' ? null : Number(v.hire_deposit),
-                lease_price_per_month: v.lease_price_per_month === null || v.lease_price_per_month === '' ? null : Number(v.lease_price_per_month),
-                lease_deposit: v.lease_deposit === null || v.lease_deposit === '' ? null : Number(v.lease_deposit),
-                min_margin_pct: v.min_margin_pct === null ? null : Number(v.min_margin_pct),
-                reorder_level: v.reorder_level === null ? 0 : Number(v.reorder_level),
-                reorder_quantity: v.reorder_quantity === null ? null : Number(v.reorder_quantity),
-                warranty_months: v.warranty_months === null ? null : Number(v.warranty_months),
-                warranty_type: v.warranty_type || null,
-                dispensing_class: v.dispensing_class || null,
+                min_margin_pct: v.min_margin_pct === null || v.min_margin_pct === '' ? null : Number(v.min_margin_pct),
+                reorder_level: v.reorder_level === null || v.reorder_level === '' ? 0 : Number(v.reorder_level),
+                reorder_quantity: v.reorder_quantity === null || v.reorder_quantity === '' ? null : Number(v.reorder_quantity),
                 units: ladder.map((l, i) => ({
                   code: l.code || (i === 0 ? 'PIECE' : `UNIT_${i}`),
                   name: l.name || l.code || `Unit ${i + 1}`,
@@ -491,12 +510,27 @@
                   unit_price: i === 0 ? Number(v.selling_price) : (l.unit_price != null ? l.unit_price : null),
                 })),
               }, flagValues);
+              if (SR.state.moduleOn('hire')) {
+                payload.hire_price_per_day = moneyOrNull(v.hire_price_per_day);
+                payload.hire_deposit = moneyOrNull(v.hire_deposit);
+              }
+              if (SR.state.moduleOn('lease')) {
+                payload.lease_price_per_month = moneyOrNull(v.lease_price_per_month);
+                payload.lease_deposit = moneyOrNull(v.lease_deposit);
+              }
+              if (SR.state.moduleOn('warranty')) {
+                payload.warranty_months = moneyOrNull(v.warranty_months);
+                payload.warranty_type = v.warranty_type || null;
+              }
+              if (SR.state.moduleOn('dispensing')) payload.dispensing_class = v.dispensing_class || null;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Saving…';
               try {
-                const result = editing
-                  ? await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, payload)
-                  : await SR.api.post('/api/products', payload);
+                const result = greenbook
+                  ? await SR.api.post(`/api/nafdac/${encodeURIComponent(greenbook.id)}/adopt`, payload)
+                  : editing
+                    ? await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, payload)
+                    : await SR.api.post('/api/products', payload);
                 if (result && result.barcodeWarning) ui.warn(result.barcodeWarning);
                 if (flagValues.requires_serial === 1 && !SR.state.usesSerialNumbers() && SR.state.can('OWNER')) {
                   await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
@@ -711,16 +745,16 @@
           ['Category', data.category ? data.category.name : p.category_name],
           ['Brand', p.brand], ['Model', p.model_no],
           ['Registration', p.registration_no],
-          ['Dispensing', p.dispensing_class || 'not a medicine'],
-          ['Controlled', Number(p.is_controlled) ? 'yes — buyer name and phone required' : 'no'],
-          ['Warranty', Number(p.warranty_months) ? `${p.warranty_months} months (${U.humanise(p.warranty_type || 'manufacturer')})` : 'none'],
+          SR.state.moduleOn('dispensing') ? ['Dispensing', p.dispensing_class || 'not a medicine'] : null,
+          SR.state.moduleOn('dispensing') ? ['Controlled', Number(p.is_controlled) ? 'yes — buyer name and phone required' : 'no'] : null,
+          SR.state.moduleOn('warranty') ? ['Warranty', Number(p.warranty_months) ? `${p.warranty_months} months (${U.humanise(p.warranty_type || 'manufacturer')})` : 'none'] : null,
           ['Return window', Number(p.return_window_days) ? `${p.return_window_days} days` : null],
-          ['Serial number', Number(p.requires_serial) ? 'On — the till asks for one number per unit' : 'Off'],
-          ['Variants', Number(p.tracks_variants) ? 'yes' : 'no'],
-          ['Expiry tracked', Number(p.has_expiry) ? 'yes' : 'no'],
-          ['Needs installation', Number(p.requires_installation) ? 'yes' : 'no'],
+          SR.state.moduleOn('serials') ? ['Serial number', Number(p.requires_serial) ? 'On — the till asks for one number per unit' : 'Off'] : null,
+          SR.state.moduleOn('variants') ? ['Variants', Number(p.tracks_variants) ? 'yes' : 'no'] : null,
+          SR.state.moduleOn('expiry') ? ['Expiry tracked', Number(p.has_expiry) ? 'yes' : 'no'] : null,
+          SR.state.moduleOn('installation') ? ['Needs installation', Number(p.requires_installation) ? 'yes' : 'no'] : null,
           ['Active', Number(p.is_active) ? 'yes' : 'NO — hidden from the POS'],
-        ]),
+        ].filter(Boolean)),
       }));
       if (variants.length) {
         facts.appendChild(ui.dataCard({
@@ -837,6 +871,7 @@
   }
 
   function serialSwitch(product, { stop = false, after = null } = {}) {
+    if (!SR.state.moduleOn('serials')) return null;
     const on = Boolean(Number(product.requires_serial));
     return ui.h('button', {
       class: on ? 'btn btn-sm btn-primary' : 'btn btn-sm',

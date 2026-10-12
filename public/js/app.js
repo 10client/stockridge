@@ -40,7 +40,7 @@
     { path: '/pos', title: 'Sell', group: 'Today', view: 'pos', icon: 'cart', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/till', title: 'Till & safe', group: 'Today', view: 'till', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/sales', title: 'Sales', group: 'Today', view: 'sales', icon: 'receipt', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/hire-book', title: 'Hire book', group: 'Today', view: 'hire-book', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/hire-book', title: 'Hire book', group: 'Today', view: 'hire-book', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'hireBook' },
 
     { path: '/products', title: 'Catalogue', group: 'Stock', view: 'products', icon: 'tag', roles: ['MANAGER', 'OWNER'] },
     { path: '/stock', title: 'Stock', group: 'Stock', view: 'stock', icon: 'box', roles: ['STAFF', 'MANAGER', 'OWNER'] },
@@ -55,8 +55,8 @@
     // The nav has listed 'change-owed' for every role since the navigation was written;
     // this is the screen it was pointing at.
     { path: '/change-owed', title: 'Change owed', group: 'Customers', view: 'change-owed', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'instalments' },
+    { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'deliveries' },
     { path: '/returns', title: 'Returns & warranty', group: 'Customers', view: 'returns', icon: 'back', roles: ['STAFF', 'MANAGER', 'OWNER'] },
 
     { path: '/attendance', title: 'Attendance', group: 'People', view: 'attendance', icon: 'clock', roles: ['STAFF', 'MANAGER', 'OWNER'] },
@@ -155,6 +155,7 @@
   }
 
   function allowed(route) {
+    if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) return false;
     if (!route.roles) return true;
     return route.roles.includes(String((SR.state.user && SR.state.user.role) || '').toUpperCase());
   }
@@ -185,11 +186,14 @@
     }
     if (!allowed(hit.route)) {
       showShell();
-      ui.warn('Your role does not include that screen.');
+      const wrongModule = hit.route.module && !(SR.state.moduleOn && SR.state.moduleOn(hit.route.module));
+      ui.warn(wrongModule ? 'That belongs to another kind of business.' : 'Your role does not include that screen.');
       setActiveNav(null);
       ui.mount('#view', ui.empty({
-        title: 'Not available to your role',
-        message: `${hit.route.title || 'That screen'} is for ${(hit.route.roles || []).join(', ')}. You are signed in as ${SR.state.user.role}.`,
+        title: wrongModule ? 'Not part of this business' : 'Not available to your role',
+        message: wrongModule
+          ? `${hit.route.title || 'That screen'} is only there for a business that uses it. Switch to that business, or stay on the screens this one has.`
+          : `${hit.route.title || 'That screen'} is for ${(hit.route.roles || []).join(', ')}. You are signed in as ${SR.state.user.role}.`,
         action: { label: 'Back to the dashboard', run: () => navigate('/dashboard') },
         mark: 'lock',
       }));
@@ -407,6 +411,7 @@
     for (const route of ROUTES) {
       if (route.nav === false) continue;
       if (!route.roles || !route.roles.includes(role)) continue;
+      if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) continue;
       const group = route.group || 'Other';
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(route);
@@ -1052,7 +1057,11 @@
     if (subLink) subLink.addEventListener('click', () => navigate('/plan'));
     SR.api.on('auth', () => handleAuthFailure());
     SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); });
-    SR.state.on('business', () => paintIdentity());
+    SR.state.on('business', () => {
+      paintIdentity();
+      buildNav();
+      if (currentRoute && currentRoute.module && !(SR.state.moduleOn && SR.state.moduleOn(currentRoute.module))) navigate('/dashboard');
+    });
   }
 
   function wireChrome() {

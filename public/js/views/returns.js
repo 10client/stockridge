@@ -31,6 +31,8 @@
   async function render(ctx) {
     ctx.setTitle('Returns & warranty');
     const state = { tab: ctx.query.tab || 'returns', page: 0, pageSize: 50, status: '', q: '' };
+    if (state.tab === 'claims' && !SR.state.moduleOn('warranty')) state.tab = 'returns';
+    if (state.tab === 'serials' && !SR.state.moduleOn('serials')) state.tab = 'returns';
 
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
@@ -39,11 +41,14 @@
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · refunds, swaps and warranty claims, with what each one cost`)),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => startReturn() }, 'Start a return'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/deliveries') }, 'Deliveries'),
+        SR.state.moduleOn('deliveries') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/deliveries') }, 'Deliveries') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
 
     const tabs = ui.h('div', { class: 'tabs' });
-    for (const [key, label] of [['returns', 'Returns'], ['claims', 'Warranty claims'], ['serials', 'Serial lookup'], ['board', 'Cost of after-sales']]) {
+    const tabList = [['returns', 'Returns'], ['board', 'Cost of after-sales']];
+    if (SR.state.moduleOn('warranty')) tabList.splice(1, 0, ['claims', 'Warranty claims']);
+    if (SR.state.moduleOn('serials')) tabList.splice(SR.state.moduleOn('warranty') ? 2 : 1, 0, ['serials', 'Serial lookup']);
+    for (const [key, label] of tabList) {
       tabs.appendChild(ui.h('button', {
         class: `tab ${state.tab === key ? 'is-active' : ''}`,
         onClick: () => {

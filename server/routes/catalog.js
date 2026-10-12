@@ -27,6 +27,7 @@ const { atLeast } = require('../../domain/roles');
 const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, valid, numField, strField, boolField, searchTerm } = require('../lib/respond');
 const { validateLadder } = require('../../domain/uom');
 const { LADDERS, MEASURE_AXES, PROFILE_CODES, getProfile, resolveProfile, describeProfile } = require('../../domain/verticals');
+const { modulesOf } = require('../../domain/modules');
 const { round2 } = require('../../domain/money');
 const { barcode: barcodeRule, oneOf } = require('../../domain/validation');
 const { newId } = require('../../domain/crypto');
@@ -70,6 +71,62 @@ const PRODUCT_FIELDS = {
   lease_deposit: (v) => (v == null || v === '' ? null : numField(v, { field: 'Lease deposit', min: 0 })),
 };
 const PRODUCT_FLAGS = ['requires_serial', 'tracks_variants', 'is_bulky', 'requires_installation', 'has_expiry', 'is_age_restricted', 'is_fragile', 'is_returnable', 'is_active', 'offers_sale', 'offers_hire', 'offers_lease', 'is_controlled'];
+
+function overridesOf(business) {
+  if (!business || !business.profile_overrides_json) return null;
+  try { return JSON.parse(business.profile_overrides_json); } catch (e) { return null; }
+}
+
+function modulesOfBusiness(business) {
+  return modulesOf(business && business.profile_code, overridesOf(business));
+}
+
+function refuseForeignModule(business, fields) {
+  if (!business) return;
+  const modules = modulesOfBusiness(business);
+  const on = (flag) => fields[flag] === 1 || fields[flag] === true;
+  if ((on('offers_hire') || Number(fields.hire_price_per_day) > 0 || Number(fields.hire_deposit) > 0) && !modules.hire) {
+    throw new HttpError('Hire belongs to a business that hires goods out. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if ((on('offers_lease') || Number(fields.lease_price_per_month) > 0 || Number(fields.lease_deposit) > 0) && !modules.lease) {
+    throw new HttpError('A lease belongs to a business that leases. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if ((fields.dispensing_class || on('is_controlled')) && !modules.dispensing) {
+    throw new HttpError('Prescription and controlled medicines belong to a dispensary. This business is not one.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('requires_serial') && !modules.serials) {
+    throw new HttpError('Serial numbers belong to a business that tracks individual units. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (Number(fields.warranty_months) > 0 && !modules.warranty) {
+    throw new HttpError('Warranty belongs to a business that sells covered goods. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('tracks_variants') && !modules.variants) {
+    throw new HttpError('Variants belong to a business that sells the same goods in more than one form. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('has_expiry') && !modules.expiry) {
+    throw new HttpError('Expiry tracking belongs to a business that sells dated goods. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('requires_installation') && !modules.installation) {
+    throw new HttpError('Installation belongs to a business that fits what it sells. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('is_bulky') && !modules.bulky) {
+    throw new HttpError('Bulky delivery belongs to a business that delivers large goods. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+  if (on('is_fragile') && !modules.fragile) {
+    throw new HttpError('Fragile handling belongs to a business that marks goods that break. This one does not.', { status: 403, code: 'MODULE_OFF' });
+  }
+}
+
+async function requireModule(db, ctx, name, message) {
+  const branch = await resolveBranch(db, ctx, { required: false });
+  const business = await resolveBusiness(db, ctx, branch || undefined, { required: false });
+  if (!business) {
+    throw new HttpError('Choose which business this applies to.', { status: 400, code: 'BUSINESS_REQUIRED' });
+  }
+  const modules = modulesOfBusiness(business);
+  if (!modules[name]) throw new HttpError(message, { status: 403, code: 'MODULE_OFF' });
+  return business;
+}
 
 /**
  * A new category is not appended. It is given the place its name has among
@@ -424,6 +481,7 @@ function mount(app, base = '/api') {
     }
     if (!fields.name) throw new HttpError('A product needs a name.', { status: 400, code: 'MISSING_FIELD', fields: { name: 'Required.' } });
     for (const flag of PRODUCT_FLAGS) if (body[flag] !== undefined) fields[flag] = boolField(body[flag]);
+    refuseForeignModule(business, fields);
 
     // A selling price below cost is allowed but recorded: a clearance line is a
     // legitimate decision, a typo is not, and the audit trail is what tells them
@@ -523,6 +581,10 @@ function mount(app, base = '/api') {
     }
     if (!before.business_id && (fields.dispensing_class || fields.is_controlled)) {
       throw new HttpError('The shared market list is not a dispensary. Copy the product into this business before marking it as a medicine.', { status: 400, code: 'SHARED_GOODS_NOT_DISPENSABLE' });
+    }
+    if (before.business_id) {
+      const owner = await db.first('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0', [String(before.business_id)]);
+      refuseForeignModule(owner, fields);
     }
     const priceChanged = fields.selling_price !== undefined && round2(Number(fields.selling_price)) !== round2(Number(before.selling_price));
     if (priceChanged) {
@@ -1069,18 +1131,22 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   app.get(`${base}/nafdac`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
+    const business = await requireModule(db, ctx, 'nafdac', 'The NAFDAC Greenbook is only for a pharmaceutical business.');
     const q = String(ctx.req.queryParam('q') || '').trim().toLowerCase();
     if (q.length < 2) throw new HttpError('Type at least two characters of a name, an ingredient, or a NAFDAC number.', { status: 400, code: 'QUERY_TOO_SHORT' });
     const limit = Math.min(50, Math.max(1, Number(ctx.req.queryParam('limit')) || 20));
     const like = `%${q.replace(/[%_]/g, '')}%`;
     const rows = await db.all(
-      `SELECT id, nafdac_reg_no, product_name, ingredient_name, strength, dosage_form, manufacturer,
-              pack_size, category, base_unit, is_controlled, dispensing_type, registration_expiry
-         FROM nafdac_catalog
-        WHERE search_blob LIKE ? OR lower(nafdac_reg_no) LIKE ? OR lower(product_name) LIKE ?
-        ORDER BY product_name COLLATE NOCASE, id
+      `SELECT n.id, n.nafdac_reg_no, n.product_name, n.ingredient_name, n.strength, n.dosage_form, n.manufacturer,
+              n.pack_size, n.category, n.base_unit, n.is_controlled, n.dispensing_type, n.registration_expiry,
+              (SELECT p.id FROM products p
+                WHERE p.business_id = ? AND p.nafdac_catalog_id = n.id AND p.is_deleted = 0
+                ORDER BY p.id LIMIT 1) AS adopted_id
+         FROM nafdac_catalog n
+        WHERE n.search_blob LIKE ? OR lower(n.nafdac_reg_no) LIKE ? OR lower(n.product_name) LIKE ?
+        ORDER BY n.product_name COLLATE NOCASE, n.id
         LIMIT ?`,
-      [like, like, like, limit],
+      [String(business.id), like, like, like, limit],
     );
     ctx.json({ ok: true, data: rows, count: rows.length });
   });
@@ -1089,9 +1155,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const body = await ctx.req.json().catch(() => ({}));
-    const branch = await resolveBranch(db, ctx, { required: false });
-    const business = await resolveBusiness(db, ctx, branch || undefined);
-    if (!business || !business.id) throw new HttpError('Choose a business before copying a Greenbook row into the catalogue.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    const business = await requireModule(db, ctx, 'nafdac', 'The NAFDAC Greenbook is only for a pharmaceutical business.');
     const catalogId = Number(ctx.req.param('id'));
     const row = await db.first('SELECT * FROM nafdac_catalog WHERE id = ?', [catalogId]);
     if (!row) throw new HttpError('That Greenbook row does not exist.', { status: 404, code: 'NAFDAC_NOT_FOUND' });
@@ -1106,16 +1170,36 @@ function mount(app, base = '/api') {
     const price = numField(body.selling_price, { field: 'Selling price', min: 0 });
     const cost = body.cost_price == null || body.cost_price === '' ? 0 : numField(body.cost_price, { field: 'Cost price', min: 0 });
     if (!(price > 0)) throw new HttpError('Set a selling price when you copy a Greenbook row. The Greenbook itself is not priced.', { status: 400, code: 'PRICE_REQUIRED' });
+    const name = strField(body.name, { field: 'Name', maxLength: 200 }) || row.product_name;
+    const brand = body.brand === undefined ? (row.manufacturer || null) : strField(body.brand, { field: 'Brand', maxLength: 120 });
+    const categoryId = body.category_id ? String(body.category_id) : null;
+    if (categoryId) {
+      const category = await db.first(
+        'SELECT id FROM product_categories WHERE id = ? AND business_id = ? AND is_deleted = 0',
+        [categoryId, String(business.id)],
+      );
+      if (!category) throw new HttpError('That category is not on this business.', { status: 400, code: 'BAD_CATEGORY' });
+    }
     const id = newId();
-    const sku = `NAF-${String(row.nafdac_reg_no || 'ROW').replace(/[^A-Za-z0-9]+/g, '').slice(0, 16)}-${catalogId}`.slice(0, 40);
+    const suggested = `NAF-${String(row.nafdac_reg_no || 'ROW').replace(/[^A-Za-z0-9]+/g, '').slice(0, 16)}-${catalogId}`.slice(0, 40);
+    const sku = body.sku ? String(body.sku).toUpperCase().replace(/\s+/g, '').slice(0, 40) : suggested;
+    const clash = await db.first(
+      'SELECT id FROM products WHERE business_id = ? AND sku = ? AND is_deleted = 0',
+      [String(business.id), sku],
+    );
+    if (clash) throw new HttpError('That SKU is already in this catalogue. Leave it blank and one will be suggested.', { status: 409, code: 'SKU_TAKEN' });
+    const dispensing = body.dispensing_class ? String(body.dispensing_class).toUpperCase() : (row.dispensing_type || 'OTC');
+    if (!['OTC', 'POM'].includes(dispensing)) {
+      throw new HttpError('A Greenbook row is either OTC or POM.', { status: 400, code: 'BAD_DISPENSING' });
+    }
     await db.run(`INSERT INTO products (
-        id, business_id, sku, name, brand, registration_no, base_unit_name,
+        id, business_id, category_id, sku, name, brand, registration_no, base_unit_name,
         has_expiry, cost_price, selling_price, dispensing_class, is_controlled, nafdac_catalog_id,
         valuation_method, is_active, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?,'WEIGHTED_AVG',1,?, datetime('now'), datetime('now'))`, [
-      id, String(business.id), sku, row.product_name, row.manufacturer || null, row.nafdac_reg_no || null,
+      VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,'WEIGHTED_AVG',1,?, datetime('now'), datetime('now'))`, [
+      id, String(business.id), categoryId, sku, name, brand, row.nafdac_reg_no || null,
       row.base_unit || 'unit', round2(cost), round2(price),
-      row.dispensing_type || 'OTC', Number(row.is_controlled) ? 1 : 0, catalogId, String(user.id),
+      dispensing, Number(row.is_controlled) || Number(body.is_controlled) ? 1 : 0, catalogId, String(user.id),
     ]);
     await db.run(`INSERT INTO product_units (id, product_id, level, code, name, plural_name, quantity_in_base, is_sellable, is_default_sell, created_at, updated_at)
                   VALUES (?,?,0,?,?,?,1,1,1, datetime('now'), datetime('now'))`, [
@@ -1125,11 +1209,12 @@ function mount(app, base = '/api') {
       action: 'PRODUCT_CREATED', entityType: 'PRODUCT', entityId: id, businessId: business.id,
       after: { source: 'nafdac', nafdac_reg_no: row.nafdac_reg_no, name: row.product_name },
     });
-    ctx.json({ ok: true, id, message: `${row.product_name} is in this catalogue. It is not on the shared market list.` }, 201);
+    ctx.json({ ok: true, id, name, message: `${name} is in this catalogue. It is not on the shared market list.` }, 201);
   });
 
   app.get(`${base}/pharmacy/register`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
+    await requireModule(db, ctx, 'dispensing', 'The controlled register belongs to a dispensary. This business is not one.');
     const scope = ctx.get('scope');
     const scoped = scopeFilter(scope, { alias: 'r' });
     const where = ['r.is_deleted = 0'];

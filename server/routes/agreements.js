@@ -11,13 +11,24 @@ const { watToday } = require('../../domain/time');
 const { atLeast } = require('../../domain/roles');
 const trade = require('../../domain/trade');
 const glService = require('../services/glService');
-const { scopeFilter, numField, strField } = require('../lib/respond');
+const { scopeFilter, numField, strField, resolveBusiness } = require('../lib/respond');
+const { modulesOf } = require('../../domain/modules');
 
 function mount(app, base = '/api') {
   app.get(`${base}/agreements`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const filter = scopeFilter(scope, { alias: 'a' });
+    const business = await resolveBusiness(db, ctx, null, { required: false });
+    if (business) {
+      let overrides = null;
+      if (business.profile_overrides_json) {
+        try { overrides = JSON.parse(business.profile_overrides_json); } catch (e) { overrides = null; }
+      }
+      if (!modulesOf(business.profile_code, overrides).hireBook) {
+        throw new HttpError('The hire book belongs to a business that hires or leases. This one does not.', { status: 403, code: 'MODULE_OFF' });
+      }
+    }
     const status = strField(ctx.req.queryParam('status'), { field: 'Status', maxLength: 20 });
     const where = ['a.is_deleted = 0'];
     const params = [];

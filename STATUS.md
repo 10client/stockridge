@@ -1864,3 +1864,11 @@ The rest of the screen list answered. Stock, the current till and the safe ask f
 Local: the three read checks passed. The old dashboard column is refused by SQLite. The new column is accepted. No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`.
 
 Live on staging, sample and production as `ridge-20261012-1448-bed5151`. Staging version `60dce82d-9a0d-4812-b1a2-896635262fa4`, sample `c0a76756-979b-4d27-8f49-35d97bc9438c`, production `3fbba07b-569e-4dec-8a72-3fb2aa360cba`. No migration was applied. Each still reports 13 migrations. Staging is ready with 3 businesses. Sample is ready with 2. Production is still awaiting the first business. The dashboard and the hire book answered 200 on all three, including a status filter. The admin PIN was not changed.
+
+### P40 — modules stay with their business, and the Greenbook is a pharmacy catalogue (local checkpoint)
+
+A hire book, an instalment book, a delivery book, a warranty claim and a commission report now appear only for a business whose profile uses that module. Switching business rebuilds the side navigation. A direct link to a screen the business does not use says so, instead of opening the screen.
+
+The NAFDAC Greenbook is only for a pharmaceutical business. A supermarket, a general shop and an electronics shop are refused, including by the API. On a pharmacy, the catalogue search also looks in the Greenbook. A match that is not in the shop yet is added with the same product form as any other product. The pharmacist sets the price. The row is not put on the shared market list. A match already in the shop opens that product.
+
+Local: the module map tests passed. No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`.
