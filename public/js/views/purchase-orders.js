@@ -237,7 +237,9 @@
       const linesBody = ui.h('div', { class: 'card-body stack' });
       linesCard.appendChild(linesBody);
       wrapEl.appendChild(linesCard);
-      wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Pick the product from the list under its name. A typed name and a price are not on the order until you do. Quantities are converted to the product\'s base unit when the order is saved.'));
+      wrapEl.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('nafdac')
+        ? 'Pick the product from the list under its name. A NAFDAC registration that is not in this shop yet can be picked too — that adds it here, with no selling price, so this order can name it. It is not put on the shared market list. A typed name is not ordered until you pick it.'
+        : 'Pick the product from the list under its name. A typed name and a price are not on the order until you do. Quantities are converted to the product\'s base unit when the order is saved.'));
 
       const totalsBar = ui.h('div', { class: 'alert alert-info' }, 'No lines yet.');
 
@@ -246,22 +248,40 @@
 
       async function findProducts(term) {
         try {
-          const d = await SR.api.get('/api/products', { query: SR.state.query({ q: term, limit: 8 }) });
+          const d = await SR.api.get('/api/products', {
+            query: SR.state.query({ q: term, limit: 12, nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined }),
+          });
           return d.data || [];
         } catch (err) {
           if (!err.isOffline) throw err;
           return (await SR.store.all('products', { where: (p) => !Number(p.is_deleted) }))
             .filter((p) => String(p.name).toLowerCase().includes(term.toLowerCase()) || String(p.sku || '').toLowerCase().includes(term.toLowerCase()))
-            .slice(0, 8);
+            .slice(0, 12);
         }
       }
-      function adopt(line, product) {
-        line.product_id = String(product.id);
-        line.name = product.name;
-        line.pickedName = product.name;
-        line.sku = product.sku || '';
-        line.unit_code = product.default_unit_code || line.unit_code || 'PIECE';
-        if (!Number(line.expected_unit_cost)) line.expected_unit_cost = Number(product.cost_price) || 0;
+      async function adopt(line, product) {
+        let chosen = product;
+        if (Number(product.from_greenbook) === 1 || String(product.id || '').startsWith('nafdac:')) {
+          const created = await SR.api.post(`/api/nafdac/${encodeURIComponent(product.nafdac_catalog_id)}/adopt`, {
+            for_order: true,
+            selling_price: 0,
+            cost_price: Number(line.expected_unit_cost) || 0,
+            business_id: SR.state.activeBusinessId,
+          });
+          chosen = {
+            id: created.id,
+            name: created.name || product.name,
+            sku: product.sku || '',
+            default_unit_code: product.default_unit_code || 'PIECE',
+            cost_price: Number(line.expected_unit_cost) || 0,
+          };
+        }
+        line.product_id = String(chosen.id);
+        line.name = chosen.name;
+        line.pickedName = chosen.name;
+        line.sku = chosen.sku || product.sku || '';
+        line.unit_code = chosen.default_unit_code || product.default_unit_code || line.unit_code || 'PIECE';
+        if (!Number(line.expected_unit_cost)) line.expected_unit_cost = Number(chosen.cost_price) || Number(product.cost_price) || 0;
         if (!Number(line.quantity)) line.quantity = 1;
       }
       function paintStatus() {
@@ -316,16 +336,25 @@
             results.replaceChildren();
             if (!rows.length) {
               results.hidden = false;
-              results.appendChild(ui.h('div', { class: 'hint' }, `Nothing in this business's catalogue matches "${term}". A name that is not in the catalogue cannot be ordered.`));
+              results.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('nafdac')
+                ? `Nothing in this shop or the NAFDAC Greenbook matches "${term}".`
+                : `Nothing in this business's catalogue matches "${term}". A name that is not in the catalogue cannot be ordered.`));
               return;
             }
             for (const product of rows) {
               results.appendChild(ui.h('button', {
                 class: 'pos-hit', type: 'button',
-                onClick: () => { adopt(line, product); paintLines(); const drawn = linesBody.children[i]; if (drawn && drawn.scrollIntoView) drawn.scrollIntoView({ block: 'nearest' }); },
+                onClick: async () => {
+                  try {
+                    await adopt(line, product);
+                    paintLines();
+                    const drawn = linesBody.children[i];
+                    if (drawn && drawn.scrollIntoView) drawn.scrollIntoView({ block: 'nearest' });
+                  } catch (err) { ui.apiError(err); }
+                },
               }, ui.h('div', { class: 'grow' },
                 ui.h('div', { class: 'ph-name' }, product.name),
-                ui.h('div', { class: 'ph-meta' }, [product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
+                ui.h('div', { class: 'ph-meta' }, [Number(product.from_greenbook) ? 'NAFDAC' : null, product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
               ui.h('span', { class: 'ph-price' }, U.money(product.cost_price))));
             }
             results.hidden = false;

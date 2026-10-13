@@ -1924,3 +1924,13 @@ A named business now wins over a home shop that belongs to a different business.
 No migration was written. The admin PIN was not changed. The create-business form and the verticals card were not changed.
 
 Live on staging, sample and production as `ridge-20261013-1251-aeaf652`. Staging version `c45400b1-c669-4364-9818-82967dfa34b3`, sample `1793caed-276b-4345-9a33-384618b3d71a`, production `3690e0dc-28d0-4bb8-b86f-bdbf0d961b4f`. No migration was applied. The admin PIN was not changed. pharmaridge on sample was left as it is.
+
+### P45 — NAFDAC registrations are in the pharmaceutical catalogue
+
+A purchase order could only pick a product already copied into the shop. The Greenbook was a separate search, so a dispensary could not order a registered medicine it had not added by hand.
+
+The pharmaceutical catalogue now lists every NAFDAC registration, after this shop’s own goods. They are not priced, and they are not written onto the shared market list. A supermarket or any other vertical does not see them. The till’s own product list does not either.
+
+Picking one on a purchase order copies it into this shop with no selling price, so the order can name it. The cost is the cost on the line. Setting a selling price is still required when the row is added for sale.
+
+No migration was written. The admin PIN was not changed. Applied migrations were not edited.

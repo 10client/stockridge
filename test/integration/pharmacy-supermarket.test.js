@@ -9,6 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { openDatabase, migrate } = require('../../server/lib/db');
+const { createHttpApp } = require('../../server/app');
 const { provisionDeployment } = require('../../server/services/provisioningService');
 const salesService = require('../../server/services/salesService');
 const glService = require('../../server/services/glService');
@@ -58,6 +59,25 @@ async function makeWorld(profileCode) {
     }
   };
   return world;
+}
+
+async function callAsOwner(world) {
+  const app = createHttpApp({ db: world.db, jwtSecret: 'pharma-catalogue-secret-long-enough', settings: world.settings });
+  const owner = await world.db.first("SELECT username FROM users WHERE role = 'OWNER' AND is_deleted = 0 ORDER BY created_at LIMIT 1");
+  const call = async (method, url, { token, body } = {}) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const res = await app.fetch(new Request(`http://local${url}`, {
+      method, headers, body: body === undefined ? undefined : JSON.stringify(body),
+    }));
+    const text = await res.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { json = null; }
+    return { status: res.status, json, text };
+  };
+  const login = await call('POST', '/api/auth/login', { body: { username: owner.username, pin: '12345' } });
+  assert.equal(login.status, 200, login.text.slice(0, 300));
+  return { call, token: login.json.token };
 }
 
 async function receive(world, product, { quantity, costPrice, sellingPrice, expiryDate = null }) {
@@ -170,6 +190,59 @@ test('integration: the Greenbook is loaded and a pharmacy can dispense from it',
   assert.equal(await world.db.scalar('SELECT COUNT(*) FROM prescriptions WHERE sale_id = ?', [otcSale.saleId]), 0);
 });
 
+test('integration: a pharmaceutical catalogue lists every NAFDAC registration for a purchase order', async (t) => {
+  const world = await makeWorld('PHARMACEUTICAL');
+  t.after(world.cleanup);
+
+  const sharedBefore = await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL');
+  const { call, token } = await callAsOwner(world);
+  const catalogue = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&sort=name&limit=8`, { token });
+  assert.equal(catalogue.status, 200, catalogue.text.slice(0, 400));
+  const hit = (catalogue.json.data || []).find((r) => String(r.registration_no) === 'A4-6238');
+  assert.ok(hit, 'a NAFDAC registration was not in the pharmaceutical catalogue');
+  assert.equal(Number(hit.from_greenbook), 1);
+  assert.equal(String(hit.business_id), String(world.businessId), 'a Greenbook row was listed as a shared market good');
+  assert.equal(String(hit.id).startsWith('nafdac:'), true, 'a Greenbook row was inserted as a product just to be listed');
+
+  const page = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&sort=name&limit=50`, { token });
+  assert.equal(page.status, 200, page.text.slice(0, 300));
+  assert.ok(Number(page.json.paging.total) >= 6801, `the catalogue total is ${page.json.paging && page.json.paging.total}, not the Greenbook`);
+  assert.ok((page.json.data || []).some((r) => Number(r.from_greenbook) === 1), 'the first page of a dispensary did not show a NAFDAC registration');
+
+  const till = await call('GET', `/api/products?business_id=${world.businessId}&q=artheget&limit=8`, { token });
+  assert.equal((till.json.data || []).some((r) => Number(r.from_greenbook) === 1), false, 'the till list included the Greenbook');
+
+  const adopted = await call('POST', `/api/nafdac/${hit.nafdac_catalog_id}/adopt`, {
+    token,
+    body: { for_order: true, selling_price: 0, cost_price: 500, business_id: world.businessId },
+  });
+  assert.equal(adopted.status, 201, adopted.text.slice(0, 400));
+  const stored = await world.db.first('SELECT business_id, selling_price FROM products WHERE id = ?', [adopted.json.id]);
+  assert.equal(String(stored.business_id), String(world.businessId));
+  assert.equal(Number(stored.selling_price), 0, 'ordering a Greenbook row invented a selling price');
+  assert.equal(await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL'), sharedBefore, 'a Greenbook row was written onto the shared market list');
+
+  const again = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&limit=12`, { token });
+  assert.equal((again.json.data || []).some((r) => String(r.id) === String(hit.id)), false, 'an adopted registration was still listed as not in the shop');
+  assert.ok((again.json.data || []).some((r) => String(r.id) === String(adopted.json.id)), 'the shop copy was missing from the purchase-order search');
+
+  const supplierId = newId();
+  await world.db.run(
+    `INSERT INTO suppliers (id, business_id, name, created_at, updated_at) VALUES (?,?,?, datetime('now'), datetime('now'))`,
+    [supplierId, world.businessId, 'Greenbook Wholesale'],
+  );
+  const po = await call('POST', '/api/purchase-orders', {
+    token,
+    body: {
+      branch_id: world.branchId,
+      business_id: world.businessId,
+      supplier_id: supplierId,
+      items: [{ product_id: adopted.json.id, quantity: 2, unit_code: 'PIECE', expected_unit_cost: 500 }],
+    },
+  });
+  assert.equal(po.status, 201, po.text.slice(0, 500));
+});
+
 test('integration: a supermarket sells by aisle and refuses expired stock', async (t) => {
   const world = await makeWorld('SUPERMARKET');
   t.after(world.cleanup);
@@ -200,4 +273,9 @@ test('integration: a supermarket sells by aisle and refuses expired stock', asyn
     () => salesService.complete(world.db, saleArgs(world, frozen, { amount: 4200, unitCode: 'PIECE' })),
     (e) => e.code === 'SALE_PREPARATION_FAILED' && e.problems.some((p) => p.code === 'EXPIRED_STOCK'),
   );
+
+  const { call, token } = await callAsOwner(world);
+  const listed = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&limit=8`, { token });
+  assert.equal(listed.status, 200, listed.text.slice(0, 300));
+  assert.equal((listed.json.data || []).some((r) => Number(r.from_greenbook) === 1), false, 'a supermarket was shown the Greenbook');
 });

@@ -81,6 +81,27 @@ function modulesOfBusiness(business) {
   return modulesOf(business && business.profile_code, overridesOf(business));
 }
 
+/**
+ * Greenbook rows this shop has not copied yet.
+ *
+ * They are listed with the pharmaceutical catalogue so a purchase order can
+ * pick one. They are not inserted, and they are not given a null business_id,
+ * so they never become shared market goods.
+ */
+function unadoptedGreenbookWhere(businessId, search) {
+  const where = [`NOT EXISTS (
+    SELECT 1 FROM products own
+    WHERE own.business_id = ? AND own.nafdac_catalog_id = n.id AND own.is_deleted = 0
+  )`];
+  const params = [String(businessId)];
+  if (search) {
+    const like = `%${String(search).toLowerCase().replace(/[%_]/g, '')}%`;
+    where.push(`(n.search_blob LIKE ? OR lower(IFNULL(n.nafdac_reg_no, '')) LIKE ? OR lower(n.product_name) LIKE ? OR lower(IFNULL(n.ingredient_name, '')) LIKE ? OR lower(IFNULL(n.manufacturer, '')) LIKE ?)`);
+    params.push(like, like, like, like, like);
+  }
+  return { sql: where.join(' AND '), params };
+}
+
 function refuseForeignModule(business, fields) {
   if (!business) return;
   const modules = modulesOfBusiness(business);
@@ -211,7 +232,20 @@ function mount(app, base = '/api') {
       : `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) FROM stock_batches sb
           WHERE sb.product_id = p.id AND sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED'))`;
 
-    const rows = await db.all(`
+    // The pharmaceutical catalogue asks for the Greenbook. Other lists do not:
+    // a till that asked for the first page must not be handed six thousand
+    // unpriced registrations, and a furniture shop must not see them at all.
+    let nafdacOn = false;
+    if (ctx.req.queryParam('nafdac') === '1' && businessId && !lowStock && !categoryId) {
+      const focused = await db.first(
+        'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
+        [String(businessId)],
+      );
+      nafdacOn = Boolean(focused && modulesOfBusiness(focused).nafdac);
+    }
+
+    const productBind = [...(branch ? [String(branch.id)] : []), ...params, ...(lowStock && branch ? [String(branch.id)] : [])];
+    const productSelect = `
       SELECT p.id, p.business_id, p.category_id, p.sku, p.name, p.brand, p.model_no,
              p.requires_serial, p.tracks_variants, p.warranty_months, p.warranty_type,
              p.is_bulky, p.requires_installation, p.has_expiry, p.is_fragile, p.is_returnable,
@@ -238,38 +272,96 @@ function mount(app, base = '/api') {
              ${stockExpr} AS on_hand
       FROM products p
       LEFT JOIN product_categories c ON c.id = p.category_id
-      ${lowStock && branch ? '' : ''}
       WHERE ${where.join(' AND ')}
-      ${lowStock ? 'AND COALESCE((' + stockExpr + '), 0) <= p.reorder_level' : ''}
-      -- Default: the shop's own goods first. The shared market list is thousands of
-      -- unpriced names; sorting those first would hide a priced product on
-      -- the first page of the till and of every audit that sells one.
-      -- The catalogue screen asks for sort=name, which files a new product
-      -- among those names instead of in a block ahead of them.
-      ORDER BY ${orderSql}
-      LIMIT ? OFFSET ?`,
-    [...(branch ? [String(branch.id)] : []), ...params, ...(lowStock && branch ? [String(branch.id)] : []), limit, offset]);
+      ${lowStock ? 'AND COALESCE((' + stockExpr + '), 0) <= p.reorder_level' : ''}`;
 
-    const total = await db.scalar(`SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')}`, params);
-    // locate tells the catalogue which page a name just landed on, using the
-    // same filter and the same name order as the list above.
+    let rows;
+    let total;
     let located = null;
     const locateId = ctx.req.queryParam('locate');
-    if (locateId && sortByName) {
-      const target = await db.first(
-        `SELECT p.id, p.name, p.sku FROM products p WHERE p.id = ? AND ${where.join(' AND ')}`,
-        [String(locateId), ...params],
-      );
-      if (target) {
-        const index = await db.scalar(
-          `SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')} AND (
-             LOWER(p.name) < LOWER(?)
-             OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) < LOWER(?))
-             OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
-           )`,
-          [...params, target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
+    if (!nafdacOn) {
+      rows = await db.all(`
+        ${productSelect}
+        -- Default: the shop's own goods first. The shared market list is thousands of
+        -- unpriced names; sorting those first would hide a priced product on
+        -- the first page of the till and of every audit that sells one.
+        -- The catalogue screen asks for sort=name, which files a new product
+        -- among those names instead of in a block ahead of them.
+        ORDER BY ${orderSql}
+        LIMIT ? OFFSET ?`,
+      [...productBind, limit, offset]);
+      total = await db.scalar(`SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')}`, params);
+      // locate tells the catalogue which page a name just landed on, using the
+      // same filter and the same name order as the list above.
+      if (locateId && sortByName) {
+        const target = await db.first(
+          `SELECT p.id, p.name, p.sku FROM products p WHERE p.id = ? AND ${where.join(' AND ')}`,
+          [String(locateId), ...params],
         );
-        located = { id: target.id, index: Number(index) || 0, name: target.name };
+        if (target) {
+          const index = await db.scalar(
+            `SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')} AND (
+               LOWER(p.name) < LOWER(?)
+               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) < LOWER(?))
+               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
+             )`,
+            [...params, target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
+          );
+          located = { id: target.id, index: Number(index) || 0, name: target.name };
+        }
+      }
+    } else {
+      const green = unadoptedGreenbookWhere(String(businessId), search);
+      // Shop goods, then every NAFDAC registration this shop has not copied,
+      // then the shared market list. A pure name sort would file a medicine
+      // among thousands of unpriced market names, and the first page of a
+      // dispensary would not show a drug.
+      const greenSelect = `
+        SELECT 'nafdac:' || n.id, ?, NULL, n.nafdac_reg_no, n.product_name, n.manufacturer, n.strength,
+               0, 0, 0, NULL,
+               0, 0, 1, 0, 1,
+               IFNULL(n.base_unit, 'unit'),
+               0, 0, 0, 0, 0,
+               'WEIGHTED_AVG', 1, NULL,
+               1, 0, 0,
+               NULL, NULL, NULL, NULL,
+               n.dispensing_type, n.is_controlled, n.id, n.nafdac_reg_no,
+               n.category, NULL,
+               'PIECE', 1, 0
+        FROM nafdac_catalog n
+        WHERE ${green.sql}`;
+      rows = await db.all(`
+        SELECT listed.*,  CASE WHEN listed.id LIKE 'nafdac:%' THEN 1 ELSE 0 END AS from_greenbook
+          FROM (
+            ${productSelect}
+            UNION ALL
+            ${greenSelect}
+          ) listed
+         ORDER BY CASE WHEN listed.id LIKE 'nafdac:%' THEN 1 WHEN listed.business_id IS NULL THEN 2 ELSE 0 END,
+                  LOWER(listed.name) ASC, LOWER(IFNULL(listed.sku, '')) ASC, listed.id ASC
+         LIMIT ? OFFSET ?`,
+      [...productBind, String(businessId), ...green.params, limit, offset]);
+      total = await db.scalar(
+        `SELECT (SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')})
+              + (SELECT COUNT(*) FROM nafdac_catalog n WHERE ${green.sql})`,
+        [...params, ...green.params],
+      );
+      if (locateId && sortByName && !String(locateId).startsWith('nafdac:')) {
+        const target = await db.first(
+          `SELECT p.id, p.name, p.sku, p.business_id FROM products p WHERE p.id = ? AND ${where.join(' AND ')}`,
+          [String(locateId), ...params],
+        );
+        if (target && String(target.business_id) === String(businessId)) {
+          const index = await db.scalar(
+            `SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')} AND p.business_id = ? AND (
+               LOWER(p.name) < LOWER(?)
+               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) < LOWER(?))
+               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
+             )`,
+            [...params, String(businessId), target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
+          );
+          located = { id: target.id, index: Number(index) || 0, name: target.name };
+        }
       }
     }
     const body = listResponse(rows.map((r) => ({
@@ -1167,9 +1259,15 @@ function mount(app, base = '/api') {
       ctx.json({ ok: true, id: existing.id, already: true, message: `${existing.name} is already in this catalogue.` });
       return;
     }
-    const price = numField(body.selling_price, { field: 'Selling price', min: 0 });
+    // A purchase order needs the row in this shop before it can name it.
+    // The selling price is still unknown then. Ordering must not invent one,
+    // and it must not put the row on the shared market list.
+    const forOrder = Boolean(boolField(body.for_order));
+    const price = body.selling_price == null || body.selling_price === ''
+      ? 0
+      : numField(body.selling_price, { field: 'Selling price', min: 0 });
     const cost = body.cost_price == null || body.cost_price === '' ? 0 : numField(body.cost_price, { field: 'Cost price', min: 0 });
-    if (!(price > 0)) throw new HttpError('Set a selling price when you copy a Greenbook row. The Greenbook itself is not priced.', { status: 400, code: 'PRICE_REQUIRED' });
+    if (!forOrder && !(price > 0)) throw new HttpError('Set a selling price when you copy a Greenbook row. The Greenbook itself is not priced.', { status: 400, code: 'PRICE_REQUIRED' });
     const name = strField(body.name, { field: 'Name', maxLength: 200 }) || row.product_name;
     const brand = body.brand === undefined ? (row.manufacturer || null) : strField(body.brand, { field: 'Brand', maxLength: 120 });
     const categoryId = body.category_id ? String(body.category_id) : null;

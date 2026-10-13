@@ -57,7 +57,7 @@
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
         ui.h('p', { class: 'sub' }, SR.state.moduleOn('nafdac')
-          ? 'The catalogue is in alphabetical order. Search also looks in the NAFDAC Greenbook. A match that is not in this shop yet is added the same way as any other product, and you set the price. It is not put on the shared market list.'
+          ? 'Every NAFDAC registered product is in this list, after this shop’s own goods. A Greenbook row has no price and is not on the shared market list. Search a name or a NAFDAC number, then pick it on a purchase order — that adds it to this shop.'
           : 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
@@ -145,7 +145,14 @@
       let data; let offline = false;
       try {
         data = await SR.api.get('/api/products', {
-          query: SR.state.query({ sort: 'name', q: state.q || undefined, category_id: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize }),
+          query: SR.state.query({
+            sort: 'name',
+            q: state.q || undefined,
+            category_id: state.category || undefined,
+            limit: state.pageSize,
+            offset: state.page * state.pageSize,
+            nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined,
+          }),
         });
       } catch (err) {
         if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } })); return; }
@@ -170,6 +177,7 @@
             if (Number(p.has_expiry)) tags.push('expiry');
             if (Number(p.warranty_months)) tags.push(`${p.warranty_months}m warranty`);
             if (Number(p.is_bulky)) tags.push('bulky');
+            if (Number(p.from_greenbook)) tags.push('NAFDAC');
             if (tags.length) cell.appendChild(ui.h('div', { class: 'chips-row', style: { marginTop: '4px' } }, ...tags.map((t) => ui.badge(t, 'badge-info'))));
             return cell;
           } },
@@ -184,10 +192,12 @@
             const floor = Number(p.min_margin_pct) || 0;
             return ui.h('span', { style: m < floor ? { color: 'var(--red-700)', fontWeight: '700' } : (m < floor + 5 ? { color: 'var(--amber-700)' } : {}) }, U.pct(m));
           } },
-          { key: 'x', label: '', render: (p) => ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); SR.app.navigate(`/products/${p.id}`); } }, 'Open') },
+          { key: 'x', label: '', render: (p) => Number(p.from_greenbook)
+            ? ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); addFromGreenbook(greenbookShape(p)); } }, 'Add')
+            : ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); SR.app.navigate(`/products/${p.id}`); } }, 'Open') },
         ],
         rows,
-        onRowClick: (p) => SR.app.navigate(`/products/${p.id}`),
+        onRowClick: (p) => (Number(p.from_greenbook) ? addFromGreenbook(greenbookShape(p)) : SR.app.navigate(`/products/${p.id}`)),
         rowClass: (p) => (state.highlightId && String(p.id) === String(state.highlightId) ? 'is-placed' : ''),
         emptyTitle: state.q ? 'Nothing matches that search' : 'The catalogue is empty',
         emptyMessage: state.q
@@ -208,37 +218,19 @@
           onSize: (n) => { state.pageSize = n; state.page = 0; state.highlightId = null; load(); },
         }),
       }));
-      if (SR.state.moduleOn('nafdac') && String(state.q || '').trim().length >= 2 && !offline) {
-        host.appendChild(await greenbookCard(state.q));
-      }
     }
 
-    async function greenbookCard(q) {
-      let data;
-      try {
-        data = await SR.api.get('/api/nafdac', { query: SR.state.query({ q, limit: 12 }) });
-      } catch (err) {
-        return ui.h('div', { class: 'alert alert-warn' }, err.message || 'The Greenbook could not be searched.');
-      }
-      const rows = data.data || [];
-      if (!rows.length) return ui.h('p', { class: 'hint' }, 'Nothing in the NAFDAC Greenbook matches that.');
-      const table = ui.renderTable({
-        columns: [
-          { key: 'product_name', label: 'Greenbook product', className: 'wrap', render: (row) => ui.h('div', {},
-            ui.h('div', { style: { fontWeight: '600' } }, row.product_name),
-            ui.h('div', { class: 'hint' }, [row.nafdac_reg_no, row.ingredient_name, row.strength, row.dispensing_type, Number(row.is_controlled) ? 'controlled' : null].filter(Boolean).join(' · '))) },
-          { key: 'manufacturer', label: 'Maker' },
-          { key: 'x', label: '', render: (row) => row.adopted_id
-            ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/products/${row.adopted_id}`) }, 'Open')
-            : ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => addFromGreenbook(row) }, 'Add') },
-        ],
-        rows,
-        emptyTitle: 'Nothing in the Greenbook',
-      });
-      const card = ui.dataCard({ title: 'NAFDAC Greenbook', table });
-      return ui.h('div', { class: 'stack' },
-        ui.h('p', { class: 'hint' }, 'Not priced. Add works like any other product: you set the price, and the row stays off the shared market list.'),
-        card);
+    function greenbookShape(row) {
+      return {
+        id: row.nafdac_catalog_id,
+        product_name: row.name,
+        manufacturer: row.brand || '',
+        nafdac_reg_no: row.registration_no || row.sku || '',
+        base_unit: row.base_unit_name || 'unit',
+        dispensing_type: row.dispensing_class || 'OTC',
+        is_controlled: Number(row.is_controlled) ? 1 : 0,
+        strength: row.model_no || '',
+      };
     }
 
     function addFromGreenbook(row) {
@@ -250,7 +242,11 @@
         await SR.exporter.list({
           filename: 'catalogue',
           path: '/api/products',
-          query: SR.state.query({ sort: 'name', q: state.q || undefined }),
+          query: SR.state.query({
+            sort: 'name',
+            q: state.q || undefined,
+            nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined,
+          }),
           mirrorTable: 'products',
           columns: [
             { key: 'name', label: 'Product' }, { key: 'sku', label: 'SKU' },
@@ -285,7 +281,13 @@
       state.page = 0;
       try {
         const probe = await SR.api.get('/api/products', {
-          query: SR.state.query({ sort: 'name', locate: product.id, limit: 1, offset: 0 }),
+          query: SR.state.query({
+            sort: 'name',
+            locate: product.id,
+            limit: 1,
+            offset: 0,
+            nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined,
+          }),
         });
         const index = probe.located && Number.isFinite(Number(probe.located.index)) ? Number(probe.located.index) : 0;
         state.page = Math.floor(index / state.pageSize);
