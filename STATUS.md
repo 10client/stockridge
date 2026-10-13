@@ -1904,3 +1904,11 @@ The till is not held. The amount pad never locks, so the next digit still lands.
 No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`. Do not put pharmacy goods on the shared market list. The nine-month probe was not run again, and it was not written onto a live host.
 
 Live on staging, sample and production as `ridge-20261013-0844-f44b59e`. Staging version `386f0ff5-8964-4a3e-8306-7041a74ac876`, sample `a34d0002-69ac-4f6d-86af-5ef24a8e6749`, production `52fb0f7f-d30e-49f2-9b23-b84f9c55a69b`. No migration was applied. The admin PIN was not changed. A signed-in check was not run, so the daily row-write allowance was not spent. The three hosts are serving the loader.
+
+### P43 — the create-business form, and the verticals card (local checkpoint)
+
+Create a business never opened the form. The screen asked for `profileOptions`, and that list was never defined, so the click loaded and stopped. The form now opens at once. The vertical list is filled from the catalogue, and Create stays disabled until that list is in the box.
+
+The verticals button opened one wide table. The dialog centred that table, so the card sat off the page. The same list is now a grid of cards inside a dialog that cannot grow wider than the screen. The body scrolls. The card stays on the page.
+
+No migration was written. The admin PIN was not changed.

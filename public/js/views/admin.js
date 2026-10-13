@@ -421,12 +421,12 @@
       if (isNew) {
         form.appendChild(ui.h('h2', {}, 'Vertical'));
         form.appendChild(ui.h('p', { class: 'sub' }, 'The vertical decides the categories, the unit ladders, the compliance records (SONCAP / SON) and the warranty rules the starter catalogue is built from. It cannot be changed once the business has products.'));
-        const profileSel = ui.field({
+        form.appendChild(ui.h('div', { class: 'form-grid' }, ui.field({
           label: 'What kind of business is it',
           name: 'profile_code',
-          options: profileOptions,
-        });
-        form.appendChild(ui.h('div', { class: 'form-grid' }, profileSel));
+          required: true,
+          options: [{ value: '', label: 'Loading the verticals…' }],
+        })));
         form.appendChild(ui.h('h2', {}, 'First branch'));
         form.appendChild(ui.h('div', { class: 'form-grid' },
           ui.field({ label: 'Branch name', name: 'branch_name', placeholder: 'Main shop' }),
@@ -437,8 +437,9 @@
       }
 
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
-      const go = ui.h('button', { class: 'btn btn-primary' }, isNew ? 'Create and provision' : 'Save changes');
+      const go = ui.h('button', { class: 'btn btn-primary', disabled: isNew }, isNew ? 'Create and provision' : 'Save changes');
       const m = ui.openModal({ title: isNew ? 'Create a business' : b.name, body: form, footer: [cancel, go], size: 'wide' });
+      if (isNew) fillVerticalSelect(form, go);
 
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);
@@ -485,41 +486,70 @@
       });
     }
 
+    function verticalLabel(row) {
+      return (row && ((row.profile && row.profile.label) || row.label || row.name)) || (row && (row.profile_code || row.code)) || '';
+    }
+
+    function verticalCode(row) {
+      return String((row && (row.profile_code || row.code)) || '').trim();
+    }
+
+    async function loadVerticals() {
+      const data = await SR.api.get('/api/catalogue/profiles', { query: SR.state.query({}) });
+      const list = (data && (data.data || data.profiles)) || [];
+      return list.slice().sort((a, b) => verticalLabel(a).localeCompare(verticalLabel(b)));
+    }
+
+    async function fillVerticalSelect(form, go) {
+      const select = form.querySelector('select[name="profile_code"]');
+      try {
+        const list = await loadVerticals();
+        if (!select) return;
+        select.replaceChildren();
+        const usable = list.filter((row) => verticalCode(row));
+        if (!usable.length) {
+          select.appendChild(ui.h('option', { value: '' }, 'No verticals are available'));
+          return;
+        }
+        for (const row of usable) {
+          select.appendChild(ui.h('option', { value: verticalCode(row) }, verticalLabel(row)));
+        }
+        if (go) go.disabled = false;
+      } catch (err) {
+        if (select) select.replaceChildren(ui.h('option', { value: '' }, 'Could not load the verticals'));
+        ui.apiError(err);
+      }
+    }
+
+    function verticalCard(p) {
+      const features = p.enabledFeatures || [];
+      return ui.h('article', { class: 'vertical-card' },
+        ui.h('div', { class: 'vertical-card-head' },
+          ui.h('h3', {}, verticalLabel(p) || 'Vertical'),
+          ui.badge(verticalCode(p) || '—', 'badge-mute')),
+        p.blurb ? ui.h('p', { class: 'hint' }, p.blurb) : null,
+        ui.h('div', { class: 'vertical-meta' },
+          ui.h('span', {}, `${U.qty(p.categoryCount || 0)} categories`),
+          ui.h('span', {}, p.baseUnit ? `Base unit ${U.humanise(p.baseUnit)}` : 'No base unit')),
+        ui.h('div', { class: 'vertical-note' },
+          (p.complianceFields || []).length
+            ? `Compliance: ${(p.complianceFields || []).join(', ')}`
+            : 'No extra compliance fields'),
+        ui.h('div', { class: 'row vertical-flows' },
+          features.slice(0, 6).map((f) => ui.badge(U.humanise(f), 'badge-info')),
+          features.length > 6 ? ui.h('span', { class: 'hint' }, `+${features.length - 6} more`) : null));
+    }
+
     async function openProfiles() {
-      const body = ui.h('div', {}, ui.skeleton(4));
+      const body = ui.h('div', { class: 'vertical-pane' }, ui.loading('Opening the verticals…'));
       const m = ui.openModal({ title: 'The verticals', body, size: 'wide' });
       try {
-        const data = await SR.api.get('/api/catalogue/profiles', { query: SR.state.query({}) });
-        const list = data.data || data.profiles || [];
+        const list = await loadVerticals();
         body.replaceChildren(ui.h('div', { class: 'stack' },
           ui.h('p', { class: 'sub' }, 'Each vertical is data, not code: categories, unit ladders, measured axes, compliance records and warranty rules. A client on any of them gets a working catalogue on day one.'),
-          ui.renderTable({
-            columns: [
-              { key: 'label', label: 'Vertical', render: (p) => ui.h('div', {},
-                ui.h('div', {}, p.label || p.code),
-                ui.h('div', { class: 'hint' }, p.blurb || '')) },
-              { key: 'code', label: 'Code', render: (p) => ui.badge(p.code, 'badge-mute') },
-              { key: 'categoryCount', label: 'Categories', align: 'right', render: (p) => U.qty(p.categoryCount || 0) },
-              { key: 'baseUnit', label: 'Base unit', render: (p) => (p.baseUnit ? U.humanise(p.baseUnit) : '—') },
-              {
-                key: 'complianceFields',
-                label: 'Compliance captured',
-                render: (p) => ((p.complianceFields || []).length
-                  ? p.complianceFields.join(', ')
-                  : ui.h('span', { class: 'hint' }, 'none beyond the standard fields')),
-              },
-              {
-                key: 'enabledFeatures',
-                label: 'Flows switched on',
-                render: (p) => ui.h('div', { class: 'row' },
-                  (p.enabledFeatures || []).slice(0, 6).map((f) => ui.badge(U.humanise(f), 'badge-info')),
-                  (p.enabledFeatures || []).length > 6 ? ui.h('span', { class: 'hint' }, `+${(p.enabledFeatures || []).length - 6} more`) : null),
-              },
-            ],
-            rows: list,
-            emptyTitle: 'No profiles loaded',
-            emptyMessage: 'Profiles ship with the deployment.',
-          })));
+          list.length
+            ? ui.h('div', { class: 'vertical-grid' }, list.map(verticalCard))
+            : ui.empty({ title: 'No profiles loaded', message: 'Profiles ship with the deployment.' })));
       } catch (err) {
         body.replaceChildren(ui.h('div', { class: 'alert alert-danger' }, err.message || 'Could not load the profiles.'));
       }

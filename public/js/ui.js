@@ -384,14 +384,16 @@
     } catch (err) {
       end();
       if (panel) panel.cancel();
-      throw err;
+      error((err && err.message) || 'That did not work.');
+      return;
     }
     Promise.resolve(result).then(() => {
       end();
       if (panel) return panel.finish();
-    }, () => {
+    }, (err) => {
       end();
       if (panel) panel.cancel();
+      error((err && err.message) || 'That did not work.');
     });
   }
 

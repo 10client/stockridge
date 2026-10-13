@@ -29,3 +29,13 @@ test('premium loading is central, and the till numpad is not locked', () => {
   assert.match(kind, /numpad/);
   assert.match(kind, /return 'press'/);
 });
+
+test('creating a business opens a form, and the verticals card stays on the page', () => {
+  const admin = fs.readFileSync(path.join(ROOT, 'public/js/views/admin.js'), 'utf8');
+  assert.equal(admin.includes('profileOptions'), false, 'the create form still names a list that was never defined, so the dialog never opens');
+  assert.match(admin, /fillVerticalSelect\(form, go\)/);
+  assert.match(admin, /class: 'vertical-grid'/);
+  assert.match(CSS, /\.modal-root\s*\{[^}]*overflow:\s*auto/);
+  assert.match(CSS, /\.modal\s*\{[^}]*max-width:\s*100%/);
+  assert.match(CSS, /\.vertical-grid\s*\{[^}]*minmax\(240px,\s*1fr\)/);
+});
