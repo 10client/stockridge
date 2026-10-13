@@ -140,6 +140,20 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id', fa
   // answer when nothing is named, which is the case it was written for.
   let branchId = requested || pinned || rowBranch;
 
+  // A PIN IS A HOME SHOP, NOT A SWITCH.
+  //
+  // An owner who also has a home shop is pinned to that shop. The pin is the
+  // right answer when the request names nothing. It is the wrong answer when
+  // the request names a different business: the Greenbook and the controlled
+  // register then answer for the home shop, and a dispensary is told it is
+  // not one. The pin stays when it belongs to the business they named. A
+  // branch they named themselves already won, above.
+  const namedBusiness = ctx.req.queryParam('business_id') || await idFromBody(ctx, 'business_id');
+  if (!requested && pinned && namedBusiness && String(branchId) === String(pinned)) {
+    const pinRow = await db.first('SELECT business_id FROM branches WHERE id = ? AND is_deleted = 0', [String(pinned)]);
+    if (!pinRow || String(pinRow.business_id) !== String(namedBusiness)) branchId = rowBranch || null;
+  }
+
   if (!branchId && scope.branchIds && scope.branchIds.size === 1) {
     branchId = [...scope.branchIds][0];
   }

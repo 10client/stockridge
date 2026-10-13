@@ -1914,3 +1914,11 @@ The verticals button opened one wide table. The dialog centred that table, so th
 No migration was written. The admin PIN was not changed.
 
 Live on staging, sample and production as `ridge-20261013-0909-e74a86a`. Staging version `c2d5f528-90e7-4896-bf97-c9106d06c96b`, sample `68055dcc-fee1-47c6-be72-fd956abc7c18`, production `c709e66e-9cdc-46eb-a026-541c7edd1443`. No migration was applied. The admin PIN was not changed. The create form and the verticals card are on all three hosts.
+
+### P44 — a pharmaceutical business can open the Greenbook and the controlled register
+
+pharmaridge was saved as PHARMACEUTICAL. The controlled register still said it was not a dispensary, and the Greenbook would not open. The owner is pinned to the electronics shop. A request that named the dispensary and no shop was answered as that home shop, so the module check looked at electronics.
+
+A named business now wins over a home shop that belongs to a different business. A request that names nothing still uses the home shop. Reloading no longer pulls an owner who chose the dispensary back to that shop. A cashier stays pinned.
+
+No migration was written. The admin PIN was not changed. The create-business form and the verticals card were not changed.

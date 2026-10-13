@@ -378,6 +378,53 @@ test('state: switching business does not guess a shop, and a shop picks its busi
   assert.equal(state.activeBusinessId, null);
 });
 
+test('state: an owner who chose a dispensary is not pulled back to the home shop', async () => {
+  const previous = global.localStorage;
+  const stored = new Map();
+  global.localStorage = {
+    getItem: (k) => (stored.has(k) ? stored.get(k) : null),
+    setItem: (k, v) => stored.set(k, String(v)),
+    removeItem: (k) => stored.delete(k),
+  };
+  const me = {
+    user: {
+      id: 'u6', username: 'owner', role: 'OWNER', fullName: 'Owner',
+      business: { id: 'b1', name: 'electronica' },
+      branch: { id: 'br1', name: 'Head office' },
+    },
+    scope: { role: 'OWNER', allBusinesses: true, allBranches: true, businessIds: null, branchIds: null, pinnedBranchId: 'br1', pinnedBusinessId: 'b1' },
+    businesses: [
+      { id: 'b1', name: 'electronica', profile_code: 'ELECTRONICS', modules: { dispensing: false, nafdac: false } },
+      { id: 'b2', name: 'pharmaridge', profile_code: 'PHARMACEUTICAL', modules: { dispensing: true, nafdac: true } },
+    ],
+    branches: [
+      { id: 'br1', business_id: 'b1', name: 'Head office' },
+      { id: 'br2', business_id: 'b2', name: 'pharmaHq' },
+    ],
+    settings: {}, featureLabels: {}, vertical: null,
+  };
+  try {
+    const first = loadState({ me });
+    await first.load({ force: true });
+    const switched = first.setBusiness('b2');
+    assert.equal(switched.ok, true);
+    assert.equal(first.query().business_id, 'b2');
+    assert.equal(first.query().branch_id, undefined, 'the home shop was sent with the dispensary');
+    assert.equal(first.moduleOn('nafdac'), true);
+    assert.equal(first.moduleOn('dispensing'), true);
+
+    const again = loadState({ me });
+    await again.load({ force: true });
+    assert.equal(again.activeBusinessId, 'b2', 'reload rewrote the dispensary back to the home shop');
+    assert.notEqual(again.activeBranchId, 'br1', 'reload selected the electronics shop for the dispensary');
+    assert.equal(again.query().business_id, 'b2');
+    assert.equal(again.query().branch_id, undefined);
+    assert.equal(again.moduleOn('dispensing'), true);
+  } finally {
+    global.localStorage = previous;
+  }
+});
+
 test('state: one business is not a switch, and a pinned user cannot stand in the group', async () => {
   const state = loadState({
     me: {

@@ -424,17 +424,23 @@
     }
 
     const forBiz = branchesFor(state.activeBusinessId);
+    const pinBranch = pinned ? branches().find((b) => String(b.id) === String(pinned)) : null;
+    const pinFits = Boolean(pinBranch && (!state.activeBusinessId || String(pinBranch.business_id) === String(state.activeBusinessId)));
+    const rememberedRow = rememberedBranch ? branches().find((b) => String(b.id) === String(rememberedBranch)) : null;
+    const rememberedFits = Boolean(rememberedRow && (!state.activeBusinessId || String(rememberedRow.business_id) === String(state.activeBusinessId)));
+    // A cashier is the person the pin is for. An owner who can see every shop
+    // is not locked to their home shop: choosing a pharmaceutical business
+    // must not be rewritten to the electronics shop on the next load, or the
+    // Greenbook and the controlled register never open.
+    const lockedToPin = Boolean(pinBranch && !canSeeAllBranches());
 
-    // Branch: a pinned user gets their own, always. A remembered branch is a
-    // switch they already made. An owner who can see more than one branch is
-    // NOT switched onto the only shop of the active business — that guess is
-    // how the dashboard showed a branch's totals before anybody had switched.
-    const ownerChooses = canSeeAllBranches() && !pinned && branches().length > 1;
-    if (pinned && branches().some((b) => String(b.id) === String(pinned))) {
+    if (lockedToPin) {
       state.activeBranchId = String(pinned);
-    } else if (rememberedBranch && branches().some((b) => String(b.id) === String(rememberedBranch))) {
+    } else if (rememberedFits) {
       state.activeBranchId = String(rememberedBranch);
-    } else if (ownerChooses) {
+    } else if (pinFits) {
+      state.activeBranchId = String(pinned);
+    } else if (canSeeAllBranches() && branches().length > 1) {
       state.activeBranchId = null;
     } else if (forBiz.length === 1) {
       state.activeBranchId = String(forBiz[0].id);
@@ -457,7 +463,12 @@
   function query(extra = {}) {
     const q = Object.assign({}, extra);
     if (state.activeBusinessId) q.business_id = state.activeBusinessId;
-    if (state.activeBranchId) q.branch_id = state.activeBranchId;
+    // A shop of another business must not ride along. The server used to treat
+    // that shop as the business, and a dispensary was told it was not one.
+    const branch = activeBranch();
+    if (branch && state.activeBranchId && (!state.activeBusinessId || String(branch.business_id) === String(state.activeBusinessId))) {
+      q.branch_id = state.activeBranchId;
+    }
     return q;
   }
 

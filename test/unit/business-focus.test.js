@@ -9,7 +9,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { scopeFilter } = require('../../server/lib/respond');
+const { scopeFilter, resolveBranch, resolveBusiness } = require('../../server/lib/respond');
+const { Context } = require('../../server/lib/http');
+const { modulesOf } = require('../../domain/modules');
 
 const root = path.resolve(__dirname, '..', '..');
 
@@ -35,6 +37,53 @@ test('a named business narrows an owner list and does not replace the security r
 
   const count = scopeFilter({ allBusinesses: true, allBranches: true, focusBusinessId: 'biz-b' }, { alias: 'b', ignoreFocus: true });
   assert.equal(count.sql, '', 'counting reachable shops must not treat a focused business as the only shop they can reach');
+});
+
+test('a named dispensary is not judged as the owner home shop', async () => {
+  const branches = [
+    { id: 'br-elec', business_id: 'biz-elec', name: 'Head office', is_deleted: 0, is_active: 1 },
+    { id: 'br-pharma', business_id: 'biz-pharma', name: 'pharmaHq', is_deleted: 0, is_active: 1 },
+  ];
+  const businesses = [
+    { id: 'biz-elec', name: 'electronica', profile_code: 'ELECTRONICS', is_deleted: 0 },
+    { id: 'biz-pharma', name: 'pharmaridge', profile_code: 'PHARMACEUTICAL', is_deleted: 0 },
+  ];
+  const db = {
+    async first(sql, params) {
+      const id = String(params && params[0]);
+      if (sql.includes('FROM branches')) return branches.find((b) => b.id === id) || null;
+      if (sql.includes('FROM businesses')) return businesses.find((b) => b.id === id) || null;
+      return null;
+    },
+    async all() { return branches.map((b) => ({ id: b.id })); },
+  };
+  const scope = {
+    role: 'OWNER', allBusinesses: true, allBranches: true,
+    businessIds: null, branchIds: null,
+    pinnedBranchId: 'br-elec', pinnedBusinessId: 'biz-elec',
+  };
+  function ctxFor(businessId) {
+    const url = businessId
+      ? `http://localhost/api/pharmacy/register?business_id=${businessId}`
+      : 'http://localhost/api/pharmacy/register';
+    const ctx = new Context({ method: 'GET', url, headers: new Headers(), body: null, env: {}, params: {} });
+    ctx.set('scope', scope);
+    ctx.set('user', { id: 'owner', role: 'OWNER' });
+    return ctx;
+  }
+
+  const named = ctxFor('biz-pharma');
+  const branch = await resolveBranch(db, named, { required: false });
+  assert.equal(branch, null, 'the electronics pin was used as the pharmaceutical shop');
+  const business = await resolveBusiness(db, named, branch || undefined, { required: false });
+  assert.equal(business.id, 'biz-pharma');
+  const modules = modulesOf(business.profile_code, null);
+  assert.equal(modules.dispensing, true, 'the controlled register was refused for a dispensary');
+  assert.equal(modules.nafdac, true, 'the Greenbook was refused for a pharmaceutical business');
+
+  const home = ctxFor(null);
+  const pinned = await resolveBranch(db, home, { required: false });
+  assert.equal(pinned && pinned.id, 'br-elec', 'a request that names no business must still use the home shop');
 });
 
 test('the side nav scrolls its list, and the shell does not clip login', () => {
