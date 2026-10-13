@@ -371,7 +371,15 @@ function mount(app, base = '/api') {
    * created" — a capability that reaches a customer as a screen they cannot fill
    * in. These two endpoints are how it is created and cleared.
    *
-   * WRITE IT, OR CLEAR IT — there is no third verb. An ovest allowed = canEditPrices(ctx.get('settings'), user);
+   * WRITE IT, OR CLEAR IT — there is no third verb. An override is a whole
+   * pricing decision for one product in one branch, so a partial update would
+   * leave `pack_price` from a previous decision standing next to a new per-piece
+   * price, which is how a branch ends up quietly selling cartons below cost.
+   */
+  app.put(`${base}/products/:id/price-override`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const allowed = canEditPrices(ctx.get('settings'), user);
     if (!allowed.allowed) throw new HttpError(allowed.reason, { status: 403, code: 'PRICE_EDIT_NOT_ALLOWED' });
 
     const id = String(ctx.req.param('id'));

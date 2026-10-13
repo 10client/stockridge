@@ -75,7 +75,9 @@ test('the API surface over real HTTP', async (t) => {
   // Give the branch some stock so a sale can actually complete: a receipt posts
   // a batch, updates the weighted-average cost and moves the ledger, exactly as
   // the goods-received route does in production.
-  const product = await setup.first('SELECT * FROM products WHERE is_deleted = 0 ORDER BY name LIMIT 1');
+  // Shared market rows have no business and no price. A batch has to belong to
+  // the shop, so the first alphabetical name — often a shared good — will not do.
+  const product = await setup.first('SELECT * FROM products WHERE business_id IS NOT NULL AND is_deleted = 0 ORDER BY name LIMIT 1');
   const ownerId = await setup.scalar("SELECT id FROM users WHERE role = 'OWNER' AND is_deleted = 0 LIMIT 1");
   if (product) {
     const { newId: nid } = require(path.join(ROOT, 'domain/crypto'));
