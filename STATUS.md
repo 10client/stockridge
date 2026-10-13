@@ -1902,3 +1902,5 @@ A button shows a ring for the work it started. The ring is not a child of the bu
 The till is not held. The amount pad never locks, so the next digit still lands. Sell and Till & safe use a shorter entrance than the other screens. A payment button stays busy only while that payment is actually recording.
 
 No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`. Do not put pharmacy goods on the shared market list. The nine-month probe was not run again, and it was not written onto a live host.
+
+Live on staging, sample and production as `ridge-20261013-0844-f44b59e`. Staging version `386f0ff5-8964-4a3e-8306-7041a74ac876`, sample `a34d0002-69ac-4f6d-86af-5ef24a8e6749`, production `52fb0f7f-d30e-49f2-9b23-b84f9c55a69b`. No migration was applied. The admin PIN was not changed. A signed-in check was not run, so the daily row-write allowance was not spent. The three hosts are serving the loader.
