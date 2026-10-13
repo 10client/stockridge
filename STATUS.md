@@ -1934,3 +1934,5 @@ The pharmaceutical catalogue now lists every NAFDAC registration, after this sho
 Picking one on a purchase order copies it into this shop with no selling price, so the order can name it. The cost is the cost on the line. Setting a selling price is still required when the row is added for sale.
 
 No migration was written. The admin PIN was not changed. Applied migrations were not edited.
+
+Live on staging, sample and production as `ridge-20261013-1311-c0762f5`. Staging version `23f47192-d04c-45b2-bfe5-4a9c599b661f`, sample `9432c2db-647d-47e9-8105-d679cdbf991b`, production `71eb016f-dc47-419c-a08c-9e6772d07527`. No migration was applied. The admin PIN was not changed.
