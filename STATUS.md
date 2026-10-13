@@ -1878,3 +1878,17 @@ Live on staging, sample and production as `ridge-20261012-1541-b3cca7b`. Staging
 The signed-in check was finished on 2026-10-13. Staging furniture and both electronics shops are refused the Greenbook, the hire book and the controlled register. Sample is building materials and electronics. Production still has no client business.
 
 Staging was at its three-business cap, so the Greenbook had no pharmacy to open. The platform cap was raised from 3 to 4 and Ridge Pharmacy was created there. Searching the Greenbook for amoxicillin returned rows. Adding registration A4-8982 created a shop product at the price the caller set. The catalogue shows that product linked to the Greenbook row. Searching the same registration again opens the existing product. The furniture shop is still refused. Sample was not given a pharmacy. The admin PIN was not changed. No migration was applied.
+
+### P41 — format the live databases down to sample, then a nine-month two-way probe
+
+Staging and production were cleared so they no longer hold a shop. Sample was left as it was: two businesses and their staff. The shared market list and the Greenbook were not deleted, and no migration was applied. The admin PIN was not changed. Staging is one administrator and no business, with the business cap back at 3. Production is one administrator and no business. That is the handover state.
+
+The nine-month probe was run locally, not on the live databases, so it would not spend the daily row-write allowance. Twelve verticals were created, each with two branches. Each shop got an owner, a manager at each branch, and a cashier at each branch. Stock was received at the main branch and transferred to the warehouse, and the warehouse manager booked it in.
+
+Three quarters were posted in order, 13 January 2026 through 12 October 2026. Where the shop sells, the owner recorded a sale in each quarter and the cashier recorded a sale today. A cashier cannot backdate, and a hire or a lease cannot start on a day that has already passed, so the leasing shop's three quarters are general entries and its sale is a nine-month lease starting today, rung by the owner and again by the cashier. Every sale was read back, and the journal for that shop was read back.
+
+The Greenbook was searched and a row was added on the pharmacy only. Hire, lease, delivery and instalments were used on the shops that have those modules. Other shops were refused the Greenbook and the hire book.
+
+Data management was run three times, in order, after an export: a period delete on electronics, a clear of trading that keeps the books on furniture, and a clear that keeps the books and the shelf on wholesale. Each run is in the history. Every shop then posted a closing general entry dated 12 October 2026. All twelve trial balances balanced.
+
+The full result is in `.data/nine-month-probe.json`. It is not committed. The probe itself is `tools/nine-month-probe.js`. Serial tracking is off on a fresh deployment, so a warranty claim was not opened. A claim needs a serial that was sold here.
