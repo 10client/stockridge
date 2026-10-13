@@ -199,6 +199,7 @@
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales') }, 'Back to sales'),
           repaintButton(sale, items, payments, serials)));
+      host.replaceChildren();
       host.appendChild(head);
 
       if (sale.status === 'VOIDED') {

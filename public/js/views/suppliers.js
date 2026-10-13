@@ -276,6 +276,7 @@
       purchaseOrders = data.purchaseOrders || data.orders || [];
       payments = data.payments || data.creditorLedger || [];
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, s.name),

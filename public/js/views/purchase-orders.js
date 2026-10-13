@@ -524,7 +524,13 @@
       const nothingReceived = !items.some((i) => Number(i.quantity_received || 0) > 0);
       const canCancelOrder = openForReceiving && nothingReceived && SR.state.atLeast('MANAGER');
       const outstanding = items.filter((i) => round4(Number(i.quantity_in_base) - Number(i.quantity_received)) > 0);
+      // The list route adds units_ordered / units_received as aggregates. The detail row does not,
+      // so the top cards have to count the lines or they render as an empty dash.
+      const unitsOrdered = items.reduce((sum, i) => sum + Number(i.quantity_in_base || 0), 0);
+      const unitsReceived = items.reduce((sum, i) => sum + Number(i.quantity_received || 0), 0);
+      const whtRate = po.wht_rate_percent != null ? po.wht_rate_percent : po.wht_percent;
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, po.po_number),
@@ -538,8 +544,8 @@
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
-        ui.kpi({ label: 'Order total', value: U.money(po.total), foot: `${U.qty(po.units_ordered)} units on ${items.length} line${items.length === 1 ? '' : 's'}`, small: true }),
-        ui.kpi({ label: 'Received', value: `${U.qty(po.units_received)} units`, tone: outstanding.length ? 'warn' : 'good', foot: outstanding.length ? `${outstanding.length} line${outstanding.length === 1 ? '' : 's'} outstanding` : 'complete', small: true }),
+        ui.kpi({ label: 'Order total', value: U.money(po.total), foot: `${U.qty(unitsOrdered)} units on ${items.length} line${items.length === 1 ? '' : 's'}`, small: true }),
+        ui.kpi({ label: 'Received', value: `${U.qty(unitsReceived)} units`, tone: outstanding.length ? 'warn' : 'good', foot: outstanding.length ? `${outstanding.length} line${outstanding.length === 1 ? '' : 's'} outstanding` : 'complete', small: true }),
         ui.kpi({
           label: 'Expected',
           value: po.expected_date ? U.date(po.expected_date) : '—',
@@ -550,7 +556,7 @@
         ui.kpi({
           label: 'Withholding',
           value: Number(po.wht_amount) ? U.money(po.wht_amount) : 'none',
-          foot: po.wht_code ? `${po.wht_code}${po.wht_rate_percent ? ` @ ${po.wht_rate_percent}%` : ''}` : null,
+          foot: po.wht_code ? `${po.wht_code}${whtRate != null && whtRate !== '' ? ` @ ${whtRate}%` : ''}` : null,
           small: true,
         })));
 
@@ -561,7 +567,7 @@
             { key: 'product_name', label: 'Item', className: 'wrap', render: (i) => ui.h('div', {},
               ui.h('div', { style: { fontWeight: '600' } }, i.product_name || i.name),
               ui.h('div', { class: 'hint' }, [i.sku, i.variant_name].filter(Boolean).join(' · '))) },
-            { key: 'quantity', label: 'Ordered', align: 'right', render: (i) => `${U.qty(i.quantity)} ${i.unit_code || ''}` },
+            { key: 'quantity', label: 'Ordered', align: 'right', render: (i) => `${U.qty(i.quantity != null ? i.quantity : i.quantity_ordered)} ${i.unit_code || ''}` },
             { key: 'quantity_in_base', label: 'In base units', align: 'right', render: (i) => U.qty(i.quantity_in_base) },
             { key: 'quantity_received', label: 'Received', align: 'right', render: (i) => {
               const got = Number(i.quantity_received);
@@ -629,7 +635,7 @@
         subtitle: [po.supplier_name, po.branch_name, `Expected ${po.expected_date || 'no date'}`].filter(Boolean).join(' · '),
         columns: [
           { key: 'product_name', label: 'Item' },
-          { key: 'quantity', label: 'Qty', value: (i) => `${i.quantity} ${i.unit_code || ''}` },
+          { key: 'quantity', label: 'Qty', value: (i) => `${U.qty(i.quantity != null ? i.quantity : i.quantity_ordered)} ${i.unit_code || ''}` },
           { key: 'quantity_in_base', label: 'Base units', value: (i) => U.qty(i.quantity_in_base) },
           { key: 'expected_unit_cost', label: 'Unit cost', value: (i) => U.amount(i.expected_unit_cost) },
           { key: 'expected_total_cost', label: 'Line total', value: (i) => U.amount(i.expected_total_cost) },

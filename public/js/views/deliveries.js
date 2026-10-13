@@ -199,6 +199,7 @@
         ? DELIVERY_STATUSES[Math.min(currentIndex + 1, 4)]
         : null;
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, job.job_no || 'Delivery job'),

@@ -683,6 +683,7 @@
       const progress = data.progress || {};
       const trigger = data.trigger || {};
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, plan.plan_no || 'Instalment plan'),

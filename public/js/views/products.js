@@ -712,6 +712,7 @@
       const batches = data.batches || [];
       const barcodes = data.barcodes || [];
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, p.name),

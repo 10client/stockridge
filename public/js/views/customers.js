@@ -329,6 +329,7 @@
       const sales = data.sales || data.recentSales || [];
       const ledgerRows = (ledger && (ledger.entries || ledger.data)) || data.ledger || [];
 
+      host.replaceChildren();
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, c.name),
