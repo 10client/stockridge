@@ -295,7 +295,86 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
     void createdBy;
   });
 
+  if (withCatalogue && profile.code === 'PHARMACEUTICAL') {
+    summary.greenbook = await fileGreenbook(db, businessId);
+  }
+
   return summary;
+}
+
+/**
+ * Copy every NAFDAC registration into this dispensary's own catalogue.
+ *
+ * A registration that is only searched, and then offered an Add button, is
+ * not in the catalogue. The shop's own goods and the Greenbook have to be
+ * the same kind of row, or the list shows Open on one and Add on the other.
+ * The copy is unpriced, it belongs to this business, and it is not written
+ * with a null business_id, so it never joins the shared market list.
+ * Idempotent: a registration already linked is left as it is.
+ */
+async function fileGreenbook(db, businessId) {
+  const id = String(businessId);
+  const missing = await db.scalar(
+    `SELECT COUNT(*) FROM nafdac_catalog n
+      WHERE NOT EXISTS (
+        SELECT 1 FROM products p
+         WHERE p.business_id = ? AND p.nafdac_catalog_id = n.id AND p.is_deleted = 0
+      )`,
+    [id],
+  );
+  if (!Number(missing)) return 0;
+  await db.run(
+    `INSERT OR IGNORE INTO products (
+        id, business_id, category_id, sku, name, brand, model_no,
+        registration_no, has_expiry, base_unit_name, cost_price, selling_price,
+        dispensing_class, is_controlled, nafdac_catalog_id,
+        valuation_method, is_active, created_at, updated_at)
+      SELECT lower(hex(randomblob(16))),
+             ?,
+             (SELECT c.id FROM product_categories c
+               WHERE c.business_id = ? AND c.is_deleted = 0 AND lower(c.name) = lower(n.category)
+               LIMIT 1),
+             substr(IFNULL(n.nafdac_reg_no, 'NAF'), 1, 20) || '-' || n.id,
+             n.product_name,
+             n.manufacturer,
+             n.strength,
+             n.nafdac_reg_no,
+             1,
+             IFNULL(NULLIF(n.base_unit, ''), 'unit'),
+             0,
+             0,
+             CASE WHEN n.dispensing_type IN ('OTC', 'POM') THEN n.dispensing_type ELSE 'OTC' END,
+             IFNULL(n.is_controlled, 0),
+             n.id,
+             'WEIGHTED_AVG',
+             1,
+             datetime('now'),
+             datetime('now')
+        FROM nafdac_catalog n
+       WHERE NOT EXISTS (
+         SELECT 1 FROM products p
+          WHERE p.business_id = ? AND p.nafdac_catalog_id = n.id AND p.is_deleted = 0
+       )`,
+    [id, id, id],
+  );
+  await db.run(
+    `INSERT OR IGNORE INTO product_units (
+        id, product_id, level, code, name, plural_name, quantity_in_base,
+        is_sellable, is_default_sell, created_at, updated_at)
+      SELECT lower(hex(randomblob(16))), p.id, 0, 'PIECE',
+             IFNULL(NULLIF(p.base_unit_name, ''), 'Piece'),
+             IFNULL(NULLIF(p.base_unit_name, ''), 'Piece') || 's',
+             1, 1, 1, datetime('now'), datetime('now')
+        FROM products p
+       WHERE p.business_id = ?
+         AND p.nafdac_catalog_id IS NOT NULL
+         AND p.is_deleted = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM product_units u WHERE u.product_id = p.id AND u.is_deleted = 0
+         )`,
+    [id],
+  );
+  return Number(missing);
 }
 
 /** Expand [{colour:[a,b]},{size:[x,y]}] into the cartesian combinations. */
@@ -630,4 +709,4 @@ async function provisionDeployment(db, {
   };
 }
 
-module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku };
+module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku, fileGreenbook };

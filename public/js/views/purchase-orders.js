@@ -238,7 +238,7 @@
       linesCard.appendChild(linesBody);
       wrapEl.appendChild(linesCard);
       wrapEl.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('nafdac')
-        ? 'Pick the product from the list under its name. A NAFDAC registration that is not in this shop yet can be picked too — that adds it here, with no selling price, so this order can name it. It is not put on the shared market list. A typed name is not ordered until you pick it.'
+        ? 'Pick the product from the list under its name. Every NAFDAC registration is already in this shop’s catalogue, unpriced until you set a price, and it is not on the shared market list. A typed name is not ordered until you pick it.'
         : 'Pick the product from the list under its name. A typed name and a price are not on the order until you do. Quantities are converted to the product\'s base unit when the order is saved.'));
 
       const totalsBar = ui.h('div', { class: 'alert alert-info' }, 'No lines yet.');
@@ -354,7 +354,7 @@
                 },
               }, ui.h('div', { class: 'grow' },
                 ui.h('div', { class: 'ph-name' }, product.name),
-                ui.h('div', { class: 'ph-meta' }, [Number(product.from_greenbook) ? 'NAFDAC' : null, product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
+                ui.h('div', { class: 'ph-meta' }, [(product.nafdac_catalog_id || Number(product.from_greenbook)) ? 'NAFDAC' : null, product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
               ui.h('span', { class: 'ph-price' }, U.money(product.cost_price))));
             }
             results.hidden = false;

@@ -195,36 +195,54 @@ test('integration: a pharmaceutical catalogue lists every NAFDAC registration fo
   t.after(world.cleanup);
 
   const sharedBefore = await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL');
+  const owned = await world.db.scalar(
+    'SELECT COUNT(*) FROM products WHERE business_id = ? AND is_deleted = 0 AND nafdac_catalog_id IS NOT NULL',
+    [world.businessId],
+  );
+  assert.equal(Number(owned), 6801, `this dispensary holds ${owned} Greenbook copies, not every registration`);
+  assert.equal(await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL AND nafdac_catalog_id IS NOT NULL'), 0, 'a registration was written onto the shared market list');
+
   const { call, token } = await callAsOwner(world);
   const catalogue = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&sort=name&limit=8`, { token });
   assert.equal(catalogue.status, 200, catalogue.text.slice(0, 400));
   const hit = (catalogue.json.data || []).find((r) => String(r.registration_no) === 'A4-6238');
   assert.ok(hit, 'a NAFDAC registration was not in the pharmaceutical catalogue');
-  assert.equal(Number(hit.from_greenbook), 1);
+  assert.equal(Number(hit.from_greenbook) || 0, 0, 'a catalogue row was still a virtual Greenbook entry');
   assert.equal(String(hit.business_id), String(world.businessId), 'a Greenbook row was listed as a shared market good');
-  assert.equal(String(hit.id).startsWith('nafdac:'), true, 'a Greenbook row was inserted as a product just to be listed');
+  assert.equal(String(hit.id).startsWith('nafdac:'), false, 'a Greenbook row was still a virtual id');
+  assert.ok(hit.nafdac_catalog_id, 'the shop copy is not linked to the registration');
+  assert.equal(Number(hit.selling_price), 0, 'filing a registration invented a selling price');
+  assert.equal(hit.default_unit_code, 'PIECE', 'a filed registration has no unit a purchase order can name');
 
   const page = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&sort=name&limit=50`, { token });
   assert.equal(page.status, 200, page.text.slice(0, 300));
   assert.ok(Number(page.json.paging.total) >= 6801, `the catalogue total is ${page.json.paging && page.json.paging.total}, not the Greenbook`);
-  assert.ok((page.json.data || []).some((r) => Number(r.from_greenbook) === 1), 'the first page of a dispensary did not show a NAFDAC registration');
+  assert.equal((page.json.data || []).some((r) => String(r.id).startsWith('nafdac:') || Number(r.from_greenbook) === 1), false, 'a virtual Greenbook row was listed');
+  assert.ok((page.json.data || []).some((r) => r.nafdac_catalog_id && String(r.business_id) === String(world.businessId)), 'the first page of a dispensary did not show a NAFDAC registration');
 
   const till = await call('GET', `/api/products?business_id=${world.businessId}&q=artheget&limit=8`, { token });
-  assert.equal((till.json.data || []).some((r) => Number(r.from_greenbook) === 1), false, 'the till list included the Greenbook');
+  assert.equal((till.json.data || []).some((r) => String(r.id).startsWith('nafdac:') || Number(r.from_greenbook) === 1), false, 'the till list included a virtual Greenbook row');
+  assert.ok((till.json.data || []).some((r) => String(r.id) === String(hit.id)), 'the till could not find the shop copy of a registration');
 
   const adopted = await call('POST', `/api/nafdac/${hit.nafdac_catalog_id}/adopt`, {
     token,
     body: { for_order: true, selling_price: 0, cost_price: 500, business_id: world.businessId },
   });
-  assert.equal(adopted.status, 201, adopted.text.slice(0, 400));
-  const stored = await world.db.first('SELECT business_id, selling_price FROM products WHERE id = ?', [adopted.json.id]);
+  assert.equal(adopted.status, 200, adopted.text.slice(0, 400));
+  assert.equal(adopted.json.already, true, 'a registration already in the shop was copied again');
+  assert.equal(String(adopted.json.id), String(hit.id));
+  const stored = await world.db.first('SELECT business_id, selling_price FROM products WHERE id = ?', [hit.id]);
   assert.equal(String(stored.business_id), String(world.businessId));
   assert.equal(Number(stored.selling_price), 0, 'ordering a Greenbook row invented a selling price');
   assert.equal(await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id IS NULL'), sharedBefore, 'a Greenbook row was written onto the shared market list');
+  assert.equal(await world.db.scalar(
+    'SELECT COUNT(*) FROM products WHERE business_id = ? AND nafdac_catalog_id = ? AND is_deleted = 0',
+    [world.businessId, hit.nafdac_catalog_id],
+  ), 1, 'adopt created a second copy of a registration already in the shop');
 
   const again = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&limit=12`, { token });
-  assert.equal((again.json.data || []).some((r) => String(r.id) === String(hit.id)), false, 'an adopted registration was still listed as not in the shop');
-  assert.ok((again.json.data || []).some((r) => String(r.id) === String(adopted.json.id)), 'the shop copy was missing from the purchase-order search');
+  assert.ok((again.json.data || []).some((r) => String(r.id) === String(hit.id)), 'the shop copy was missing from the purchase-order search');
+  assert.equal((again.json.data || []).some((r) => String(r.id).startsWith('nafdac:')), false);
 
   const supplierId = newId();
   await world.db.run(
@@ -237,7 +255,7 @@ test('integration: a pharmaceutical catalogue lists every NAFDAC registration fo
       branch_id: world.branchId,
       business_id: world.businessId,
       supplier_id: supplierId,
-      items: [{ product_id: adopted.json.id, quantity: 2, unit_code: 'PIECE', expected_unit_cost: 500 }],
+      items: [{ product_id: hit.id, quantity: 2, unit_code: 'PIECE', expected_unit_cost: 500 }],
     },
   });
   assert.equal(po.status, 201, po.text.slice(0, 500));
@@ -275,7 +293,10 @@ test('integration: a supermarket sells by aisle and refuses expired stock', asyn
   );
 
   const { call, token } = await callAsOwner(world);
+  const before = await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id = ? AND is_deleted = 0', [world.businessId]);
   const listed = await call('GET', `/api/products?nafdac=1&business_id=${world.businessId}&q=artheget&limit=8`, { token });
   assert.equal(listed.status, 200, listed.text.slice(0, 300));
-  assert.equal((listed.json.data || []).some((r) => Number(r.from_greenbook) === 1), false, 'a supermarket was shown the Greenbook');
+  assert.equal((listed.json.data || []).some((r) => Number(r.from_greenbook) === 1 || String(r.id).startsWith('nafdac:')), false, 'a supermarket was shown the Greenbook');
+  assert.equal((listed.json.data || []).some((r) => String(r.registration_no) === 'A4-6238'), false, 'a supermarket was given a NAFDAC registration');
+  assert.equal(await world.db.scalar('SELECT COUNT(*) FROM products WHERE business_id = ? AND is_deleted = 0', [world.businessId]), before, 'opening the catalogue filed the Greenbook into a supermarket');
 });

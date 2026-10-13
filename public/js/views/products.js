@@ -57,7 +57,7 @@
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
         ui.h('p', { class: 'sub' }, SR.state.moduleOn('nafdac')
-          ? 'Every NAFDAC registered product is in this list, after this shop’s own goods. A Greenbook row has no price and is not on the shared market list. Search a name or a NAFDAC number, then pick it on a purchase order — that adds it to this shop.'
+          ? 'Every NAFDAC registered product is in this catalogue, the same as any other product. Open it. It is not priced until you set a price, and it is not on the shared market list. Search a name or a NAFDAC number to raise a purchase order.'
           : 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
@@ -177,7 +177,7 @@
             if (Number(p.has_expiry)) tags.push('expiry');
             if (Number(p.warranty_months)) tags.push(`${p.warranty_months}m warranty`);
             if (Number(p.is_bulky)) tags.push('bulky');
-            if (Number(p.from_greenbook)) tags.push('NAFDAC');
+            if (p.nafdac_catalog_id || Number(p.from_greenbook)) tags.push('NAFDAC');
             if (tags.length) cell.appendChild(ui.h('div', { class: 'chips-row', style: { marginTop: '4px' } }, ...tags.map((t) => ui.badge(t, 'badge-info'))));
             return cell;
           } },
@@ -192,12 +192,10 @@
             const floor = Number(p.min_margin_pct) || 0;
             return ui.h('span', { style: m < floor ? { color: 'var(--red-700)', fontWeight: '700' } : (m < floor + 5 ? { color: 'var(--amber-700)' } : {}) }, U.pct(m));
           } },
-          { key: 'x', label: '', render: (p) => Number(p.from_greenbook)
-            ? ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); addFromGreenbook(greenbookShape(p)); } }, 'Add')
-            : ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); SR.app.navigate(`/products/${p.id}`); } }, 'Open') },
+          { key: 'x', label: '', render: (p) => ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); openProduct(p); } }, 'Open') },
         ],
         rows,
-        onRowClick: (p) => (Number(p.from_greenbook) ? addFromGreenbook(greenbookShape(p)) : SR.app.navigate(`/products/${p.id}`)),
+        onRowClick: (p) => openProduct(p),
         rowClass: (p) => (state.highlightId && String(p.id) === String(state.highlightId) ? 'is-placed' : ''),
         emptyTitle: state.q ? 'Nothing matches that search' : 'The catalogue is empty',
         emptyMessage: state.q
@@ -235,6 +233,28 @@
 
     function addFromGreenbook(row) {
       productForm(null, { greenbook: row }).then((ok) => { if (ok && ok.id) placeInList(ok); else if (ok) load(); });
+    }
+
+    async function openProduct(row) {
+      if (!row) return;
+      // A real product opens. A leftover virtual Greenbook id is not a product,
+      // and it must not open the price form under an Open label. Copy it into
+      // this shop, then open that copy.
+      if (row.id && !String(row.id).startsWith('nafdac:') && !Number(row.from_greenbook)) {
+        SR.app.navigate(`/products/${row.id}`);
+        return;
+      }
+      const catalogId = row.nafdac_catalog_id;
+      if (!catalogId) return;
+      try {
+        const created = await SR.api.post(`/api/nafdac/${encodeURIComponent(catalogId)}/adopt`, {
+          for_order: true,
+          selling_price: 0,
+          cost_price: 0,
+          business_id: SR.state.activeBusinessId,
+        });
+        if (created && created.id) SR.app.navigate(`/products/${created.id}`);
+      } catch (err) { ui.apiError(err); }
     }
 
     async function exportList() {

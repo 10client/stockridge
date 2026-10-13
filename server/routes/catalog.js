@@ -34,6 +34,7 @@ const { newId } = require('../../domain/crypto');
 const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
+const { fileGreenbook } = require('../services/provisioningService');
 
 /**
  * The catalogue columns a client may set.
@@ -79,27 +80,6 @@ function overridesOf(business) {
 
 function modulesOfBusiness(business) {
   return modulesOf(business && business.profile_code, overridesOf(business));
-}
-
-/**
- * Greenbook rows this shop has not copied yet.
- *
- * They are listed with the pharmaceutical catalogue so a purchase order can
- * pick one. They are not inserted, and they are not given a null business_id,
- * so they never become shared market goods.
- */
-function unadoptedGreenbookWhere(businessId, search) {
-  const where = [`NOT EXISTS (
-    SELECT 1 FROM products own
-    WHERE own.business_id = ? AND own.nafdac_catalog_id = n.id AND own.is_deleted = 0
-  )`];
-  const params = [String(businessId)];
-  if (search) {
-    const like = `%${String(search).toLowerCase().replace(/[%_]/g, '')}%`;
-    where.push(`(n.search_blob LIKE ? OR lower(IFNULL(n.nafdac_reg_no, '')) LIKE ? OR lower(n.product_name) LIKE ? OR lower(IFNULL(n.ingredient_name, '')) LIKE ? OR lower(IFNULL(n.manufacturer, '')) LIKE ?)`);
-    params.push(like, like, like, like, like);
-  }
-  return { sql: where.join(' AND '), params };
 }
 
 function refuseForeignModule(business, fields) {
@@ -179,11 +159,10 @@ function mount(app, base = '/api') {
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
     // sort=name is the catalogue screen. Everything else keeps owned goods
-    // first so a priced row is still on page one.
+    // first so a priced row is still on page one. A dispensary's own goods
+    // now include every registration, so those stay ahead of the shared
+    // market list even when the catalogue asks for name order.
     const sortByName = String(ctx.req.queryParam('sort') || '') === 'name';
-    const orderSql = sortByName
-      ? "LOWER(p.name) ASC, LOWER(IFNULL(p.sku, '')) ASC, p.id ASC"
-      : '(p.business_id IS NULL), p.name ASC';
     const search = searchTerm(ctx);
     const businessId = ctx.req.queryParam('business_id');
     const categoryId = ctx.req.queryParam('category_id');
@@ -232,17 +211,25 @@ function mount(app, base = '/api') {
       : `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) FROM stock_batches sb
           WHERE sb.product_id = p.id AND sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED'))`;
 
-    // The pharmaceutical catalogue asks for the Greenbook. Other lists do not:
-    // a till that asked for the first page must not be handed six thousand
-    // unpriced registrations, and a furniture shop must not see them at all.
-    let nafdacOn = false;
-    if (ctx.req.queryParam('nafdac') === '1' && businessId && !lowStock && !categoryId) {
+    // A pharmaceutical business owns every NAFDAC registration as one of its
+    // own products. File any that are missing before the list is read, so the
+    // catalogue and a purchase order see the same rows a shop product uses.
+    // Other verticals are not given them. A virtual Greenbook id is not listed:
+    // that was the Add button.
+    let ownCatalogue = false;
+    if (businessId) {
       const focused = await db.first(
         'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
         [String(businessId)],
       );
-      nafdacOn = Boolean(focused && modulesOfBusiness(focused).nafdac);
+      if (focused && modulesOfBusiness(focused).nafdac) {
+        await fileGreenbook(db, String(businessId));
+        ownCatalogue = true;
+      }
     }
+    const orderSql = sortByName
+      ? `${ownCatalogue ? '(p.business_id IS NULL), ' : ''}LOWER(p.name) ASC, LOWER(IFNULL(p.sku, '')) ASC, p.id ASC`
+      : '(p.business_id IS NULL), p.name ASC';
 
     const productBind = [...(branch ? [String(branch.id)] : []), ...params, ...(lowStock && branch ? [String(branch.id)] : [])];
     const productSelect = `
@@ -279,7 +266,7 @@ function mount(app, base = '/api') {
     let total;
     let located = null;
     const locateId = ctx.req.queryParam('locate');
-    if (!nafdacOn) {
+    {
       rows = await db.all(`
         ${productSelect}
         -- Default: the shop's own goods first. The shared market list is thousands of
@@ -306,59 +293,6 @@ function mount(app, base = '/api') {
                OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
              )`,
             [...params, target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
-          );
-          located = { id: target.id, index: Number(index) || 0, name: target.name };
-        }
-      }
-    } else {
-      const green = unadoptedGreenbookWhere(String(businessId), search);
-      // Shop goods, then every NAFDAC registration this shop has not copied,
-      // then the shared market list. A pure name sort would file a medicine
-      // among thousands of unpriced market names, and the first page of a
-      // dispensary would not show a drug.
-      const greenSelect = `
-        SELECT 'nafdac:' || n.id, ?, NULL, n.nafdac_reg_no, n.product_name, n.manufacturer, n.strength,
-               0, 0, 0, NULL,
-               0, 0, 1, 0, 1,
-               IFNULL(n.base_unit, 'unit'),
-               0, 0, 0, 0, 0,
-               'WEIGHTED_AVG', 1, NULL,
-               1, 0, 0,
-               NULL, NULL, NULL, NULL,
-               n.dispensing_type, n.is_controlled, n.id, n.nafdac_reg_no,
-               n.category, NULL,
-               'PIECE', 1, 0
-        FROM nafdac_catalog n
-        WHERE ${green.sql}`;
-      rows = await db.all(`
-        SELECT listed.*,  CASE WHEN listed.id LIKE 'nafdac:%' THEN 1 ELSE 0 END AS from_greenbook
-          FROM (
-            ${productSelect}
-            UNION ALL
-            ${greenSelect}
-          ) listed
-         ORDER BY CASE WHEN listed.id LIKE 'nafdac:%' THEN 1 WHEN listed.business_id IS NULL THEN 2 ELSE 0 END,
-                  LOWER(listed.name) ASC, LOWER(IFNULL(listed.sku, '')) ASC, listed.id ASC
-         LIMIT ? OFFSET ?`,
-      [...productBind, String(businessId), ...green.params, limit, offset]);
-      total = await db.scalar(
-        `SELECT (SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')})
-              + (SELECT COUNT(*) FROM nafdac_catalog n WHERE ${green.sql})`,
-        [...params, ...green.params],
-      );
-      if (locateId && sortByName && !String(locateId).startsWith('nafdac:')) {
-        const target = await db.first(
-          `SELECT p.id, p.name, p.sku, p.business_id FROM products p WHERE p.id = ? AND ${where.join(' AND ')}`,
-          [String(locateId), ...params],
-        );
-        if (target && String(target.business_id) === String(businessId)) {
-          const index = await db.scalar(
-            `SELECT COUNT(*) FROM products p WHERE ${where.join(' AND ')} AND p.business_id = ? AND (
-               LOWER(p.name) < LOWER(?)
-               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) < LOWER(?))
-               OR (LOWER(p.name) = LOWER(?) AND LOWER(IFNULL(p.sku, '')) = LOWER(?) AND p.id < ?)
-             )`,
-            [...params, String(businessId), target.name, target.name, target.sku || '', target.name, target.sku || '', target.id],
           );
           located = { id: target.id, index: Number(index) || 0, name: target.name };
         }
