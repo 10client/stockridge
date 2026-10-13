@@ -39,6 +39,9 @@ async function publicBranding(db) {
   return {
     name: (row && row.business_name) || (primary && primary.name) || 'StockRidge',
     logoDataUrl: (row && row.logo_data_url) || null,
+    // The product mark, used wherever a shop has not uploaded its own. A path,
+    // not the bytes: the sign-in screen must not download a picture inside JSON.
+    defaultLogoUrl: '/brand/logo.jpg',
     receiptFooter: (row && row.receipt_footer_text) || null,
     // A vendor mark, kept separate from the client's own name so the UI can show
     // "Powered by StockRidge" without competing with the shop's brand.
@@ -145,7 +148,7 @@ function mountGuarded(app, base = '/api/branding') {
     if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only the owner or an administrator can change the logo.', { status: 403, code: 'ROLE_REQUIRED' });
     await db.run("UPDATE client_settings SET logo_data_url = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = 1", [String(user.id)]);
     await recordFromCtx(ctx, { action: 'BRANDING_UPDATED', entityType: 'CLIENT_SETTINGS', entityId: '1', after: { logoDataUrl: null } });
-    ctx.json({ ok: true, message: 'Logo removed. The wordmark will be used instead.' });
+    ctx.json({ ok: true, message: 'Logo removed. The StockRidge logo will be used instead.' });
   });
 }
 

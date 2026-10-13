@@ -114,13 +114,13 @@ function mount(app, base = '/api') {
       scope: '/',
       display: 'standalone',
       orientation: 'any',
-      background_color: '#0f1720',
-      theme_color: '#0f7a4d',
+      background_color: '#041016',
+      theme_color: '#0a2b10',
       categories: ['business', 'productivity', 'finance'],
       icons: [
         { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
         { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
-        { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        { src: '/icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
       ],
       shortcuts: [
         { name: 'New sale', short_name: 'Sell', url: '/pos', description: 'Open the point of sale' },

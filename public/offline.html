@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>StockRidge — no connection</title>
-<meta name="theme-color" content="#0f766e">
+<meta name="theme-color" content="#0a2b10">
 <!--
   =====================================================================
   public/offline.html — WHAT A SHOP SEES WHEN THE NETWORK IS GONE
@@ -27,7 +27,7 @@
   even when nothing else will.
 
   IT MUST NOT DEPEND ON ANYTHING. No external CSS, no fonts, no images, no icons
-  fetched over the network. The only decoration is an inline SVG, because a
+  fetched over the network. The only decoration is the logo, inlined as a data URI, because a
   network that has just failed is exactly the wrong time to ask it for a picture.
 
   It is precached by sw.js and served as the navigation fallback when a fetch
@@ -81,7 +81,7 @@
 <body>
 <main>
   <div class="brand">
-    <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M3 17.5 8.5 11l4 4L21 5.5V9l-8.5 9.5-4-4L3 21z"/></svg>
+    <img src="data:image/jpeg;base64,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" width="28" height="28" alt="" style="border-radius:6px;display:block">
     StockRidge
   </div>
 

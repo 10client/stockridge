@@ -71,6 +71,9 @@ const SHELL = [
   '/icons/icon.svg',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  '/icons/icon-maskable-512.png',
+  '/brand/logo.jpg',
+  '/brand/mark.png',
   // THE OFFLINE FALLBACK IS PART OF THE SHELL, and it was not. The navigation
   // handler below used to build its own fallback as an inline HTML string, which
   // meant the page a shop sees when the network drops was written in a different

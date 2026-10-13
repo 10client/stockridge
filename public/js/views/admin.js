@@ -698,10 +698,10 @@
         // uploading a file and saving a name are not the same edit, and the logo posts bytes.
         const logoBox = ui.h('div', { class: 'ctl' }, 'Logo');
         const preview = ui.h('img', { alt: 'The current logo', class: 'brand-logo-preview' });
-        if (b.logoDataUrl) { preview.src = b.logoDataUrl; } else { preview.hidden = true; }
+        preview.src = b.logoDataUrl || '/brand/logo.jpg';
         const file = ui.h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', disabled: !canEdit, class: 'brand-logo-input' });
-        const remove = ui.h('button', { class: 'btn btn-sm', disabled: !canEdit, onClick: async () => {
-          if (!(await ui.confirmDialog({ title: 'Remove the logo', message: 'The wordmark will be used instead.', confirmLabel: 'Remove', danger: true }))) return;
+        const remove = ui.h('button', { class: 'btn btn-sm', hidden: !b.logoDataUrl, disabled: !canEdit, onClick: async () => {
+          if (!(await ui.confirmDialog({ title: 'Remove the logo', message: 'The StockRidge logo will be used instead.', confirmLabel: 'Remove', danger: true }))) return;
           try { const res = await SR.api.del('/api/branding/logo'); ui.ok(res.message || 'Logo removed.'); loadBranding(); }
           catch (err) { ui.apiError(err); }
         } }, 'Remove logo');
@@ -723,7 +723,9 @@
             loadBranding();
           } catch (err) { ui.apiError(err); } finally { file.value = ''; }
         });
-        logoBox.appendChild(ui.h('div', { class: 'brand-logo-row' }, preview, ui.h('div', { class: 'stack' }, file, ui.h('div', { class: 'hint' }, 'PNG, JPEG, WebP or GIF. SVG is refused on purpose: it can carry a script, and this image is shown on the sign-in screen.'), remove)));
+        logoBox.appendChild(ui.h('div', { class: 'brand-logo-row' }, preview, ui.h('div', { class: 'stack' }, file, ui.h('div', { class: 'hint' }, b.logoDataUrl
+          ? 'PNG, JPEG, WebP or GIF. SVG is refused on purpose: it can carry a script, and this image is shown on the sign-in screen.'
+          : 'This is the StockRidge logo. Upload a PNG, JPEG, WebP or GIF to replace it on the sign-in screen. SVG is refused: it can carry a script.'), remove)));
 
         // ONLY WHAT CHANGED IS SENT. The route audits every field it receives, and a trail full
         // of unchanged rows is a trail nobody reads — the same rule the feature switches above

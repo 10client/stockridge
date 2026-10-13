@@ -313,20 +313,41 @@
    * a dead line still shows the client's name — this is an offline-first product), then the
    * server. A failure changes nothing: the shell's markup is the fallback.
    */
+  const DEFAULT_LOGO = '/brand/logo.jpg';
+  const DEFAULT_MARK = '/brand/mark.png';
+
+  function applyBrandMark(b) {
+    const custom = b && b.logoDataUrl ? b.logoDataUrl : '';
+    const name = (b && b.name) || 'StockRidge';
+    const vendor = name.trim().toLowerCase() === 'stockridge';
+    const img = document.getElementById('login-brand-logo');
+    const brand = document.getElementById('login-brand');
+    const nameEl = document.getElementById('login-brand-name');
+    if (img) {
+      img.hidden = false;
+      img.src = custom || DEFAULT_LOGO;
+      img.alt = name;
+      img.classList.toggle('is-custom', Boolean(custom));
+    }
+    if (brand) brand.classList.toggle('is-custom', Boolean(custom));
+    setText('login-brand-name', name);
+    // The lockup already says STOCK RIDGE. A shop that has renamed itself, or
+    // uploaded its own mark, still needs the name in type.
+    if (nameEl) nameEl.hidden = !custom && vendor;
+    const appMark = document.getElementById('app-mark');
+    if (appMark) {
+      appMark.src = custom || DEFAULT_MARK;
+      appMark.alt = name;
+      appMark.classList.toggle('is-custom', Boolean(custom));
+    }
+  }
+
   async function paintLoginBrand() {
     const apply = (b) => {
       if (!b || !b.name) return;
-      setText('login-brand-name', b.name);
       setText('login-brand-sub', b.receiptFooter || 'Multi-branch stock, sales and accounting');
       document.title = b.name;
-      const img = document.getElementById('login-brand-logo');
-      const mark = document.getElementById('login-brand-mark');
-      if (img && mark) {
-        const hasLogo = Boolean(b.logoDataUrl);
-        img.hidden = !hasLogo;
-        mark.hidden = hasLogo;
-        if (hasLogo) img.src = b.logoDataUrl;
-      }
+      applyBrandMark(b);
     };
     try {
       const cached = JSON.parse(localStorage.getItem('sr.brand') || 'null');
@@ -384,6 +405,7 @@
 
     setText('brand-name', brandName);
     setText('brand-sub', working);
+    applyBrandMark({ name: brandName, logoDataUrl: settings.logo_data_url || '' });
     setText('nav-business', working);
     setText('business-chip-name', working);
     setText('user-initials', U.initials(user && user.fullName));

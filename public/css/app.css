@@ -119,16 +119,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ------------------------------- boot ------------------------------- */
 .boot {
   position: fixed; inset: 0; display: grid; place-items: center;
-  background: linear-gradient(160deg, var(--green-800), var(--green-900));
+  background: #041016;
   color: #eaf6f1; z-index: 300;
 }
-.boot-inner { text-align: center; width: min(320px, 84vw); }
-.boot-mark { color: #7fdcbf; margin-bottom: 12px; position: relative; display: inline-grid; place-items: center; }
-.boot-mark::after {
-  content: ""; position: absolute; inset: -10px; border-radius: 50%;
-  border: 2px solid rgba(127, 220, 191, .28); border-top-color: #7fdcbf;
-  animation: spin .8s linear infinite;
-}
+.boot-inner { text-align: center; width: min(440px, 88vw); }
+.boot-logo { width: 100%; height: auto; display: block; margin: 0 auto 18px; border-radius: 14px; }
 .boot-title { font-size: 1.7rem; letter-spacing: .02em; margin: 0 0 6px; color: #fff; }
 .boot-line { color: #a9cfc2; font-size: .88rem; min-height: 1.3em; margin: 0 0 16px; }
 .boot-bar { height: 4px; border-radius: 4px; background: rgba(255,255,255,.16); overflow: hidden; }
@@ -138,18 +133,22 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ------------------------------ login ------------------------------- */
 .login-screen { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; background: var(--page); }
 .login-card {
-  width: min(408px, 100%); background: var(--surface); border: 1px solid var(--line);
+  width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); padding: 28px 26px 22px; box-shadow: var(--shadow-2);
 }
-.login-brand { display: flex; gap: 12px; align-items: center; margin-bottom: 22px; color: var(--green-700); }
+.login-brand { display: flex; flex-direction: column; gap: 12px; align-items: stretch; margin-bottom: 22px; text-align: center; color: var(--green-700); }
+.login-brand.is-custom { flex-direction: row; align-items: center; text-align: left; }
 [data-theme="dark"] .login-brand { color: var(--green-500); }
 .login-brand h1 { margin: 0; font-size: 1.28rem; color: var(--ink-900); }
-/* The client's own logo, when the deployment has one. Sized to the wordmark it replaces so
-   the sign-in card does not move by a pixel when a logo is uploaded or removed. */
-#login-brand-logo { width: 40px; height: 40px; object-fit: contain; }
+/* The default is the StockRidge lockup. A shop's own logo is a mark beside their name,
+   not a second banner, so it stays small. */
+#login-brand-logo { width: 100%; height: auto; max-height: 210px; object-fit: contain; border-radius: 12px; display: block; }
+#login-brand-logo.is-custom { width: 48px; height: 48px; max-height: 48px; object-fit: contain; border-radius: 8px; flex: none; }
 .login-brand p { margin: 2px 0 0; font-size: .82rem; color: var(--ink-500); }
 .brand-logo-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 6px; }
-.brand-logo-preview { max-width: 132px; max-height: 64px; object-fit: contain; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 4px; }
+.brand-logo-preview { max-width: 220px; max-height: 120px; object-fit: contain; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 4px; }
+.app-mark { width: 34px; height: 34px; object-fit: cover; border-radius: 8px; flex: none; }
+.app-mark.is-custom { object-fit: contain; background: var(--surface-2); }
 .field { display: block; position: relative; margin-bottom: 16px; }
 .field-label { display: block; font-size: .8rem; font-weight: 600; color: var(--ink-500); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
 .field input, .field select, .field textarea {
