@@ -1912,3 +1912,5 @@ Create a business never opened the form. The screen asked for `profileOptions`, 
 The verticals button opened one wide table. The dialog centred that table, so the card sat off the page. The same list is now a grid of cards inside a dialog that cannot grow wider than the screen. The body scrolls. The card stays on the page.
 
 No migration was written. The admin PIN was not changed.
+
+Live on staging, sample and production as `ridge-20261013-0909-e74a86a`. Staging version `c2d5f528-90e7-4896-bf97-c9106d06c96b`, sample `68055dcc-fee1-47c6-be72-fd956abc7c18`, production `c709e66e-9cdc-46eb-a026-541c7edd1443`. No migration was applied. The admin PIN was not changed. The create form and the verticals card are on all three hosts.
