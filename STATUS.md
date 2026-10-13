@@ -1922,3 +1922,5 @@ pharmaridge was saved as PHARMACEUTICAL. The controlled register still said it w
 A named business now wins over a home shop that belongs to a different business. A request that names nothing still uses the home shop. Reloading no longer pulls an owner who chose the dispensary back to that shop. A cashier stays pinned.
 
 No migration was written. The admin PIN was not changed. The create-business form and the verticals card were not changed.
+
+Live on staging, sample and production as `ridge-20261013-1251-aeaf652`. Staging version `c45400b1-c669-4364-9818-82967dfa34b3`, sample `1793caed-276b-4345-9a33-384618b3d71a`, production `3690e0dc-28d0-4bb8-b86f-bdbf0d961b4f`. No migration was applied. The admin PIN was not changed. pharmaridge on sample was left as it is.
