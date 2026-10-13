@@ -172,21 +172,27 @@
     return { path: url.pathname, query: Object.fromEntries(url.searchParams.entries()) };
   }
 
+  let renderToken = 0;
+
   async function render() {
+    const token = ++renderToken;
     const { path, query } = readLocation();
     const hit = matchRoute(path);
     closeNav();
 
-    if (!SR.state.user) { showLogin(); return; }
+    if (!SR.state.user) { ui.endPageNow(); showLogin(); return; }
 
     if (!hit) {
       showShell();
+      const seq = ui.beginPage('Opening');
       renderNotFound(path);
+      if (token === renderToken) await ui.endPage(seq);
       return;
     }
     if (!allowed(hit.route)) {
       showShell();
       const wrongModule = hit.route.module && !(SR.state.moduleOn && SR.state.moduleOn(hit.route.module));
+      const seq = ui.beginPage(hit.route.title || 'Opening');
       ui.warn(wrongModule ? 'That belongs to another kind of business.' : 'Your role does not include that screen.');
       setActiveNav(null);
       ui.mount('#view', ui.empty({
@@ -197,6 +203,7 @@
         action: { label: 'Back to the dashboard', run: () => navigate('/dashboard') },
         mark: 'lock',
       }));
+      if (token === renderToken) await ui.endPage(seq);
       return;
     }
 
@@ -212,11 +219,15 @@
 
     const view = SR.views[hit.route.view];
     if (!view || typeof view.render !== 'function') {
+      const seq = ui.beginPage(hit.route.title || 'Opening');
       renderNotFound(path);
+      await ui.endPage(seq);
       return;
     }
 
     const host = document.getElementById('view');
+    const quick = hit.route.view === 'pos' || hit.route.view === 'till';
+    const pageSeq = ui.beginPage(hit.route.title || 'Opening', { quick });
     host.replaceChildren();
     const context = {
       route: hit.route,
@@ -230,15 +241,19 @@
 
     try {
       const node = await view.render(context);
+      if (token !== renderToken) return;
       if (!host.contains(node) && node) host.replaceChildren(node);
       else if (!node) { /* the view rendered in place */ }
       document.title = `${hit.route.title || 'StockRidge'} · StockRidge`;
       host.scrollTop = 0;
     } catch (err) {
+      if (token !== renderToken) return;
       if (err && err.isAuth) { handleAuthFailure(); return; }
       host.replaceChildren();
       host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: () => render() } }));
       if (err && err.code !== 'OFFLINE') console.error(`[view:${hit.route.view}]`, err);
+    } finally {
+      if (token === renderToken) await ui.endPage(pageSeq);
     }
   }
 
@@ -327,6 +342,7 @@
   }
 
   function showLogin() {
+    ui.endPageNow();
     showBoot(false);
     document.getElementById('shell').hidden = true;
     document.getElementById('login-screen').hidden = false;
@@ -795,7 +811,10 @@
     }
   }
 
-  async function doLogout() {
+  async function doLogout(ev) {
+    const btn = ev && ev.currentTarget;
+    if (btn) btn.disabled = true;
+    try {
     const pending = await SR.sync.queueStats().catch(() => ({ pending: 0, failed: 0 }));
     if (pending.pending > 0) {
       const go = await ui.confirmDialog({
@@ -816,6 +835,9 @@
     closeUserMenu();
     showLogin();
     ui.info('Signed out.');
+    } finally {
+      if (btn && btn.isConnected) btn.disabled = false;
+    }
   }
 
   // -------------------------------------------------------------------

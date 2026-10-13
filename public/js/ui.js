@@ -28,7 +28,7 @@
       if (k === 'class') el.className = v;
       else if (k === 'dataset') Object.assign(el.dataset, v);
       else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
-      else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), (ev) => v(keepCurrentTarget(ev, el)));
+      else if (k.startsWith('on') && typeof v === 'function') bindHandler(el, tag, k.slice(2).toLowerCase(), v);
       else if (k === 'html') el.innerHTML = v;
       else if (k === 'text') el.textContent = v;
       else if (v === true) el.setAttribute(k, '');
@@ -81,6 +81,353 @@
     } catch (err) {
       return ev;
     }
+  }
+
+  // -------------------------------------------------------------------
+  // premium loading — one place, so a button, a tab and a page all use it
+  // -------------------------------------------------------------------
+  // A cashier's numpad must not grow a lock. A page and a tab should show the
+  // same card, and a button that sets its own text to "Recording…" must not
+  // wipe the spinner off: the ring is a ::after, not a child node.
+  const PAGE_HOLD_MS = 400;
+  const TILL_PAGE_HOLD_MS = 220;
+  const PANEL_HOLD_MS = 340;
+  const BUTTON_HOLD_MS = 240;
+  const TILL_BUTTON_HOLD_MS = 120;
+  const PRESS_HOLD_MS = 70;
+
+  function reduceMotion() {
+    return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+
+  function clipLabel(value, max = 42) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+  }
+
+  function onTill(el) {
+    const path = (window.location && window.location.pathname) || '';
+    if (path === '/pos' || path === '/till' || path.startsWith('/tills/')) return true;
+    return Boolean(el && el.closest && el.closest('.pos, .numpad'));
+  }
+
+  /** press = numpad, no lock. icon = replace the glyph. inline = keep the label. takeover = hide the label. */
+  function controlKind(el) {
+    if (!el || (el.closest && el.closest('.numpad'))) return 'press';
+    const cls = el.classList;
+    if (!cls) return 'takeover';
+    if (cls.contains('icon-btn') || cls.contains('avatar') || cls.contains('field-reveal')) return 'icon';
+    if (cls.contains('nav-item') || cls.contains('chip') || cls.contains('link-btn') || cls.contains('sidenav-switch') || cls.contains('menu-item') || cls.contains('tab') || cls.contains('report-chip')) return 'inline';
+    return 'takeover';
+  }
+
+  function holdMs(kind, el) {
+    if (reduceMotion()) return 60;
+    if (kind === 'press') return PRESS_HOLD_MS;
+    if (onTill(el)) return TILL_BUTTON_HOLD_MS;
+    if (kind === 'icon' || kind === 'inline') return 200;
+    return BUTTON_HOLD_MS;
+  }
+
+  function beginControl(el) {
+    if (!el || el.dataset.srBusy === '1') return function endBusy() {};
+    const kind = controlKind(el);
+    el.dataset.srBusy = '1';
+    el.classList.add(kind === 'press' ? 'is-pressed' : (kind === 'inline' ? 'is-busy' : 'is-loading'));
+    el.setAttribute('aria-busy', 'true');
+    const started = Date.now();
+    let ended = false;
+    return function endBusy() {
+      if (ended) return;
+      ended = true;
+      const wait = Math.max(0, holdMs(kind, el) - (Date.now() - started));
+      setTimeout(() => {
+        el.classList.remove('is-loading', 'is-busy', 'is-pressed');
+        el.removeAttribute('aria-busy');
+        delete el.dataset.srBusy;
+      }, wait);
+    };
+  }
+
+  function releaseWhenIdle(el, end, wasDisabled) {
+    if (controlKind(el) === 'press') { end(); return; }
+    setTimeout(() => {
+      if (!el.isConnected) { end(); return; }
+      if (el.disabled && !wasDisabled) {
+        let done = false;
+        const finish = () => { if (done) return; done = true; obs.disconnect(); end(); };
+        const obs = new MutationObserver(() => { if (!el.disabled) finish(); });
+        obs.observe(el, { attributes: true, attributeFilter: ['disabled'] });
+        setTimeout(finish, 20000);
+        return;
+      }
+      end();
+    }, 0);
+  }
+
+  function mountVeil(title, detail) {
+    const veil = document.createElement('div');
+    veil.className = 'premium-veil';
+    veil.setAttribute('role', 'status');
+    veil.setAttribute('aria-label', title || 'Loading');
+    const card = document.createElement('div');
+    card.className = 'premium-card';
+    const mark = document.createElement('div');
+    mark.className = 'premium-mark';
+    mark.setAttribute('aria-hidden', 'true');
+    const ring = document.createElement('span');
+    ring.className = 'premium-ring';
+    const ringB = document.createElement('span');
+    ringB.className = 'premium-ring premium-ring-b';
+    mark.appendChild(ring);
+    mark.appendChild(ringB);
+    const copy = document.createElement('div');
+    copy.className = 'premium-copy';
+    const strong = document.createElement('strong');
+    strong.textContent = title || 'Opening';
+    const span = document.createElement('span');
+    span.textContent = detail || 'One moment';
+    copy.appendChild(strong);
+    copy.appendChild(span);
+    const track = document.createElement('div');
+    track.className = 'premium-track';
+    track.setAttribute('aria-hidden', 'true');
+    track.appendChild(document.createElement('span'));
+    card.appendChild(mark);
+    card.appendChild(copy);
+    card.appendChild(track);
+    veil.appendChild(card);
+    document.body.appendChild(veil);
+    return veil;
+  }
+
+  function bindPlace(veil, place) {
+    const onMove = () => {
+      if (!veil.isConnected) { unbind(); return; }
+      place();
+    };
+    function unbind() {
+      window.removeEventListener('resize', onMove);
+      window.removeEventListener('scroll', onMove, true);
+    }
+    veil._unbind = unbind;
+    window.addEventListener('resize', onMove);
+    window.addEventListener('scroll', onMove, true);
+    place();
+  }
+
+  function removeVeil(veil) {
+    if (!veil) return;
+    if (typeof veil._unbind === 'function') veil._unbind();
+    veil.remove();
+  }
+
+  function positionOver(veil, el) {
+    if (!veil || !el) return;
+    const r = el.getBoundingClientRect();
+    const top = Math.max(0, r.top);
+    const left = Math.max(0, r.left);
+    veil.style.top = `${top}px`;
+    veil.style.left = `${left}px`;
+    veil.style.width = `${Math.max(0, r.width)}px`;
+    veil.style.height = `${Math.max(140, Math.min(r.height || 0, window.innerHeight - top))}px`;
+  }
+
+  function positionBelow(veil, bar, root) {
+    if (!veil || !bar) return;
+    const br = bar.getBoundingClientRect();
+    const rr = root ? root.getBoundingClientRect() : br;
+    const top = Math.max(0, br.bottom);
+    const left = Math.max(0, rr.left);
+    const width = Math.max(160, rr.width || br.width);
+    const bottom = Math.max(rr.bottom, top + 188);
+    const height = Math.max(188, Math.min(bottom - top, window.innerHeight - top - 8));
+    veil.style.top = `${top}px`;
+    veil.style.left = `${left}px`;
+    veil.style.width = `${width}px`;
+    veil.style.height = `${height}px`;
+  }
+
+  function stillLoading(root) {
+    return Boolean(root && root.querySelector && root.querySelector('.skeleton, .premium-skeleton, .loading-line'));
+  }
+
+  let pageSeq = 0;
+  let pageVeil = null;
+  let pageMeta = null;
+  let activePanel = null;
+
+  function cancelPanel() {
+    if (activePanel) activePanel.cancel();
+  }
+
+  function beginPage(title, opts = {}) {
+    const seq = ++pageSeq;
+    removeVeil(pageVeil);
+    pageVeil = null;
+    cancelPanel();
+    const label = clipLabel(title) || 'Opening';
+    pageVeil = mountVeil(label, 'Preparing this screen');
+    pageVeil._seq = seq;
+    pageMeta = { seq, started: Date.now(), quick: Boolean(opts.quick) };
+    bindPlace(pageVeil, () => positionOver(pageVeil, document.getElementById('main') || document.getElementById('view')));
+    const view = document.getElementById('view');
+    if (view) view.setAttribute('aria-busy', 'true');
+    const main = document.getElementById('main');
+    if (main) main.setAttribute('inert', '');
+    return seq;
+  }
+
+  function endPageNow() {
+    pageSeq += 1;
+    removeVeil(pageVeil);
+    pageVeil = null;
+    pageMeta = null;
+    cancelPanel();
+    const view = document.getElementById('view');
+    if (view) view.removeAttribute('aria-busy');
+    const main = document.getElementById('main');
+    if (main) main.removeAttribute('inert');
+  }
+
+  function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+
+  async function endPage(seq) {
+    if (seq != null && seq !== pageSeq) return;
+    const meta = pageMeta;
+    const started = meta ? meta.started : Date.now();
+    const quick = meta ? meta.quick : false;
+    const min = reduceMotion() ? 60 : (quick ? TILL_PAGE_HOLD_MS : PAGE_HOLD_MS);
+    const wait = Math.max(0, min - (Date.now() - started));
+    if (wait) await sleep(wait);
+    if (seq != null && seq !== pageSeq) return;
+    const view = document.getElementById('view');
+    const cap = Date.now() + (quick ? 2500 : 8000);
+    while (seq === pageSeq && stillLoading(view) && Date.now() < cap) await sleep(40);
+    if (seq != null && seq !== pageSeq) return;
+    if (pageVeil && pageVeil._seq === seq) removeVeil(pageVeil);
+    if (pageVeil && pageVeil._seq === seq) pageVeil = null;
+    pageMeta = null;
+    if (view) view.removeAttribute('aria-busy');
+    const main = document.getElementById('main');
+    if (main) main.removeAttribute('inert');
+  }
+
+  function beginPanel(el) {
+    cancelPanel();
+    const bar = (el && el.closest && el.closest('.tabs, .report-picker')) || (el && el.parentElement);
+    const root = bar && bar.parentElement;
+    if (!bar || !root) return { finish() {}, cancel() {} };
+    const label = clipLabel(el.textContent) || 'Opening';
+    const veil = mountVeil(label, 'Opening this tab');
+    const started = Date.now();
+    let mutated = false;
+    const place = () => positionBelow(veil, bar, root);
+    bindPlace(veil, place);
+    const obs = new MutationObserver(() => { mutated = true; place(); });
+    obs.observe(root, { childList: true, subtree: true });
+    let gone = false;
+    function cancel() {
+      if (gone) return;
+      gone = true;
+      if (activePanel && activePanel.cancel === cancel) activePanel = null;
+      obs.disconnect();
+      removeVeil(veil);
+    }
+    const api = {
+      cancel,
+      finish() {
+        const hold = reduceMotion() ? 60 : PANEL_HOLD_MS;
+        return new Promise((resolve) => {
+          const tick = () => {
+            if (gone) { resolve(); return; }
+            const held = Date.now() - started >= hold;
+            const tooLong = Date.now() - started > 8000;
+            if (tooLong || !root.isConnected) { cancel(); resolve(); return; }
+            if (held && !stillLoading(root)) { cancel(); resolve(); return; }
+            if (held && mutated && !stillLoading(root)) { cancel(); resolve(); return; }
+            setTimeout(tick, 40);
+          };
+          setTimeout(tick, 30);
+        });
+      },
+    };
+    activePanel = api;
+    return api;
+  }
+
+  function isPanelControl(el) {
+    return Boolean(el && el.classList && (el.classList.contains('tab') || el.classList.contains('report-chip')));
+  }
+
+  function bindHandler(el, tag, eventName, fn) {
+    if (eventName === 'click' && String(tag).toLowerCase() === 'button') {
+      el.dataset.uiBound = '1';
+      el.addEventListener('click', (ev) => runBoundClick(el, ev, fn));
+      return;
+    }
+    el.addEventListener(eventName, (ev) => fn(keepCurrentTarget(ev, el)));
+  }
+
+  function runBoundClick(el, ev, fn) {
+    if (el.dataset.srBusy === '1' && controlKind(el) !== 'press') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      return;
+    }
+    const end = beginControl(el);
+    const panel = isPanelControl(el) ? beginPanel(el) : null;
+    let result;
+    try {
+      result = fn(keepCurrentTarget(ev, el));
+    } catch (err) {
+      end();
+      if (panel) panel.cancel();
+      throw err;
+    }
+    Promise.resolve(result).then(() => {
+      end();
+      if (panel) return panel.finish();
+    }, () => {
+      end();
+      if (panel) panel.cancel();
+    });
+  }
+
+  function buttonFromEvent(ev) {
+    const t = ev && ev.target;
+    if (!t) return null;
+    if (typeof t.closest === 'function') return t.closest('button');
+    const parent = t.parentElement;
+    return parent && typeof parent.closest === 'function' ? parent.closest('button') : null;
+  }
+
+  function armNativeButton(el) {
+    if (!el || el.dataset.uiBound === '1') return;
+    if (el.dataset.srBusy === '1') return;
+    if (controlKind(el) === 'press') return;
+    const end = beginControl(el);
+    releaseWhenIdle(el, end, el.disabled);
+  }
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('click', (ev) => {
+      const el = buttonFromEvent(ev);
+      if (!el || el.dataset.uiBound === '1') return;
+      if (el.dataset.srBusy === '1' && controlKind(el) !== 'press') {
+        ev.preventDefault();
+        ev.stopImmediatePropagation();
+        return;
+      }
+      armNativeButton(el);
+    }, true);
+    document.addEventListener('submit', (ev) => {
+      const form = ev.target;
+      if (!form || !form.querySelector) return;
+      const btn = form.querySelector('button[type="submit"], button:not([type])');
+      armNativeButton(btn);
+    }, true);
   }
 
   function html(markup) {
@@ -258,14 +605,22 @@
   // -------------------------------------------------------------------
   // loading / empty / error blocks
   // -------------------------------------------------------------------
-  const loading = (label = 'Loading…') => h('div', { class: 'loading-line' }, h('span', { class: 'spinner' }), h('span', {}, label));
+  const loading = (label = 'Loading…') => h('div', { class: 'loading-line premium-inline', role: 'status' },
+    h('span', { class: 'premium-ring-sm', 'aria-hidden': 'true' }),
+    h('span', {}, label));
 
   function skeleton(lines = 4) {
+    const card = h('div', { class: 'card premium-skeleton', role: 'status', 'aria-label': 'Loading' });
+    const head = h('div', { class: 'premium-skel-head' });
+    head.appendChild(h('span', { class: 'premium-ring-sm', 'aria-hidden': 'true' }));
+    head.appendChild(h('span', {}, 'Loading'));
+    card.appendChild(head);
     const wrap = h('div', { class: 'card-body stack' });
     for (let i = 0; i < lines; i += 1) {
       wrap.appendChild(h('div', { class: 'skeleton', style: { width: `${60 + ((i * 13) % 40)}%`, height: i === 0 ? '22px' : '15px' } }));
     }
-    return h('div', { class: 'card' }, wrap);
+    card.appendChild(wrap);
+    return card;
   }
 
   function empty({ title = 'Nothing here yet', message = '', action = null, mark = 'box' } = {}) {
@@ -711,6 +1066,7 @@
     toast, ok, warn, error, info, apiError,
     openModal, confirmDialog, promptDialog,
     loading, skeleton, empty, errorBlock,
+    beginControl, beginPage, endPage, endPageNow,
     renderTable, dataCard, pager,
     badge, statusBadge, TONES, kpi, kv, bars, sparkline, iconForFigure, trendChip,
     field, readForm, readFormStrings, withBusy,

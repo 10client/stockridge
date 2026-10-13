@@ -1892,3 +1892,13 @@ The Greenbook was searched and a row was added on the pharmacy only. Hire, lease
 Data management was run three times, in order, after an export: a period delete on electronics, a clear of trading that keeps the books on furniture, and a clear that keeps the books and the shelf on wholesale. Each run is in the history. Every shop then posted a closing general entry dated 12 October 2026. All twelve trial balances balanced.
 
 The full result is in `.data/nine-month-probe.json`. It is not committed. The probe itself is `tools/nine-month-probe.js`. Serial tracking is off on a fresh deployment, so a warranty claim was not opened. A claim needs a serial that was sold here.
+
+### P42 — premium loading on every button, page and tab (local checkpoint)
+
+Opening a screen, a tab, or a report now shows one card: the screen name, two rings, and a short track. It stays up while that screen is still reading, and at least long enough to be seen when the read is instant. A second click while it is up does not start a second open.
+
+A button shows a ring for the work it started. The ring is not a child of the button, so a handler that replaces the label with "Recording…" does not wipe it. Sign-in and sign-out stay on that ring until they finish. Tabs and report chips keep their labels; the card below them is the loading. The same card is what a list already showed as a skeleton.
+
+The till is not held. The amount pad never locks, so the next digit still lands. Sell and Till & safe use a shorter entrance than the other screens. A payment button stays busy only while that payment is actually recording.
+
+No migration was written. The admin PIN was not changed. Do not edit `0001`, `0010`, `0011`, `0012` or `0013`. Do not put pharmacy goods on the shared market list. The nine-month probe was not run again, and it was not written onto a live host.
