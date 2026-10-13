@@ -822,7 +822,7 @@
         if (card._paintSerialHint) card._paintSerialHint();
       }
     });
-    wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Selling price defaults to the product\'s current price. Changing it here changes the price on the new batch only.'));
+    wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Selling price defaults to the product\'s current price. If this shop has no price yet, the figure you type becomes the price the till charges. A later delivery does not change a price already set — it only prices the new batch.'));
     paint();
 
     const m = ui.openModal({
@@ -890,6 +890,11 @@
               // proof of which unit arrived, so the person who scanned it should see it land —
               // and a warning (a duplicate across the group, say) is passed on rather than
               // swallowed.
+              if (Array.isArray(result.prices)) {
+                for (const priced of result.prices) {
+                  try { await SR.store.rememberShopPrice(priced); } catch (err) { /* the till reads the server */ }
+                }
+              }
               const registered = Array.isArray(result.serials) ? result.serials.length : 0;
               // The route files them under `warnings` (a duplicate across the group, say).
               const warningList = Array.isArray(result.warnings) ? result.warnings
@@ -898,7 +903,7 @@
                 ? ` ${typeof warningList[0] === 'string' ? warningList[0] : JSON.stringify(warningList[0])}` : '';
               ui.ok(`${result.fullyReceived
                 ? 'Received in full. The order is complete and the batches are on the shelf.'
-                : 'Delivery recorded. The order remains open for the balance.'}${registered ? ` ${registered} serial number(s) are on file against the units.` : ''}${warned}`);
+                : 'Delivery recorded. The order remains open for the balance.'}${registered ? ` ${registered} serial number(s) are on file against the units.` : ''}${(result.prices || []).some((p) => p.catalogue || p.override_id) ? ' The selling price is what the till will charge.' : ''}${warned}`);
               m.close();
               if (done) done(); else load();
             } catch (err) {

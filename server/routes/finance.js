@@ -37,6 +37,7 @@ const { resolveDeduction, exemptionHint, whtRemittanceDueDate, WHT_REMITTANCE_DA
 const { ageBalance } = require('../../domain/credit');
 const glService = require('../services/glService');
 const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
+const { planCataloguePrice } = require('../services/cataloguePrice');
 
 const PO_STATUSES = ['DRAFT', 'PENDING', 'PARTIALLY_RECEIVED', 'RECEIVED', 'CANCELLED'];
 
@@ -273,11 +274,24 @@ function mount(app, base = '/api') {
       // unit on serial-tracked products — the route refuses the delivery without them — and it
       // cannot ask for what the line never told it. Without this column the form had no way to
       // know a line needed numbers, so a phone or an appliance was refused with nowhere to type.
-      db.all(`SELECT i.*, p.name AS product_name, p.sku, p.base_unit_name, p.requires_serial, v.name AS variant_name
+      // selling_price is the price THIS shop already charges, not the shared
+      // market row's 0. The receive form prefills from it, so a second delivery
+      // does not look unpriced after the first receipt set the shop price.
+      db.all(`SELECT i.*, p.name AS product_name, p.sku, p.base_unit_name, p.requires_serial, v.name AS variant_name,
+          COALESCE(NULLIF(p.selling_price, 0),
+            (SELECT o.default_selling_price FROM product_price_overrides o
+              WHERE o.product_id = p.id AND o.branch_id = ? AND o.is_deleted = 0 AND o.variant_id IS NULL
+                AND o.default_selling_price > 0
+              ORDER BY o.updated_at DESC, o.rowid DESC LIMIT 1),
+            (SELECT sb.selling_price_per_unit FROM stock_batches sb
+              WHERE sb.product_id = p.id AND sb.branch_id = ? AND sb.is_deleted = 0
+                AND sb.selling_price_per_unit > 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED')
+              ORDER BY sb.received_at DESC, sb.id DESC LIMIT 1),
+            0) AS selling_price
           FROM purchase_order_items i
           JOIN products p ON p.id = i.product_id
           LEFT JOIN product_variants v ON v.id = i.variant_id
-          WHERE i.purchase_order_id = ? AND i.is_deleted = 0 ORDER BY p.name, i.id`, [id]),
+          WHERE i.purchase_order_id = ? AND i.is_deleted = 0 ORDER BY p.name, i.id`, [po.branch_id, po.branch_id, id]),
       db.all(`SELECT r.*, p.name AS product_name, u.full_name AS received_by_name
           FROM purchase_order_receipts r
           LEFT JOIN purchase_order_items i ON i.id = r.purchase_order_item_id
@@ -440,6 +454,22 @@ function mount(app, base = '/api') {
     const fullyReceived = currentItems.every((i) =>
       Number(i.quantity_received) + (addingByItem.get(String(i.id)) || 0) >= Number(i.quantity_in_base) - 0.0001);
 
+    // One shop price per product. A second line of the same product keeps its
+    // own batch price and must not insert a second override — the NULL variant
+    // is not unique in SQLite, so the lookup has to happen once, here.
+    const priceWrites = [];
+    const pricedProducts = new Set();
+    for (const p of plan) {
+      const key = String(p.product.id);
+      if (pricedProducts.has(key) || !(Number(p.sellingPrice) > 0)) continue;
+      pricedProducts.add(key);
+      p.priceWrite = await planCataloguePrice(db, {
+        product: p.product, branchId: branch.id, businessId: business.id,
+        sellingPrice: p.sellingPrice, userId: user.id,
+      });
+      if (p.priceWrite.statements.length) priceWrites.push(p.priceWrite);
+    }
+
     await db.transaction(async (tx) => {
       for (const p of plan) {
         const receiptId = newId();
@@ -466,8 +496,11 @@ function mount(app, base = '/api') {
           strField(body.warehouse_zone, { field: 'Warehouse zone', maxLength: 120 }),
           `Received on ${po.po_number}`,
         ]);
-        if (p.newAvg != null) {
-          tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ?", [round2(p.newAvg), String(p.product.id)]);
+        // Cost on a shared market row would become every business's cost.
+        // The batch holds what this shop paid. Only this business's own
+        // product keeps a catalogue cost.
+        if (p.newAvg != null && p.product.business_id && String(p.product.business_id) === String(business.id)) {
+          tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?", [round2(p.newAvg), String(p.product.id), String(business.id)]);
         }
         if (p.serialRows && p.serialRows.length) serialStatements(tx, p.serialRows);
       }
@@ -484,6 +517,10 @@ function mount(app, base = '/api') {
         freightTotal: round2(plan.reduce((a, p) => a + p.qtyBase * p.freightPerUnit, 0)),
         user, accountIds,
       })) tx.queue(st.sql, st.params);
+
+      for (const write of priceWrites) {
+        for (const st of write.statements) tx.queue(st.sql, st.params);
+      }
 
       if (paidNow > 0) {
         tx.queue(`INSERT INTO creditor_ledger (
@@ -505,6 +542,7 @@ function mount(app, base = '/api') {
       message: `${plan.length} line(s) received against ${po.po_number} — ₦${receivedValue.toLocaleString('en-NG')} of stock added at ${branch.name}.${fullyReceived ? ' The order is now complete.' : ' The order remains partly outstanding.'}`
         + (serialCount ? ` ${serialCount} serial number(s) filed, so each unit can be sold and its warranty proved.` : ''),
       receivedValue, fullyReceived, serialCount,
+      prices: plan.filter((p) => p.priceWrite && p.priceWrite.receipt).map((p) => p.priceWrite.receipt),
       serials: plan.flatMap((p) => (p.serialRows || []).map((r) => r.serialNo)),
       warnings: plan.flatMap((p) => p.serialWarnings || []),
       newStatus: fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED',

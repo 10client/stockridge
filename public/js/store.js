@@ -172,6 +172,31 @@
     return hit ? hit.row : null;
   }
 
+  /**
+   * A receipt just set this shop's sell price. The mirror must know before
+   * the next sync, or an offline till still sees the empty catalogue price.
+   * A shared market row is not rewritten: the override is the shop price.
+   */
+  async function rememberShopPrice(priced) {
+    if (!priced || !(Number(priced.selling_price) > 0) || !priced.product_id) return;
+    if (priced.catalogue) {
+      const row = await get('products', priced.product_id);
+      if (row && !(Number(row.selling_price) > 0)) {
+        await putMany('products', [Object.assign({}, row, { selling_price: Number(priced.selling_price) })]);
+      }
+    }
+    if (priced.override_id && priced.branch_id) {
+      await putMany('product_price_overrides', [{
+        id: String(priced.override_id),
+        branch_id: String(priced.branch_id),
+        product_id: String(priced.product_id),
+        variant_id: null,
+        default_selling_price: Number(priced.selling_price),
+        is_deleted: 0,
+      }]);
+    }
+  }
+
   async function remove(table, id) {
     await tx(STORE_ROWS, 'readwrite', (stores) => { stores[0].delete([table, String(id)]); });
   }
@@ -399,7 +424,7 @@
   SR.store = {
     DB_NAME, DB_VERSION, OUTBOX_CAP,
     open, tx,
-    putMany, all, first, get, remove, clearTable, clearAll, tableStats,
+    putMany, all, first, get, remove, rememberShopPrice, clearTable, clearAll, tableStats,
     enqueue, pending, outboxAll, outboxCount, updateOutbox, removeOutbox,
     markFailed, markSynced, purgeSynced, requeue,
     metaGet, metaSet, metaAll,

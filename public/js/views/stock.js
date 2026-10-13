@@ -415,7 +415,7 @@
         // The whole consignment's carriage, not one unit's: that is what a clearing
         // invoice shows, and the server spreads it across the units received.
         ui.field({ label: 'Freight / clearing for this delivery (₦)', name: 'freight_cost', type: 'number', step: '0.01', min: '0', hint: 'Spread across the units in this receipt.' }),
-        ui.field({ label: 'Selling price (₦)', name: 'selling_price', type: 'number', step: '0.01', min: '0' }),
+        ui.field({ label: 'Selling price (₦)', name: 'selling_price', type: 'number', step: '0.01', min: '0', hint: 'Per the unit chosen above. If the catalogue has no price, this becomes the price the till charges.' }),
         ui.field({ label: 'Manufactured', name: 'manufacture_date', type: 'date' }),
         ui.field({ label: 'Expires', name: 'expiry_date', type: 'date', hint: 'Refused if it is already in the past — receiving dead stock helps nobody.' }),
         ui.field({ label: 'Supplier', name: 'supplier_id', placeholder: 'Optional' }),
@@ -667,7 +667,7 @@
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Recording…';
               try {
-                await SR.api.post('/api/stock/receive', {
+                const received = await SR.api.post('/api/stock/receive', {
                   branch_id: SR.state.activeBranchId,
                   business_id: SR.state.activeBusinessId,
                   product_id: String(productId),
@@ -686,7 +686,12 @@
                   notes: v.notes || null,
                   serials: serials.length ? serials : undefined,
                 }, { queue: false });
-                ui.ok(`Received ${U.qty(quantity)} ${v.unit_code || ''} into stock.`);
+                if (received && Array.isArray(received.prices)) {
+                  for (const priced of received.prices) {
+                    try { await SR.store.rememberShopPrice(priced); } catch (err) { /* the till reads the server */ }
+                  }
+                }
+                ui.ok(`Received ${U.qty(quantity)} ${v.unit_code || ''} into stock.${(received && received.prices || []).some((p) => p.catalogue || p.override_id) ? ' The selling price is what the till will charge.' : ''}`);
                 m.close();
                 load();
               } catch (err) {

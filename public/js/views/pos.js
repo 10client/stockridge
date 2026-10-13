@@ -203,7 +203,42 @@
         || String(p.model_no || '').toLowerCase().includes(needle)
       ));
       void variants; void barcodes; void units;
-      return matches.slice(0, 20);
+      return withShopPrice(matches.slice(0, 20));
+    }
+
+    /**
+     * The catalogue column is 0 for a shared market row and for a product
+     * priced only when it was received. The till used to refuse those before
+     * the batch price — the figure typed at the gate — was ever read.
+     * This branch's override wins, then the latest batch price.
+     */
+    async function withShopPrice(products) {
+      const list = products || [];
+      const need = list.filter((p) => p && !(Number(p.selling_price) > 0));
+      if (!need.length) return list;
+      const branchId = SR.state.activeBranchId;
+      const ids = new Set(need.map((p) => String(p.id)));
+      const overrides = await SR.store.all('product_price_overrides', {
+        where: (o) => !Number(o.is_deleted) && !o.variant_id && ids.has(String(o.product_id))
+          && (!branchId || String(o.branch_id) === String(branchId))
+          && Number(o.default_selling_price) > 0,
+      }).catch(() => []);
+      const batches = await SR.store.all('stock_batches', {
+        where: (b) => !Number(b.is_deleted) && ids.has(String(b.product_id))
+          && (!branchId || String(b.branch_id) === String(branchId))
+          && Number(b.selling_price_per_unit) > 0
+          && !['QUARANTINED', 'EXPIRED'].includes(String(b.status || '').toUpperCase()),
+      }).catch(() => []);
+      const ov = new Map();
+      for (const o of overrides) if (!ov.has(String(o.product_id))) ov.set(String(o.product_id), Number(o.default_selling_price));
+      batches.sort((a, b) => String(b.received_at || '').localeCompare(String(a.received_at || '')));
+      const batch = new Map();
+      for (const b of batches) if (!batch.has(String(b.product_id))) batch.set(String(b.product_id), Number(b.selling_price_per_unit));
+      return list.map((p) => {
+        if (!p || Number(p.selling_price) > 0) return p;
+        const price = ov.get(String(p.id)) || batch.get(String(p.id)) || 0;
+        return price > 0 ? Object.assign({}, p, { selling_price: price }) : p;
+      });
     }
 
     /** An exact barcode/serial scan goes straight into the cart. */
@@ -434,6 +469,10 @@
     }
 
     async function addLine(product, opts = {}) {
+      if (product && !(Number(product.selling_price) > 0) && opts.priceOverride == null) {
+        const priced = await withShopPrice([product]);
+        if (priced[0] && Number(priced[0].selling_price) > 0) product = priced[0];
+      }
       const arrangement = opts.arrangement || await askArrangement(product);
       if (!arrangement) return;
       const dispense = opts.dispense || await askDispense(product);

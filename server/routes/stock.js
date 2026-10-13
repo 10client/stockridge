@@ -36,6 +36,7 @@ const { canAdjustStock } = require('../../domain/planLimits');
 const { oneOf } = require('../../domain/validation');
 const glService = require('../services/glService');
 const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
+const { planCataloguePrice } = require('../services/cataloguePrice');
 
 const ADJUSTMENT_TYPES = ['DAMAGE', 'THEFT', 'EXPIRED', 'COUNT_VARIANCE', 'SAMPLE', 'SHRINKAGE', 'FOUND', 'RETURN_TO_SUPPLIER', 'WRITE_OFF', 'OTHER'];
 
@@ -302,6 +303,14 @@ function mount(app, base = '/api') {
       { quantity: quantityBase, cost: landedCostPerBase },
     ]);
 
+    // Per base unit, the same figure the batch stores and the till multiplies
+    // by the sell-unit factor. Read before the transaction: the write phase
+    // may only queue.
+    const priceWrite = await planCataloguePrice(db, {
+      product, branchId: branch.id, businessId: business.id,
+      sellingPrice: round2(sellingPerBase), userId: user.id,
+    });
+
     await db.transaction(async (tx) => {
       tx.queue(`INSERT INTO stock_batches (
           id, branch_id, business_id, product_id, variant_id, batch_no, supplier_id, purchase_order_id,
@@ -324,9 +333,12 @@ function mount(app, base = '/api') {
       // already on hand. It is what `products.cost_price` means, and maintaining
       // it here rather than in a nightly job keeps the margin on the next sale
       // correct immediately.
-      if (newAvgCost != null) {
-        tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ?", [round2(newAvgCost), productId]);
+      // A shared market row is not this shop's catalogue. Writing the cost
+      // there would show every other business what this delivery cost.
+      if (newAvgCost != null && product.business_id && String(product.business_id) === String(business.id)) {
+        tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?", [round2(newAvgCost), productId, String(business.id)]);
       }
+      for (const st of priceWrite.statements) tx.queue(st.sql, st.params);
 
       // Quarantine on arrival when asked: a failed goods-received inspection must
       // not reach the shelf, but it must still be counted.
@@ -356,6 +368,7 @@ function mount(app, base = '/api') {
       message: `Received ${qtyIn} ${unitCode.toLowerCase()} of ${product.name} (${round2(quantityBase)} ${product.base_unit_name}) at ₦${landedCostPerBase.toLocaleString('en-NG', { maximumFractionDigits: 4 })} each.`
         + (serialRows.length ? ` ${serialRows.length} serial number(s) filed against this receipt, so each unit can be sold and its warranty proved.` : ''),
       quantityBase, landedCostPerBase,
+      prices: priceWrite.receipt ? [priceWrite.receipt] : [],
       serialCount: serialRows.length,
       serials: serialRows.map((s) => s.serialNo),
       warnings: [

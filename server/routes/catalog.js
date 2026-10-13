@@ -298,6 +298,12 @@ function mount(app, base = '/api') {
         }
       }
     }
+    // The till searches this list and refuses a row whose selling_price is 0.
+    // A shared market product stays unpriced on the row itself. This branch's
+    // override, or the price typed when the goods were received, is what the
+    // shop actually charges — so that is the price the list hands the till.
+    const priceBranchId = ctx.req.queryParam('branch_id');
+    if (priceBranchId) rows = await applyShopPrices(db, rows, String(priceBranchId));
     const body = listResponse(rows.map((r) => ({
       ...r,
       on_hand: round2(Number(r.on_hand) || 0),
@@ -314,7 +320,7 @@ function mount(app, base = '/api') {
     const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [id]);
     if (!product) throw new HttpError('That product does not exist, or has been deleted.', { status: 404, code: 'PRODUCT_NOT_FOUND' });
 
-    const [units, variants, measures, barcodes, registrations, category, overrides, stockByBranch] = await Promise.all([
+    const [units, variants, measures, barcodes, registrations, category, overrides, stockByBranch, shelfPrices] = await Promise.all([
       db.all('SELECT * FROM product_units WHERE product_id = ? AND is_deleted = 0 ORDER BY quantity_in_base ASC', [id]),
       db.all('SELECT * FROM product_variants WHERE product_id = ? AND is_deleted = 0 ORDER BY sort_order, name', [id]),
       db.all('SELECT * FROM product_measures WHERE product_id = ? AND is_deleted = 0', [id]),
@@ -332,6 +338,10 @@ function mount(app, base = '/api') {
                    AND sb.status NOT IN ('QUARANTINED','EXPIRED')
               WHERE b.is_deleted = 0 AND b.is_active = 1
               GROUP BY b.id ORDER BY b.name`, [id]),
+      db.all(`SELECT branch_id, selling_price_per_unit, received_at FROM stock_batches
+        WHERE product_id = ? AND is_deleted = 0 AND selling_price_per_unit > 0
+          AND status NOT IN ('QUARANTINED','EXPIRED')
+        ORDER BY received_at DESC, id DESC`, [id]),
     ]);
 
     ctx.json({
@@ -344,6 +354,7 @@ function mount(app, base = '/api') {
       barcodes,
       registrations,
       priceOverrides: overrides,
+      shelfPrices,
       stock: stockByBranch.map((s) => ({
         ...s,
         on_shelf: round2(Number(s.on_shelf)), reserved: round2(Number(s.reserved)),
@@ -1299,8 +1310,25 @@ async function productPayload(db, product, branch, scope, scannedUnit = null, ba
   ]);
 
   const onHand = stock.reduce((a, s) => a + Math.max(0, Number(s.quantity) - Number(s.quantity_reserved)), 0);
+  // A scan sells the product object the till already has. If that object's
+  // catalogue price is 0, the till refuses before it looks at the batches
+  // this payload also returns. Hand it the price this branch actually charges.
+  const catalogue = Number(product.selling_price) || 0;
+  let shopPrice = catalogue;
+  if (!(shopPrice > 0)) {
+    const ov = overrides.find((o) => !o.variant_id && Number(o.default_selling_price) > 0);
+    if (ov) shopPrice = Number(ov.default_selling_price);
+    else {
+      const priced = stock.filter((s) => Number(s.selling_price_per_unit) > 0)
+        .sort((a, b) => String(b.received_at || '').localeCompare(String(a.received_at || '')));
+      if (priced.length) shopPrice = Number(priced[0].selling_price_per_unit);
+    }
+  }
+  const pricedProduct = shopPrice > 0 && !(catalogue > 0)
+    ? Object.assign({}, product, { selling_price: round2(shopPrice), catalogue_price: catalogue })
+    : product;
   return {
-    product,
+    product: pricedProduct,
     category_name: product.category_name,
     units,
     variants,
@@ -1323,6 +1351,54 @@ async function productPayload(db, product, branch, scope, scannedUnit = null, ba
     serialised: Boolean(Number(product.requires_serial)),
     needsVariant: Boolean(Number(product.tracks_variants)),
   };
+}
+
+/**
+ * The price this branch sells at, written onto selling_price for the till.
+ * A catalogue price already set is left as the row stored it. An empty
+ * catalogue uses this branch's override, then the latest batch price — the
+ * figure typed when the goods were received. The shared market row is not
+ * updated; only the list the shop is looking at.
+ *
+ * Chunked so a full page (the cap is 500) stays under D1's 100 bound parameters.
+ */
+async function applyShopPrices(db, rows, branchId) {
+  if (!rows.length || !branchId) return rows;
+  const branchPrice = new Map();
+  const batchPrice = new Map();
+  const ids = rows.map((r) => String(r.id));
+  for (let i = 0; i < ids.length; i += 80) {
+    const chunk = ids.slice(i, i + 80);
+    const marks = chunk.map(() => '?').join(',');
+    const overrides = await db.all(
+      `SELECT product_id, default_selling_price FROM product_price_overrides
+        WHERE is_deleted = 0 AND variant_id IS NULL AND default_selling_price > 0 AND branch_id = ?
+          AND product_id IN (${marks})
+        ORDER BY updated_at DESC, rowid DESC`,
+      [String(branchId), ...chunk],
+    );
+    for (const o of overrides) {
+      if (!branchPrice.has(String(o.product_id))) branchPrice.set(String(o.product_id), Number(o.default_selling_price));
+    }
+    const batches = await db.all(
+      `SELECT product_id, selling_price_per_unit FROM stock_batches
+        WHERE is_deleted = 0 AND selling_price_per_unit > 0
+          AND status NOT IN ('QUARANTINED','EXPIRED') AND branch_id = ?
+          AND product_id IN (${marks})
+        ORDER BY received_at DESC, id DESC`,
+      [String(branchId), ...chunk],
+    );
+    for (const b of batches) {
+      if (!batchPrice.has(String(b.product_id))) batchPrice.set(String(b.product_id), Number(b.selling_price_per_unit));
+    }
+  }
+  return rows.map((r) => {
+    const catalogue = Number(r.selling_price) || 0;
+    if (catalogue > 0) return r;
+    const shop = branchPrice.get(String(r.id)) || batchPrice.get(String(r.id)) || 0;
+    if (!(shop > 0)) return r;
+    return { ...r, catalogue_price: catalogue, selling_price: round2(shop) };
+  });
 }
 
 function pick(obj, keys) {

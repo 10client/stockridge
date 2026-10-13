@@ -18,6 +18,25 @@
 (function (global) {
   const SR = global.SR;
   const ui = SR.ui;
+
+  /**
+   * What this shop charges. The catalogue column is 0 on a shared market row
+   * and on a product priced only when it was received. The branch override,
+   * then the latest batch price, is the figure the till will use.
+   */
+  function shopSellPrice(product, data) {
+    const catalogue = Number(product && product.selling_price) || 0;
+    if (catalogue > 0) return catalogue;
+    const branchId = SR.state.activeBranchId;
+    const overrides = (data && data.priceOverrides) || [];
+    const ov = overrides.find((o) => Number(o.default_selling_price) > 0 && !o.variant_id
+      && (!branchId || String(o.branch_id) === String(branchId)));
+    if (ov) return Number(ov.default_selling_price);
+    const shelf = (data && data.shelfPrices) || [];
+    const row = shelf.find((s) => Number(s.selling_price_per_unit) > 0
+      && (!branchId || String(s.branch_id) === String(branchId)));
+    return row ? Number(row.selling_price_per_unit) : 0;
+  }
   const U = SR.util;
 
   const PAGE_SIZE = 50;
@@ -129,15 +148,31 @@
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
       const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.branch_id) === String(SR.state.activeBranchId) });
       const onHand = new Map();
-      for (const b of batches) {
+      const batchPrice = new Map();
+      const ordered = batches.slice().sort((a, b) => String(b.received_at || '').localeCompare(String(a.received_at || '')));
+      for (const b of ordered) {
         const k = String(b.product_id);
         onHand.set(k, (onHand.get(k) || 0) + Number(b.quantity || 0) - Number(b.quantity_reserved || 0));
+        if (!batchPrice.has(k) && Number(b.selling_price_per_unit) > 0
+          && !['QUARANTINED', 'EXPIRED'].includes(String(b.status || '').toUpperCase())) {
+          batchPrice.set(k, Number(b.selling_price_per_unit));
+        }
       }
-      return rows.sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => Object.assign({}, p, {
-        category_name: catName.get(String(p.category_id)) || null,
-        on_hand: onHand.get(String(p.id)) || 0,
-        margin_pct: Number(p.selling_price) > 0 ? U.round2(((Number(p.selling_price) - Number(p.cost_price)) / Number(p.selling_price)) * 100) : null,
-      }));
+      const overrides = await SR.store.all('product_price_overrides', {
+        where: (o) => !Number(o.is_deleted) && !o.variant_id && String(o.branch_id) === String(SR.state.activeBranchId) && Number(o.default_selling_price) > 0,
+      }).catch(() => []);
+      const ovPrice = new Map();
+      for (const o of overrides) if (!ovPrice.has(String(o.product_id))) ovPrice.set(String(o.product_id), Number(o.default_selling_price));
+      return rows.sort((a, b) => String(a.name).localeCompare(String(b.name))).map((p) => {
+        const catalogue = Number(p.selling_price) || 0;
+        const price = catalogue > 0 ? catalogue : (ovPrice.get(String(p.id)) || batchPrice.get(String(p.id)) || 0);
+        return Object.assign({}, p, {
+          category_name: catName.get(String(p.category_id)) || null,
+          on_hand: onHand.get(String(p.id)) || 0,
+          selling_price: price,
+          margin_pct: price > 0 ? U.round2(((price - Number(p.cost_price)) / price) * 100) : null,
+        });
+      });
     }
 
     async function load() {
@@ -704,9 +739,17 @@
         offline = true;
         const p = await SR.store.get('products', ctx.params.id);
         if (!p) { host.replaceChildren(ui.empty({ title: 'Not on this device', message: 'This product has not been synced to this device yet.' })); return; }
-        data = { product: p, units: await SR.store.all('product_units', { where: (u) => String(u.product_id) === String(p.id) }), variants: [], batches: [], barcodes: [] };
+        data = {
+          product: p,
+          units: await SR.store.all('product_units', { where: (u) => String(u.product_id) === String(p.id) }),
+          variants: [], batches: [], barcodes: [],
+          priceOverrides: await SR.store.all('product_price_overrides', { where: (o) => !Number(o.is_deleted) && String(o.product_id) === String(p.id) }).catch(() => []),
+          shelfPrices: (await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.product_id) === String(p.id) && Number(b.selling_price_per_unit) > 0 }).catch(() => []))
+            .map((b) => ({ branch_id: b.branch_id, selling_price_per_unit: b.selling_price_per_unit, received_at: b.received_at })),
+        };
       }
       const p = data.product || data;
+      const price = shopSellPrice(p, data);
       const units = data.units || p.units || [];
       const variants = data.variants || [];
       const batches = data.batches || [];
@@ -727,17 +770,22 @@
             } catch (err) { ui.apiError(err); }
           } }, Number(p.requires_serial) ? 'Serial off' : 'Serial on'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(data).then((ok) => { if (ok) load(); }); } }, 'Edit'),
-          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label'))));
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label'))));
 
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
-        ui.kpi({ label: 'Selling price', value: Number(p.selling_price) > 0 ? U.money(p.selling_price) : 'No price', small: true }),
+        ui.kpi({
+          label: 'Selling price',
+          value: price > 0 ? U.money(price) : 'No price',
+          foot: price > 0 && !(Number(p.selling_price) > 0) ? 'This shop, from the receipt' : null,
+          small: true,
+        }),
         ui.kpi({ label: 'Cost', value: U.money(p.cost_price), small: true }),
         ui.kpi({
           label: 'Margin',
-          value: U.pct(Number(p.selling_price) > 0 ? U.round2(((Number(p.selling_price) - Number(p.cost_price)) / Number(p.selling_price)) * 100) : 0),
-          tone: Number(p.min_margin_pct) && ((Number(p.selling_price) - Number(p.cost_price)) / Number(p.selling_price)) * 100 < Number(p.min_margin_pct) ? 'bad' : 'good',
+          value: U.pct(price > 0 ? U.round2(((price - Number(p.cost_price)) / price) * 100) : 0),
+          tone: Number(p.min_margin_pct) && price > 0 && ((price - Number(p.cost_price)) / price) * 100 < Number(p.min_margin_pct) ? 'bad' : 'good',
           foot: Number(p.min_margin_pct) ? `floor ${p.min_margin_pct}%` : null,
           small: true,
         }),
@@ -752,7 +800,7 @@
             { key: 'name', label: 'Unit' },
             { key: 'code', label: 'Code', render: (u) => ui.h('span', { class: 'mono' }, u.code || u.unit_code) },
             { key: 'quantity_in_base', label: 'Base units', align: 'right', render: (u) => U.qty(u.quantity_in_base) },
-            { key: 'unit_price', label: 'Price', align: 'right', render: (u) => U.money(u.unit_price != null ? u.unit_price : (Number(u.quantity_in_base) * Number(p.selling_price))) },
+            { key: 'unit_price', label: 'Price', align: 'right', render: (u) => U.money(u.unit_price != null ? u.unit_price : (Number(u.quantity_in_base) * price)) },
             { key: 'base', label: '', render: (u) => (Number(u.is_base) ? ui.badge('base', 'badge-good') : '') },
           ],
           rows: units,
@@ -809,7 +857,7 @@
         }
         if (barcodes.length > 8) body.appendChild(ui.h('div', { class: 'hint' }, `and ${barcodes.length - 8} more`));
         body.appendChild(ui.h('div', { class: 'btn-row' },
-          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.printLabels([{ name: p.name, sku: p.sku, price: p.selling_price, unit: p.base_unit_name }]) }, 'Print these as labels')));
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.printLabels([{ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name }]) }, 'Print these as labels')));
         chips.appendChild(body);
         host.appendChild(chips);
       }
@@ -844,7 +892,9 @@
           }, 'Set a branch price'))));
       const priceBody = ui.h('div', { class: 'card-body' });
       priceBody.appendChild(ui.h('p', { class: 'hint' },
-        `The catalogue price is ${U.money(p.selling_price)} per ${String(p.base_unit_name || 'unit').toLowerCase()}, the same in every branch. A branch price here overrules it in that one shop — for a market that will not pay it, a shop carrying the delivery cost, or a wholesale counter that sells by the carton.`));
+        price > 0 && !(Number(p.selling_price) > 0)
+          ? `The shared list has no price. This shop sells it at ${U.money(price)} per ${String(p.base_unit_name || 'unit').toLowerCase()}, from the price typed when the goods were received.`
+          : `The catalogue price is ${U.money(p.selling_price)} per ${String(p.base_unit_name || 'unit').toLowerCase()}, the same in every branch. A branch price here overrules it in that one shop — for a market that will not pay it, a shop carrying the delivery cost, or a wholesale counter that sells by the carton.`));
       if (!overrides.length) {
         priceBody.appendChild(ui.h('div', { class: 'hint' }, 'Every branch sells this at the catalogue price.'));
       } else {
