@@ -241,7 +241,15 @@ button, input, select, textarea { font: inherit; color: inherit; }
 [data-theme="dark"] .nav-item.is-active { background: var(--green-100); color: var(--green-500); }
 .nav-item svg { flex: none; opacity: .8; }
 .nav-badge { margin-left: auto; background: var(--red-600); color: #fff; font-size: .68rem; font-weight: 700; border-radius: 20px; padding: 1px 7px; }
-.sidenav-foot { display: flex; align-items: center; justify-content: space-between; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); font-size: .78rem; }
+.sidenav-foot { display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line); font-size: .78rem; }
+.sidenav-foot-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 4px; }
+.nav-install {
+  display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%;
+  padding: 9px 12px; border-radius: var(--radius-sm); border: 1px solid var(--green-700);
+  background: var(--green-50); color: var(--green-800); font-weight: 650; cursor: pointer;
+}
+.nav-install:hover { background: var(--green-100); }
+[data-theme="dark"] .nav-install { color: var(--green-500); border-color: var(--green-500); }
 .build-tag { color: var(--ink-400); font-family: var(--mono); font-size: .7rem; }
 
 .main { grid-area: main; min-height: 0; min-width: 0; overflow-x: hidden; overflow-y: auto; padding: 18px 18px calc(28px + env(safe-area-inset-bottom)); }
@@ -259,7 +267,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
   .topbar-brand { display: none; }
   .main { padding: 14px 12px calc(24px + env(safe-area-inset-bottom)); }
 }
-@media (min-width: 901px) { #nav-toggle, #nav-close { display: none; } .scrim { display: none !important; } }
+@media (min-width: 901px) {
+  #nav-toggle, #nav-close { display: none; }
+  .scrim { display: none !important; }
+  /* On a wide screen the sidebar is the nav, and it already carries Download.
+     The top bar is for the shop, the branch and the queue — not a second copy. */
+  #install-btn { display: none !important; }
+}
 
 /* ------------------------------ chips ------------------------------- */
 .chip {
@@ -279,6 +293,13 @@ button.chip:hover { background: var(--surface-3); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 .chip-queue { background: var(--amber-100); border-color: var(--amber-500); color: var(--amber-700); }
 .chip-queue.is-failed { background: var(--red-100); border-color: var(--red-600); color: var(--red-700); }
+.chip-install { background: var(--green-50); border-color: var(--green-700); color: var(--green-800); }
+.chip-install:hover { background: var(--green-100); }
+[data-theme="dark"] .chip-install { color: var(--green-500); border-color: var(--green-500); }
+#install-btn[hidden], #nav-install[hidden], #login-install[hidden] { display: none !important; }
+.install-steps { margin: 0; padding-left: 1.2rem; display: grid; gap: 8px; }
+.install-steps li { line-height: 1.45; }
+#login-install { margin-top: 10px; }
 @media (max-width: 620px) {
   .chip-net span:last-child { display: none; }
   .chip-net { padding: 0 9px; }
@@ -866,6 +887,8 @@ img, video { max-width: 100%; height: auto; }
   .chip-branch, .chip-business { max-width: 78px; }
   .chip-queue { font-size: 0; gap: 0; }
   .chip-queue #queue-count { font-size: .72rem; }
+  .chip-install { gap: 0; padding: 0 8px; }
+  .chip-install span { font-size: 0; }
   .icon-btn { width: 34px; height: 34px; }
   .avatar { width: 32px; height: 32px; }
   .kpi { padding: 11px 12px; }

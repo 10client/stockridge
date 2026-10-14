@@ -85,6 +85,7 @@
       <button type="submit" class="btn btn-primary btn-block" id="login-submit">Sign in</button>
       <button type="button" class="btn btn-block login-continue" id="login-offline-continue" hidden>Continue offline with this till</button>
     </form>
+    <button type="button" class="btn btn-block" id="login-install" hidden>Download onto this device</button>
 
     <div class="login-foot">
       <button type="button" class="link-btn" id="login-theme">Switch theme</button>
@@ -137,6 +138,14 @@
       <span id="queue-count">0</span><span id="queue-label"> queued</span>
     </button>
 
+    <!-- Shown only when this device can install the app and has not yet. A phone
+         that is already running it, or a browser that cannot install it, never
+         sees a button that would do nothing. -->
+    <button class="chip chip-install" id="install-btn" type="button" hidden title="Download StockRidge onto this device" aria-label="Download app">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v11M8 11l4 4 4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span>Download</span>
+    </button>
+
     <!-- THE BELL. The engine's only producer today is the daily compliance sweep, and
          its alerts are the difference between a licence renewed and a shop closed. Until
          this button existed there was nothing in the product that could show one. -->
@@ -168,8 +177,14 @@
     </div>
     <div id="nav-list" class="nav-list"></div>
     <div class="sidenav-foot">
-      <button class="link-btn" id="nav-signout">Sign out</button>
-      <span class="build-tag" id="build-tag">v1.0.0</span>
+      <button type="button" class="nav-install" id="nav-install" hidden aria-label="Download app">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M12 4v11M8 11l4 4 4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>Download</span>
+      </button>
+      <div class="sidenav-foot-row">
+        <button class="link-btn" id="nav-signout">Sign out</button>
+        <span class="build-tag" id="build-tag">v1.0.0</span>
+      </div>
     </div>
   </nav>
   <div class="scrim" id="scrim" hidden></div>

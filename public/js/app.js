@@ -31,6 +31,134 @@
   SR.BUILD = 'ridge-20261014-2040-329d642';
 
   // -------------------------------------------------------------------
+  // DOWNLOAD — only where the device can install, and has not
+  // -------------------------------------------------------------------
+  // Chromium tells us, once, with `beforeinstallprompt`. That event is the
+  // compatibility test: it does not fire in a browser that cannot install, and
+  // it does not fire when the app is already installed. Safari never fires it,
+  // but an iPhone, iPad or Mac Safari can still add the app from the share
+  // sheet, so those get the button and the steps. An in-app browser (WhatsApp,
+  // Instagram) cannot install anything, so it gets no button.
+  let installPrompt = null;
+  let browserOfferedInstall = false;
+
+  function runningAsInstalledApp() {
+    try {
+      if (navigator.standalone === true) return true;
+      return ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'].some((mode) =>
+        window.matchMedia(`(display-mode: ${mode})`).matches);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function iosDevice() {
+    const ua = navigator.userAgent || '';
+    if (/iPad|iPhone|iPod/i.test(ua)) return true;
+    return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  }
+
+  function inAppBrowser() {
+    return /FBAN|FBAV|Instagram|Line\/|Twitter|LinkedInApp|Snapchat|TikTok|musical_ly|WhatsApp/i.test(navigator.userAgent || '');
+  }
+
+  function safariCanInstall() {
+    if (inAppBrowser() || !window.isSecureContext) return false;
+    if (iosDevice()) return true;
+    const ua = navigator.userAgent || '';
+    return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS|Android/i.test(ua);
+  }
+
+  function installCompatible() {
+    if (runningAsInstalledApp()) return false;
+    if (installPrompt || browserOfferedInstall) return true;
+    return safariCanInstall();
+  }
+
+  function paintInstallButton() {
+    const show = installCompatible();
+    for (const id of ['install-btn', 'nav-install', 'login-install']) {
+      const el = document.getElementById(id);
+      if (el) el.hidden = !show;
+    }
+  }
+
+  window.addEventListener('beforeinstallprompt', (event) => {
+    // Keep the prompt for our button. The browser's own banner would otherwise
+    // consume it, and a till that already has a Download control does not need both.
+    event.preventDefault();
+    installPrompt = event;
+    browserOfferedInstall = true;
+    paintInstallButton();
+  });
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    browserOfferedInstall = false;
+    paintInstallButton();
+  });
+  try {
+    const installedMq = window.matchMedia('(display-mode: standalone)');
+    if (installedMq && installedMq.addEventListener) installedMq.addEventListener('change', paintInstallButton);
+  } catch (e) { /* the next paint still hides the button once the app is standalone */ }
+
+  function openInstallHelp() {
+    const ios = iosDevice();
+    const macSafari = !ios && safariCanInstall();
+    const body = ui.h('div', { class: 'stack' });
+    const steps = ui.h('ol', { class: 'install-steps' });
+    if (ios || macSafari) {
+      body.appendChild(ui.h('p', {}, ios
+        ? 'This device can keep StockRidge on the Home Screen. The browser does not open a download window, so it takes three taps.'
+        : 'This Mac can keep StockRidge in the Dock. Safari does not open a download window, so it takes three clicks.'));
+      steps.appendChild(ui.h('li', {}, ios ? 'Tap the Share button — the square with an arrow pointing up.' : 'Click the Share button in the toolbar.'));
+      steps.appendChild(ui.h('li', {}, ios ? 'Scroll the sheet and tap Add to Home Screen.' : 'Choose Add to Dock.'));
+      steps.appendChild(ui.h('li', {}, 'Confirm. The icon then opens StockRidge on its own, and it keeps working offline.'));
+      if (/CriOS|FxiOS|EdgiOS|OPiOS/i.test(navigator.userAgent || '')) {
+        body.appendChild(ui.h('p', { class: 'hint' }, 'If Add to Home Screen is not in the sheet, open this page in Safari and use Share there.'));
+      }
+    } else {
+      body.appendChild(ui.h('p', {}, 'This browser can install StockRidge. If the download window did not open, use the browser menu.'));
+      steps.appendChild(ui.h('li', {}, 'Open the browser menu.'));
+      steps.appendChild(ui.h('li', {}, 'Choose Install app, or Add to Home screen.'));
+      steps.appendChild(ui.h('li', {}, 'Confirm. The icon opens StockRidge on its own, and it keeps working offline.'));
+    }
+    body.appendChild(steps);
+    closeNav();
+    ui.openModal({ title: 'Download StockRidge', body, size: 'narrow' });
+  }
+
+  async function downloadApp() {
+    if (runningAsInstalledApp()) {
+      paintInstallButton();
+      return;
+    }
+    const prompt = installPrompt;
+    if (prompt) {
+      // prompt() has to run inside the tap. Anything awaited before it, and the
+      // browser treats the download as not requested by the person.
+      installPrompt = null;
+      const buttons = ['install-btn', 'nav-install', 'login-install']
+        .map((id) => document.getElementById(id)).filter(Boolean);
+      buttons.forEach((el) => { el.disabled = true; });
+      try {
+        prompt.prompt();
+        const result = await prompt.userChoice;
+        if (result && result.outcome === 'accepted') {
+          browserOfferedInstall = false;
+          ui.ok('StockRidge is downloading onto this device.');
+        }
+      } catch (e) {
+        openInstallHelp();
+      } finally {
+        buttons.forEach((el) => { el.disabled = false; });
+        paintInstallButton();
+      }
+      return;
+    }
+    openInstallHelp();
+  }
+
+  // -------------------------------------------------------------------
   // ROUTES
   // -------------------------------------------------------------------
   // `nav: false` means the route is reachable but does not appear in the sidebar
@@ -389,6 +517,7 @@
     const u = document.getElementById('login-username');
     if (u && !u.value) setTimeout(() => u.focus(), 60);
     updateNetChrome();
+    paintInstallButton();
   }
 
   function showShell() {
@@ -410,6 +539,7 @@
     // Decoration too: it reads ids the shell owns, and a throw here would take the
     // rest of `showShell` with it.
     try { updateSubscriptionChrome(); } catch (err) { console.error('[chrome] subscription paint failed', err); }
+    paintInstallButton();
   }
 
   function paintIdentity() {
@@ -1339,6 +1469,11 @@
     const businessSwitch = document.getElementById('business-switch');
     if (businessSwitch) businessSwitch.addEventListener('click', () => openBusinessPicker());
     document.getElementById('queue-chip').addEventListener('click', () => navigate('/sync'));
+    for (const id of ['install-btn', 'nav-install', 'login-install']) {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('click', () => { void downloadApp(); });
+    }
+    paintInstallButton();
     document.getElementById('bell-btn').addEventListener('click', (ev) => { ev.stopPropagation(); toggleBell(); });
     document.getElementById('bell-read-all').addEventListener('click', (ev) => { ev.stopPropagation(); void markAllRead(); });
     const bellSend = document.getElementById('bell-send');
