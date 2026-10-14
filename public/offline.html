@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>StockRidge — no connection</title>
-<meta name="theme-color" content="#0a2b10">
+<meta name="theme-color" content="#07290c">
 <!--
   =====================================================================
   public/offline.html — WHAT A SHOP SEES WHEN THE NETWORK IS GONE
@@ -38,11 +38,11 @@
 <style>
   :root {
     --ink: #14201f; --ink-500: #5b6b69; --line: #d8e0df;
-    --surface: #ffffff; --bg: #f5f8f7; --teal: #0f766e; --teal-050: #ecfdf9;
+    --surface: #ffffff; --bg: #f5f8f7; --teal: #0d5a22; --teal-050: #eef8f1;
     --amber-050: #fffbeb; --amber-line: #fcd34d; --amber-800: #92400e;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --ink: #e8f1f0; --ink-500: #9db0ae; --line: #2a3a38; --surface: #14201f; --bg: #0b1413; --teal: #5eead4; --teal-050: #10241f; --amber-050: #241a06; --amber-line: #7c5a11; --amber-800: #fcd34d; }
+    :root { --ink: #e8f1f0; --ink-500: #9db0ae; --line: #2a3a38; --surface: #14201f; --bg: #0b1413; --teal: #3dcc5e; --teal-050: #0c2412; --amber-050: #241a06; --amber-line: #7c5a11; --amber-800: #fcd34d; }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -81,7 +81,7 @@
 <body>
 <main>
   <div class="brand">
-    <img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAoHCAkIBgoJCAkMCwoMDxoRDw4ODx8WGBMaJSEnJiQhJCMpLjsyKSw4LCMkM0Y0OD0/QkNCKDFITUhATTtBQj//2wBDAQsMDA8NDx4RER4/KiQqPz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz8/Pz//wAARCABIAEgDASIAAhEBAxEB/8QAHAAAAgIDAQEAAAAAAAAAAAAAAAYEBwIDBQEI/8QAQBAAAQIEBAIGBAkNAAAAAAAAAQIDAAQFEQYSITFBURMiMmFxsQcUM8EVI2JygZGSodEkJjQ1QkNSU2OissLh/8QAGQEAAwEBAQAAAAAAAAAAAAAAAQIDAAQF/8QAJBEAAgICAgIABwAAAAAAAAAAAAECESExAxITQRQiI0JRUnH/2gAMAwEAAhEDEQA/AKfte3Ac4LAbm3KNzbQcOptbc8I9dZyLym3jDiWaNT325RsaRdWvKM0s7Ew0YToblRnmQ2znWpeVpJ2UriT8kbmNrLFlLBEcoeSkIdWFesqObLwAt2fnW1jgLbtsNY+gMT0GWkqFI05N1dtS3bdZTmnX8fdpFOVynqlplZUjKsGywNr8FDuMKnewZjs4LjDjSgHW1IuL9YW0jxDebc290T5ybmJ0pMy4XFoSEJJ5DYRGSjnD1Y1mHQC5F7gcRBHaplME2w+4Xm2+hRmstVirXYQQeoLOM0Lp0EbRYcLmN87JGSmCnVTSicirW+g94jS0lTrqUISVLUQABxMKneUYmUuTXOzYbBsgauKt2U/jwEX5giiy9DYZ9bLbVQmkHomFEZkNjXKBz4qPPwio6XPt4f8AZMofnEdYLXqgOcFEccvAbX1jGm4gnmcVytbnH3Zl9p0FxSjclB0UkctCdBEZcisl5EmW96RJpmRkpaZmFZW0Z78ydLAd8VnMPyeIZIqlbJnG0m7C+0tPFPf3RBx5ieYxNU0uHM3JsqIl2TwH8R7z/wAhYSooWFIJSoagjQiB2t4GfJetHk0wGXLAHKdUqPl4xikdUHyiWt8zSlCaVcqN89tb8/xjFco60nS+U6i3GLRl2QYuyOXVJ0BIJ5QRvlZUuvjPogdogX8AO+CG7JbZrSHKvU+Xn0vrYUhbqPbtpIuk8FW5+cKrcuqm5lOFKphWjak7JSePiR9UYSCVIcVNOFYS2dwbFSjwv5wwYMprGIMXysnUQtTDoWpYSrKdEkgX+iOXs9L2JKV4XsX16aE3Ktrx16Zhut1MD1CmTLiVHtlGRP2lWEXxS8L0OkkKkaZLtuD94U51/aNzHUefZYTmfdQ2nmtQA++CuP8AJlwfsyhKr6PqxT5Rh6aXKpddUbNBwki1tza0LU3R6jKkl2Ucyj9pAzj7oujGdcpUyJVtioMOLQtWYJVe2g47QuJcQ4LtLSrvSq8DCwh1CH2sq3YfKHCOnS51pGdib1QR1FEXynl4GHmakZWbSRMSzbhPEp1+veEfEsjL02ooZlkKShbWcgm9jcj3QVaBTg7LCwBSaXJLlqzW5iXYW8u0hLuLANzpnI58uW/KCKsbm1ZwXFFdwBc66QQHyNPQPK44SJL7qTlZY9kjQd/fHcwQqoDFTBo6ELnejcyBdrdnXfuhcRorzhz9FIJx3LE/yXT/AGwiVsgvmkkPvwLjSoD8tq6JVJ3S2v3JA84ya9HLLiwuo1SYmFHfKkD7zcw9wRXxx9nT8PD3n+srXFWE6VTpSVEs25mWtQUtThJOn1QquUJrMC0+4g+AP4RZOOv0eT+eryhOFxwhZQjegvigvRxhI1NgfETmcDYLJ994VcVmc9fZ9fyBzorJyW1Fzyiwt9jCRjoD4WlTfXoP9jAUa0BwSVoWk2JIgjwm20EMITASrsg+MO3onR+fLBJuRLu/RoIIIRbRGD+okXxBBBHQegKuOReXk/nq8oTtoIIm9gZ5CNj39Zyh/oH/ACMEEASWhXgggjEj/9k=" width="28" height="28" alt="" style="border-radius:6px;display:block">
+    <img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAkGBwgHBgkIBwgKCgkLDRYPDQwMDRsUFRAWIB0iIiAdHx8kKDQsJCYxJx8fLT0tMTU3Ojo6Iys/RD84QzQ5Ojf/2wBDAQoKCg0MDRoPDxo3JR8lNzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzf/wAARCABAAEADASIAAhEBAxEB/8QAHAAAAQQDAQAAAAAAAAAAAAAABgIDBQcAAQQI/8QAPBAAAQIEBAIFCQUJAAAAAAAAAQIDAAQFEQYSITFBYQcTFFFxIjNCUoGRobHRFSMyssEkJUNiY3Ki4fD/xAAYAQADAQEAAAAAAAAAAAAAAAABAgMEAP/EAB8RAAICAgIDAQAAAAAAAAAAAAABAhESIQNhMUFCkf/aAAwDAQACEQMRAD8ApQpIVZWljGtAON4fbCLnMFEX0B3hSm0lZyg5efCHoSzmSkmCDC1Edqs+00lpbiMwBSndwnZI8fgLmOKRk1TMwhpkAqUdzsO8nlHobouwi3S5BFSmW7OrQezhQ1SkjVZ5q+At3wJaEbcnSPP9cppkptxIbKUZiMp9E8U/9wjhVTpgSSZ3KnqFLKArMNxy3i0MW0kTcuuYbRmWkfeADdI2V4j5RWjza2XFNK1t3bHmI6LsNtaOJKEk+VeHky4KrC5BOkKS2N+ES0kaeiSfTMocMybdUUkZR33h1E5siOpcYdcZeSUrQbKSeEKGpGunKDLF1BsoPy48g6IPd/If0PsgdpbQYPa3k3KVWabUN1DiR3D5xNTVWwN1thlgyRpNFY+1cRrs2CCJdAzOPqGobA7tionTYd8W1hXH8lV8O1Cr1BLci3JvKStvNmIQRdHiTtpxEeeXHFuqBUSpR79bQ4z1zh7LKhxZcUCWkAqzEbHKN7XPvjO+V3ZnXM09Ek/jGfVVFzTFkytylMsvUFPPnziOqq5SfX1skktKVqGD6J4pB4pPD3RHutrZUUOoUhd9UqBB9xhKb8NLQVJrY+TEJSQDmBHgI2hpb7qW2xmJ0CRxiXpzbVSzMrIS+ElQV64+sGXRngY16fXNTIIpjCsrixp1xH8NPL1j7I0Zpor5SoFWK/UZuZmFvPJEssXdaKboSngAOB5xLYMw4vG9delzOdkSyz1pX1ec5bhNgLjXWBp1SW0CWaOYA3Wr1lf6gy6KpissVieOH5RmZmVSwSoOqsEpzjXccbRju3szuVuntFlUjomw1I+XOpfqDvEvuZU+xKbfG8GEjTqbSGSmRlJaTbA16tCUD2mBA0vHtSH7VV5WQQfRYFyPcP1jE9G/alBdZrs9OHci9h/kTFU36iVU5fEP2kB82yzMlxDyEPIKjooBQ3iFmsL0qYBKGVS6jxZVYe43EPO0FDLjnZZp1qyiBx48rRiZWrsebnUOjucH1ieT9oZt/UQNr9INFeZKZguB0KKTlylNrfWJGlY4rcmqRblp5bLMn5lhuwb55h6V9b374Yxs5PLMn25lpspCwgoN821+MDKNTpoRtDeUTfWjtR5Kh8YtLoEH7/qZJ17Gn88VYkFe+giyuhRycaqtSNMlmZhzs6AoPPFsAZt72N/CFjqRPjdTRfMZEEXMTr/DK0lv+59xXySI0UYpVvMUdvwZdV81CL5dGzPplavefct66t/GEHU63EMPN1JLq7uyijmN/u1Dj4xodvH4kSp8FKESsGXQK9I1h9nE/wBQflgMKu6C/pC65SJAvIQkBTmUpUTfblAdaCTltn//2Q==" width="32" height="32" alt="" style="border-radius:6px;display:block">
     StockRidge
   </div>
 

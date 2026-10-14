@@ -1,11 +1,11 @@
 :root {
-  --green-900: #06382c;
-  --green-800: #0b4a3a;
-  --green-700: #0f5c4a;
-  --green-600: #14785f;
-  --green-500: #1c9475;
-  --green-100: #d9efe8;
-  --green-50:  #eef8f4;
+  --green-900: #04180a;
+  --green-800: #07290c;
+  --green-700: #0d5a22;
+  --green-600: #128a32;
+  --green-500: #149433;
+  --green-100: #d7f0dc;
+  --green-50:  #eef8f1;
 
   --amber-700: #8a5a00;
   --amber-500: #d69a12;
@@ -46,13 +46,13 @@
 }
 
 [data-theme="dark"] {
-  --green-900: #041f19;
-  --green-800: #0a3a2e;
-  --green-700: #14785f;
-  --green-600: #1c9475;
-  --green-500: #27b48d;
-  --green-100: #10352a;
-  --green-50:  #0c2a22;
+  --green-900: #03140a;
+  --green-800: #07290c;
+  --green-700: #168033;
+  --green-600: #1a8a38;
+  --green-500: #3dcc5e;
+  --green-100: #12331a;
+  --green-50:  #0c2412;
 
   --amber-700: #e0aa3c;
   --amber-500: #d69a12;
@@ -119,7 +119,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ------------------------------- boot ------------------------------- */
 .boot {
   position: fixed; inset: 0; display: grid; place-items: center;
-  background: #041016;
+  background: #00080a;
   color: #eaf6f1; z-index: 300;
 }
 .boot-inner { text-align: center; width: min(440px, 88vw); }
@@ -127,7 +127,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .boot-title { font-size: 1.7rem; letter-spacing: .02em; margin: 0 0 6px; color: #fff; }
 .boot-line { color: #a9cfc2; font-size: .88rem; min-height: 1.3em; margin: 0 0 16px; }
 .boot-bar { height: 4px; border-radius: 4px; background: rgba(255,255,255,.16); overflow: hidden; }
-.boot-bar span { display: block; height: 100%; width: 8%; background: #7fdcbf; border-radius: 4px; transition: width .35s ease; }
+.boot-bar span { display: block; height: 100%; width: 8%; background: #2fbf55; border-radius: 4px; transition: width .35s ease; }
 .boot.is-error .boot-line { color: #ffc9bf; }
 
 /* ------------------------------ login ------------------------------- */
@@ -142,7 +142,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .login-brand h1 { margin: 0; font-size: 1.28rem; color: var(--ink-900); }
 /* The default is the StockRidge lockup. A shop's own logo is a mark beside their name,
    not a second banner, so it stays small. */
-#login-brand-logo { width: 100%; height: auto; max-height: 210px; object-fit: contain; border-radius: 12px; display: block; }
+#login-brand-logo { width: 100%; height: auto; max-height: 280px; object-fit: contain; border-radius: 12px; display: block; }
 #login-brand-logo.is-custom { width: 48px; height: 48px; max-height: 48px; object-fit: contain; border-radius: 8px; flex: none; }
 .login-brand p { margin: 2px 0 0; font-size: .82rem; color: var(--ink-500); }
 .brand-logo-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 6px; }

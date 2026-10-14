@@ -20,7 +20,7 @@
     const value = theme === 'dark' ? 'dark' : 'light';
     document.documentElement.dataset.theme = value;
     const meta = document.querySelector('meta[name="theme-color"]');
-    if (meta) meta.setAttribute('content', value === 'dark' ? '#0d1519' : '#0f5c4a');
+    if (meta) meta.setAttribute('content', value === 'dark' ? '#00080a' : '#07290c');
     for (const fn of listeners) {
       try { fn(value); } catch (e) { /* a bad listener must not break the toggle */ }
     }

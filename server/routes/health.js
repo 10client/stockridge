@@ -114,8 +114,8 @@ function mount(app, base = '/api') {
       scope: '/',
       display: 'standalone',
       orientation: 'any',
-      background_color: '#041016',
-      theme_color: '#0a2b10',
+      background_color: '#00080a',
+      theme_color: '#07290c',
       categories: ['business', 'productivity', 'finance'],
       icons: [
         { src: '/icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
