@@ -134,7 +134,7 @@
     </span>
 
     <button class="chip chip-queue" id="queue-chip" type="button" hidden title="Queued work waiting to sync">
-      <span id="queue-count">0</span> queued
+      <span id="queue-count">0</span><span id="queue-label"> queued</span>
     </button>
 
     <!-- THE BELL. The engine's only producer today is the daily compliance sweep, and
@@ -204,6 +204,7 @@
   </div>
   <div class="bell-list" id="bell-list"></div>
   <div class="bell-foot">
+    <button class="link-btn" id="bell-send" type="button" hidden>Send a message</button>
     <button class="link-btn" id="bell-read-all">Mark all read</button>
     <span class="hint" id="bell-foot-note"></span>
   </div>

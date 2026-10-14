@@ -52,6 +52,7 @@
         ui.h('h1', {}, 'Staff & access'),
         ui.h('p', { class: 'sub' }, 'Who works here, where, and what the system lets them do')),
       ui.h('div', { class: 'actions' },
+        (SR.state.isOwner() || SR.state.isAdmin()) ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.openMessageComposer() }, 'Send a message') : null,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add someone') : null,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openCoverage() }, 'Who was here on…') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));

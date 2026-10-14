@@ -1462,6 +1462,140 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // NOTIFICATIONS
   // -------------------------------------------------------------------
+  /**
+   * A MESSAGE IS ONE UNREAD ROW PER RECIPIENT, never a broadcast.
+   *
+   * `user_id` NULL is a broadcast, and the list shows a broadcast to everyone who
+   * reaches that business — including the person who sent it. A message the sender
+   * then has to mark read is not a message, it is an echo. One row each also means
+   * marking it read clears it for that person only.
+   *
+   * Who may send, and to whom, is the whole of the rule:
+   *   ADMIN  → the owners of the business named on the request, or one of them.
+   *   OWNER  → one staff member or manager of that business, all staff, all
+   *            managers, or staff and managers together.
+   * A manager and a cashier cannot send. The sender is never a recipient.
+   */
+  app.post(`${base}/notifications`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const role = String(user.role || '').toUpperCase();
+    if (!atLeast(role, 'OWNER')) {
+      throw new HttpError('Only an owner or the administrator can send a message.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const body = await ctx.req.json().catch(() => ({}));
+    const title = strField(requireVal(body, 'title'), { field: 'Subject', maxLength: 120, required: true });
+    const text = strField(requireVal(body, 'body'), { field: 'Message', maxLength: 1000, required: true });
+    const audience = String(body.audience || '').trim().toUpperCase();
+    const isAdmin = role === 'ADMIN';
+    const allowed = isAdmin
+      ? ['OWNERS', 'USER']
+      : ['USER', 'STAFF', 'MANAGERS', 'STAFF_AND_MANAGERS'];
+    if (!allowed.includes(audience)) {
+      throw new HttpError(
+        isAdmin
+          ? 'An administrator sends a message to the owners of this business, or to one owner.'
+          : 'Choose one person, all staff, all managers, or staff and managers.',
+        { status: 400, code: 'AUDIENCE_NOT_ALLOWED' },
+      );
+    }
+    // A write that names no business must not guess the oldest one and message
+    // those owners. The shell always knows which business it is showing.
+    const requested = body.business_id || ctx.req.queryParam('business_id');
+    if (!requested) {
+      throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    }
+    const business = await resolveBusiness(db, ctx, null, { required: true });
+    if (!business || String(business.id) !== String(requested)) {
+      throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    }
+
+    const where = ['u.is_deleted = 0', 'u.is_active = 1', 'u.id <> ?'];
+    const params = [String(user.id)];
+    // Staff and managers belong to the business on their row, or — where that was
+    // never filled — to the business of the branch they are pinned to. An owner of
+    // a second company is reachable through the access grant as well, because that
+    // grant is what makes them an owner of it.
+    const home = `COALESCE(u.business_id, (SELECT b.business_id FROM branches b WHERE b.id = u.branch_id)) = ?`;
+    if (audience === 'OWNERS' || (audience === 'USER' && isAdmin)) {
+      where.push(`(${home} OR EXISTS (
+        SELECT 1 FROM user_business_access uba
+        WHERE uba.user_id = u.id AND uba.business_id = ? AND uba.is_deleted = 0 AND uba.revoked_at IS NULL
+      ))`);
+      params.push(String(business.id), String(business.id));
+      where.push("u.role = 'OWNER'");
+    } else {
+      where.push(home);
+      params.push(String(business.id));
+      if (audience === 'STAFF') where.push("u.role = 'STAFF'");
+      else if (audience === 'MANAGERS') where.push("u.role = 'MANAGER'");
+      else where.push("u.role IN ('STAFF', 'MANAGER')");
+    }
+    if (audience === 'USER') {
+      const targetId = strField(requireVal(body, 'user_id'), { field: 'Recipient', maxLength: 64, required: true });
+      where.push('u.id = ?');
+      params.push(targetId);
+    }
+
+    const people = await db.all(
+      `SELECT u.id, u.full_name, u.username, u.role, u.branch_id FROM users u WHERE ${where.join(' AND ')}`,
+      params,
+    );
+    if (!people.length) {
+      throw new HttpError(
+        audience === 'USER'
+          ? 'That person cannot receive this message.'
+          : 'Nobody in that group can receive this message.',
+        { status: 400, code: 'NO_RECIPIENTS' },
+      );
+    }
+    if (people.length > 400) {
+      throw new HttpError(
+        `That group has ${people.length} people, which is more than one message can reach at once. Choose a smaller group.`,
+        { status: 400, code: 'TOO_MANY_RECIPIENTS' },
+      );
+    }
+
+    const from = user.full_name || user.username || 'StockRidge';
+    const storedBody = `From ${from}: ${text}`;
+    const ids = [];
+    await db.transaction(async (tx) => {
+      for (const person of people) {
+        const id = newId();
+        ids.push(id);
+        tx.queue(
+          `INSERT INTO notifications (
+            id, business_id, branch_id, user_id, type, severity, title, body,
+            reference_type, reference_id, is_read, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, 'MESSAGE', 'INFO', ?, ?, 'USER', ?, 0, datetime('now'), datetime('now'))`,
+          [id, String(business.id), person.branch_id || null, String(person.id), title, storedBody, String(user.id)],
+        );
+      }
+    });
+
+    await recordFromCtx(ctx, {
+      action: 'NOTIFICATION_SENT',
+      entityType: 'NOTIFICATION',
+      entityId: ids[0],
+      businessId: business.id,
+      after: {
+        audience,
+        count: people.length,
+        title,
+        recipient_ids: people.map((p) => p.id),
+      },
+    });
+
+    const names = people.length === 1 ? (people[0].full_name || people[0].username || 'them') : `${people.length} people`;
+    ctx.json({
+      ok: true,
+      sent: people.length,
+      message: people.length === 1
+        ? `Sent to ${names}. It will show in their notifications.`
+        : `Sent to ${names}. Each of them will see it in their notifications.`,
+    }, 201);
+  });
+
   app.get(`${base}/notifications`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');

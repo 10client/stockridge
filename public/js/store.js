@@ -266,6 +266,13 @@
       synced_at: null,
     };
     await tx(STORE_OUTBOX, 'readwrite', (stores) => { stores[0].put(record); });
+    // THE TOP-BAR COUNTER LISTENS FOR THIS. A sale queued from the till calls
+    // `enqueue` directly and never goes through `SR.api`, so without this emit the
+    // chip stays hidden at 0 while the outbox already holds the sale. The write is
+    // awaited first: a listener that recounts the outbox must be able to see this row.
+    try {
+      if (SR.api && SR.api.emit) SR.api.emit('queue', { clientId, type: record.type });
+    } catch (e) { /* the counter is a display; the queued sale is already stored */ }
     return record;
   }
 

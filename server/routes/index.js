@@ -122,8 +122,8 @@ const SUSPENDED_EXEMPT = [
     why: 'a device that has been off the network has to report what it did and hear back per operation; each replayed sale is refused on its own way through this same pipeline, and the refusal is what the device shows the shop',
   },
   {
-    match: (m, p) => p.startsWith('/api/notifications/'),
-    why: 'clearing an alert is not discharging it — and the board is how they hear that service was suspended',
+    match: (m, p) => p === '/api/notifications' || p.startsWith('/api/notifications/'),
+    why: 'the alert board, including a message from the owner or the administrator. Clearing an alert is not discharging it, and a message is how a suspended shop is told what to do — not money and not stock',
   },
   {
     match: (m, p) => p === '/api/users' || p.startsWith('/api/users/'),

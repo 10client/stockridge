@@ -446,6 +446,11 @@
       bizChip.disabled = !canBiz;
       bizChip.title = canBiz ? 'Switch business' : working;
     }
+    const sendMsg = document.getElementById('bell-send');
+    if (sendMsg) {
+      const role = String((user && user.role) || '').toUpperCase();
+      sendMsg.hidden = role !== 'OWNER' && role !== 'ADMIN';
+    }
     // The branch chip is only a control when there is a choice to make.
     const chip = document.getElementById('branch-chip');
     if (chip) {
@@ -627,20 +632,51 @@
     }
   }
 
-  async function updateQueueChrome() {
+  /**
+   * The count lives in `#queue-count` and must survive every refresh.
+   *
+   * A refused sale used to replace the chip's text, which deleted that span. The
+   * next refresh then returned early (`if (!count) return`), so the number froze.
+   * On a phone the chip's own words are `font-size: 0` and only `#queue-count`
+   * is visible — wiping the span hides the count entirely.
+   */
+  function ensureQueueChip() {
     const chip = document.getElementById('queue-chip');
-    const count = document.getElementById('queue-count');
-    if (!chip || !count) return;
+    if (!chip) return null;
+    let count = document.getElementById('queue-count');
+    let label = document.getElementById('queue-label');
+    if (!count || !label) {
+      chip.replaceChildren();
+      count = document.createElement('span');
+      count.id = 'queue-count';
+      label = document.createElement('span');
+      label.id = 'queue-label';
+      label.textContent = ' queued';
+      chip.append(count, label);
+    }
+    chip.classList.add('chip-queue');
+    return { chip, count, label };
+  }
+
+  async function updateQueueChrome() {
+    const parts = ensureQueueChip();
+    if (!parts) return;
+    const { chip, count, label } = parts;
     try {
       const stats = await SR.sync.queueStats();
-      count.textContent = String(stats.pending + stats.failed);
-      chip.hidden = stats.pending + stats.failed === 0 && stats.synced === 0;
-      const bad = stats.failed > 0;
-      chip.classList.toggle('chip-queue', !bad);
-      if (bad) {
-        chip.dataset.failed = 'true';
-        chip.textContent = `${stats.failed} failed · ${stats.pending} queued`;
-      }
+      const waiting = Number(stats.pending || 0) + Number(stats.failed || 0);
+      count.textContent = String(waiting);
+      // Nothing waiting means nothing to count. A sale that has already uploaded
+      // is not queued, and leaving "0 queued" up trained people to ignore the chip.
+      chip.hidden = waiting === 0;
+      const bad = Number(stats.failed || 0) > 0;
+      chip.classList.toggle('is-failed', bad);
+      if (bad) chip.dataset.failed = 'true';
+      else delete chip.dataset.failed;
+      label.textContent = bad ? ' need attention' : ' queued';
+      chip.title = bad
+        ? `${stats.failed} refused, ${stats.pending} still waiting to upload`
+        : `${waiting} waiting to upload`;
     } catch (e) { /* the store may be mid-upgrade */ }
   }
 
@@ -682,6 +718,7 @@
 
   function bellMetaFor(n) {
     const bits = [];
+    if (String(n.type || '').toUpperCase() === 'MESSAGE') bits.push('Message');
     if (n.branch_name) bits.push(n.branch_name);
     else if (n.user_id) bits.push('For you');
     else bits.push('Whole business');
@@ -712,7 +749,9 @@
     const foot = document.getElementById('bell-foot-note');
     if (!list) return;
     if (sub) sub.textContent = unread ? `${unread} unread` : 'nothing unread';
-    if (foot) foot.textContent = 'The daily sweep raises an expiry alert again until the record is renewed.';
+    if (foot) {
+      foot.textContent = 'A message stays here until you mark it read. An expiry alert is raised again until the record is renewed.';
+    }
     list.replaceChildren();
     if (!items.length) {
       list.appendChild(ui.h('div', { class: 'bell-empty' }, 'Nothing needs your attention.'));
@@ -779,12 +818,134 @@
     if (pop.hidden) { openBell(); void updateBell({ refreshPanel: true }); } else closeBell();
   }
 
+  /**
+   * A message is a notification, not a chat.
+   *
+   * An administrator writes to the owners of the business they are working in.
+   * An owner writes to one staff member or manager, or to all staff, all managers,
+   * or both. Each recipient gets their own unread row, so marking it read does not
+   * clear it for anyone else, and the sender does not see their own message as an
+   * alert.
+   */
+  async function openMessageComposer() {
+    const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
+    const isAdmin = role === 'ADMIN';
+    if (!isAdmin && role !== 'OWNER') {
+      ui.warn('Only an owner or the administrator can send a message.');
+      return;
+    }
+    if (!SR.api.isOnline()) {
+      ui.warn('Sending a message needs a connection. It appears in their notifications once it is sent.');
+      return;
+    }
+    if (!SR.state.activeBusinessId) {
+      ui.warn('Choose the business first, so the message goes to the right people.');
+      openBusinessPicker();
+      return;
+    }
+    closeBell();
+    const bizName = SR.state.activeBusinessName();
+    const body = ui.h('div', { class: 'stack' });
+    body.appendChild(ui.h('p', { class: 'hint' }, isAdmin
+      ? `This goes to the owners of ${bizName}, and each of them sees it in their notifications.`
+      : `This appears in the notifications of the people you choose at ${bizName}.`));
+
+    const audience = ui.h('select', { name: 'audience' });
+    const choices = isAdmin
+      ? [['OWNERS', 'All owners of this business'], ['USER', 'One owner']]
+      : [['USER', 'One person'], ['STAFF', 'All staff'], ['MANAGERS', 'All managers'], ['STAFF_AND_MANAGERS', 'Staff and managers']];
+    for (const [value, label] of choices) audience.appendChild(ui.h('option', { value }, label));
+
+    const personWrap = ui.h('div', { class: 'span-2' });
+    const person = ui.h('select', { name: 'user_id' });
+    person.appendChild(ui.h('option', { value: '' }, 'Loading people…'));
+    personWrap.appendChild(ui.h('label', { class: 'ctl' }, isAdmin ? 'Which owner' : 'Who'));
+    personWrap.appendChild(person);
+
+    const form = ui.h('div', { class: 'form-grid' },
+      ui.h('div', { class: 'span-2' },
+        ui.h('label', { class: 'ctl' }, 'Send to'),
+        audience),
+      personWrap,
+      ui.field({ label: 'Subject', name: 'title', required: true, span: true, placeholder: 'A short subject' }),
+      ui.field({ label: 'Message', name: 'body', type: 'textarea', required: true, rows: 5, span: true, placeholder: 'What they should know' }));
+    const titleInput = form.querySelector('[name=title]');
+    const bodyInput = form.querySelector('[name=body]');
+    if (titleInput) titleInput.maxLength = 120;
+    if (bodyInput) bodyInput.maxLength = 1000;
+    body.appendChild(form);
+
+    function syncPerson() {
+      const one = audience.value === 'USER';
+      personWrap.hidden = !one;
+      person.required = one;
+    }
+    audience.addEventListener('change', syncPerson);
+    syncPerson();
+
+    const cancel = ui.h('button', { class: 'btn', type: 'button' }, 'Cancel');
+    const send = ui.h('button', { class: 'btn btn-primary', type: 'button', onClick: () => submit() }, 'Send');
+    const modal = ui.openModal({ title: 'Send a message', body, footer: [cancel, send] });
+    cancel.addEventListener('click', () => modal.close());
+
+    try {
+      const q = SR.state.query({ limit: 500, active: '1' });
+      if (isAdmin) q.role = 'OWNER';
+      const res = await SR.api.get('/api/users', { query: q });
+      const rows = ((res && (res.data || res.rows)) || []).filter((u) => {
+        if (!u || String(u.id) === String(SR.state.user && SR.state.user.id)) return false;
+        const r = String(u.role || '').toUpperCase();
+        return isAdmin ? r === 'OWNER' : (r === 'STAFF' || r === 'MANAGER');
+      });
+      person.replaceChildren();
+      if (!rows.length) {
+        person.appendChild(ui.h('option', { value: '' }, isAdmin ? 'No owner on this business' : 'No staff or managers'));
+      } else {
+        person.appendChild(ui.h('option', { value: '' }, 'Choose someone'));
+        for (const u of rows) {
+          const who = `${u.full_name || u.username} · ${U.titleCase(u.role)}${u.branch_name ? ` · ${u.branch_name}` : ''}`;
+          person.appendChild(ui.h('option', { value: u.id }, who));
+        }
+      }
+    } catch (err) {
+      person.replaceChildren(ui.h('option', { value: '' }, 'Could not load people'));
+    }
+
+    async function submit() {
+      const title = titleInput ? titleInput.value.trim() : '';
+      const text = bodyInput ? bodyInput.value.trim() : '';
+      if (!title || !text) {
+        ui.warn('Write a subject and a message.');
+        return;
+      }
+      if (audience.value === 'USER' && !person.value) {
+        ui.warn(isAdmin ? 'Choose which owner should receive it.' : 'Choose who should receive it.');
+        return;
+      }
+      const payload = {
+        title,
+        body: text,
+        audience: audience.value,
+        business_id: SR.state.activeBusinessId,
+      };
+      if (audience.value === 'USER') payload.user_id = person.value;
+      try {
+        const res = await SR.api.post('/api/notifications', payload);
+        ui.ok((res && res.message) || 'Sent. They will see it in their notifications.');
+        modal.close();
+      } catch (err) {
+        ui.apiError(err);
+      }
+    }
+  }
+
   function startBellPolling() {
     void updateBell();
     if (bellPollTimer) clearInterval(bellPollTimer);
-    // Every five minutes: an expiry alert is not a second-by-second fact, and the sweep
-    // that raises them runs daily.
-    bellPollTimer = setInterval(() => { void updateBell({ refreshPanel: true }); }, 5 * 60 * 1000);
+    // A minute, not five. Expiry alerts are raised daily, but a message from the
+    // owner or the administrator has to show up in the bell while the till is open,
+    // not the next time somebody thinks to look.
+    bellPollTimer = setInterval(() => { void updateBell({ refreshPanel: true }); }, 60 * 1000);
   }
 
   // -------------------------------------------------------------------
@@ -1136,6 +1297,9 @@
 
     startBellPolling();
     SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); });
+    // A sale queued offline never passes through the sync engine, so `change` does
+    // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
+    SR.api.on('queue', () => { void updateQueueChrome(); });
     SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSubscriptionChrome(); });
     // A REFUSED WRITE IS THE MOST RELIABLE SIGNAL THERE IS. The cached settings can be
     // minutes or days old (they are mirrored for offline use); a 402 naming the
@@ -1177,6 +1341,8 @@
     document.getElementById('queue-chip').addEventListener('click', () => navigate('/sync'));
     document.getElementById('bell-btn').addEventListener('click', (ev) => { ev.stopPropagation(); toggleBell(); });
     document.getElementById('bell-read-all').addEventListener('click', (ev) => { ev.stopPropagation(); void markAllRead(); });
+    const bellSend = document.getElementById('bell-send');
+    if (bellSend) bellSend.addEventListener('click', (ev) => { ev.stopPropagation(); closeBell(); void openMessageComposer(); });
     document.getElementById('user-menu').addEventListener('click', (ev) => { ev.stopPropagation(); toggleUserMenu(); });
     document.getElementById('menu-logout').addEventListener('click', doLogout);
     document.getElementById('nav-signout').addEventListener('click', doLogout);
@@ -1302,7 +1468,7 @@
     boot, render, navigate, matchRoute, allowed,
     showLogin, showShell, paintIdentity, paintLoginBrand, buildNav, setActiveNav, closeNav,
     openBranchPicker, openBusinessPicker, guardWorkingBusiness,
-    updateBell, openBell, closeBell, markAllRead,
+    updateBell, openBell, closeBell, markAllRead, openMessageComposer,
     updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
     updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,
     liveBuild, offerNewBuild,
