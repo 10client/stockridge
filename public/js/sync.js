@@ -215,17 +215,28 @@
     if (!SR.api.isOnline()) return { ok: false, offline: true, rows: 0 };
     if (!SR.api.hasToken()) return { ok: false, needsAuth: true, rows: 0 };
 
+    // The shelf is a handful of rows. Download it on its own first, so a
+    // catalogue of eleven thousand names timing out cannot leave the till
+    // unable to find a shoe that is sitting on the shelf.
+    if (!tables) {
+      await pullRequest({
+        full: true,
+        tables: ['stock_batches', 'purchase_orders', 'product_price_overrides'],
+        saveCursor: false,
+      }).catch(() => {});
+    }
+    return pullRequest({ full, tables, saveCursor: true });
+  }
+
+  async function pullRequest({ full = false, tables = null, saveCursor = true } = {}) {
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
     const branchId = SR.state.activeBranchId;
-    // Purchase orders were added after devices already had a cursor. An
-    // incremental pull would skip every order received before that cursor,
-    // and the till would not know which stock came from a received order.
-    // Ask for the whole table once, then keep up by the cursor.
+    // Stock and the orders it came from are always pulled in full. A cursor
+    // from before a receipt must not hide the cartons that are on the shelf.
+    const asking = tables || PULL_TABLES;
     const fullTables = [];
-    if (!full && !(tables && tables.length)) {
-      const primed = await SR.store.metaGet('pulled_purchase_orders');
-      if (!primed) fullTables.push('purchase_orders');
-    }
+    if (asking.includes('stock_batches')) fullTables.push('stock_batches');
+    if (asking.includes('purchase_orders')) fullTables.push('purchase_orders');
     let result;
     try {
       result = await SR.api.post('/api/sync/pull', {
@@ -233,7 +244,8 @@
         app_version: SR.APP_VERSION,
         since: since || undefined,
         branch_id: branchId || undefined,
-        tables: tables || PULL_TABLES,
+        include_all_branches: true,
+        tables: asking,
         full_tables: fullTables.length ? fullTables : undefined,
       }, { timeoutMs: 60000 });
     } catch (err) {
@@ -255,13 +267,14 @@
     // Only advance the cursor when the whole pull succeeded. Moving it past a
     // table that errored would make those rows permanently invisible to this
     // device — it would ask for "everything since" a moment the rows never
-    // arrived in.
-    if (result && result.cursor && !(result.tables && Object.values(result.tables).some((t) => t && t.error))) {
+    // arrived in. A shelf-only prefetch must not move it either: that request
+    // does not carry the catalogue.
+    if (saveCursor && result && result.cursor && !(result.tables && Object.values(result.tables).some((t) => t && t.error))) {
       await SR.store.metaSet('sync_cursor', result.cursor);
       if (fullTables.includes('purchase_orders') && result.tables && result.tables.purchase_orders && !result.tables.purchase_orders.error) {
         await SR.store.metaSet('pulled_purchase_orders', true);
       }
-    } else if (result && result.cursor) {
+    } else if (saveCursor && result && result.cursor) {
       // An errored table means the cursor is kept but flagged, so the UI can say
       // the mirror is incomplete rather than quietly pretending otherwise.
       await SR.store.metaSet('sync_incomplete_since', since || null);

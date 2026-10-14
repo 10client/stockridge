@@ -588,6 +588,7 @@ function mount(app, base = '/api') {
     // device is pulling a table it has never held, so a cursor from before that
     // table existed does not hide the rows already on the shelf.
     const fullTables = new Set(Array.isArray(body.full_tables) ? body.full_tables.map((t) => String(t).toLowerCase()) : []);
+    const includeAllBranches = body.include_all_branches === true || body.include_all_branches === 1 || body.include_all_branches === '1';
 
     // A first sync has no cursor and must get everything; a later sync gets only
     // what changed. The cap on a full sync matters — a 78-product catalogue with
@@ -617,7 +618,10 @@ function mount(app, base = '/api') {
         const ids = [...scope.branchIds];
         where.push(`(branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',')}))`);
         params.push(...ids);
-      } else if (spec.branchScoped && branch) {
+      } else if (spec.branchScoped && branch && !includeAllBranches) {
+        // A named shop used to cut the mirror down to that shop. An owner who
+        // synced while standing in one business then lost the line in another
+        // had no shelf there. Scope still limits a pinned cashier.
         where.push('(branch_id IS NULL OR branch_id = ?)'); params.push(String(branch.id));
       }
       if (since && !fullTables.has(table)) { where.push('updated_at > ?'); params.push(since); }
@@ -629,6 +633,7 @@ function mount(app, base = '/api') {
         out[table] = { error: e.message, rows: [] };
         continue;
       }
+      if (table === 'stock_batches' && rows.length) rows = await attachStockProductNames(db, rows);
       out[table] = { rows, count: rows.length, truncated: rows.length >= perTableLimit };
       totalRows += rows.length;
     }
@@ -833,6 +838,38 @@ const PULLABLE = {
 };
 
 /** Strip anything a device should not carry around. */
+/**
+ * The till searches the shelf, not the 11,000-row catalogue. A phone that
+ * never finishes downloading every market name must still know that the
+ * cover shoe on the shelf is called a shoe. The name rides on the batch.
+ */
+async function attachStockProductNames(db, rows) {
+  const ids = [...new Set(rows.map((r) => r && r.product_id).filter(Boolean).map(String))];
+  const byId = new Map();
+  for (let i = 0; i < ids.length; i += 80) {
+    const chunk = ids.slice(i, i + 80);
+    const found = await db.all(
+      `SELECT id, name, sku, brand, model_no, selling_price, is_active, base_unit_name
+         FROM products WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      chunk,
+    );
+    for (const p of found || []) byId.set(String(p.id), p);
+  }
+  return rows.map((r) => {
+    const p = byId.get(String(r.product_id));
+    if (!p) return r;
+    return Object.assign({}, r, {
+      product_name: p.name,
+      product_sku: p.sku,
+      product_brand: p.brand,
+      product_model_no: p.model_no,
+      product_selling_price: p.selling_price,
+      product_active: p.is_active,
+      product_base_unit: p.base_unit_name,
+    });
+  });
+}
+
 function redactSettings(row) {
   const out = { ...row };
   for (const k of ['logo_data_url']) delete out[k]; // large, and branding has its own public endpoint

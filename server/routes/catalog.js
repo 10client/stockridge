@@ -267,7 +267,10 @@ function mount(app, base = '/api') {
     // Other verticals are not given them. A virtual Greenbook id is not listed:
     // that was the Add button.
     let ownCatalogue = false;
-    if (businessId) {
+    // Filing the Greenbook is a catalogue job. Doing it on every till
+    // keystroke made a dispensary search wait on thousands of registrations,
+    // and a phone that gave up then searched an empty device.
+    if (businessId && !forSale) {
       const focused = await db.first(
         'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
         [String(businessId)],

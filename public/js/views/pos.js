@@ -156,11 +156,20 @@
       }
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
-      try {
-        const data = await SR.api.get('/api/products', { query: SR.state.query({ q, limit: 20, for_sale: '1' }) });
-        hits = data.data || [];
-        source = 'server';
-      } catch (err) {
+      const offline = !SR.api.isOnline() || (typeof navigator !== 'undefined' && navigator.onLine === false);
+      // Offline must not wait on a request that cannot succeed. A failed fetch
+      // that comes back as an empty page used to be treated as "nothing matches".
+      if (!offline) {
+        try {
+          const data = await SR.api.get('/api/products', { query: SR.state.query({ q, limit: 20, for_sale: '1' }) });
+          if (!data || !Array.isArray(data.data)) throw new Error('The till search did not return a list.');
+          hits = data.data;
+          source = 'server';
+        } catch (err) {
+          hits = await searchMirror(q);
+          source = 'device';
+        }
+      } else {
         hits = await searchMirror(q);
         source = 'device';
       }
@@ -201,59 +210,84 @@
       return btn;
     }
 
-    const RECEIVED_PO = new Set(['PARTIALLY_RECEIVED', 'RECEIVED']);
-
     /**
      * What this device can sell right now: active batches at this shop that
-     * came in on a received purchase order, after any sale already queued here.
-     * A purchase-order row that has not been pulled yet does not hide the
-     * batch — the batch link is the receipt. A row that is present and is not
-     * received does hide it.
+     * still have quantity, after any sale already queued here. The product
+     * name is read off the batch when the catalogue row was never downloaded.
      */
     async function sellableIndex() {
       const branchId = SR.state.activeBranchId;
-      const [batches, orders] = await Promise.all([
-        SR.store.all('stock_batches').catch(() => []),
-        SR.store.all('purchase_orders').catch(() => []),
-      ]);
-      const poStatus = new Map();
-      for (const po of orders) {
-        if (Number(po.is_deleted)) continue;
-        poStatus.set(String(po.id), String(po.status || '').toUpperCase());
-      }
+      const batches = await SR.store.all('stock_batches').catch(() => []);
       const byProduct = new Map();
       const rows = [];
       for (const b of batches) {
         if (Number(b.is_deleted)) continue;
-        if (String(b.status || '').toUpperCase() !== 'ACTIVE') continue;
+        const status = String(b.status || 'ACTIVE').toUpperCase();
+        if (status === 'QUARANTINED' || status === 'EXPIRED' || status === 'DEPLETED') continue;
         if (branchId && String(b.branch_id) !== String(branchId)) continue;
-        if (!b.purchase_order_id) continue;
-        const status = poStatus.get(String(b.purchase_order_id));
-        if (status && !RECEIVED_PO.has(status)) continue;
         const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
         if (!(avail > 0)) continue;
         const id = String(b.product_id);
-        byProduct.set(id, (byProduct.get(id) || 0) + avail);
+        const cur = byProduct.get(id) || {
+          on_hand: 0,
+          name: b.product_name || '',
+          sku: b.product_sku || '',
+          brand: b.product_brand || '',
+          model: b.product_model_no || '',
+          price: 0,
+        };
+        cur.on_hand += avail;
+        if (!cur.name && b.product_name) cur.name = b.product_name;
+        if (!cur.sku && b.product_sku) cur.sku = b.product_sku;
+        if (!cur.brand && b.product_brand) cur.brand = b.product_brand;
+        if (!cur.model && b.product_model_no) cur.model = b.product_model_no;
+        const batchPrice = Number(b.selling_price_per_unit) || Number(b.product_selling_price) || 0;
+        if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
+        byProduct.set(id, cur);
         rows.push(b);
       }
       return { byProduct, rows, branchId };
     }
 
     async function searchMirror(term) {
-      const needle = term.toLowerCase();
+      const needle = String(term || '').toLowerCase();
       const stock = await sellableIndex();
       if (!stock.byProduct.size) return [];
-      const products = await SR.store.all('products', {
-        where: (p) => !Number(p.is_deleted) && Number(p.is_active) === 1 && stock.byProduct.has(String(p.id)),
-      });
-      const matches = products.filter((p) => (
-        String(p.name || '').toLowerCase().includes(needle)
-        || String(p.sku || '').toLowerCase().includes(needle)
-        || String(p.brand || '').toLowerCase().includes(needle)
-        || String(p.model_no || '').toLowerCase().includes(needle)
-      ));
-      const priced = await withShopPrice(matches.slice(0, 20));
-      return priced.map((p) => Object.assign({}, p, { on_hand: stock.byProduct.get(String(p.id)) || 0 }));
+      // Look up only the products that are on the shelf. Loading the whole
+      // catalogue here used to fail on a phone, and the till then said nothing
+      // matched even though the shoe was in the stock it already held.
+      const hits = [];
+      for (const [id, info] of stock.byProduct) {
+        const product = await SR.store.get('products', id).catch(() => null);
+        if (product && Number(product.is_deleted)) continue;
+        if (product && Number(product.is_active) === 0) continue;
+        const name = (product && product.name) || info.name || '';
+        const sku = (product && product.sku) || info.sku || '';
+        const brand = (product && product.brand) || info.brand || '';
+        const model = (product && product.model_no) || info.model || '';
+        const blob = `${name} ${sku} ${brand} ${model}`.toLowerCase();
+        if (!blob.includes(needle)) continue;
+        const price = product && Number(product.selling_price) > 0
+          ? Number(product.selling_price)
+          : (info.price || 0);
+        hits.push(Object.assign({}, product || {
+          id,
+          name,
+          sku,
+          brand,
+          model_no: model,
+          is_active: 1,
+          base_unit_name: 'PIECE',
+        }, {
+          name,
+          sku,
+          brand,
+          on_hand: info.on_hand,
+          selling_price: price,
+        }));
+        if (hits.length >= 20) break;
+      }
+      return withShopPrice(hits);
     }
 
     /**
