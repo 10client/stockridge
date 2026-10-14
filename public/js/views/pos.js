@@ -146,10 +146,18 @@
     const doSearch = U.debounce(async (term) => {
       const q = String(term || '').trim();
       if (q.length < 2) { results.hidden = true; results.replaceChildren(); return; }
+      if (!SR.state.activeBranchId) {
+        results.replaceChildren();
+        results.appendChild(ui.h('div', { class: 'pos-hit' },
+          ui.h('div', { class: 'ph-name' }, 'Pick a shop before you sell.'),
+          ui.h('div', { class: 'ph-meta' }, 'A sale has to come out of one shop’s received stock.')));
+        results.hidden = false;
+        return;
+      }
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
       try {
-        const data = await SR.api.get('/api/products', { query: SR.state.query({ q, limit: 20 }) });
+        const data = await SR.api.get('/api/products', { query: SR.state.query({ q, limit: 20, for_sale: '1' }) });
         hits = data.data || [];
         source = 'server';
       } catch (err) {
@@ -159,8 +167,13 @@
       if (seq !== searchSeq) return;
       results.replaceChildren();
       if (!hits.length) {
-        results.appendChild(ui.h('div', { class: 'pos-hit' }, ui.h('div', { class: 'ph-name' }, `Nothing matches “${q}”.`),
-          ui.h('div', { class: 'ph-meta' }, 'Check the spelling, or add the product under Catalogue.')));
+        const recorded = source === 'device' ? await sellableIndex() : null;
+        const noneYet = recorded && recorded.byProduct.size === 0;
+        results.appendChild(ui.h('div', { class: 'pos-hit' },
+          ui.h('div', { class: 'ph-name' }, noneYet ? 'No received stock on this device yet.' : `Nothing in stock matches “${q}”.`),
+          ui.h('div', { class: 'ph-meta' }, noneYet
+            ? 'Connect once so the till can download what was received. It then sells from that record when the line drops.'
+            : 'The till only offers goods received on a purchase order that are still on the shelf.')));
       } else {
         if (source === 'device') {
           results.appendChild(ui.h('div', { class: 'pos-hit' }, ui.h('div', { class: 'ph-meta' }, 'Offline — results are from this device\'s last sync.')));
@@ -188,22 +201,59 @@
       return btn;
     }
 
+    const RECEIVED_PO = new Set(['PARTIALLY_RECEIVED', 'RECEIVED']);
+
+    /**
+     * What this device can sell right now: active batches at this shop that
+     * came in on a received purchase order, after any sale already queued here.
+     * A purchase-order row that has not been pulled yet does not hide the
+     * batch — the batch link is the receipt. A row that is present and is not
+     * received does hide it.
+     */
+    async function sellableIndex() {
+      const branchId = SR.state.activeBranchId;
+      const [batches, orders] = await Promise.all([
+        SR.store.all('stock_batches').catch(() => []),
+        SR.store.all('purchase_orders').catch(() => []),
+      ]);
+      const poStatus = new Map();
+      for (const po of orders) {
+        if (Number(po.is_deleted)) continue;
+        poStatus.set(String(po.id), String(po.status || '').toUpperCase());
+      }
+      const byProduct = new Map();
+      const rows = [];
+      for (const b of batches) {
+        if (Number(b.is_deleted)) continue;
+        if (String(b.status || '').toUpperCase() !== 'ACTIVE') continue;
+        if (branchId && String(b.branch_id) !== String(branchId)) continue;
+        if (!b.purchase_order_id) continue;
+        const status = poStatus.get(String(b.purchase_order_id));
+        if (status && !RECEIVED_PO.has(status)) continue;
+        const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
+        if (!(avail > 0)) continue;
+        const id = String(b.product_id);
+        byProduct.set(id, (byProduct.get(id) || 0) + avail);
+        rows.push(b);
+      }
+      return { byProduct, rows, branchId };
+    }
+
     async function searchMirror(term) {
       const needle = term.toLowerCase();
-      const [products, variants, barcodes, units] = await Promise.all([
-        SR.store.all('products', { where: (p) => !Number(p.is_deleted) }),
-        SR.store.all('product_variants', { where: (v) => !Number(v.is_deleted) }).catch(() => []),
-        SR.store.all('product_barcodes').catch(() => []),
-        SR.store.all('product_units', { where: (u) => !Number(u.is_deleted) }).catch(() => []),
-      ]);
+      const stock = await sellableIndex();
+      if (!stock.byProduct.size) return [];
+      const products = await SR.store.all('products', {
+        where: (p) => !Number(p.is_deleted) && Number(p.is_active) === 1 && stock.byProduct.has(String(p.id)),
+      });
       const matches = products.filter((p) => (
         String(p.name || '').toLowerCase().includes(needle)
         || String(p.sku || '').toLowerCase().includes(needle)
         || String(p.brand || '').toLowerCase().includes(needle)
         || String(p.model_no || '').toLowerCase().includes(needle)
       ));
-      void variants; void barcodes; void units;
-      return withShopPrice(matches.slice(0, 20));
+      const priced = await withShopPrice(matches.slice(0, 20));
+      return priced.map((p) => Object.assign({}, p, { on_hand: stock.byProduct.get(String(p.id)) || 0 }));
     }
 
     /**
@@ -246,14 +296,20 @@
       const code = String(raw || '').trim();
       if (!code) return;
       try {
-        const data = await SR.api.get('/api/catalogue/scan', { query: SR.state.query({ code }) });
+        const data = await SR.api.get('/api/catalogue/scan', { query: SR.state.query({ code, for_sale: '1' }) });
         if (data && data.product) {
+          if (data.product.on_hand == null && data.onHand != null) data.product.on_hand = data.onHand;
           addLine(data.product, { barcode: code, variantId: data.variant_id || null, unitCode: data.unit_code || null, serialNo: data.serial_no || null, units: data.units });
           flash(scanBox, true);
           scanInput.value = '';
           return;
         }
       } catch (err) {
+        if (err && err.code === 'NOT_IN_RECEIVED_STOCK') {
+          flash(scanBox, false);
+          ui.warn(err.message);
+          return;
+        }
         if (!err.isOffline && err.status !== 404) { ui.apiError(err); }
       }
       // Offline, or not found on the server: try the mirror, then fall back to
@@ -265,25 +321,76 @@
         scanInput.value = '';
         return;
       }
+      const known = (await SR.store.all('product_barcodes').catch(() => [])).find((b) => String(b.barcode) === code && !Number(b.is_deleted));
+      if (known) {
+        flash(scanBox, false);
+        ui.warn('That code is in the catalogue, but it is not on the shelf from a received purchase order.');
+        return;
+      }
       flash(scanBox, false);
       ui.warn(`No product with the code “${code}”. Searching by name instead.`);
       doSearch(code);
     }
 
     async function scanMirror(code) {
+      const stock = await sellableIndex();
+      const withStock = (product, extra) => {
+        if (!product || !stock.byProduct.has(String(product.id))) return null;
+        return Object.assign({ product: Object.assign({}, product, { on_hand: stock.byProduct.get(String(product.id)) || 0 }) }, extra);
+      };
       const barcodes = await SR.store.all('product_barcodes').catch(() => []);
       const hit = barcodes.find((b) => String(b.barcode) === code && !Number(b.is_deleted));
       if (hit) {
         const product = await SR.store.get('products', hit.product_id);
-        if (product) return { product, variantId: hit.variant_id || null, unitCode: hit.unit_code || null, units: hit.units, barcode: code };
+        const found = withStock(product, { variantId: hit.variant_id || null, unitCode: hit.unit_code || null, units: hit.units, barcode: code });
+        if (found) return found;
       }
       const serials = await SR.store.all('serial_numbers').catch(() => []);
       const serial = serials.find((s) => String(s.serial_no).toUpperCase() === code.toUpperCase());
       if (serial) {
         const product = await SR.store.get('products', serial.product_id);
-        if (product) return { product, serialNo: serial.serial_no, serialId: serial.id, unitCode: serial.unit_code || null, units: serial.units };
+        const found = withStock(product, { serialNo: serial.serial_no, serialId: serial.id, unitCode: serial.unit_code || null, units: serial.units });
+        if (found) return found;
       }
       return null;
+    }
+
+    /**
+     * Take the sale off the on-device stock before the server has seen it.
+     * The next search on this till must not offer units that were just rung
+     * up. The pull after a successful sync replaces these rows with the
+     * server's figures, which include the same sale.
+     */
+    async function applyLocalSale(lines) {
+      const stock = await sellableIndex();
+      const batches = stock.rows.slice().sort((a, b) => {
+        const ae = a.expiry_date ? 0 : 1;
+        const be = b.expiry_date ? 0 : 1;
+        if (ae !== be) return ae - be;
+        const exp = String(a.expiry_date || '').localeCompare(String(b.expiry_date || ''));
+        if (exp) return exp;
+        const rec = String(a.received_at || '').localeCompare(String(b.received_at || ''));
+        if (rec) return rec;
+        return String(a.batch_no || '').localeCompare(String(b.batch_no || '')) || String(a.id).localeCompare(String(b.id));
+      });
+      const changed = [];
+      for (const line of lines || []) {
+        let need = Number(line.quantity) * (Number(line.unitFactor) > 0 ? Number(line.unitFactor) : 1);
+        if (!(need > 0)) continue;
+        for (const b of batches) {
+          if (need <= 0) break;
+          if (String(b.product_id) !== String(line.productId)) continue;
+          if (line.variantId && b.variant_id && String(b.variant_id) !== String(line.variantId)) continue;
+          const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
+          if (!(avail > 0)) continue;
+          const take = Math.min(avail, need);
+          b.quantity = Number(b.quantity) - take;
+          if (Number(b.quantity) - Number(b.quantity_reserved || 0) <= 0) b.status = 'DEPLETED';
+          changed.push(b);
+          need -= take;
+        }
+      }
+      if (changed.length) await SR.store.putMany('stock_batches', changed);
     }
 
     scanInput.addEventListener('keydown', (ev) => {
@@ -1327,6 +1434,7 @@
     }
 
     async function queueOffline(payload) {
+      await applyLocalSale(cart.lines).catch(() => {});
       const record = await SR.store.enqueue({
         type: 'SALE',
         payload,

@@ -451,7 +451,7 @@
           ['Waiting to upload', U.qty(outboxCount)],
           ['Storage used', quotaMb ? `${usedMb} MB of about ${quotaMb} MB` : 'unknown'],
         ]),
-        ui.h('p', { class: 'sub' }, 'StockRidge keeps a copy of the tables it needs on this device so the till keeps working when the line drops. The server is still the system of record: this copy exists to survive the outage, not to replace it.'))));
+        ui.h('p', { class: 'sub' }, 'An installed till keeps stock quantities, prices, customers, received purchase orders and queued sales in the on-device store. A browser cannot open a native SQLite file, so that store is the database the till sells from when the line is down. The server remains the system of record: after each sync the device’s figures are replaced by the server’s.'))));
 
       stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'What is stored here'),

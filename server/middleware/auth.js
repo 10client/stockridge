@@ -32,6 +32,10 @@ const { ROLES, atLeast, isRole } = require('../../domain/roles');
 const { HttpError } = require('../lib/http');
 
 const TOKEN_TTL_SECONDS = 12 * 60 * 60; // one long shop day including overtime
+// A till that asked to stay signed in. Long enough that a counter does not
+// retype a PIN every morning, short enough that a lost phone is not a
+// permanent key. The PIN itself is never stored on the device.
+const REMEMBER_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 /** Everything about a user that the app needs on every request. */
 const USER_SELECT = `
@@ -105,9 +109,10 @@ async function resolveScope(db, user) {
  * token must not survive the change) and then start a fresh one for the person who proved the
  * new PIN. That is exactly what the caller of this function does.
  */
-async function startSession(db, user, secret, { deviceId = null, userAgent = null } = {}) {
+async function startSession(db, user, secret, { deviceId = null, userAgent = null, remember = false } = {}) {
   const sessionId = newId();
-  const token = await signToken({ sub: user.id, role: user.role, sid: sessionId }, secret, { ttlSeconds: TOKEN_TTL_SECONDS });
+  const ttlSeconds = remember ? REMEMBER_TTL_SECONDS : TOKEN_TTL_SECONDS;
+  const token = await signToken({ sub: user.id, role: user.role, sid: sessionId }, secret, { ttlSeconds });
 
   // Single active session per user. INSERT OR REPLACE is atomic and means a
   // second sign-in silently retires the first; the retired device gets a
@@ -127,7 +132,7 @@ async function startSession(db, user, secret, { deviceId = null, userAgent = nul
   return { token, sessionId };
 }
 
-async function login(db, { username, pin, secret, deviceId = null, userAgent = null }) {
+async function login(db, { username, pin, secret, deviceId = null, userAgent = null, remember = false }) {
   const uname = String(username || '').trim().toLowerCase();
   if (!uname) throw new HttpError('Enter your username.', { status: 400, code: 'USERNAME_REQUIRED' });
   if (pin == null || String(pin).trim() === '') throw new HttpError('Enter your PIN.', { status: 400, code: 'PIN_REQUIRED' });
@@ -166,7 +171,7 @@ async function login(db, { username, pin, secret, deviceId = null, userAgent = n
   const user = await loadUser(db, row.id);
   if (!user) throw new HttpError('This account could not be loaded. Ask a manager to check it.', { status: 403, code: 'ACCOUNT_UNAVAILABLE' });
 
-  const { token, sessionId } = await startSession(db, user, secret, { deviceId, userAgent });
+  const { token, sessionId } = await startSession(db, user, secret, { deviceId, userAgent, remember: Boolean(remember) });
   await db.run("UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [String(user.id)]);
 
   const scope = await resolveScope(db, user);

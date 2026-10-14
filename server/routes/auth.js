@@ -100,7 +100,8 @@ function mount(app, base = '/api/auth', makeEnv = null) {
     }
 
     try {
-      const result = await login(db, { username, pin: String(rawPin), secret, deviceId, userAgent });
+      const remember = body.remember === true || body.remember === 1 || body.remember === '1';
+      const result = await login(db, { username, pin: String(rawPin), secret, deviceId, userAgent, remember });
       await recordLoginAttempt(db, { username, userId: result.user.id, succeeded: true, ipAddress, userAgent });
       await recordFromCtx(ctx, { action: 'LOGIN_SUCCESS', entityType: 'USER', entityId: result.user.id });
 

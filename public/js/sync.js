@@ -10,9 +10,13 @@
 //          hiccup and stays PENDING for the next attempt.
 //
 //   PULL — the mirror. Reference data (catalogue, prices, customers, stock as at
-//          last sync) so the POS can price a cart with no network. It runs on a
-//          cursor, so a normal sync moves a few rows rather than the whole
-//          catalogue.
+//          last sync, and the purchase orders that stock was received on) so the
+//          POS can price a cart with no network. It runs on a cursor, so a normal
+//          sync moves a few rows rather than the whole catalogue.
+//
+//          An installed PWA cannot open a native SQLite file. This IndexedDB
+//          mirror is the on-device database: stock quantities, prices, customers,
+//          received orders, and the outbox. The browser is asked to keep it.
 //
 // ORDER MATTERS. A device's queued sale must reach the server BEFORE that device
 // pulls a fresh mirror, or the pull would overwrite the local stock figures with
@@ -29,7 +33,7 @@
     'businesses', 'branches', 'users', 'customer_classes', 'customers',
     'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes',
     'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers',
-    'stock_batches', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
+    'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
   ];
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;
@@ -213,6 +217,15 @@
 
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
     const branchId = SR.state.activeBranchId;
+    // Purchase orders were added after devices already had a cursor. An
+    // incremental pull would skip every order received before that cursor,
+    // and the till would not know which stock came from a received order.
+    // Ask for the whole table once, then keep up by the cursor.
+    const fullTables = [];
+    if (!full && !(tables && tables.length)) {
+      const primed = await SR.store.metaGet('pulled_purchase_orders');
+      if (!primed) fullTables.push('purchase_orders');
+    }
     let result;
     try {
       result = await SR.api.post('/api/sync/pull', {
@@ -221,6 +234,7 @@
         since: since || undefined,
         branch_id: branchId || undefined,
         tables: tables || PULL_TABLES,
+        full_tables: fullTables.length ? fullTables : undefined,
       }, { timeoutMs: 60000 });
     } catch (err) {
       lastError = err.message;
@@ -244,6 +258,9 @@
     // arrived in.
     if (result && result.cursor && !(result.tables && Object.values(result.tables).some((t) => t && t.error))) {
       await SR.store.metaSet('sync_cursor', result.cursor);
+      if (fullTables.includes('purchase_orders') && result.tables && result.tables.purchase_orders && !result.tables.purchase_orders.error) {
+        await SR.store.metaSet('pulled_purchase_orders', true);
+      }
     } else if (result && result.cursor) {
       // An errored table means the cursor is kept but flagged, so the UI can say
       // the mirror is incomplete rather than quietly pretending otherwise.

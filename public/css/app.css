@@ -159,6 +159,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .field-reveal { position: absolute; right: 6px; bottom: 6px; background: none; border: 0; color: var(--green-700); font-size: .78rem; font-weight: 600; cursor: pointer; padding: 6px 8px; border-radius: 6px; }
 .login-foot { display: flex; gap: 8px; align-items: center; justify-content: center; margin-top: 18px; font-size: .8rem; color: var(--ink-500); }
 .login-hint { margin: 14px 0 0; font-size: .8rem; color: var(--ink-500); background: var(--amber-100); padding: 10px 12px; border-radius: var(--radius-sm); }
+.remember-line { display: flex; align-items: flex-start; gap: 8px; margin: -4px 0 16px; font-size: .84rem; color: var(--ink-700); line-height: 1.35; }
+.remember-line input { margin-top: 2px; flex: none; }
+.login-continue { margin-top: 10px; }
 .dot { color: var(--line-strong); }
 
 /* ------------------------------ shell ------------------------------- */

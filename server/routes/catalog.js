@@ -150,6 +150,44 @@ async function fileCategoriesAlphabetically(db, businessId) {
   return rows;
 }
 
+/**
+ * Stock the till is allowed to sell: still on the shelf, and received against
+ * a purchase order. A catalogue row that was never received, a direct receipt
+ * with no order, and a cancelled order are not offered at the counter.
+ * PARTIALLY_RECEIVED counts — the cartons that arrived are stock.
+ */
+function receivedStockExpr(productAlias = 'p') {
+  return `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0)
+    FROM stock_batches sb
+    INNER JOIN purchase_orders po ON po.id = sb.purchase_order_id
+      AND po.is_deleted = 0 AND po.status IN ('PARTIALLY_RECEIVED','RECEIVED')
+    WHERE sb.product_id = ${productAlias}.id AND sb.branch_id = ?
+      AND sb.is_deleted = 0 AND sb.status = 'ACTIVE')`;
+}
+
+async function receivedAvailable(db, productId, branchId) {
+  const n = await db.scalar(
+    `SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0)
+     FROM stock_batches sb
+     INNER JOIN purchase_orders po ON po.id = sb.purchase_order_id
+       AND po.is_deleted = 0 AND po.status IN ('PARTIALLY_RECEIVED','RECEIVED')
+     WHERE sb.product_id = ? AND sb.branch_id = ? AND sb.is_deleted = 0 AND sb.status = 'ACTIVE'`,
+    [String(productId), String(branchId)],
+  );
+  return Number(n) || 0;
+}
+
+async function assertSellable(db, productId, branchId, name) {
+  const available = await receivedAvailable(db, productId, branchId);
+  if (!(available > 0)) {
+    throw new HttpError(
+      `“${name || 'That product'}” is not on the shelf from a received purchase order. The till only sells goods that were received on a purchase order and still have stock.`,
+      { status: 404, code: 'NOT_IN_RECEIVED_STOCK' },
+    );
+  }
+  return available;
+}
+
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // PRODUCTS
@@ -168,7 +206,11 @@ function mount(app, base = '/api') {
     const categoryId = ctx.req.queryParam('category_id');
     const activeOnly = ctx.req.queryParam('active') !== '0';
     const lowStock = ctx.req.queryParam('low_stock') === '1';
-    const branch = lowStock ? await resolveBranch(db, ctx) : null;
+    // The catalogue keeps listing goods that have not been received yet — that
+    // is how a purchase order is raised. The till passes for_sale=1 and must
+    // not be offered those rows, or a name that was never received.
+    const forSale = ctx.req.queryParam('for_sale') === '1';
+    const branch = (lowStock || forSale) ? await resolveBranch(db, ctx) : null;
 
     const where = ['p.is_deleted = 0'];
     const params = [];
@@ -204,12 +246,20 @@ function mount(app, base = '/api') {
     // On-hand stock is a correlated subquery rather than a join, because a join
     // over stock_batches would multiply product rows by batch count and then need
     // re-grouping; for a list screen the subquery is both simpler and faster.
-    const stockExpr = branch
+    // A sale search counts only stock received on a purchase order, so the
+    // figure beside the name is the quantity the till is allowed to ring.
+    const stockExpr = forSale
+      ? receivedStockExpr('p')
+      : branch
       ? `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) FROM stock_batches sb
           WHERE sb.product_id = p.id AND sb.branch_id = ? AND sb.is_deleted = 0
             AND sb.status NOT IN ('QUARANTINED','EXPIRED'))`
       : `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) FROM stock_batches sb
           WHERE sb.product_id = p.id AND sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED'))`;
+    if (forSale) {
+      where.push(`${receivedStockExpr('p')} > 0`);
+      params.push(String(branch.id));
+    }
 
     // A pharmaceutical business owns every NAFDAC registration as one of its
     // own products. File any that are missing before the list is read, so the
@@ -710,6 +760,7 @@ function mount(app, base = '/api') {
     const scope = ctx.get('scope');
     const code = (ctx.req.queryParam('code') || ctx.req.queryParam('barcode') || '').trim();
     if (!code) throw new HttpError('Pass ?code= with the scanned value.', { status: 400, code: 'MISSING_FIELD' });
+    const forSale = ctx.req.queryParam('for_sale') === '1';
     const branch = await resolveBranch(db, ctx);
 
     // Exact match first. A LIKE search on a scan would let a damaged barcode
@@ -737,7 +788,8 @@ function mount(app, base = '/api') {
           ORDER BY (p.business_id IS NULL) ASC
           LIMIT 1`, scanBiz ? [code.toUpperCase(), code.toUpperCase(), scanBiz] : [code.toUpperCase(), code.toUpperCase()]);
       if (!bySku) throw new HttpError(`Nothing in your catalogue matches “${code}”. Check the barcode, or add the product under Products.`, { status: 404, code: 'SCAN_NOT_FOUND' });
-      return ctx.json({ ok: true, matchedBy: 'SKU', ...(await productPayload(db, bySku, branch, scope)) });
+      if (forSale) await assertSellable(db, bySku.id, branch.id, bySku.name);
+      return ctx.json({ ok: true, matchedBy: 'SKU', ...(await productPayload(db, bySku, branch, scope, null, null, { sellableOnly: forSale })) });
     }
 
     const scopeCheck = scopeFilter(scope, { alias: 'p' });
@@ -745,7 +797,8 @@ function mount(app, base = '/api') {
       const allowed = await db.first(`SELECT p.id FROM products p WHERE p.id = ? AND ${scopeCheck.sql}`, [hit.id, ...scopeCheck.params]);
       if (!allowed) throw new HttpError('That product belongs to a different business.', { status: 403, code: 'SCOPE_VIOLATION' });
     }
-    ctx.json({ ok: true, matchedBy: 'BARCODE', ...(await productPayload(db, hit, branch, scope, hit.scanned_unit, hit.barcode_variant_id)) });
+    if (forSale) await assertSellable(db, hit.id, branch.id, hit.name);
+    ctx.json({ ok: true, matchedBy: 'BARCODE', ...(await productPayload(db, hit, branch, scope, hit.scanned_unit, hit.barcode_variant_id, { sellableOnly: forSale })) });
   });
 
   // -------------------------------------------------------------------
@@ -1287,7 +1340,8 @@ function mount(app, base = '/api') {
 }
 
 /** The payload a POS scan needs: price, units, variants and stock at this branch. */
-async function productPayload(db, product, branch, scope, scannedUnit = null, barcodeVariantId = null) {
+async function productPayload(db, product, branch, scope, scannedUnit = null, barcodeVariantId = null, options = {}) {
+  const sellableOnly = Boolean(options && options.sellableOnly);
   // `measures`, NOT `measure`. This destructured the array as `measure` and then returned
   // `measures` twenty lines down, so EVERY call to productPayload threw
   // `ReferenceError: measures is not defined` — and both callers are the barcode scan at the
@@ -1302,7 +1356,13 @@ async function productPayload(db, product, branch, scope, scannedUnit = null, ba
     // (product_id, axis)` means a product may legitimately carry several rows,
     // so `first()` here was picking whichever the planner happened to return.
     db.all('SELECT * FROM product_measures WHERE product_id = ? AND is_deleted = 0 ORDER BY axis', [product.id]),
-    db.all(`SELECT sb.*, sb.quantity - sb.quantity_reserved AS available FROM stock_batches sb
+    db.all(sellableOnly
+      ? `SELECT sb.*, sb.quantity - sb.quantity_reserved AS available FROM stock_batches sb
+      INNER JOIN purchase_orders po ON po.id = sb.purchase_order_id
+        AND po.is_deleted = 0 AND po.status IN ('PARTIALLY_RECEIVED','RECEIVED')
+      WHERE sb.product_id = ? AND sb.branch_id = ? AND sb.is_deleted = 0 AND sb.status = 'ACTIVE'
+      ORDER BY sb.expiry_date IS NULL, sb.expiry_date, sb.received_at, sb.batch_no, sb.id`
+      : `SELECT sb.*, sb.quantity - sb.quantity_reserved AS available FROM stock_batches sb
       WHERE sb.product_id = ? AND sb.branch_id = ? AND sb.is_deleted = 0 AND sb.status = 'ACTIVE'
       ORDER BY sb.expiry_date IS NULL, sb.expiry_date, sb.received_at, sb.batch_no, sb.id`, [product.id, branch.id]),
     db.all('SELECT * FROM product_price_overrides WHERE product_id = ? AND branch_id = ? AND is_deleted = 0', [product.id, branch.id]),
@@ -1327,8 +1387,13 @@ async function productPayload(db, product, branch, scope, scannedUnit = null, ba
   const pricedProduct = shopPrice > 0 && !(catalogue > 0)
     ? Object.assign({}, product, { selling_price: round2(shopPrice), catalogue_price: catalogue })
     : product;
+  // The till reads on_hand off the product, not off the payload. A sale scan
+  // must carry the received-order quantity, or the cart has no ceiling.
+  const handed = sellableOnly
+    ? Object.assign({}, pricedProduct, { on_hand: round2(onHand) })
+    : pricedProduct;
   return {
-    product: pricedProduct,
+    product: handed,
     category_name: product.category_name,
     units,
     variants,

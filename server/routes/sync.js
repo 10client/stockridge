@@ -584,6 +584,10 @@ function mount(app, base = '/api') {
     // was just corrected. An unreadable cursor pulls everything rather than
     // returning an empty delta that looks like "nothing changed".
     const since = sinceRaw ? toUtcSql(sinceRaw) : null;
+    // A table named here ignores the cursor for this request only. Used when a
+    // device is pulling a table it has never held, so a cursor from before that
+    // table existed does not hide the rows already on the shelf.
+    const fullTables = new Set(Array.isArray(body.full_tables) ? body.full_tables.map((t) => String(t).toLowerCase()) : []);
 
     // A first sync has no cursor and must get everything; a later sync gets only
     // what changed. The cap on a full sync matters — a 78-product catalogue with
@@ -597,7 +601,7 @@ function mount(app, base = '/api') {
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
-      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings'];
+      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings'];
 
     const out = {};
     let totalRows = 0;
@@ -616,7 +620,7 @@ function mount(app, base = '/api') {
       } else if (spec.branchScoped && branch) {
         where.push('(branch_id IS NULL OR branch_id = ?)'); params.push(String(branch.id));
       }
-      if (since) { where.push('updated_at > ?'); params.push(since); }
+      if (since && !fullTables.has(table)) { where.push('updated_at > ?'); params.push(since); }
       const cols = spec.columns ? spec.columns.join(', ') : '*';
       let rows;
       try {
@@ -821,6 +825,7 @@ const PULLABLE = {
   product_price_overrides: { businessScoped: false, branchScoped: true, orderBy: 'product_id' },
   suppliers: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   stock_batches: { businessScoped: true, branchScoped: true, orderBy: 'product_id, batch_no' },
+  purchase_orders: { businessScoped: true, branchScoped: true, orderBy: 'ordered_at' },
   deposits: { businessScoped: true, branchScoped: true, orderBy: 'expires_at' },
   instalment_plans: { businessScoped: true, branchScoped: true, orderBy: 'next_due_date' },
   delivery_jobs: { businessScoped: true, branchScoped: true, orderBy: 'created_at DESC' },

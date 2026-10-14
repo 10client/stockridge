@@ -74,10 +74,16 @@
         <button type="button" class="field-reveal" id="login-reveal" aria-label="Show PIN">Show</button>
       </label>
 
+      <label class="remember-line" for="login-remember">
+        <input id="login-remember" name="remember" type="checkbox" checked>
+        <span>Keep this till signed in on this device</span>
+      </label>
+
       <div id="login-error" class="alert alert-danger" hidden role="alert"></div>
       <div id="login-notice" class="alert alert-info" hidden></div>
 
       <button type="submit" class="btn btn-primary btn-block" id="login-submit">Sign in</button>
+      <button type="button" class="btn btn-block login-continue" id="login-offline-continue" hidden>Continue offline with this till</button>
     </form>
 
     <div class="login-foot">
@@ -86,8 +92,8 @@
       <span id="login-net" class="net-line">Checking connection…</span>
     </div>
     <p class="login-hint" id="login-offline-hint" hidden>
-      You are offline. If you have signed in on this device before you can still
-      continue — your queued work will sync when the line returns.
+      You are offline. This till sells from the stock last recorded on this device.
+      Sign in when the line is back and the queued sales go up by themselves.
     </p>
   </div>
 </main>
@@ -265,6 +271,14 @@
   // by a service worker install, and a device that has never loaded the app
   // still gets a usable screen if registration fails.
   if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
+    });
+  }
+</script>
+</body>
+</html>
+rker' in navigator) {
     window.addEventListener('load', function () {
       navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function () {});
     });

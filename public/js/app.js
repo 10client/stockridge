@@ -362,11 +362,30 @@
     } catch (err) { /* offline, or the deployment has no settings row yet: the shell's markup stands */ }
   }
 
+  const TILL_KEY = 'sr.till';
+  function readTill() {
+    try { return JSON.parse(localStorage.getItem(TILL_KEY) || 'null'); } catch (e) { return null; }
+  }
+  function writeTill(value) {
+    try {
+      if (value) localStorage.setItem(TILL_KEY, JSON.stringify({ username: value.username || '', remember: Boolean(value.remember) }));
+      else localStorage.removeItem(TILL_KEY);
+    } catch (e) { /* private mode: the session still lives for this tab */ }
+  }
+  function applyRememberedLogin() {
+    const till = readTill();
+    const u = document.getElementById('login-username');
+    const box = document.getElementById('login-remember');
+    if (u && till && till.username && !u.value) u.value = till.username;
+    if (box) box.checked = !till || till.remember !== false;
+  }
+
   function showLogin() {
     ui.endPageNow();
     showBoot(false);
     document.getElementById('shell').hidden = true;
     document.getElementById('login-screen').hidden = false;
+    applyRememberedLogin();
     const u = document.getElementById('login-username');
     if (u && !u.value) setTimeout(() => u.focus(), 60);
     updateNetChrome();
@@ -586,16 +605,25 @@
       if (t) {
         t.textContent = SR.state.user
           ? 'Everything you do is saved on this device and sent automatically when the line returns.'
-          : 'Sign in once with a connection to use this device offline.';
+          : 'Sign in once with a connection. After that this till sells from the stock last recorded here.';
       }
     }
     const loginNet = document.getElementById('login-net');
     if (loginNet) loginNet.textContent = online ? 'Connected' : 'No connection';
     const hint = document.getElementById('login-offline-hint');
-    if (hint) {
+    const cont = document.getElementById('login-offline-continue');
+    if (hint || cont) {
       // Only promise an offline sign-in if this device actually has a session to
-      // fall back on.
-      SR.store.metaGet('me').then((cached) => { hint.hidden = online || !cached; }).catch(() => { hint.hidden = true; });
+      // fall back on, and only auto-continue when the till was asked to stay signed in.
+      SR.store.metaGet('me').then((cached) => {
+        const till = readTill();
+        const canContinue = Boolean(cached && cached.user && till && till.remember);
+        if (hint) hint.hidden = online || !cached;
+        if (cont) cont.hidden = online || !canContinue;
+      }).catch(() => {
+        if (hint) hint.hidden = true;
+        if (cont) cont.hidden = true;
+      });
     }
   }
 
@@ -787,6 +815,8 @@
 
     const username = String(usernameEl.value || '').trim().toLowerCase();
     const pin = String(pinEl.value || '').trim();
+    const rememberEl = document.getElementById('login-remember');
+    const remember = !rememberEl || rememberEl.checked;
     if (!username || !pin) {
       errEl.textContent = 'Enter your username and PIN.';
       errEl.hidden = false;
@@ -796,8 +826,9 @@
     submit.disabled = true;
     submit.textContent = 'Signing in…';
     try {
-      const result = await SR.api.login({ username, pin });
-      SR.api.setToken(result.token);
+      const result = await SR.api.login({ username, pin, remember });
+      writeTill({ username, remember });
+      SR.api.setToken(result.token, { remember });
       void form;
       await SR.state.load({ force: true });
       updateSubscriptionChrome();
@@ -814,6 +845,7 @@
         // nothing at all, which is not a login, it is a bypass.
         const cached = await SR.store.metaGet('me');
         if (cached && cached.user && String(cached.user.username).toLowerCase() === username) {
+          writeTill({ username, remember });
           await SR.state.loadFromMirror();
           SR.sync.start();
           navigate('/dashboard', { replace: true });
@@ -852,6 +884,8 @@
       } catch (e) { /* the queue survives either way */ }
     }
     await SR.api.logout();
+    const till = readTill();
+    if (till) writeTill({ username: till.username, remember: false });
     SR.state.clear();
     SR.sync.stop();
     closeUserMenu();
@@ -1055,13 +1089,24 @@
         restored = true;
       } catch (err) {
         if (err && err.isAuth) {
-          SR.api.setToken(null);
+          // A real refusal from the server. An offline miss is not one of those:
+          // the till keeps the last session and sells from the stock it holds.
+          const reachable = await SR.api.probe({ force: true });
+          if (reachable) SR.api.setToken(null);
+          else restored = Boolean(await SR.state.loadFromMirror());
         } else {
           // The server could not be reached. Fall back to the mirror, because a
           // counter at 7 a.m. with no line still has a day's work to do.
           const cached = await SR.state.loadFromMirror();
           restored = Boolean(cached);
         }
+      }
+    }
+    if (!restored) {
+      const till = readTill();
+      const reachable = SR.api.isOnline() ? true : await SR.api.probe({ force: true });
+      if (till && till.remember && !reachable) {
+        restored = Boolean(await SR.state.loadFromMirror());
       }
     }
 
@@ -1150,6 +1195,25 @@
     });
 
     document.getElementById('login-form').addEventListener('submit', doLogin);
+    const offlineContinue = document.getElementById('login-offline-continue');
+    if (offlineContinue) offlineContinue.addEventListener('click', async () => {
+      if (SR.api.isOnline()) return;
+      const till = readTill();
+      if (!till || !till.remember) {
+        ui.warn('Sign in once while connected, and leave “Keep this till signed in” ticked.');
+        return;
+      }
+      const cached = await SR.state.loadFromMirror();
+      if (!cached) {
+        ui.warn('This device has no saved till yet. Connect once and sign in.');
+        return;
+      }
+      SR.sync.start();
+      showShell();
+      const pos = { path: '/pos', roles: ['STAFF', 'MANAGER', 'OWNER'] };
+      navigate(allowed(pos) ? '/pos' : '/dashboard', { replace: true });
+      ui.warn('Selling from the stock last recorded on this device. It will sync when the line returns.');
+    });
     document.getElementById('login-reveal').addEventListener('click', () => {
       const pin = document.getElementById('login-pin');
       const btn = document.getElementById('login-reveal');

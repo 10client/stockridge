@@ -311,9 +311,12 @@
   // -------------------------------------------------------------------
   // auth
   // -------------------------------------------------------------------
-  async function login({ username, pin }) {
-    const out = await request('POST', '/api/auth/login', { body: { username, pin }, queue: false });
-    if (out.token) setToken(out.token);
+  async function login({ username, pin, remember = true }) {
+    const out = await request('POST', '/api/auth/login', {
+      body: { username, pin, remember: Boolean(remember) },
+      queue: false,
+    });
+    if (out.token) setToken(out.token, { remember: Boolean(remember) });
     return out;
   }
 
