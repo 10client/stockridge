@@ -235,12 +235,18 @@
           brand: b.product_brand || '',
           model: b.product_model_no || '',
           price: 0,
+          dispensing: b.product_dispensing_class || '',
+          controlled: Number(b.product_is_controlled) === 1 ? 1 : 0,
+          requiresSerial: Number(b.product_requires_serial) === 1 ? 1 : 0,
         };
         cur.on_hand += avail;
         if (!cur.name && b.product_name) cur.name = b.product_name;
         if (!cur.sku && b.product_sku) cur.sku = b.product_sku;
         if (!cur.brand && b.product_brand) cur.brand = b.product_brand;
         if (!cur.model && b.product_model_no) cur.model = b.product_model_no;
+        if (!cur.dispensing && b.product_dispensing_class) cur.dispensing = b.product_dispensing_class;
+        if (!cur.controlled && Number(b.product_is_controlled) === 1) cur.controlled = 1;
+        if (!cur.requiresSerial && Number(b.product_requires_serial) === 1) cur.requiresSerial = 1;
         const batchPrice = Number(b.selling_price_per_unit) || Number(b.product_selling_price) || 0;
         if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
         byProduct.set(id, cur);
@@ -278,6 +284,9 @@
           model_no: model,
           is_active: 1,
           base_unit_name: 'PIECE',
+          dispensing_class: info.dispensing || null,
+          is_controlled: info.controlled || 0,
+          requires_serial: info.requiresSerial || 0,
         }, {
           name,
           sku,
@@ -609,7 +618,82 @@
       return out;
     }
 
+    /**
+     * A shelf-only hit can name the product and still not know it is
+     * prescription-only. The till then queues a sale the server will refuse,
+     * and the refusal used to arrive with the reason written into a field the
+     * Sync screen did not read. Look the marks up before the line is added.
+     */
+    async function withDispenseMarks(product) {
+      if (!product || !product.id) return product;
+      if (product.dispensing_class || Number(product.is_controlled) === 1) return product;
+      const stored = await SR.store.get('products', product.id).catch(() => null);
+      if (stored && (stored.dispensing_class || Number(stored.is_controlled) === 1)) {
+        return Object.assign({}, product, {
+          dispensing_class: stored.dispensing_class,
+          is_controlled: stored.is_controlled,
+          requires_serial: product.requires_serial != null ? product.requires_serial : stored.requires_serial,
+          name: product.name || stored.name,
+        });
+      }
+      const batches = await SR.store.all('stock_batches', {
+        where: (b) => String(b.product_id) === String(product.id),
+      }).catch(() => []);
+      const hit = (batches || []).find((b) => b.product_dispensing_class || Number(b.product_is_controlled) === 1);
+      if (hit) {
+        return Object.assign({}, product, {
+          dispensing_class: hit.product_dispensing_class || product.dispensing_class || null,
+          is_controlled: Number(hit.product_is_controlled) === 1 ? 1 : (product.is_controlled || 0),
+          requires_serial: product.requires_serial != null ? product.requires_serial : hit.product_requires_serial,
+          name: product.name || hit.product_name,
+        });
+      }
+      if (!SR.api.isOnline()) return product;
+      try {
+        const data = await SR.api.get('/api/products/' + encodeURIComponent(product.id));
+        const remote = data && data.product;
+        if (!remote) return product;
+        return Object.assign({}, product, {
+          dispensing_class: remote.dispensing_class || null,
+          is_controlled: remote.is_controlled,
+          requires_serial: product.requires_serial != null ? product.requires_serial : remote.requires_serial,
+          name: product.name || remote.name,
+        });
+      } catch (e) {
+        return product;
+      }
+    }
+
+    /** Ask now if a line is marked and the details were never collected. */
+    async function ensureDispense(lines) {
+      for (const line of lines) {
+        const marks = await withDispenseMarks({ id: line.productId, name: line.name });
+        const pom = String(marks.dispensing_class || '').toUpperCase() === 'POM';
+        const controlled = Number(marks.is_controlled) === 1;
+        if (pom && !(line.prescription && line.prescription.prescriber_name)) {
+          const asked = await askDispense({
+            name: marks.name || line.name,
+            dispensing_class: 'POM',
+            is_controlled: controlled ? 1 : 0,
+          });
+          if (!asked) return false;
+          line.prescription = asked.prescription || null;
+          if (asked.controlledKyc) line.controlledKyc = asked.controlledKyc;
+        } else if (controlled && !(line.controlledKyc && line.controlledKyc.buyer_name)) {
+          const asked = await askDispense({
+            name: marks.name || line.name,
+            dispensing_class: '',
+            is_controlled: 1,
+          });
+          if (!asked) return false;
+          line.controlledKyc = asked.controlledKyc || null;
+        }
+      }
+      return true;
+    }
+
     async function addLine(product, opts = {}) {
+      product = await withDispenseMarks(product);
       if (product && !(Number(product.selling_price) > 0) && opts.priceOverride == null) {
         const priced = await withShopPrice([product]);
         if (priced[0] && Number(priced[0].selling_price) > 0) product = priced[0];
@@ -1238,7 +1322,12 @@
     }
 
     // ---------------- tender ----------------
-    function openTender() {
+    async function openTender() {
+      const ready = await ensureDispense(cart.lines);
+      if (!ready) {
+        ui.warn('Payment was not opened. A prescription-only or controlled item still needs the details the register requires.');
+        return;
+      }
       if (!cart.lines.length) { ui.warn('Add something to the cart first.'); return; }
       const missing = missingSerials();
       if (missing.length) {

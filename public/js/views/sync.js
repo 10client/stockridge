@@ -15,9 +15,8 @@
 //   PENDING   waiting for a connection. Nothing to do.
 //   RETRY     the line dropped mid-send. It will go again.
 //   FAILED    the server REFUSED it, with a reason. This is the one that needs a
-//             human: it will retry forever and never succeed until somebody
-//             reads the reason and fixes the entry or discards it. Showing the
-//             reason next to the item is the whole point of the screen.
+//             human: it does not retry by itself. Showing the reason next to the
+//             item is the whole point of the screen.
 //
 // Conflicts are shown side by side — losing value against winning value — for
 // the same reason. A conflict nobody can read is a conflict nobody resolves.
@@ -112,7 +111,7 @@
 
       if (stats.failed) {
         stack.appendChild(ui.h('div', { class: 'alert alert-danger' },
-          ui.h('div', {}, `${stats.failed} item(s) were refused by the server. They will keep retrying and keep failing until somebody reads the reason below. A refused sale is not a lost sale — but it is not in the books either.`),
+          ui.h('div', {}, `${stats.failed} item(s) were refused by the server. They are not uploading again by themselves. Read the reason, fill in whatever it asks for, then try again. A refused sale is not a lost sale — but it is not in the books either.`),
           ui.h('button', { class: 'btn btn-sm', onClick: () => retryAllFailed() }, 'Retry all of them')));
       }
 
@@ -129,8 +128,8 @@
           showReason ? {
             key: 'error_message',
             label: 'Why it was refused',
-            render: (i) => ui.h('div', {}, ui.h('div', {}, i.error_message || 'No reason given.'),
-              ui.h('div', { class: 'hint' }, i.error_code || '')),
+            render: (i) => ui.h('div', {}, ui.h('div', {}, refusalOf(i).message || 'No reason given.'),
+              ui.h('div', { class: 'hint' }, refusalOf(i).code || '')),
           } : { key: 'attempts', label: 'Tries', align: 'right', render: (i) => U.qty(i.attempts || 0) },
           {
             key: 'actions',
@@ -179,6 +178,89 @@
       host.replaceChildren(stack);
     }
 
+    function refusalOf(item) {
+      return {
+        message: (item && (item.last_error || item.error_message)) || '',
+        code: (item && (item.last_code || item.error_code)) || '',
+      };
+    }
+
+    async function productForQueuedLine(line) {
+      const id = line && (line.product_id || line.productId);
+      if (!id) return null;
+      const stored = await SR.store.get('products', id).catch(() => null);
+      if (stored && (stored.dispensing_class || Number(stored.is_controlled) === 1)) return stored;
+      if (!SR.api.isOnline()) return stored;
+      try {
+        const data = await SR.api.get('/api/products/' + encodeURIComponent(id));
+        return (data && data.product) || stored;
+      } catch (e) {
+        return stored;
+      }
+    }
+
+    /**
+     * A sale the server already refused for a missing prescriber or buyer
+     * cannot succeed on a bare retry. Ask for the missing detail, write it
+     * into the queued payload, and only then send it again.
+     */
+    async function repairQueuedSale(item) {
+      if (!item || item.type !== 'SALE' || !item.payload || !Array.isArray(item.payload.lines)) return true;
+      const refusal = refusalOf(item);
+      const lines = item.payload.lines.map((l) => Object.assign({}, l));
+      let changed = false;
+      for (const line of lines) {
+        const product = await productForQueuedLine(line);
+        const knownPom = product && String(product.dispensing_class || '').toUpperCase() === 'POM';
+        const knownControlled = product && Number(product.is_controlled) === 1;
+        const knownClass = product && product.dispensing_class;
+        const needsRx = knownPom || (!knownClass && refusal.code === 'PRESCRIPTION_REQUIRED');
+        const needsKyc = knownControlled || (!product && refusal.code === 'CONTROLLED_KYC_REQUIRED');
+        const name = (product && product.name) || 'this medicine';
+        const rx = line.prescription;
+        if (needsRx && !(rx && (rx.prescriber_name || rx.prescriberName))) {
+          const prescriber = await ui.promptDialog({
+            title: name,
+            label: 'Prescriber name',
+            required: true,
+            hint: 'This medicine is prescription-only. The server refused the sale because the prescriber was not recorded. It will not upload without that name.',
+          });
+          if (!prescriber) return false;
+          const patient = await ui.promptDialog({
+            title: name,
+            label: 'Patient name (optional)',
+            required: false,
+          });
+          if (patient === null) return false;
+          line.prescription = {
+            prescriber_name: String(prescriber).trim(),
+            patient_name: patient ? String(patient).trim() : null,
+          };
+          changed = true;
+        }
+        const kyc = line.controlled_kyc || line.controlledKyc;
+        if (needsKyc && !(kyc && (kyc.buyer_name || kyc.buyerName))) {
+          const buyer = await ui.promptDialog({
+            title: name,
+            label: 'Buyer name',
+            required: true,
+            hint: 'A controlled medicine is written into the register. The sale will not upload without the buyer’s name and phone.',
+          });
+          if (!buyer) return false;
+          const phone = await ui.promptDialog({ title: name, label: 'Buyer phone', required: true });
+          if (!phone) return false;
+          line.controlled_kyc = { buyer_name: String(buyer).trim(), buyer_phone: String(phone).trim() };
+          changed = true;
+        }
+      }
+      if (changed) {
+        const payload = Object.assign({}, item.payload, { lines });
+        await SR.store.updateOutbox(item.client_id, { payload });
+        item.payload = payload;
+      }
+      return true;
+    }
+
     function showItem(item) {
       let pretty = item.payload;
       try { pretty = JSON.stringify(typeof item.payload === 'string' ? JSON.parse(item.payload) : item.payload, null, 2); } catch (e) { /* leave */ }
@@ -189,7 +271,8 @@
         ['Recorded', U.dateTime(item.occurred_at || item.created_at)],
         ['Attempts', String(item.attempts || 0)],
         ['Idempotency key', item.client_id],
-        ['Refused because', item.error_message || '—'],
+        ['Refused because', refusalOf(item).message || '—'],
+        ['Refusal code', refusalOf(item).code || '—'],
       ]));
       body.appendChild(ui.h('p', { class: 'sub' }, 'The idempotency key is generated once and reused on every retry. The server keeps the first result against it, so a sale that is retried five times over a bad line is still one sale.'));
       body.appendChild(ui.h('pre', { class: 'pre-block' }, String(pretty).slice(0, 6000)));
@@ -198,6 +281,11 @@
 
     async function retryItem(item) {
       try {
+        const ready = await repairQueuedSale(item);
+        if (!ready) {
+          ui.warn('Left as refused. It will not upload until the missing detail is filled in.');
+          return;
+        }
         await SR.store.requeue(item.client_id);
         ui.ok('It will be tried again on the next sync.');
         await SR.sync.runOnce({ silent: true });
@@ -207,9 +295,20 @@
 
     async function retryAllFailed() {
       try {
-        const n = await SR.sync.retryFailed();
-        ui.ok(`${n && n.retried != null ? n.retried : (state.queue ? state.queue.failed : 0)} item(s) queued for another try.`);
-        await SR.sync.runOnce({ silent: true });
+        const list = await SR.store.outboxAll();
+        const failed = list.filter((i) => i.status === 'FAILED');
+        let queued = 0;
+        let skipped = 0;
+        for (const item of failed) {
+          const ready = await repairQueuedSale(item);
+          if (!ready) { skipped += 1; continue; }
+          await SR.store.requeue(item.client_id);
+          queued += 1;
+        }
+        ui.ok(skipped
+          ? `${queued} item(s) queued. ${skipped} still need the missing detail.`
+          : `${queued} item(s) queued for another try.`);
+        if (queued) await SR.sync.runOnce({ silent: true });
         load();
       } catch (err) { ui.apiError(err); }
     }

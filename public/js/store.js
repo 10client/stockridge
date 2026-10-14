@@ -310,7 +310,18 @@
    * the row is removed only when they say so.
    */
   async function markFailed(clientId, { code, message }) {
-    await updateOutbox(clientId, { status: 'FAILED', last_code: code || 'REJECTED', last_error: message || 'The server refused this.' });
+    await tx(STORE_OUTBOX, 'readwrite', (stores) => {
+      const store = stores[0];
+      return reqAsync(store.get(clientId)).then((row) => {
+        if (!row) return;
+        store.put(Object.assign({}, row, {
+          status: 'FAILED',
+          last_code: code || 'REJECTED',
+          last_error: message || 'The server refused this.',
+          attempts: Number(row.attempts || 0) + 1,
+        }));
+      });
+    });
   }
 
   async function markSynced(clientId, serverRef) {

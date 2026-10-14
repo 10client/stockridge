@@ -849,7 +849,8 @@ async function attachStockProductNames(db, rows) {
   for (let i = 0; i < ids.length; i += 80) {
     const chunk = ids.slice(i, i + 80);
     const found = await db.all(
-      `SELECT id, name, sku, brand, model_no, selling_price, is_active, base_unit_name
+      `SELECT id, name, sku, brand, model_no, selling_price, is_active, base_unit_name,
+                dispensing_class, is_controlled, requires_serial
          FROM products WHERE id IN (${chunk.map(() => '?').join(',')})`,
       chunk,
     );
@@ -866,6 +867,9 @@ async function attachStockProductNames(db, rows) {
       product_selling_price: p.selling_price,
       product_active: p.is_active,
       product_base_unit: p.base_unit_name,
+      product_dispensing_class: p.dispensing_class,
+      product_is_controlled: p.is_controlled,
+      product_requires_serial: p.requires_serial,
     });
   });
 }
