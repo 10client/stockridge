@@ -276,29 +276,70 @@
   // -------------------------------------------------------------------
   // THE PRINT ITSELF
   // -------------------------------------------------------------------
-  function printText(text, { title = 'StockRidge', copies = null } = {}) {
-    let area = document.getElementById('print-area');
-    if (!area) {
-      area = document.createElement('div');
-      area.id = 'print-area';
-      document.body.appendChild(area);
-    }
+  function escapeHtml(value) {
+    return String(value || '').replace(/[&<>"']/g, (ch) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[ch]));
+  }
+
+  /**
+   * Print only the slip, in its own document.
+   *
+   * Printing the till page left the receipt at the top-left of an A4 sheet and
+   * a second page of leftover markup, because the receipt was absolutely
+   * positioned over a document that was still as tall as the app. A short
+   * receipt is one page, fitted to the paper, and nothing else is in the job.
+   */
+  function printText(text, { title = 'StockRidge', copies = null, paper = null } = {}) {
+    const kind = String(paper || printerPrefs.paper || '80');
+    const pageRule = kind === '58'
+      ? 'size: 58mm auto; margin: 3mm;'
+      : kind === 'a4'
+        ? 'size: A4; margin: 12mm;'
+        : 'margin: 10mm;';
     const n = Math.max(1, Number(copies || printerPrefs.copies || 1));
-    area.innerHTML = '';
+    const blocks = [];
     for (let i = 0; i < n; i += 1) {
-      const pre = document.createElement('pre');
-      pre.style.cssText = 'font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; line-height: 1.35; margin: 0 0 18px; white-space: pre-wrap; word-break: break-word;';
-      pre.textContent = text;
-      area.appendChild(pre);
+      blocks.push(`<pre class="slip${i === n - 1 ? ' last' : ''}">${escapeHtml(text)}</pre>`);
     }
-    const prevTitle = document.title;
-    document.title = title;
-    // A short delay lets the layout settle; printing synchronously after a
-    // replaceChildren can capture an empty page on slower machines.
+    let frame = document.getElementById('print-frame');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.id = 'print-frame';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.title = 'Receipt print';
+      document.body.appendChild(frame);
+    }
+    const stray = document.getElementById('print-area');
+    if (stray) stray.remove();
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
+      @page { ${pageRule} }
+      html, body { margin: 0; padding: 0; background: #fff; color: #111; height: auto; width: 100%; }
+      body { width: 100%; }
+      pre.slip {
+        box-sizing: border-box;
+        display: block;
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+        padding: 0;
+        font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
+        font-size: 16pt;
+        line-height: 1.35;
+        white-space: pre-wrap;
+        word-break: break-word;
+        page-break-after: always;
+        page-break-inside: auto;
+      }
+      pre.slip.last { page-break-after: auto; }
+    </style></head><body>${blocks.join('')}</body></html>`);
+    doc.close();
+    const win = frame.contentWindow;
     setTimeout(() => {
-      global.print();
-      document.title = prevTitle;
-    }, 60);
+      try { win.focus(); win.print(); } catch (e) { /* the till stays usable if the dialog is blocked */ }
+    }, 80);
   }
 
   /** Open a preview modal with a Print button — the path a cashier actually
@@ -445,11 +486,70 @@
     const actions = [
       SR.ui.h('button', { class: 'btn', onClick: () => SR.ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
       SR.ui.h('button', { class: 'btn', onClick: () => U.download(`${heading.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
-      SR.ui.h('button', { class: 'btn btn-primary', onClick: () => printText(text, { title: heading }) }, 'Print'),
+      SR.ui.h('button', { class: 'btn btn-primary', onClick: () => printSlip(sale, { brand, footer, title: heading }) }, 'Print'),
     ];
-    const modal = SR.ui.openModal({ title: heading, body, footer: actions, size: 'narrow' });
-    if (autoPrint && prefs().autoPrint !== false) setTimeout(() => printText(text, { title: heading }), 350);
+    const modal = SR.ui.openModal({
+      title: heading,
+      body,
+      footer: actions,
+      size: 'narrow',
+      onClose: () => {
+        const root = document.getElementById('modal-root');
+        if (root) root.classList.remove('is-receipt');
+      },
+    });
+    if (modal && modal.dialog) modal.dialog.classList.add('receipt-sheet');
+    const root = document.getElementById('modal-root');
+    if (root) root.classList.add('is-receipt');
+    if (autoPrint && prefs().autoPrint !== false) setTimeout(() => printSlip(sale, { brand, footer, title: heading }), 350);
     return { modal, text };
+  }
+
+  /** The slip, fitted to the paper, with none of the till around it. */
+  function printSlip(sale, { brand = 'StockRidge', footer = null, title = 'Receipt' } = {}) {
+    const node = slipNode(sale, { brand, footer });
+    const holder = document.createElement('div');
+    holder.appendChild(node);
+    writeFrame(holder.innerHTML, title, SLIP_PRINT_CSS);
+  }
+
+  const SLIP_PRINT_CSS = `
+    @page { margin: 10mm; }
+    html, body { margin: 0; padding: 0; width: 100%; height: auto; background: #fff; color: #111; }
+    .slip { width: 100%; max-width: none; margin: 0; background: #fff; color: #111; border: 0; border-radius: 0; box-shadow: none; padding: 0; }
+    .slip-head, .slip-foot { text-align: center; }
+    .slip-brand { font-weight: 750; font-size: 18pt; }
+    .slip-sub { color: #444; font-size: 10pt; margin-top: 2px; }
+    .slip-rule { border: 0; border-top: 1px dashed #999; margin: 8px 0; }
+    .slip-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12pt; padding: 2px 0; }
+    .slip-row span:last-child { text-align: right; }
+    .slip-item { padding: 6px 0; }
+    .slip-item + .slip-item { border-top: 1px solid #eee; }
+    .slip-item-name { font-weight: 700; font-size: 12pt; }
+    .slip-serial { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10pt; }
+    .slip-total { font-size: 16pt; font-weight: 750; }
+    .slip-foot { font-size: 10pt; }
+  `;
+
+  function writeFrame(bodyHtml, title, css) {
+    let frame = document.getElementById('print-frame');
+    if (!frame) {
+      frame = document.createElement('iframe');
+      frame.id = 'print-frame';
+      frame.setAttribute('aria-hidden', 'true');
+      frame.title = 'Receipt print';
+      document.body.appendChild(frame);
+    }
+    const stray = document.getElementById('print-area');
+    if (stray) stray.remove();
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    doc.open();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${css}</style></head><body>${bodyHtml}</body></html>`);
+    doc.close();
+    const win = frame.contentWindow;
+    setTimeout(() => {
+      try { win.focus(); win.print(); } catch (e) { /* the till stays usable if the dialog is blocked */ }
+    }, 80);
   }
 
   SR.print = {

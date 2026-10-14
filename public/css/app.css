@@ -557,6 +557,23 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .po-line { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; background: var(--surface); }
 .po-line.on-order { border-color: var(--green-600); }
 .modal.narrow { width: min(430px, 100%); }
+.modal-root.is-receipt {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+  z-index: 220;
+  background: rgba(4, 16, 20, .72);
+}
+.modal.receipt-sheet {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: 100dvh;
+  margin: 0;
+  border-radius: 0;
+}
+.modal.receipt-sheet .modal-body { display: flex; justify-content: center; }
+.modal.receipt-sheet .slip, .modal.receipt-sheet .receipt { width: min(440px, 100%); max-width: none; margin: 0 auto; }
 .modal-head { display: flex; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid var(--line); }
 .modal-head h2 { margin: 0; font-size: 1.08rem; }
 .modal-head .spacer { flex: 1; }
@@ -632,11 +649,32 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .slip-due span:last-child { font-weight: 700; }
 .slip-foot { text-align: center; font-size: .78rem; color: #57534e; }
 .slip-words { margin-bottom: 6px; }
+/* The receipt is printed from its own frame. This node must never sit in the
+   page under the nav — that is what made a paid sale look like the slip had
+   fallen out of the till and onto the bottom of the screen. */
+#print-area { display: none !important; }
+#print-frame {
+  position: fixed;
+  left: -12000px;
+  top: 0;
+  width: 800px;
+  height: 1100px;
+  border: 0;
+  pointer-events: none;
+}
 @media print {
-  body * { visibility: hidden; }
-  #print-area, #print-area * { visibility: visible; }
-  #print-area { position: absolute; left: 0; top: 0; width: 100%; }
-  .no-print { display: none !important; }
+  .topbar, .sidenav, .scrim, .toasts, .modal-root, .offline-bar, .subscription-bar,
+  #boot, #login-screen, #print-area, #print-frame, .no-print {
+    display: none !important;
+  }
+  html, body, .shell, .main, .view {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+  .shell { display: block !important; }
+  @page { margin: 12mm; }
 }
 
 /* charts (pure CSS bars — no chart library, no network) */

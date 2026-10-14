@@ -938,9 +938,33 @@
         danger: true,
       }).then((yes) => {
         if (!yes) return;
-        Object.assign(cart, blankCart());
-        save(); paint();
+        resetTill();
       });
+    }
+
+    /** The till after a sale is paid, or after payment is cancelled. Nothing from that checkout stays on the screen. */
+    function resetTill() {
+      const fresh = blankCart();
+      Object.keys(cart).forEach((key) => { delete cart[key]; });
+      Object.assign(cart, fresh);
+      save();
+      scanInput.value = '';
+      results.hidden = true;
+      results.replaceChildren();
+      paint();
+    }
+
+    function checkoutSnapshot() {
+      return {
+        lines: cart.lines.map((l) => Object.assign({}, l, { serialNumbers: (l.serialNumbers || []).slice() })),
+        payments: cart.payments.map((p) => Object.assign({}, p)),
+        totals: computedTotals(),
+        customerName: cart.customerName,
+        customerPhone: cart.customerPhone,
+        saleType: cart.saleType,
+        discountAmount: cart.discountAmount,
+        deliveryFee: cart.deliveryFee,
+      };
     }
 
     // ---------------- paint cart + totals ----------------
@@ -1468,15 +1492,18 @@
       }
 
       const completeBtn = ui.h('button', { class: 'btn btn-primary btn-lg' }, 'Complete sale');
+      let outcome = 'cancel';
+      const paymentsAtOpen = cart.payments.map((p) => Object.assign({}, p));
       completeBtn.addEventListener('click', async () => {
         completeBtn.disabled = true;
         completeBtn.textContent = 'Recording…';
         try {
           const done = await completeSale();
+          outcome = 'paid';
           m.close();
           // Only now, with the payment sheet gone, is a modal free to occupy the
           // one slot the modal system has.
-          if (done) showReceipt(done.result, done.payload);
+          if (done) showReceipt(done.result, done.payload, done.snapshot);
         } catch (err) {
           ui.apiError(err);
         } finally {
@@ -1490,10 +1517,21 @@
         body: wrapEl,
         size: 'wide',
         footer: [
-          ui.h('button', { class: 'btn', onClick: () => { save(); m.close(); } }, 'Hold'),
+          ui.h('button', { class: 'btn', onClick: () => { outcome = 'abandon'; m.close(); } }, 'Cancel sale'),
+          ui.h('button', { class: 'btn', onClick: () => { outcome = 'hold'; save(); m.close(); } }, 'Hold'),
           completeBtn,
         ],
-        onClose: paintRunning,
+        onClose: () => {
+          // Paid already emptied the till. Hold keeps the basket. Closing the
+          // sheet drops payment lines typed in it. Cancel sale clears the
+          // checkout entirely, because that sale was not taken.
+          if (outcome === 'abandon') resetTill();
+          else if (outcome === 'cancel') {
+            cart.payments = paymentsAtOpen;
+            save();
+            paint();
+          }
+        },
       });
       paintButtons();
       paintRunning();
@@ -1543,8 +1581,8 @@
         result = await queueOffline(payload);
       }
 
-      SR.state.clearCart();
-      paint();
+      const snapshot = checkoutSnapshot();
+      resetTill();
       UI_afterSale();
       // The receipt is SHOWN BY THE CALLER, after it has closed the payment sheet.
       // `ui.openModal` renders into a single root with replaceChildren(), and the
@@ -1553,7 +1591,7 @@
       // completed sale ended with the screen back on an empty cart: no receipt, no
       // confirmation, nothing to print, and every reason for the cashier to ring
       // the sale again.
-      return { result, payload };
+      return { result, payload, snapshot };
     }
 
     async function queueOffline(payload) {
@@ -1572,7 +1610,8 @@
     }
 
     // ---------------- receipt ----------------
-    function showReceipt(result, payload) {
+    function showReceipt(result, payload, snapshot) {
+      const taken = snapshot || checkoutSnapshot();
       const brand = (SR.state.settings || {}).business_name || 'StockRidge';
       const footer = (SR.state.settings || {}).receipt_footer_text || 'Thank you for your custom.';
       let text;
@@ -1585,8 +1624,8 @@
           occurred_at: payload.sold_at,
           device_id: payload.device_id,
           payload: {
-            lines: cart.lines,
-            payments: cart.payments,
+            lines: taken.lines,
+            payments: taken.payments,
             expectedTotal: result.total,
           },
         }, { brand });
@@ -1598,20 +1637,23 @@
           branch_name: SR.state.activeBranchName(),
           branch_code: (SR.state.activeBranch() || {}).code,
           cashier_name: (SR.state.user || {}).fullName,
-          subtotal: computedTotals().subtotal,
-          total: result.total != null ? result.total : computedTotals().total,
-          vat_amount: result.vatAmount != null ? result.vatAmount : computedTotals().vat,
-          vat_rate_percent: computedTotals().vatRate,
+          customer_name: taken.customerName,
+          customer_phone: taken.customerPhone,
+          sale_type: taken.saleType,
+          subtotal: taken.totals.subtotal,
+          total: result.total != null ? result.total : taken.totals.total,
+          vat_amount: result.vatAmount != null ? result.vatAmount : taken.totals.vat,
+          vat_rate_percent: taken.totals.vatRate,
           discount_amount: payload.discount_amount,
           delivery_fee: payload.delivery_fee,
-          items: cart.lines.map((l) => ({
+          items: taken.lines.map((l) => ({
             product_name: l.name, quantity: l.quantity, unit_code: l.unitCode,
             unit_price: l.unitPrice, line_total: Number(l.quantity) * Number(l.unitPrice) - Number(l.lineDiscount || 0),
             line_discount: l.lineDiscount, warranty_months: l.warrantyMonths,
             serial_no: (l.serialNumbers || []).join(', ') || null,
             serialNumbers: l.serialNumbers || [],
           })),
-          payments: cart.payments,
+          payments: taken.payments,
           change_given: result.changeGiven || 0,
           change_owed: result.changeOwed || 0,
           balance_due: result.balanceDue || 0,
@@ -1632,7 +1674,7 @@
           text = [
             brand,
             `Receipt ${result.receiptNo || ''}`,
-            `Total   ${U.money(result.total != null ? result.total : computedTotals().total)}`,
+            `Total   ${U.money(result.total != null ? result.total : taken.totals.total)}`,
             '',
             'The receipt could not be laid out, but the sale is recorded.',
             'Open it from Sales to see or reprint it.',
@@ -1647,15 +1689,23 @@
           ui.h('strong', {}, `Local reference ${String(result.clientId).slice(-8)}.`)));
       }
       body.appendChild(ui.h('div', { class: 'receipt' }, text));
-      ui.openModal({
+      const shown = ui.openModal({
         title,
         body,
+        size: 'narrow',
+        onClose: () => {
+          const root = document.getElementById('modal-root');
+          if (root) root.classList.remove('is-receipt');
+        },
         footer: [
           ui.h('button', { class: 'btn', onClick: () => U.download(`${title.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
           ui.h('button', { class: 'btn', onClick: () => ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
           ui.h('button', { class: 'btn btn-primary', onClick: () => SR.print.printText(text, { title }) }, 'Print'),
         ],
       });
+      if (shown && shown.dialog) shown.dialog.classList.add('receipt-sheet');
+      const receiptRoot = document.getElementById('modal-root');
+      if (receiptRoot) receiptRoot.classList.add('is-receipt');
       if (SR.print.prefs().autoPrint !== false) {
         setTimeout(() => SR.print.printText(text, { title }), 350);
       }
