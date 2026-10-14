@@ -205,7 +205,7 @@
       if (sale.status === 'VOIDED') {
         host.appendChild(ui.h('div', { class: 'alert alert-danger' },
           ui.h('strong', {}, 'This sale was voided. '),
-          `${U.dateTime(sale.voided_at)} — ${sale.void_reason || 'no reason recorded'}. The stock was returned and the ledger reversed; nothing was deleted.`));
+          `${U.watClock(sale.voided_at)} — ${sale.void_reason || 'no reason recorded'}. The stock was returned and the ledger reversed; nothing was deleted.`));
       }
       if (Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED') {
         host.appendChild(ui.h('div', { class: 'alert alert-warn' },

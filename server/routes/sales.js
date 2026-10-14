@@ -32,6 +32,7 @@ const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
 const salesService = require('../services/salesService');
+const { trustedReplay } = require('../lib/replay');
 const glService = require('../services/glService');
 
 // ---------------------------------------------------------------------
@@ -308,12 +309,21 @@ async function buildEngineParams(db, ctx, body, { forComplete }) {
     params.creditOverrideReason = strField(body.credit_override_reason || body.creditOverrideReason, { field: 'Credit override reason', maxLength: 300 });
     params.changeOwedAmount = numField(body.change_owed_amount ?? body.changeOwedAmount, { field: 'Change owed', min: 0 });
     params.deviceId = strField(body.device_id || body.deviceId || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
-    // Only a manager may backdate. The window itself is enforced in the service
-    // (90 days, ±10 minutes of future skew) so the rule cannot drift between
-    // the two backends.
+    // The till sends `sold_at` on every sale, including the one happening now.
+    // A present stamp is not a backdate. It is another time only when it is
+    // more than the engine's 10-minute skew from Lagos now — that is what moves
+    // takings between tills, and only a manager may do it from the counter.
+    // A signed sync replay may carry the moment the button was pressed offline;
+    // the service still enforces the 90-day window and the future-skew limit.
     params.soldAt = body.sold_at || body.soldAt || null;
-    if (params.soldAt && !atLeast(user.role, 'MANAGER')) {
-      throw new HttpError('Only a manager or above can record a sale as having happened at another time. Backdating moves takings between tills.', { status: 403, code: 'BACKDATE_NOT_ALLOWED' });
+    if (params.soldAt && !atLeast(user.role, 'MANAGER') && salesService.isAnotherTime(params.soldAt)) {
+      const replay = await trustedReplay(ctx);
+      if (!replay) {
+        throw new HttpError(
+          `Only a manager or above can record a sale as having happened at another time. This one is stamped ${params.soldAt}, and Lagos time now is ${watNow()}. If this is the sale you are ringing up now, the device clock is more than 10 minutes out — set it to West Africa Time and try again. Backdating moves takings between tills.`,
+          { status: 403, code: 'BACKDATE_NOT_ALLOWED' },
+        );
+      }
     }
   }
   return params;

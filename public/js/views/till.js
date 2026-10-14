@@ -170,7 +170,7 @@
         ui.h('div', { class: 'row' },
           ui.h('div', { class: 'grow' },
             ui.h('h2', {}, `Till open — ${t.cashier_name || SR.state.user.fullName}`),
-            ui.h('p', { class: 'sub' }, `Opened ${U.dateTime(t.opened_at)}${t.device_id ? ` · ${t.device_id}` : ''}`)),
+            ui.h('p', { class: 'sub' }, `Opened ${U.watClock(t.opened_at)}${t.device_id ? ` · ${t.device_id}` : ''}`)),
           ui.h('div', { class: 'actions' },
             ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/tills/${encodeURIComponent(t.id)}`) }, 'Open the sheet'),
             ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => closeTill(t) }, 'Close & count'))),
@@ -207,7 +207,7 @@
         actions: [ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export')],
         table: ui.renderTable({
           columns: [
-            { key: 'opened_at', label: 'Opened', render: (t) => U.dateTime(t.opened_at) },
+            { key: 'opened_at', label: 'Opened', render: (t) => U.watClock(t.opened_at) },
             { key: 'cashier_name', label: 'Cashier', render: (t) => t.cashier_name || '—' },
             { key: 'branch_name', label: 'Branch', render: (t) => t.branch_name || branchLabel(t) },
             { key: 'sales_count', label: 'Sales', align: 'right', render: (t) => U.qty(t.sales_count || 0) },
@@ -517,7 +517,7 @@
 
       card.firstElementChild.appendChild(ui.renderTable({
         columns: [
-          { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+          { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
           { key: 'entry_type', label: 'What', render: (r) => U.humanise(r.entry_type) },
           { key: 'amount', label: 'Amount', align: 'right', render: (r) => `${Number(r.amount) < 0 ? '\u2212' : '+'}${U.money(Math.abs(Number(r.amount)))}` },
           { key: 'reason', label: 'Why' },
@@ -573,7 +573,7 @@
           title: `Till ${String(t.id).slice(0, 8)}`,
           table: ui.kv([
             ['Status', ui.statusBadge(t.status)],
-            ['Opened', U.dateTime(t.opened_at)],
+            ['Opened', U.watClock(t.opened_at)],
             ['Float', U.money(t.opening_cash)],
             ['Cash sales', U.money(t.cash_sales_total)],
             ['Counted', t.counted_cash == null ? '—' : U.money(t.counted_cash)],
@@ -592,7 +592,7 @@
         ui.h('div', { class: 'row' },
           ui.h('div', { class: 'grow' },
             ui.h('h2', {}, `${t.cashier_name || 'Till'} · ${t.branch_name || ''}`),
-            ui.h('p', { class: 'sub' }, `Opened ${U.dateTime(t.opened_at)}${t.closed_at ? ` · closed ${U.dateTime(t.closed_at)}` : ''}${t.device_id ? ` · ${t.device_id}` : ''}`)),
+            ui.h('p', { class: 'sub' }, `Opened ${U.watClock(t.opened_at)}${t.closed_at ? ` · closed ${U.watClock(t.closed_at)}` : ''}${t.device_id ? ` · ${t.device_id}` : ''}`)),
           ui.h('div', { class: 'actions' },
             ui.statusBadge(t.status),
             r.reviewed ? ui.badge('reviewed', 'badge-good') : null,
@@ -667,7 +667,7 @@
           table: ui.renderTable({
             columns: [
               { key: 'receipt_no', label: 'Receipt' },
-              { key: 'voided_at', label: 'Voided', render: (s) => U.dateTime(s.voided_at || s.updated_at) },
+              { key: 'voided_at', label: 'Voided', render: (s) => U.watClock(s.voided_at || s.updated_at) },
               { key: 'total', label: 'Value', align: 'right', render: (s) => U.money(s.total) },
               { key: 'void_reason', label: 'Reason', render: (s) => s.void_reason || '—' },
             ],

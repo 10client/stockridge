@@ -225,8 +225,8 @@
     L.push(rule(width));
     L.push(cols('Branch', till.branch_name || '—', width));
     L.push(cols('Cashier', till.cashier_name || till.opened_by_name || '—', width));
-    L.push(cols('Opened', U.dateTime(till.opened_at), width));
-    L.push(cols('Closed', till.closed_at ? U.dateTime(till.closed_at) : 'OPEN', width));
+    L.push(cols('Opened', U.watClock(till.opened_at), width));
+    L.push(cols('Closed', till.closed_at ? U.watClock(till.closed_at) : 'OPEN', width));
     L.push(rule(width));
     L.push(cols('Opening float', money(till.opening_cash), width));
     L.push(cols('Cash sales', money(till.cash_sales_total), width));
@@ -252,7 +252,7 @@
     const L = [];
     L.push(centre(title, width));
     if (branch) L.push(centre(branch, width));
-    L.push(centre(`Printed ${U.dateTime(U.nowIso())}`, width));
+    L.push(centre(`Printed ${U.watClock(U.nowIso())}`, width));
     L.push(rule(width, '='));
     L.push(cols('PRODUCT', 'SYSTEM /  COUNT /  VARIANCE', width));
     L.push(rule(width));
@@ -322,7 +322,7 @@
     const L = [];
     L.push(centre(title, width));
     if (subtitle) L.push(centre(subtitle, width));
-    L.push(centre(`Printed ${U.dateTime(U.nowIso())}`, width));
+    L.push(centre(`Printed ${U.watClock(U.nowIso())}`, width));
     L.push(rule(width, '='));
     // Column widths are proportional to the longest value in each column, with a
     // floor so a heading is never truncated to a single character.
@@ -374,7 +374,7 @@
     L.push(rule(width));
     L.push(centre('If every line above is', width));
     L.push(centre('readable, the printer is set.', width));
-    L.push(centre(U.dateTime(U.nowIso()), width));
+    L.push(centre(U.watClock(U.nowIso()), width));
     L.push('');
     L.push('');
     return L.join('\n');

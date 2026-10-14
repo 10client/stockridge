@@ -41,7 +41,8 @@ const { atLeast } = require('../../domain/roles');
 const { resolveBranch, resolveBusiness, readBusinessId, pagination, listResponse, strField, boolField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
-const { watNow, watToday } = require('../../domain/time');
+const { watNow, watToday, utcNow, toUtcSql, utcToWat, claimedWatToUtcSql } = require('../../domain/time');
+const { signReplay } = require('../lib/replay');
 
 /**
  * Tables whose rows a device may write directly, and the columns it may write.
@@ -207,7 +208,13 @@ function mount(app, base = '/api') {
       // ---- QUARANTINE: queued BEFORE the last cleanup, applied NEVER.
       if (lastCleanupAt) {
         const occurredAt = strField(op.occurred_at || op.occurredAt || '', { field: 'Occurred at', maxLength: 40 });
-        if (occurredAt && String(occurredAt) < String(lastCleanupAt)) {
+        // The queue stamps West Africa wall clock. The cleanup watermark is
+        // UTC `datetime('now')`. Comparing the strings leaves an hour in which
+        // a sale that happened before the cleanup sorts as if it happened after,
+        // and would be applied — putting back rows the owner deleted.
+        const occurredUtc = claimedWatToUtcSql(occurredAt);
+        const cleanupUtc = toUtcSql(lastCleanupAt) || String(lastCleanupAt).slice(0, 19);
+        if (occurredUtc && cleanupUtc && occurredUtc < cleanupUtc) {
           quarantined += 1;
           // STORED, NOT DISCARDED. The device's operation is evidence: it says what
           // the shop believed had happened, and a manager may need to re-enter it by
@@ -222,7 +229,7 @@ function mount(app, base = '/api') {
           ]);
           results.operations.push({
             clientId: key, type: kind, status: 'QUARANTINED', code: 'STALE_AFTER_CLEANUP',
-            message: `This was queued before the data cleanup of ${lastCleanupAt} and was NOT applied — replaying it would put back records that were deliberately removed. It is stored under Sync → Conflicts for a manager to review and re-enter by hand if it is still true.`,
+            message: `This was queued before the data cleanup of ${utcToWat(lastCleanupAt) || lastCleanupAt} (Lagos time) and was NOT applied — replaying it would put back records that were deliberately removed. It is stored under Sync → Conflicts for a manager to review and re-enter by hand if it is still true.`,
           });
           continue;
         }
@@ -246,11 +253,19 @@ function mount(app, base = '/api') {
 
       // `sold_at` is carried from the device so the sale lands in the till and
       // the trading day it actually happened in, not the day the phone found a
-      // signal. The engine validates the window and requires manager authority
-      // beyond it.
+      // signal. The engine still enforces the 90-day window and the 10-minute
+      // future skew. A signed replay is how a staff sale from this morning is
+      // allowed through; the browser cannot forge that signature.
       const payload = Object.assign({}, op.payload || op.data || op.body || {});
       payload.device_id = payload.device_id || deviceId;
-      if (op.occurred_at || op.occurredAt) payload.sold_at = payload.sold_at || op.occurred_at || op.occurredAt;
+      if (op.occurred_at || op.occurredAt) {
+        const when = op.occurred_at || op.occurredAt;
+        payload.sold_at = payload.sold_at || when;
+        // A clock-in queued offline must land at the moment the button was
+        // pressed, not at the moment the phone found a signal. The route
+        // accepts this only on a signed replay.
+        if (kind === 'CLOCK_IN' || kind === 'CLOCK_OUT') payload.clocked_at = payload.clocked_at || when;
+      }
 
       try {
         // Replayed through `app.fetch`, the same entry point the HTTP server uses.
@@ -258,13 +273,16 @@ function mount(app, base = '/api') {
         // injected, so the replayed request re-authenticates and re-derives its
         // scope exactly as an online one would — an operation queued by a cashier
         // must still be refused if that cashier has since been deactivated.
+        // The replay header is a signature over this idempotency key. A browser
+        // can send the header name; it cannot produce the signature.
+        const replaySig = await signReplay(ctx.env, key);
         const res = await ctx.env.app.fetch(route.method, path, {
           headers: {
             'Content-Type': 'application/json',
             Authorization: ctx.req.header('Authorization') || '',
             'Idempotency-Key': key,
             'X-Device-Id': deviceId,
-            'X-Sync-Replay': '1',
+            'X-Sync-Replay': replaySig || '',
           },
           body: JSON.stringify(payload),
           env: ctx.env,
@@ -522,7 +540,7 @@ function mount(app, base = '/api') {
       // The cursor the device should use for its next pull. Taken from the
       // server clock AFTER the push, so the device's own writes come back to it
       // on the next pull rather than being missed.
-      cursor: new Date().toISOString(),
+      cursor: utcNow(),
       message: rejected === 0 && conflicts === 0 && quarantined === 0
         ? `${applied} item(s) synced from ${deviceId}.`
         : `${applied} applied, ${rejected} refused${conflicts ? `, ${conflicts} conflict(s)` : ''}${quarantined ? `, ${quarantined} quarantined after a cleanup` : ''}. Each item is listed with its reason — the refused and quarantined ones will not apply on retry, so they need a person.`,
@@ -559,7 +577,13 @@ function mount(app, base = '/api') {
     const biz = await readBusinessId(db, ctx, { branch });
     const scope = ctx.get('scope');
     const deviceId = strField(body.device_id || body.deviceId || ctx.req.queryParam('device_id') || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
-    const since = strField(body.since || ctx.req.queryParam('since'), { field: 'Since', maxLength: 40 });
+    const sinceRaw = strField(body.since || ctx.req.queryParam('since'), { field: 'Since', maxLength: 40 });
+    // Devices already in the field stored an ISO cursor. Normalise it to the
+    // same `YYYY-MM-DD HH:MM:SS` form as `updated_at` before comparing, or the
+    // space-versus-T sort drops every same-day change — including a price that
+    // was just corrected. An unreadable cursor pulls everything rather than
+    // returning an empty delta that looks like "nothing changed".
+    const since = sinceRaw ? toUtcSql(sinceRaw) : null;
 
     // A first sync has no cursor and must get everything; a later sync gets only
     // what changed. The cap on a full sync matters — a 78-product catalogue with
@@ -615,7 +639,7 @@ function mount(app, base = '/api') {
       }
     }
 
-    const cursor = new Date().toISOString();
+    const cursor = utcNow();
     // Only a pull that actually belongs to a branch updates that branch's
     // heartbeat row. A branchless pull would otherwise claim a shop's status.
     if (deviceId && branch) {

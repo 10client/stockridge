@@ -398,7 +398,7 @@
       host.appendChild(ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, t.reference || 'Transfer'),
-          ui.h('p', { class: 'sub' }, `${t.from_branch_name || '—'} → ${t.to_branch_name || '—'} · sent ${U.dateTime(t.initiated_at)}${t.initiated_by_name ? ` by ${t.initiated_by_name}` : ''}`)),
+          ui.h('p', { class: 'sub' }, `${t.from_branch_name || '—'} → ${t.to_branch_name || '—'} · sent ${U.watClock(t.initiated_at)}${t.initiated_by_name ? ` by ${t.initiated_by_name}` : ''}`)),
         ui.h('div', { class: 'actions' },
           ui.badge(U.humanise(t.status), t.status === 'RECEIVED' ? 'badge-good' : isOpen ? 'badge-warn' : 'badge-mute'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => window.print() }, 'Print'),

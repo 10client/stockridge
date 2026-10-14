@@ -60,7 +60,7 @@ const { computeSaleLine, computeSaleTotals, resolveUnitPrice, marginWarnings } =
 const { extractVatFromInclusive } = require('../../domain/nigerianTax');
 const { creditDecision } = require('../../domain/credit');
 const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = require('../../domain/planLimits');
-const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp } = require('../../domain/time');
+const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp, claimedWatToUtcSql, utcNow } = require('../../domain/time');
 const trade = require('../../domain/trade');
 const pharmacy = require('../../domain/pharmacy');
 const { atLeast } = require('../../domain/roles');
@@ -993,6 +993,24 @@ const FUTURE_SKEW_MINUTES = 10;
  *
  * Returns { sql, day, backdated, minutesBack, today }. Never writes.
  */
+/**
+ * True when a supplied sale time is not "now".
+ *
+ * The till always sends `sold_at`, including for the sale being rung up this
+ * minute. Treating every present stamp as a backdate refuses every staff sale.
+ * A stamp within the same future-skew window the engine already absorbs is the
+ * moment of sale. Anything further away is another time, and only a manager
+ * (or a signed offline replay) may record it.
+ */
+function isAnotherTime(rawSoldAt) {
+  if (rawSoldAt == null || String(rawSoldAt).trim() === '') return false;
+  const utc = claimedWatToUtcSql(rawSoldAt);
+  if (!utc) return false;
+  const gap = minutesBetween(utc, utcNow());
+  if (gap == null) return false;
+  return Math.abs(gap) > FUTURE_SKEW_MINUTES;
+}
+
 function resolveSoldAt(rawSoldAt, { user = null } = {}) {
   const now = new Date();
   const nowWatSql = watNow(now);
@@ -1920,6 +1938,6 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
 
 module.exports = {
   SALE_TYPES, PAYMENT_METHODS,
-  prepare, complete, voidSale, validatePayments, totalsByMethod, dominantMethod,
+  prepare, complete, voidSale, validatePayments, totalsByMethod, dominantMethod, isAnotherTime,
   serialEventFields, serialHeadHash,
 };

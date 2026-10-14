@@ -253,7 +253,7 @@
         table: ui.renderTable({
           columns: [
             { key: 'table_name', label: 'Record', render: (c) => ui.h('div', {}, ui.h('div', {}, U.humanise(c.table_name || c.entity_type || '—')), ui.h('div', { class: 'hint' }, String(c.row_id || c.entity_id || '').slice(0, 12))) },
-            { key: 'detected_at', label: 'Detected', render: (c) => U.dateTime(c.detected_at) },
+            { key: 'detected_at', label: 'Detected', render: (c) => U.watClock(c.detected_at) },
             { key: 'branch_name', label: 'Branch', render: (c) => c.branch_name || '—' },
             { key: 'summary', label: 'What differed', render: (c) => conflictSummary(c) },
             { key: 'resolution', label: 'State', render: (c) => (c.reviewed_at ? ui.badge('resolved', 'badge-good') : ui.badge('needs a look', 'badge-warn')) },
@@ -270,7 +270,7 @@
           table: ui.renderTable({
             columns: [
               { key: 'table_name', label: 'Record', render: (c) => U.humanise(c.table_name || c.entity_type || '—') },
-              { key: 'detected_at', label: 'Detected', render: (c) => U.date(U.dateTime(c.detected_at)) },
+              { key: 'detected_at', label: 'Detected', render: (c) => U.watDate(c.detected_at) },
               { key: 'reviewer_name', label: 'Decided by', render: (c) => c.reviewer_name || '—' },
               { key: 'note', label: 'Decision', render: (c) => c.note || '—' },
             ],
@@ -302,7 +302,7 @@
       const body = ui.h('div', { class: 'stack' });
       body.appendChild(ui.kv([
         ['Record', U.humanise(c.table_name || c.entity_type || '—')],
-        ['Detected', U.dateTime(c.detected_at)],
+        ['Detected', U.watClock(c.detected_at)],
         ['Branch', c.branch_name || '—'],
       ]));
       body.appendChild(ui.h('p', { class: 'sub' }, 'The server kept the winning value. Every field that differed is listed — pick the version you want for each, and the decision is recorded against your name.'));
@@ -447,7 +447,7 @@
           ['Device id', device.id],
           ['Installed as', device.label || 'browser'],
           ['Records held locally', U.qty(tables.total)],
-          ['Newest local record', tables.latestUpdatedAt ? U.dateTime(tables.latestUpdatedAt) : '—'],
+          ['Newest local record', tables.latestUpdatedAt ? U.watClock(tables.latestUpdatedAt) : '—'],
           ['Waiting to upload', U.qty(outboxCount)],
           ['Storage used', quotaMb ? `${usedMb} MB of about ${quotaMb} MB` : 'unknown'],
         ]),
@@ -471,7 +471,7 @@
           title: 'Activity on this device',
           table: ui.renderTable({
             columns: [
-              { key: 'at', label: 'When', render: (l) => U.dateTime(l.at) },
+              { key: 'at', label: 'When', render: (l) => U.watClock(l.at) },
               { key: 'kind', label: 'What', render: (l) => ui.badge(U.humanise(l.kind || l.event || 'event'), 'badge-mute') },
               { key: 'message', label: 'Detail', render: (l) => l.message || l.detail || '—' },
             ],

@@ -225,7 +225,7 @@
           ['Address', job.delivery_address || job.address], ['Landmark', job.landmark],
           ['City', job.city], ['State', job.state],
           ['Scheduled for', job.scheduled_for ? U.dateTime(job.scheduled_for) : null],
-          ['Delivered at', job.delivered_at ? U.dateTime(job.delivered_at) : null],
+          ['Delivered at', job.delivered_at ? U.watClock(job.delivered_at) : null],
           ['Received by', job.delivered_to],
           ['Proof', job.proof_of_delivery],
           ['Notes', job.notes],

@@ -720,7 +720,7 @@
           ['Guarantor', plan.guarantor_name],
           ['Guarantor phone', plan.guarantor_phone],
           ['Status', plan.status],
-          ['Opened', U.dateTime(plan.created_at)],
+          ['Opened', U.watClock(plan.created_at)],
           ['Notes', plan.notes],
         ]),
       }));
@@ -728,7 +728,7 @@
         title: 'Payments received',
         table: ui.renderTable({
           columns: [
-            { key: 'created_at', label: 'When', render: (p) => U.dateTime(p.created_at) },
+            { key: 'created_at', label: 'When', render: (p) => U.watClock(p.created_at) },
             { key: 'amount', label: 'Amount', align: 'right', render: (p) => U.money(p.amount) },
             { key: 'method', label: 'Method', render: (p) => U.humanise(p.method || '') },
             { key: 'reference', label: 'Ref', render: (p) => (p.reference ? ui.h('span', { class: 'mono' }, p.reference) : '—') },

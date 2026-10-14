@@ -135,6 +135,34 @@
   function soldDate(value) { return value ? date(value) : '—'; }
 
   /**
+   * A stored UTC instant, shown as Lagos wall clock.
+   *
+   * `clock_in_at`, `opened_at`, `closed_at`, `created_at` and `voided_at` are
+   * `datetime('now')` — UTC. Printing those digits as they are stored is an
+   * hour behind the laptop. `sold_at` is already West Africa Time: use
+   * `soldAt` for that, not these. A date-only field (`work_date`, a due date)
+   * must not come through here either — adding an hour to midnight rolls it
+   * into the next day.
+   */
+  function asWatWall(value) {
+    const d = parseStamp(value, { zone: 'utc' });
+    if (!d) return null;
+    return new Date(d.getTime() + WAT_OFFSET_MINUTES * 60000);
+  }
+  function watClock(value) {
+    const d = asWatWall(value);
+    return d ? `${dateFmt.format(d)} ${timeFmt.format(d)}` : '—';
+  }
+  function watTime(value) {
+    const d = asWatWall(value);
+    return d ? timeFmt.format(d) : '—';
+  }
+  function watDate(value) {
+    const d = asWatWall(value);
+    return d ? dateFmt.format(d) : '—';
+  }
+
+  /**
    * The calendar day a stamp falls on, as `YYYY-MM-DD`, in WAT — or null.
    *
    * For ARITHMETIC and machine-readable fields. `date()` is for people: it returns
@@ -350,7 +378,7 @@
   SR.util = {
     WAT_OFFSET_MINUTES,
     money, amount, numInput, qty, pct,
-    parseStamp, date, time, dateTime, soldAt, soldDate, isoDate, relTime,
+    parseStamp, date, time, dateTime, soldAt, soldDate, watClock, watTime, watDate, isoDate, relTime,
     todayWat, nowWatSql, nowIso, addDays, daysBetween,
     esc, attr, titleCase, humanise, plural, initials,
     clamp, round2, sum, uniq, groupBy, by, slug,

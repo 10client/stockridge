@@ -316,7 +316,7 @@
         title: 'Recent payments',
         table: ui.renderTable({
           columns: [
-            { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+            { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
             { key: 'amount', label: 'Amount', align: 'right', render: (r) => U.money(Math.abs(Number(r.amount))) },
             { key: 'notes', label: 'Detail', className: 'wrap' },
           ],

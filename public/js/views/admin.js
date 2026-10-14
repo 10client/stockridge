@@ -868,7 +868,7 @@
           toolbar: ui.h('div', { class: 'row' }, actionSel),
           table: ui.renderTable({
             columns: [
-              { key: 'created_at', label: 'When', render: (a) => ui.h('div', {}, ui.h('div', {}, U.dateTime(a.created_at)), ui.h('div', { class: 'hint' }, U.relTime(a.created_at))) },
+              { key: 'created_at', label: 'When', render: (a) => ui.h('div', {}, ui.h('div', {}, U.watClock(a.created_at)), ui.h('div', { class: 'hint' }, U.relTime(a.created_at))) },
               { key: 'username', label: 'Who', render: (a) => ui.h('div', {}, ui.h('div', {}, a.username || 'system'), ui.h('div', { class: 'hint' }, a.ip_address || 'no address recorded')) },
               { key: 'action', label: 'What', render: (a) => ui.badge(U.humanise(a.action), actionTone(a.action)) },
               { key: 'entity_type', label: 'On', render: (a) => ui.h('div', {}, ui.h('div', {}, U.humanise(a.entity_type || '—')), ui.h('div', { class: 'hint' }, String(a.entity_id || '').slice(0, 10))) },
@@ -923,7 +923,7 @@
       // "—" while the two facts the trail DOES carry — the address it came from and the
       // agent it claimed to be — were not shown at all.
       body.appendChild(ui.kv([
-        ['When', U.dateTime(entry.created_at)],
+        ['When', U.watClock(entry.created_at)],
         ['Who', entry.username || 'system'],
         ['Action', U.humanise(entry.action)],
         ['Entity', `${U.humanise(entry.entity_type || '—')} ${String(entry.entity_id || '').slice(0, 12)}`],

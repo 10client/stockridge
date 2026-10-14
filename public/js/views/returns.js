@@ -128,7 +128,7 @@
         table: ui.renderTable({
           columns: [
             { key: 'return_no', label: 'Return', render: (r) => ui.h('span', { class: 'mono' }, r.return_no || String(r.id).slice(0, 8)) },
-            { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+            { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
             { key: 'receipt_no', label: 'Against receipt', render: (r) => (r.receipt_no ? ui.h('a', { href: `#/sales/${r.sale_id}`, onClick: (e) => { e.preventDefault(); SR.app.navigate(`/sales/${r.sale_id}`); } }, r.receipt_no) : '—') },
             { key: 'reason_code', label: 'Reason', render: (r) => ui.badge(r.reason_code, r.reason_code === 'DEFECTIVE' || r.reason_code === 'DAMAGED_IN_TRANSIT' ? 'badge-bad' : 'badge-info') },
             { key: 'item_count', label: 'Items', align: 'right' },
@@ -191,7 +191,7 @@
         table: ui.renderTable({
           columns: [
             { key: 'claim_no', label: 'Claim', render: (c) => ui.h('span', { class: 'mono' }, c.claim_no || String(c.id).slice(0, 8)) },
-            { key: 'opened_at', label: 'Opened', render: (c) => U.dateTime(c.opened_at) },
+            { key: 'opened_at', label: 'Opened', render: (c) => U.watClock(c.opened_at) },
             { key: 'product_name', label: 'Product', className: 'wrap', render: (c) => ui.h('div', {},
               ui.h('div', { style: { fontWeight: '600' } }, c.product_name || '—'),
               ui.h('div', { class: 'hint' }, [c.sku, c.serial_no ? `serial ${c.serial_no}` : null].filter(Boolean).join(' · '))) },
@@ -272,7 +272,7 @@
             title: 'Where this unit has been',
             table: ui.renderTable({
               columns: [
-                { key: 'created_at', label: 'When', render: (h) => U.dateTime(h.created_at || h.at) },
+                { key: 'created_at', label: 'When', render: (h) => U.watClock(h.created_at || h.at) },
                 { key: 'type', label: 'Event', render: (h) => U.humanise(h.type || h.event || '') },
                 { key: 'detail', label: 'Detail', className: 'wrap', render: (h) => h.detail || h.notes || '' },
                 { key: 'actor', label: 'By', render: (h) => h.actor_name || h.created_by_name || '' },
@@ -287,7 +287,7 @@
             table: ui.renderTable({
               columns: [
                 { key: 'claim_no', label: 'Claim' },
-                { key: 'opened_at', label: 'Opened', render: (c) => U.dateTime(c.opened_at) },
+                { key: 'opened_at', label: 'Opened', render: (c) => U.watClock(c.opened_at) },
                 { key: 'fault_reported', label: 'Fault', className: 'wrap' },
                 { key: 'status', label: '', render: (c) => ui.statusBadge(c.status) },
                 { key: 'resolution', label: 'Outcome', render: (c) => (c.resolution ? U.humanise(c.resolution) : '—') },

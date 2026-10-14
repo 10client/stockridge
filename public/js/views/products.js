@@ -53,7 +53,7 @@
     const body = rows.length
       ? ui.renderTable({
         columns: [
-          { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+          { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
           { key: 'entry_type', label: 'Entry' },
           { key: 'product_name', label: 'Product' },
           { key: 'quantity_dispensed', label: 'Qty', align: 'right' },

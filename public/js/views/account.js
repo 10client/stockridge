@@ -88,7 +88,7 @@
           ['Email', me.email],
           ['Commission', me.commission_rate_pct ? `${me.commission_rate_pct}% of net revenue` : null],
           ['Employed since', me.employment_started],
-          ['Last signed in', me.last_login_at ? U.dateTime(me.last_login_at) : null],
+          ['Last signed in', me.last_login_at ? U.watClock(me.last_login_at) : null],
         ]),
         ui.h('p', { class: 'sub' }, 'Sales you ring up, tills you open and clock-ins you record are credited to this account. If you are borrowing a colleague\'s device, sign out and sign in as yourself first — otherwise their figures and yours mix.'))));
 
@@ -179,7 +179,7 @@
               { key: 'last_ip', label: 'From', render: (s) => s.last_ip || '—' },
               { key: 'issued_at', label: 'Signed in', render: (s) => U.relTime(s.issued_at) },
               { key: 'last_action_at', label: 'Last did something', render: (s) => (s.last_action_at ? U.relTime(s.last_action_at) : '—') },
-              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
+              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.watClock(s.expires_at) : '—') },
             ],
             rows: sessions,
             emptyTitle: 'Only this device',

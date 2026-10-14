@@ -591,7 +591,7 @@
           title: 'Deliveries against this order',
           table: ui.renderTable({
             columns: [
-              { key: 'received_at', label: 'Received', render: (r) => U.dateTime(r.received_at) },
+              { key: 'received_at', label: 'Received', render: (r) => U.watClock(r.received_at) },
               { key: 'product_name', label: 'Item', className: 'wrap' },
               { key: 'quantity_received', label: 'Quantity', align: 'right', render: (r) => U.qty(r.quantity_received) },
               { key: 'batch_no', label: 'Batch', render: (r) => ui.h('span', { class: 'mono' }, r.batch_no || '—') },

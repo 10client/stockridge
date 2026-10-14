@@ -303,6 +303,6 @@ module.exports = {
   newId, shortCode, numericCode,
   hashPin, verifyPin, timingSafeEqualString,
   sha256Hex, sha256HexSync, canonicalJson, hashRequestBody,
-  signToken, verifyToken,
+  signToken, verifyToken, hmacSha256Base64url,
   bytesToHex, bytesToBase64url, base64urlToBytes,
 };

@@ -91,7 +91,7 @@
             { key: 'branch_name', label: 'Branch' },
             { key: 'scope', label: 'Scope', render: (s) => ui.badge(U.humanise(s.scope), 'badge-info') },
             { key: 'status', label: 'Status', render: (s) => ui.badge(U.humanise(s.status), STATUS_TONES[s.status] || 'badge-muted') },
-            { key: 'opened_at', label: 'Opened', render: (s) => `${U.dateTime(s.opened_at)}` },
+            { key: 'opened_at', label: 'Opened', render: (s) => `${U.watClock(s.opened_at)}` },
             { key: 'opened_by_name', label: 'By', render: (s) => s.opened_by_name || '—' },
             { key: 'line_count', label: 'Lines', align: 'right', render: (s) => Number(s.line_count || 0).toLocaleString('en-NG') },
             { key: 'variance_count', label: 'With variance', align: 'right', render: (s) => {
@@ -351,9 +351,9 @@
           ui.h('h1', {}, session.reference || 'Stocktake'),
           ui.h('p', { class: 'sub' }, [
             session.branch_name || '',
-            `opened ${U.dateTime(session.opened_at)}`,
+            `opened ${U.watClock(session.opened_at)}`,
             session.opened_by_name ? `by ${session.opened_by_name}` : null,
-            committed ? `committed ${U.dateTime(session.committed_at)}` : null,
+            committed ? `committed ${U.watClock(session.committed_at)}` : null,
           ].filter(Boolean).join(' · '))),
         ui.h('div', { class: 'actions' },
           ui.badge(U.humanise(session.status), STATUS_TONES[session.status] || 'badge-muted'),

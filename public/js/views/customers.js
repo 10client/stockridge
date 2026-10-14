@@ -377,7 +377,7 @@
         ui.h('span', { class: 'badge badge-info' }, `closing balance ${U.money(c.credit_balance)}`)));
       card.appendChild(ui.h('div', { class: 'card-body tight' }, ui.renderTable({
         columns: [
-          { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+          { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
           { key: 'entry_type', label: 'Type', render: (r) => ui.badge(r.entry_type, r.entry_type === 'PAYMENT' ? 'badge-good' : (r.entry_type === 'ADJUSTMENT' ? 'badge-violet' : 'badge-mute')) },
           { key: 'notes', label: 'Detail', className: 'wrap' },
           { key: 'amount', label: 'Amount', align: 'right', render: (r) => {
@@ -425,7 +425,7 @@
           ['Credit allowed', Number(c.class_credit_allowed) ? 'yes' : 'no'],
           ['Loyalty points', Number(c.loyalty_points) ? String(c.loyalty_points) : null],
           ['Notes', c.notes],
-          ['Added', U.dateTime(c.created_at)],
+          ['Added', U.watClock(c.created_at)],
         ])));
       return card;
     }
@@ -469,7 +469,7 @@
         title: `${brand} — Statement of account`,
         subtitle: `${c.name}${c.phone ? ` · ${c.phone}` : ''} · balance ${U.money(c.credit_balance)}`,
         columns: [
-          { key: 'created_at', label: 'Date', value: (r) => U.dateTime(r.created_at) },
+          { key: 'created_at', label: 'Date', value: (r) => U.watClock(r.created_at) },
           { key: 'entry_type', label: 'Type' },
           { key: 'notes', label: 'Detail' },
           { key: 'amount', label: 'Amount', value: (r) => U.amount(r.amount) },

@@ -28,7 +28,8 @@ const { atLeast } = require('../../domain/roles');
 const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
-const { watNow, watToday, utcToWat, watToUtc } = require('../../domain/time');
+const { watNow, watToday, utcToWat, watToUtc, minutesBetween, utcNow, claimedWatToUtcSql } = require('../../domain/time');
+const { trustedReplay } = require('../lib/replay');
 const { classifyAttendance, hoursBetween, coordinatesArePlausible, haversineMeters, LOCATION_STATUS, DEVICE_STATUS } = require('../../domain/geofence');
 const { oneOf } = require('../../domain/validation');
 
@@ -36,6 +37,32 @@ const { oneOf } = require('../../domain/validation');
 // the schema does not allow would be refused by the CHECK constraint at insert
 // time, which is the worst moment to discover it — at the door, mid-shift.
 const CLOCK_METHODS = ['GEOLOCATION', 'REGISTERED_DEVICE', 'MANUAL'];
+const CLOCK_SKEW_MINUTES = 10;
+
+/**
+ * The instant a clock-in or clock-out happened, as SQLite UTC.
+ *
+ * Online, the server clock wins. A phone whose clock is wrong must not invent
+ * a shift, so a claimed time is kept only when it is within ten minutes, or
+ * when this request is a signed sync replay of a button pressed offline. The
+ * queued stamp is the moment they pressed it; replaying it hours later must
+ * not rewrite the shift to whenever the signal came back.
+ */
+async function resolveClockUtc(ctx, body) {
+  const claimed = body && (body.clocked_at || body.clockedAt);
+  const utc = claimed ? claimedWatToUtcSql(claimed) : null;
+  if (utc) {
+    const gap = minutesBetween(utc, utcNow());
+    const near = gap != null && Math.abs(gap) <= CLOCK_SKEW_MINUTES;
+    if (near || await trustedReplay(ctx)) return utc;
+  }
+  return watToUtc(watNow()) || utcNow();
+}
+
+function lagosTime(utcSql) {
+  const wat = utcToWat(utcSql);
+  return wat ? wat.slice(11, 16) : '';
+}
 
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
@@ -123,7 +150,7 @@ function mount(app, base = '/api') {
 
     const flagged = flags.length > 0 ? 1 : 0;
     const id = newId();
-    const nowUtc = watToUtc(watNow()) || new Date().toISOString();
+    const nowUtc = await resolveClockUtc(ctx, body);
 
     await db.transaction(async (tx) => {
       tx.queue(`INSERT INTO staff_attendance (
@@ -172,7 +199,7 @@ function mount(app, base = '/api') {
 
     ctx.json({
       ok: true, id,
-      clockedInAt: nowUtc, clockedInAtWat: watNow(),
+      clockedInAt: nowUtc, clockedInAtWat: utcToWat(nowUtc),
       locationStatus: classification.locationStatus,
       distanceMeters: classification.distanceMeters != null ? round2(classification.distanceMeters) : null,
       deviceStatus: classification.deviceStatus,
@@ -184,8 +211,8 @@ function mount(app, base = '/api') {
       // The message must be usable by the person standing at the door with a
       // phone in their hand. "OUTSIDE_FENCE" is a status code, not an answer.
       message: flagged
-        ? `Clocked in at ${branch.name} — but this needs a manager's review: ${flags[0]}`
-        : `Clocked in at ${branch.name}.${fence > 0 ? ` Position confirmed within the ${fence}m fence.` : ''}`,
+        ? `Clocked in at ${branch.name} at ${lagosTime(nowUtc)} — but this needs a manager's review: ${flags[0]}`
+        : `Clocked in at ${branch.name} at ${lagosTime(nowUtc)}.${fence > 0 ? ` Position confirmed within the ${fence}m fence.` : ''}`,
     }, 201);
   });
 
@@ -207,13 +234,13 @@ function mount(app, base = '/api') {
     if (!open) {
       throw new HttpError('You are not clocked in, so there is no shift to close.', { status: 409, code: 'NOT_CLOCKED_IN' });
     }
-    const nowUtc = watToUtc(watNow()) || new Date().toISOString();
+    const nowUtc = await resolveClockUtc(ctx, body);
     const hours = round2(hoursBetween(open.clock_in_at, nowUtc));
     if (hours < 0) {
       // Can only happen if the clock-in was recorded with a future timestamp.
       // Clamping at zero keeps the record usable and says what happened, rather
       // than storing negative hours that make a payroll total wrong.
-      ctx.set('negativeHours', `The clock-in (${open.clock_in_at}) is later than now (${nowUtc}); the device clock or the stored time is wrong. Recorded as 0 hours.`);
+      ctx.set('negativeHours', `The clock-in (${utcToWat(open.clock_in_at) || open.clock_in_at}) is later than now (${utcToWat(nowUtc) || nowUtc}), Lagos time; the device clock or the stored time is wrong. Recorded as 0 hours.`);
     }
     const safeHours = Math.max(0, hours);
 
@@ -242,7 +269,7 @@ function mount(app, base = '/api') {
     ctx.json({
       ok: true, id: String(open.id), hours: safeHours,
       clockedOutAt: nowUtc,
-      message: `Clocked out after ${safeHours} hour(s).${flags.length ? ` Flagged: ${flags[0]}` : ''}`,
+      message: `Clocked out at ${lagosTime(nowUtc)} after ${safeHours} hour(s).${flags.length ? ` Flagged: ${flags[0]}` : ''}`,
       warnings: [ctx.get('negativeHours'), ...flags].filter(Boolean),
     });
   });

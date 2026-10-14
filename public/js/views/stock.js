@@ -369,7 +369,7 @@
         title: 'Adjustments',
         table: ui.renderTable({
           columns: [
-            { key: 'created_at', label: 'When', render: (r) => U.dateTime(r.created_at) },
+            { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },
             { key: 'adjustment_type', label: 'Type', render: (r) => ui.badge(r.adjustment_type, ADDITIVE.has(String(r.adjustment_type)) ? 'badge-good' : 'badge-warn') },
             { key: 'product_name', label: 'Product', className: 'wrap' },
             { key: 'quantity', label: 'Qty', align: 'right', render: (r) => `${Number(r.quantity) > 0 ? '+' : ''}${U.qty(r.quantity)}` },
@@ -791,7 +791,7 @@
         body.appendChild(ui.renderTable({
           columns: [
             { key: 'batch_no', label: 'Batch', render: (b) => ui.h('span', { class: 'mono' }, b.batch_no || b.id.slice(0, 8)) },
-            { key: 'received_at', label: 'Received', render: (b) => U.date(b.received_at) },
+            { key: 'received_at', label: 'Received', render: (b) => U.watDate(b.received_at) },
             { key: 'expiry_date', label: 'Expires', render: (b) => (b.expiry_date ? U.date(b.expiry_date) : '—') },
             { key: 'quantity', label: 'On hand', align: 'right', render: (b) => U.qty(b.quantity) },
             { key: 'reserved', label: 'Reserved', align: 'right', render: (b) => U.qty(b.quantity_reserved) },

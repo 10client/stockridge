@@ -104,8 +104,8 @@
         myEntry && !myEntry.clock_out_at ? ui.h('span', { class: 'badge badge-good' }, 'clocked in') : ui.h('span', { class: 'badge badge-mute' }, 'not clocked in')));
       mine.appendChild(ui.h('div', { class: 'card-body row' },
         ui.kv([
-          ['Clocked in at', myEntry && myEntry.clock_in_at ? U.dateTime(myEntry.clock_in_at) : 'not yet today'],
-          ['Clocked out at', myEntry && myEntry.clock_out_at ? U.dateTime(myEntry.clock_out_at) : '—'],
+          ['Clocked in at', myEntry && myEntry.clock_in_at ? U.watClock(myEntry.clock_in_at) : 'not yet today'],
+          ['Clocked out at', myEntry && myEntry.clock_out_at ? U.watClock(myEntry.clock_out_at) : '—'],
           ['Hours so far', myEntry && myEntry.hours_worked != null ? `${myEntry.hours_worked}` : '—'],
           ['Location', myEntry ? (myEntry.location_status === 'INSIDE_FENCE' ? 'inside the branch fence' : (myEntry.location_status === 'OUTSIDE_FENCE' ? `outside the fence${myEntry.distance_meters != null ? ` by about ${Math.round(Number(myEntry.distance_meters))}m` : ''}` : U.humanise(myEntry.location_status || 'not recorded'))) : '—'],
         ]),
@@ -113,7 +113,7 @@
         ui.h('div', { class: 'btn-row' },
           !myEntry || !myEntry.clock_in_at ? ui.h('button', { class: 'btn btn-primary', onClick: () => clockIn() }, 'Clock in') : null,
           myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn', onClick: () => clockOut() }, 'Clock out') : null,
-          myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn', onClick: () => ui.info(`You came in at ${U.time(myEntry.clock_in_at)}.`) }, 'Status') : null)));
+          myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn', onClick: () => ui.info(`You came in at ${U.watTime(myEntry.clock_in_at)}.`) }, 'Status') : null)));
       host.appendChild(mine);
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
@@ -129,8 +129,8 @@
             { key: 'full_name', label: 'Staff', render: (r) => ui.h('div', {},
               ui.h('div', { style: { fontWeight: '600' } }, r.full_name || r.username || '—'),
               ui.h('div', { class: 'hint' }, r.role_label || r.job_title || '')) },
-            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.time(r.clock_in_at) : ui.badge('not in', 'badge-mute')) },
-            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.time(r.clock_out_at) : (r.clock_in_at ? ui.badge('still in', 'badge-good') : '—')) },
+            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.watTime(r.clock_in_at) : ui.badge('not in', 'badge-mute')) },
+            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watTime(r.clock_out_at) : (r.clock_in_at ? ui.badge('still in', 'badge-good') : '—')) },
             { key: 'hours_worked', label: 'Hours', align: 'right', render: (r) => (r.hours_worked != null ? String(r.hours_worked) : '—') },
             { key: 'within_geofence', label: 'Where', render: (r) => {
               if (!r.clock_in_at) return '—';
@@ -209,8 +209,8 @@
           columns: [
             { key: 'work_date', label: 'Date', render: (r) => U.date(r.work_date) },
             { key: 'full_name', label: 'Staff', render: (r) => r.full_name || r.username },
-            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.time(r.clock_in_at) : '—') },
-            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.time(r.clock_out_at) : '—') },
+            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.watTime(r.clock_in_at) : '—') },
+            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watTime(r.clock_out_at) : '—') },
             { key: 'hours_worked', label: 'Hours', align: 'right', render: (r) => (r.hours_worked != null ? String(r.hours_worked) : '—') },
             { key: 'within_geofence', label: 'Fence', render: (r) => (Number(r.within_geofence) ? ui.badge('inside', 'badge-good') : ui.badge('outside', 'badge-bad')) },
             { key: 'outside_reason', label: 'Reason', className: 'wrap' },
@@ -283,7 +283,7 @@
             { key: 'hours', label: 'Hours', align: 'right', render: (b) => ui.h('strong', {}, String(b.hours)) },
             { key: 'late', label: 'Late', align: 'right', render: (b) => (b.late ? ui.badge(String(b.late), 'badge-warn') : '0') },
             { key: 'outside', label: 'Off-site', align: 'right', render: (b) => (b.outside ? ui.badge(String(b.outside), 'badge-bad') : '0') },
-            { key: 'last', label: 'Last seen', render: (b) => (b.last ? U.dateTime(b.last) : '—') },
+            { key: 'last', label: 'Last seen', render: (b) => (b.last ? U.watClock(b.last) : '—') },
           ],
           rows: byStaff,
           emptyMessage: 'No records in this period.',
@@ -316,7 +316,7 @@
             { key: 'device_label', label: 'Device', render: (d) => ui.h('div', {}, ui.h('div', { style: { fontWeight: '600' } }, d.device_label || d.device_id), ui.h('div', { class: 'hint' }, d.device_id ? String(d.device_id).slice(0, 16) : '')) },
             { key: 'user_name', label: 'Usually used by', render: (d) => d.user_name || d.full_name || '—' },
             { key: 'status', label: '', render: (d) => ui.statusBadge(d.status || (Number(d.is_approved) ? 'APPROVED' : 'PENDING')) },
-            { key: 'first_seen_at', label: 'First seen', render: (d) => (d.first_seen_at ? U.dateTime(d.first_seen_at) : '—') },
+            { key: 'first_seen_at', label: 'First seen', render: (d) => (d.first_seen_at ? U.watClock(d.first_seen_at) : '—') },
             { key: 'last_seen_at', label: 'Last seen', render: (d) => (d.last_seen_at ? U.relTime(d.last_seen_at) : '—') },
             { key: 'clock_ins', label: 'Clock-ins', align: 'right' },
             { key: 'x', label: '', render: (d) => (SR.state.atLeast('MANAGER') ? ui.h('div', { class: 'btn-row' },
@@ -380,6 +380,7 @@
               try {
                 const result = await SR.api.post('/api/attendance/clock-in', {
                   device_id: SR.device.current().id,
+                  clocked_at: U.nowWatSql(),
                   notes: v.notes || null,
                   latitude: coords ? coords.latitude : null,
                   longitude: coords ? coords.longitude : null,
@@ -387,7 +388,7 @@
                 }, { queue: 'auto' });
                 if (result && result.queued) ui.info('Offline — your clock-in is queued with the time you pressed it.');
                 else if (result && result.flagged) ui.warn(result.message || `Recorded, but it needs a manager's review: ${(result.flags || []).join(' ')}`);
-                else ui.ok(result && result.message ? result.message : `Clocked in at ${U.time(U.nowIso())}.`);
+                else ui.ok(result && result.message ? result.message : `Clocked in at ${U.watTime(U.nowIso())}.`);
                 m.close();
                 load();
               } catch (err) {
@@ -418,6 +419,7 @@
               try {
                 const result = await SR.api.post('/api/attendance/clock-out', {
                   device_id: SR.device.current().id,
+                  clocked_at: U.nowWatSql(),
                   notes: v.notes || null,
                 }, { queue: 'auto' });
                 ui.ok(result && result.message ? result.message : 'Clocked out. Have a good evening.');

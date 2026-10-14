@@ -434,7 +434,7 @@
               { key: 'last_ip', label: 'From', render: (s) => s.last_ip || '—' },
               { key: 'issued_at', label: 'Signed in', render: (s) => U.relTime(s.issued_at) },
               { key: 'last_action_at', label: 'Last did something', render: (s) => (s.last_action_at ? U.relTime(s.last_action_at) : '—') },
-              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.dateTime(s.expires_at) : '—') },
+              { key: 'expires_at', label: 'Ends on its own', render: (s) => (s.expires_at ? U.watClock(s.expires_at) : '—') },
               {
                 key: 'revoke',
                 label: '',

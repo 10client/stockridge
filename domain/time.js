@@ -71,12 +71,14 @@ function parseTimestamp(value) {
   // `2026-10-05` and `2026-10-05 00:00:00` behave identically.
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) s = `${s}T00:00:00Z`;
 
-  // SQLite's `YYYY-MM-DD HH:MM:SS` carries no zone marker. Everything this
-  // system stores in that shape is UTC (`datetime('now')`), so say so
-  // explicitly rather than letting the JS engine apply the host's local zone
-  // — which would make the same string mean different things on a Lagos
-  // server and a Cloudflare edge.
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) s = `${s.replace(' ', 'T')}Z`;
+  // SQLite's `YYYY-MM-DD HH:MM:SS`, and the same digits written with a `T`
+  // and no zone, carry no zone marker. Everything this system stores in that
+  // shape is UTC (`datetime('now')`), so say so explicitly rather than letting
+  // the JS engine apply the host's local zone — which would make the same
+  // string mean different things on a Lagos server and a Cloudflare edge.
+  // A trailing `Z` or offset does not match, and is left for `Date` to read
+  // as a real instant.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) s = `${s.replace(' ', 'T')}Z`;
 
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -112,6 +114,36 @@ function watToUtc(watString) {
   const d = watToDate(watString);
   if (!d) return null;
   return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * Any accepted timestamp to SQLite UTC `YYYY-MM-DD HH:MM:SS`.
+ *
+ * A sync cursor used to be `toISOString()` (`2026-10-14T06:48:00.000Z`) while
+ * `updated_at` is `datetime('now')` (`2026-10-14 06:48:00`). At character 10,
+ * a space sorts before `T`, so `updated_at > isoCursor` is false for every
+ * same-day row and an incremental pull returns nothing until the next date.
+ * Both sides of that compare must be this form.
+ */
+function toUtcSql(value) {
+  const d = parseTimestamp(value);
+  if (!d) return null;
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+/**
+ * A claimed West Africa wall-clock stamp to SQLite UTC.
+ *
+ * Bare `YYYY-MM-DD HH:MM:SS` is what the till and the offline queue record,
+ * and those digits are WAT. An ISO string with `Z` or an offset is already
+ * an instant and must not be shifted a second time — that is the one-hour
+ * hole between a queued sale and a cleanup watermark stored as UTC.
+ */
+function claimedWatToUtcSql(value) {
+  if (value == null || String(value).trim() === '') return null;
+  const text = String(value).trim();
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(text)) return toUtcSql(text);
+  return watToUtc(text);
 }
 
 /**
@@ -258,7 +290,7 @@ function fixedHolidaysFor(year) {
 
 module.exports = {
   WAT_OFFSET_MINUTES,
-  utcNow, watNow, watToday, watToDate, utcToWat, watToUtc, parseTimestamp, watDaySql, watDayRangeUtc, watMonthRange,
+  utcNow, watNow, watToday, watToDate, utcToWat, watToUtc, toUtcSql, claimedWatToUtcSql, parseTimestamp, watDaySql, watDayRangeUtc, watMonthRange,
   addMonths, addDays, daysBetween, minutesBetween, isoWeek,
   FIXED_NIGERIAN_HOLIDAYS, MOVABLE_NIGERIAN_HOLIDAYS, fixedHolidaysFor,
 };

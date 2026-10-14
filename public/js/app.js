@@ -662,7 +662,7 @@
     // itself is renewed. Said out loud so two people do not both go and renew the same
     // licence, and so nobody is surprised that clearing it cleared it for a colleague.
     if (!n.user_id && n.branch_name) bits.push('shared with the branch');
-    bits.push(U.dateTime(n.created_at, { zone: 'wat' }));
+    bits.push(U.watClock(n.created_at));
     return bits.join(' · ');
   }
 
