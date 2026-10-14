@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261014-2040-329d642';
+  SR.BUILD = 'ridge-20261014-2051-22ff2ec';
 
   // -------------------------------------------------------------------
   // DOWNLOAD — only where the device can install, and has not
