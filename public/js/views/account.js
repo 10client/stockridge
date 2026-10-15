@@ -129,7 +129,7 @@
       deviceCard.firstElementChild.appendChild(ui.h('div', { class: 'row' },
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.print.testPage({ brand: brandInput.value }) }, 'Print a test receipt'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sync') }, 'Sync & offline'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => toggleTheme() }, SR.theme.current() === 'dark' ? 'Switch to light' : 'Switch to dark')));
+        themeSwitch()));
       stack.appendChild(deviceCard);
 
       // ------------------------------------------------------ a move in progress
@@ -235,10 +235,21 @@
       } catch (err) { ui.apiError(err); }
     }
 
-    function toggleTheme() {
-      const next = SR.theme.toggle();
-      ui.info(`Switched to ${next}.`);
-      load();
+    function themeSwitch() {
+      const btn = ui.h('button', {
+        type: 'button',
+        class: 'switch switch-btn',
+        role: 'switch',
+        'aria-checked': SR.theme.current() === 'dark' ? 'true' : 'false',
+        'aria-label': 'Dark theme',
+        onClick: () => {
+          const next = SR.theme.toggle();
+          btn.setAttribute('aria-checked', next === 'dark' ? 'true' : 'false');
+        },
+      },
+      ui.h('span', { class: 'switch-track', 'aria-hidden': 'true' }, ui.h('span', { class: 'switch-knob' })),
+      ui.h('span', {}, 'Dark'));
+      return btn;
     }
 
     async function signOut() {

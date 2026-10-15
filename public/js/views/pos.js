@@ -1306,8 +1306,9 @@
         SR.state.moduleOn('deliveries') ? ui.field({ label: 'Delivery address', name: 'deliveryAddress', value: cart.deliveryAddress || '', span: true }) : null,
         ui.field({ label: 'Notes', name: 'notes', type: 'textarea', value: cart.notes || '', span: true }));
       wrapEl.appendChild(grids);
-      const delivery = ui.h('label', { class: 'check' },
+      const delivery = ui.h('label', { class: 'switch' },
         Object.assign(ui.h('input', { type: 'checkbox', checked: Boolean(cart.deliveryRequired) }), {}),
+        ui.h('span', { class: 'switch-track', 'aria-hidden': 'true' }, ui.h('span', { class: 'switch-knob' })),
         ui.h('span', {}, 'This sale needs delivery and a delivery job'));
       if (SR.state.moduleOn('deliveries')) wrapEl.appendChild(delivery);
       const custRow = ui.h('div', { class: 'row', style: { marginTop: '12px' } },

@@ -1077,6 +1077,8 @@ function mount(app, base = '/api') {
     // A BRANCH THE CALLER NAMED NARROWS THIS LIST — see branchFilter() in lib/respond.
     const bf = await branchFilter(db, ctx, { alias: 's' });
     if (bf.sql) { where.push(bf.sql); params.push(...bf.params); }
+    if (ctx.req.queryParam('in_progress') === '1') where.push("s.status IN ('OPEN','COUNTING')");
+    else if (ctx.req.queryParam('status')) { where.push('s.status = ?'); params.push(String(ctx.req.queryParam('status'))); }
     const rows = await db.all(`SELECT s.*, b.name AS branch_name, u.full_name AS opened_by_name,
           (SELECT COUNT(*) FROM stocktake_lines l WHERE l.stocktake_id = s.id AND l.is_deleted = 0) AS line_count,
           (SELECT COUNT(*) FROM stocktake_lines l WHERE l.stocktake_id = s.id AND l.is_deleted = 0 AND COALESCE(l.variance,0) <> 0) AS variance_count

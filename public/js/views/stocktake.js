@@ -46,14 +46,29 @@
   async function renderList(ctx) {
     ctx.setTitle('Stocktake');
     const state = { page: 0, pageSize: 25, status: ctx.query.status || '' };
+    const countSlot = ui.h('span', {});
+    let openCount = null;
+
+    function paintCountAction() {
+      countSlot.replaceChildren();
+      if (openCount) {
+        countSlot.appendChild(ui.h('button', {
+          class: 'btn btn-sm btn-primary',
+          onClick: () => SR.app.navigate(`/stocktakes/${openCount.id}`),
+        }, 'Continue the count'));
+        return;
+      }
+      if (SR.state.atLeast('MANAGER')) {
+        countSlot.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openNew() }, 'Start a stocktake'));
+      }
+    }
 
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Stocktake'),
         ui.h('p', { class: 'sub' }, 'Count the shelf against the record. Variances post as adjustments and the books follow.')),
-      ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openNew() }, 'Start a stocktake'))));
+      ui.h('div', { class: 'actions' }, countSlot)));
 
     const statusSelect = ui.h('select', {
       onChange: () => { state.status = statusSelect.value; state.page = 0; load(); },
@@ -80,6 +95,13 @@
       }
       const rows = data.data || [];
       const paging = data.paging || {};
+      try {
+        const openData = await SR.api.get('/api/stocktakes', { query: SR.state.query({ in_progress: 1, limit: 1 }) });
+        openCount = (openData.data || [])[0] || null;
+      } catch (e) {
+        openCount = rows.find((s) => s.status === 'OPEN' || s.status === 'COUNTING') || null;
+      }
+      paintCountAction();
 
       host.replaceChildren();
       host.appendChild(ui.dataCard({
@@ -107,7 +129,9 @@
           onRowClick: (s) => SR.app.navigate(`/stocktakes/${s.id}`),
           emptyTitle: 'No stocktakes yet',
           emptyMessage: 'A stocktake freezes the system quantity for every batch, then compares it with what is actually on the shelf.',
-          emptyAction: SR.state.atLeast('MANAGER') ? { label: 'Start a stocktake', run: () => openNew() } : null,
+          emptyAction: openCount
+            ? { label: 'Continue the count', run: () => SR.app.navigate(`/stocktakes/${openCount.id}`) }
+            : (SR.state.atLeast('MANAGER') ? { label: 'Start a stocktake', run: () => openNew() } : null),
         }),
         pager: ui.pager({
           page: state.page, pageSize: state.pageSize, total: Number(paging.total || rows.length),

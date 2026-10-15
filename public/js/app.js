@@ -1474,6 +1474,15 @@
     });
     document.getElementById('nav-close').addEventListener('click', closeNav);
     document.getElementById('scrim').addEventListener('click', closeNav);
+    function paintThemeSwitches() {
+      const on = SR.theme.current() === 'dark';
+      for (const id of ['theme-toggle', 'login-theme']) {
+        const el = document.getElementById(id);
+        if (el) el.setAttribute('aria-checked', on ? 'true' : 'false');
+      }
+    }
+    paintThemeSwitches();
+    SR.theme.onChange(paintThemeSwitches);
     document.getElementById('theme-toggle').addEventListener('click', () => SR.theme.toggle());
     document.getElementById('login-theme').addEventListener('click', () => SR.theme.toggle());
     document.getElementById('branch-chip').addEventListener('click', () => {
@@ -1531,12 +1540,9 @@
       navigate(allowed(pos) ? '/pos' : '/dashboard', { replace: true });
       ui.warn('Selling from the stock last recorded on this device. It will sync when the line returns.');
     });
-    document.getElementById('login-reveal').addEventListener('click', () => {
+    document.getElementById('login-reveal').addEventListener('change', (ev) => {
       const pin = document.getElementById('login-pin');
-      const btn = document.getElementById('login-reveal');
-      const show = pin.type === 'password';
-      pin.type = show ? 'text' : 'password';
-      btn.textContent = show ? 'Hide' : 'Show';
+      if (pin) pin.type = ev.target.checked ? 'text' : 'password';
     });
 
     global.addEventListener('popstate', () => render());

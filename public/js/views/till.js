@@ -57,6 +57,7 @@
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Till & safe');
     const state = { page: 0, pageSize: 25, status: '', days: 14 };
+    const tillSlot = ui.h('span', {});
 
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
@@ -65,7 +66,7 @@
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · the drawer, and what happened to the cash in it`)),
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openSafeEntry() }, 'Safe entry') : null,
-        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openTill() }, 'Open a till'))));
+        tillSlot)));
 
     const banner = ui.h('div', {});
     wrap.appendChild(banner);
@@ -153,7 +154,19 @@
     }
 
     // ------------------------------------------------------------- current
+    function paintTillAction(till) {
+      tillSlot.replaceChildren();
+      // Opening and closing are one job. A drawer that is already open does not
+      // offer a second opening, and a closed day does not offer a close.
+      if (till) {
+        tillSlot.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => closeTill(till) }, 'Close & count'));
+      } else {
+        tillSlot.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openTill() }, 'Open a till'));
+      }
+    }
+
     function renderNoOpenTill(message) {
+      paintTillAction(null);
       currentHost.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('div', { class: 'row' },
           ui.h('div', { class: 'grow' },
@@ -164,6 +177,7 @@
 
     function renderCurrent(payload, offline) {
       const t = payload.till || {};
+      paintTillAction(t);
       const expected = U.amount(Number(t.opening_cash || 0) + Number(t.cash_sales_total || 0) - Number(t.refund_total || 0));
       const next = ui.h('div', { class: 'stack' });
       next.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },

@@ -293,7 +293,7 @@
           tillBody.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '10px' } }, `Branch safe: ${U.money(cash.safeBalance)}`));
         }
         tillBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
-          ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => SR.app.navigate('/till') }, 'Open till & safe'),
+          ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => SR.app.navigate('/till') }, 'Close & count'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/pos') }, 'Go to the counter')));
       } else if (otherTills.length) {
         // A manager with no till of their own, on a shift where somebody else has one.

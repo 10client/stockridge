@@ -25,14 +25,15 @@
     ctx.setTitle('Attendance');
     const state = { tab: ctx.query.tab || 'today', page: 0, pageSize: 50, from: U.addDays(U.todayWat(), -30), to: U.todayWat(), userId: '' };
 
+    const clockSlot = ui.h('span', {});
+    let clockedIn = null;
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Attendance'),
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · who is in, who is late, and who clocked in from somewhere else`)),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => clockIn() }, 'Clock in'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => clockOut() }, 'Clock out'),
+        clockSlot,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openGeofence() }, 'Geofence') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
 
@@ -50,6 +51,44 @@
     wrap.appendChild(tabs);
     const host = ui.h('div', {});
     wrap.appendChild(host);
+
+    function paintClockAction() {
+      clockSlot.replaceChildren();
+      if (clockedIn === null) return;
+      // One action, the one that still applies. A person who is already in does
+      // not get a second clock-in, and a person who is out does not get a clock-out.
+      clockSlot.appendChild(clockedIn
+        ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => clockOut() }, 'Clock out')
+        : ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => clockIn() }, 'Clock in'));
+    }
+
+    async function refreshClockState() {
+      const me = SR.state.user || {};
+      let known = null;
+      try {
+        const data = await SR.api.get('/api/attendance/today', { query: SR.state.query() });
+        const rows = data.records || data.data || [];
+        const mine = rows.find((r) => String(r.user_id) === String(me.id));
+        known = Boolean(mine && mine.clock_in_at && !mine.clock_out_at);
+      } catch (err) {
+        try {
+          const all = await SR.store.all('attendance', { where: (a) => !Number(a.is_deleted) });
+          const today = U.todayWat();
+          const mine = all.find((a) => String(a.user_id) === String(me.id) && String(a.work_date) === today);
+          known = Boolean(mine && mine.clock_in_at && !mine.clock_out_at);
+        } catch (e) {
+          known = false;
+        }
+      }
+      try {
+        const box = await SR.store.outboxAll();
+        const pending = (box || []).filter((op) => (op.status === 'PENDING' || op.status === 'RETRY') && (op.type === 'CLOCK_IN' || op.type === 'CLOCK_OUT'));
+        if (pending.length) known = pending[pending.length - 1].type === 'CLOCK_IN';
+      } catch (e) { /* the server answer stands */ }
+      clockedIn = known;
+      paintClockAction();
+      return clockedIn;
+    }
 
     async function exportList() {
       try {
@@ -70,6 +109,7 @@
 
     async function load() {
       host.replaceChildren(ui.skeleton(6));
+      if (state.tab !== 'today') await refreshClockState();
       if (state.tab === 'devices') return renderDevices();
       if (state.tab === 'team') return renderTeam();
       if (state.tab === 'history') return renderHistory();
@@ -99,6 +139,13 @@
 
       const me = SR.state.user || {};
       const myEntry = rows.find((r) => String(r.user_id) === String(me.id));
+      clockedIn = Boolean(myEntry && myEntry.clock_in_at && !myEntry.clock_out_at);
+      try {
+        const box = await SR.store.outboxAll();
+        const pending = (box || []).filter((op) => (op.status === 'PENDING' || op.status === 'RETRY') && (op.type === 'CLOCK_IN' || op.type === 'CLOCK_OUT'));
+        if (pending.length) clockedIn = pending[pending.length - 1].type === 'CLOCK_IN';
+      } catch (e) { /* the roster answer stands */ }
+      paintClockAction();
       const mine = ui.h('div', { class: 'card' });
       mine.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Your day'), ui.h('div', { class: 'spacer' }),
         myEntry && !myEntry.clock_out_at ? ui.h('span', { class: 'badge badge-good' }, 'clocked in') : ui.h('span', { class: 'badge badge-mute' }, 'not clocked in')));
@@ -157,7 +204,7 @@
           rows,
           emptyTitle: 'Nobody has clocked in today',
           emptyMessage: 'Staff clock in from the Attendance screen on their own device. The branch, the time and the location are stamped on the entry.',
-          emptyAction: { label: 'Clock in', run: () => clockIn() },
+          emptyAction: clockedIn ? null : { label: 'Clock in', run: () => clockIn() },
         }),
       }));
     }

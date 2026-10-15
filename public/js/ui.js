@@ -118,7 +118,7 @@
     const cls = el.classList;
     if (!cls) return 'takeover';
     if (cls.contains('icon-btn') || cls.contains('avatar') || cls.contains('field-reveal')) return 'icon';
-    if (cls.contains('nav-item') || cls.contains('chip') || cls.contains('link-btn') || cls.contains('sidenav-switch') || cls.contains('menu-item') || cls.contains('tab') || cls.contains('report-chip')) return 'inline';
+    if (cls.contains('nav-item') || cls.contains('chip') || cls.contains('link-btn') || cls.contains('sidenav-switch') || cls.contains('menu-item') || cls.contains('tab') || cls.contains('report-chip') || cls.contains('switch')) return 'inline';
     return 'takeover';
   }
 
@@ -988,7 +988,7 @@
 
   function field({ label, name, value = '', type = 'text', options = null, hint = null, required = false, placeholder = '', step = null, min = null, max = null, span = false, disabled = false, rows = null }) {
     const wrap = h('div', { class: span ? 'span-2' : '' });
-    wrap.appendChild(h('label', { class: 'ctl' }, label + (required ? ' *' : '')));
+    if (type !== 'checkbox') wrap.appendChild(h('label', { class: 'ctl' }, label + (required ? ' *' : '')));
     let input;
     if (options) {
       input = h('select', { name, required, disabled });
@@ -1000,7 +1000,16 @@
       input = h('textarea', { name, placeholder, required, disabled, rows: rows || 3 });
       input.value = value === null || value === undefined ? '' : String(value);
     } else if (type === 'checkbox') {
+      // An on/off control is a switch, not a tick box. Off sits on the left and
+      // on sits on the right, the same way the theme switch moves.
       input = h('input', { type: 'checkbox', name, disabled, checked: Boolean(Number(value)) });
+      const row = h('label', { class: 'switch' },
+        input,
+        h('span', { class: 'switch-track', 'aria-hidden': 'true' }, h('span', { class: 'switch-knob' })),
+        h('span', {}, label + (required ? ' *' : '')));
+      wrap.appendChild(row);
+      if (hint) wrap.appendChild(h('div', { class: 'hint' }, hint));
+      return wrap;
     } else {
       input = h('input', { type, name, placeholder, required, disabled, step, min, max });
       input.value = value === null || value === undefined ? '' : String(value);

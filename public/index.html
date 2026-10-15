@@ -66,16 +66,23 @@
                autocomplete="username" required placeholder="e.g. admin">
       </label>
 
-      <label class="field">
-        <span class="field-label">PIN</span>
+      <div class="field">
+        <span class="field-label-row">
+          <label class="field-label" for="login-pin">PIN</label>
+          <label class="switch switch-sm">
+            <input id="login-reveal" type="checkbox" aria-label="Show PIN">
+            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+            <span>Show</span>
+          </label>
+        </span>
         <input id="login-pin" name="pin" type="password" inputmode="numeric"
                pattern="[0-9]*" autocomplete="current-password" required
                placeholder="Your PIN">
-        <button type="button" class="field-reveal" id="login-reveal" aria-label="Show PIN">Show</button>
-      </label>
+      </div>
 
-      <label class="remember-line" for="login-remember">
+      <label class="switch remember-line" for="login-remember">
         <input id="login-remember" name="remember" type="checkbox" checked>
+        <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
         <span>Keep this till signed in on this device</span>
       </label>
 
@@ -88,7 +95,10 @@
     <button type="button" class="btn btn-block" id="login-install" hidden>Download onto this device</button>
 
     <div class="login-foot">
-      <button type="button" class="link-btn" id="login-theme">Switch theme</button>
+      <button type="button" class="switch switch-btn" id="login-theme" role="switch" aria-checked="false" aria-label="Dark theme">
+        <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+        <span>Dark</span>
+      </button>
       <span class="dot" aria-hidden="true">•</span>
       <span id="login-net" class="net-line">Checking connection…</span>
     </div>
@@ -154,9 +164,8 @@
       <span class="bell-badge" id="bell-count" hidden>0</span>
     </button>
 
-    <button class="icon-btn" id="theme-toggle" aria-label="Switch theme">
-      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" class="icon-sun"><circle cx="12" cy="12" r="4.2" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" class="icon-moon"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4a6.8 6.8 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+    <button type="button" class="switch switch-btn switch-sm" id="theme-toggle" role="switch" aria-checked="false" aria-label="Dark theme" title="Dark theme">
+      <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
     </button>
 
     <button class="avatar" id="user-menu" aria-label="Account menu" aria-haspopup="menu" aria-expanded="false">
