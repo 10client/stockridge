@@ -34,6 +34,7 @@
     'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes',
     'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers',
     'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
+    'branch_compliance_records',
   ];
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;

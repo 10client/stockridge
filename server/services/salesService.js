@@ -63,6 +63,7 @@ const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = re
 const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp, claimedWatToUtcSql, utcNow } = require('../../domain/time');
 const trade = require('../../domain/trade');
 const pharmacy = require('../../domain/pharmacy');
+const selling = require('../../domain/selling');
 const { atLeast } = require('../../domain/roles');
 const { computeRowHash } = require('../../domain/hashChain');
 const { HttpError } = require('../lib/http');
@@ -687,7 +688,15 @@ async function prepare(db, {
       notes: holdNote || line.notes || null,
       dispense,
       product, variant,
-      picks: selection.picks.map((p) => ({ batchId: String(p.batch.id), quantityBase: p.quantityBase, costPerBaseUnit: p.costPerBaseUnit, expiry: p.batch.expiry_date || null })),
+      picks: selection.picks.map((p) => ({
+        batchId: String(p.batch.id),
+        batchNo: p.batch.batch_no || null,
+        quantityBase: p.quantityBase,
+        quantity: p.quantityBase,
+        costPerBaseUnit: p.costPerBaseUnit,
+        expiry: p.batch.expiry_date || null,
+        expiryDate: p.batch.expiry_date || null,
+      })),
       serialRows,
       requestedSerials,
       measure,
@@ -1234,6 +1243,16 @@ async function complete(db, params) {
   const controlledHead = prepared.lines.some((l) => l.dispense && (l.dispense.prescription || l.dispense.kyc))
     ? await controlledHeadHash(db, branch.id)
     : null;
+  const licenceRows = await db.all(
+    `SELECT record_type, record_number FROM branch_compliance_records
+      WHERE branch_id = ? AND is_deleted = 0 AND record_number IS NOT NULL
+        AND record_type IN ('PCN', 'NAFDAC_PREMISES', 'SUPERINTENDENT')`,
+    [String(branch.id)],
+  ).catch(() => []);
+  const branchLicences = {};
+  for (const row of licenceRows || []) {
+    if (row.record_number) branchLicences[String(row.record_type)] = String(row.record_number);
+  }
 
   return db.transaction(async (tx) => {
     const saleId = tx.idFor('sale');
@@ -1647,6 +1666,8 @@ async function complete(db, params) {
       agreementIds,
       depositHeld: round2(prepared.depositDue || 0),
       tradeMix: prepared.tradeMix || null,
+      lines: receiptLines(prepared.lines),
+      licences: branchLicences,
     };
   });
 }
@@ -1712,6 +1733,37 @@ function totalsByMethod(legs) {
  * different drawer, and the person who was standing there outranks arithmetic.
  */
 const CLAIM_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+
+function receiptLines(lines) {
+  return (lines || []).map((line) => {
+    const pick = (line.picks && line.picks[0]) || {};
+    const group = selling.sellingGroup({
+      code: line.product && line.product.category_code,
+      name: line.product && line.product.category_name,
+    });
+    return {
+      product_name: line.productName,
+      sku: line.sku || null,
+      variant_name: line.variant ? line.variant.name : null,
+      quantity: line.quantity,
+      unit_code: line.unitCode,
+      unit_price: line.unitPrice,
+      line_total: line.lineTotal,
+      line_discount: line.discountAmount || 0,
+      category_code: (line.product && line.product.category_code) || null,
+      category_name: (line.product && line.product.category_name) || null,
+      selling_group: group.code,
+      selling_group_label: group.label,
+      batch_no: pick.batchNo || null,
+      expiry_date: pick.expiryDate || pick.expiry || null,
+      registration_no: (line.product && line.product.registration_no) || null,
+      warranty_months: line.product ? Number(line.product.warranty_months) || 0 : 0,
+      serialNumbers: line.requestedSerials || [],
+      prescription: line.dispense && line.dispense.prescription ? line.dispense.prescription : null,
+      controlled_kyc: line.dispense && line.dispense.kyc ? line.dispense.kyc : null,
+    };
+  });
+}
 
 function expiryDate(days) {
   const n = Math.max(0, Number(days) || 30);

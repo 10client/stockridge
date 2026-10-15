@@ -217,6 +217,13 @@ function mount(app, base = '/api') {
     if (businessId) { where.push('(p.business_id = ? OR p.business_id IS NULL)'); params.push(String(businessId)); }
     else if (scope.businessIds) { where.push('(p.business_id IS NULL OR p.business_id IN (' + [...scope.businessIds].map(() => '?').join(',') + '))'); params.push(...[...scope.businessIds]); }
     if (categoryId) { where.push('p.category_id = ?'); params.push(String(categoryId)); }
+    const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
+    if (sellingGroup) {
+      const selling = require('../../domain/selling');
+      const codes = selling.codesFor(sellingGroup);
+      where.push(`EXISTS (SELECT 1 FROM product_categories pcg WHERE pcg.id = p.category_id AND pcg.is_deleted = 0 AND pcg.code IN (${codes.map(() => '?').join(',')}))`);
+      params.push(...codes);
+    }
     if (activeOnly) where.push('p.is_active = 1');
     if (search) {
       where.push('(p.name LIKE ? OR p.sku LIKE ? OR p.brand LIKE ? OR p.model_no LIKE ? OR EXISTS (SELECT 1 FROM product_barcodes pb WHERE pb.product_id = p.id AND pb.barcode LIKE ? AND pb.is_deleted = 0))');

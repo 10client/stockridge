@@ -834,6 +834,7 @@ const PULLABLE = {
   product_price_overrides: { businessScoped: false, branchScoped: true, orderBy: 'product_id' },
   suppliers: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   stock_batches: { businessScoped: true, branchScoped: true, orderBy: 'product_id, batch_no' },
+  branch_compliance_records: { businessScoped: false, branchScoped: true, orderBy: 'record_type' },
   purchase_orders: { businessScoped: true, branchScoped: true, orderBy: 'ordered_at' },
   deposits: { businessScoped: true, branchScoped: true, orderBy: 'expires_at' },
   instalment_plans: { businessScoped: true, branchScoped: true, orderBy: 'next_due_date' },
@@ -853,9 +854,12 @@ async function attachStockProductNames(db, rows) {
   for (let i = 0; i < ids.length; i += 80) {
     const chunk = ids.slice(i, i + 80);
     const found = await db.all(
-      `SELECT id, name, sku, brand, model_no, selling_price, is_active, base_unit_name,
-                dispensing_class, is_controlled, requires_serial
-         FROM products WHERE id IN (${chunk.map(() => '?').join(',')})`,
+      `SELECT p.id, p.name, p.sku, p.brand, p.model_no, p.selling_price, p.is_active, p.base_unit_name,
+              p.dispensing_class, p.is_controlled, p.requires_serial, p.registration_no, p.category_id,
+              c.code AS category_code, c.name AS category_name
+         FROM products p
+         LEFT JOIN product_categories c ON c.id = p.category_id
+         WHERE p.id IN (${chunk.map(() => '?').join(',')})`,
       chunk,
     );
     for (const p of found || []) byId.set(String(p.id), p);
@@ -874,6 +878,10 @@ async function attachStockProductNames(db, rows) {
       product_dispensing_class: p.dispensing_class,
       product_is_controlled: p.is_controlled,
       product_requires_serial: p.requires_serial,
+      product_category_id: p.category_id,
+      product_category_code: p.category_code,
+      product_category_name: p.category_name,
+      product_registration_no: p.registration_no,
     });
   });
 }

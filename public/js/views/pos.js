@@ -92,11 +92,17 @@
       autocapitalize: 'off',
       spellcheck: 'false',
     });
+    const categorySelect = ui.h('select', { id: 'pos-retail-category' });
+    categorySelect.appendChild(ui.h('option', { value: '' }, 'All sellable categories'));
     const scanBox = ui.h('div', { class: 'pos-scan' }, scanInput,
       ui.h('button', { class: 'btn btn-primary scan-btn', onClick: () => doSearch(scanInput.value) }, 'Find'));
     const results = ui.h('div', { class: 'pos-results', hidden: true });
     const scanCard = ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
+        ui.h('label', { class: 'field pos-category' },
+          ui.h('span', { class: 'field-label' }, 'Selling category'),
+          categorySelect,
+          ui.h('span', { class: 'hint' }, 'Drugs are recorded apart from provisions, drinks and other goods. Pick a category to sell from that shelf.')),
         scanBox,
         ui.h('div', { class: 'hint' }, serialsOn()
           ? 'A barcode scanner types and presses Enter. A serial number is looked up too.'
@@ -148,7 +154,6 @@
     let searchSeq = 0;
     const doSearch = U.debounce(async (term) => {
       const q = String(term || '').trim();
-      if (q.length < 2) { results.hidden = true; results.replaceChildren(); return; }
       if (!SR.state.activeBranchId) {
         results.replaceChildren();
         results.appendChild(ui.h('div', { class: 'pos-hit' },
@@ -157,6 +162,8 @@
         results.hidden = false;
         return;
       }
+      const group = categorySelect.value;
+      if (q.length < 2 && !group) { results.hidden = true; results.replaceChildren(); return; }
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
       const offline = !SR.api.isOnline() || (typeof navigator !== 'undefined' && navigator.onLine === false);
@@ -164,16 +171,16 @@
       // that comes back as an empty page used to be treated as "nothing matches".
       if (!offline) {
         try {
-          const data = await SR.api.get('/api/products', { query: SR.state.query({ q, limit: 20, for_sale: '1' }) });
+          const data = await SR.api.get('/api/products', { query: SR.state.query({ q: q.length >= 2 ? q : undefined, limit: 30, for_sale: '1', selling_group: group || undefined }) });
           if (!data || !Array.isArray(data.data)) throw new Error('The till search did not return a list.');
           hits = data.data;
           source = 'server';
         } catch (err) {
-          hits = await searchMirror(q);
+          hits = await searchMirror(q, group);
           source = 'device';
         }
       } else {
-        hits = await searchMirror(q);
+        hits = await searchMirror(q, group);
         source = 'device';
       }
       if (seq !== searchSeq) return;
@@ -201,7 +208,8 @@
         ui.h('div', { class: 'ph-name' }, p.name),
         ui.h('div', { class: 'ph-meta' }, [
           p.sku ? `SKU ${p.sku}` : null,
-          p.category_name || null,
+          (p.category_code || p.category_name) ? U.sellingGroup({ code: p.category_code, name: p.category_name }).label : null,
+          p.category_name && U.sellingGroup({ code: p.category_code, name: p.category_name }).label !== p.category_name ? p.category_name : null,
           p.brand || null,
           p.on_hand != null ? `${U.qty(p.on_hand)} on hand` : null,
           serialsOn() && Number(p.requires_serial) ? 'serial tracked' : null,
@@ -241,6 +249,10 @@
           dispensing: b.product_dispensing_class || '',
           controlled: Number(b.product_is_controlled) === 1 ? 1 : 0,
           requiresSerial: Number(b.product_requires_serial) === 1 ? 1 : 0,
+          categoryId: b.product_category_id || null,
+          categoryCode: b.product_category_code || '',
+          categoryName: b.product_category_name || '',
+          registrationNo: b.product_registration_no || null,
         };
         cur.on_hand += avail;
         if (!cur.name && b.product_name) cur.name = b.product_name;
@@ -250,6 +262,9 @@
         if (!cur.dispensing && b.product_dispensing_class) cur.dispensing = b.product_dispensing_class;
         if (!cur.controlled && Number(b.product_is_controlled) === 1) cur.controlled = 1;
         if (!cur.requiresSerial && Number(b.product_requires_serial) === 1) cur.requiresSerial = 1;
+        if (!cur.categoryCode && b.product_category_code) cur.categoryCode = b.product_category_code;
+        if (!cur.categoryName && b.product_category_name) cur.categoryName = b.product_category_name;
+        if (!cur.categoryId && b.product_category_id) cur.categoryId = b.product_category_id;
         const batchPrice = Number(b.selling_price_per_unit) || Number(b.product_selling_price) || 0;
         if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
         byProduct.set(id, cur);
@@ -258,8 +273,30 @@
       return { byProduct, rows, branchId };
     }
 
-    async function searchMirror(term) {
+    async function paintSellingCategories() {
+      const rows = await SR.store.all('product_categories').catch(() => []);
+      const groups = new Map();
+      for (const row of rows || []) {
+        if (Number(row.is_deleted) || Number(row.is_active) === 0) continue;
+        const group = U.sellingGroup(row);
+        const prev = groups.get(group.code) || { code: group.code, label: group.label, count: 0 };
+        prev.count += 1;
+        groups.set(group.code, prev);
+      }
+      const current = categorySelect.value;
+      categorySelect.replaceChildren(ui.h('option', { value: '' }, 'All sellable categories'));
+      for (const group of U.sellingGroups()) {
+        const row = groups.get(group.code);
+        if (!row) continue;
+        categorySelect.appendChild(ui.h('option', { value: group.code }, `${group.label} · ${row.count}`));
+      }
+      if ([...categorySelect.options].some((opt) => opt.value === current)) categorySelect.value = current;
+    }
+
+    async function searchMirror(term, groupCode) {
       const needle = String(term || '').toLowerCase();
+      const categories = await SR.store.all('product_categories').catch(() => []);
+      const categoryById = new Map((categories || []).filter((c) => !Number(c.is_deleted)).map((c) => [String(c.id), c]));
       const stock = await sellableIndex();
       if (!stock.byProduct.size) return [];
       // Look up only the products that are on the shelf. Loading the whole
@@ -274,8 +311,13 @@
         const sku = (product && product.sku) || info.sku || '';
         const brand = (product && product.brand) || info.brand || '';
         const model = (product && product.model_no) || info.model || '';
-        const blob = `${name} ${sku} ${brand} ${model}`.toLowerCase();
-        if (!blob.includes(needle)) continue;
+        const cat = (product && categoryById.get(String(product.category_id))) || null;
+        const categoryCode = (product && product.category_code) || (cat && cat.code) || info.categoryCode || '';
+        const categoryName = (product && product.category_name) || (cat && cat.name) || info.categoryName || '';
+        const blob = `${name} ${sku} ${brand} ${model} ${categoryName}`.toLowerCase();
+        if (needle && !blob.includes(needle)) continue;
+        if (!needle && !groupCode) continue;
+        if (groupCode && U.sellingGroup({ code: categoryCode, name: categoryName }).code !== groupCode) continue;
         const price = product && Number(product.selling_price) > 0
           ? Number(product.selling_price)
           : (info.price || 0);
@@ -296,6 +338,10 @@
           brand,
           on_hand: info.on_hand,
           selling_price: price,
+          category_id: (product && product.category_id) || info.categoryId || null,
+          category_code: categoryCode || null,
+          category_name: categoryName || null,
+          registration_no: (product && product.registration_no) || info.registrationNo || null,
         }));
         if (hits.length >= 20) break;
       }
@@ -450,6 +496,9 @@
       else doSearch(value);
     });
     scanInput.addEventListener('input', () => doSearch(scanInput.value));
+    categorySelect.addEventListener('change', () => doSearch(scanInput.value));
+    paintSellingCategories();
+    if (SR.sync && SR.sync.on) SR.sync.on('change', () => { paintSellingCategories(); });
 
     // ---------------- cart mutations ----------------
     /**
@@ -751,6 +800,12 @@
           warrantyMonths: Number(product.warranty_months) || null,
           serialNumbers: opts.serialNo ? [opts.serialNo] : [],
           barcode: opts.barcode || null,
+          categoryId: product.category_id || null,
+          categoryCode: product.category_code || null,
+          categoryName: product.category_name || null,
+          batchNo: product.batch_no || null,
+          expiryDate: product.expiry_date || null,
+          registrationNo: product.registration_no || null,
           // `on_hand` is in base units; the line counts cartons, so the badge has
           // to speak the same language as the quantity box beside it.
           onHandBase: product.on_hand != null ? Number(product.on_hand) : null,
@@ -765,9 +820,43 @@
           controlledKyc: dispense.controlledKyc || null,
         });
       }
+      const added = cart.lines[cart.lines.length - 1];
+      if (added && String(added.productId) === String(product.id)) await fillLineFacts(added, product);
       save();
       paint();
       refreshPreview();
+    }
+
+    async function fillLineFacts(line, product) {
+      if (!line.categoryCode && (line.categoryId || product.category_id)) {
+        const cats = await SR.store.all('product_categories').catch(() => []);
+        const cat = (cats || []).find((c) => String(c.id) === String(line.categoryId || product.category_id));
+        if (cat) {
+          line.categoryId = cat.id;
+          line.categoryCode = cat.code;
+          line.categoryName = cat.name;
+        }
+      }
+      if (line.batchNo) return;
+      const stock = await sellableIndex();
+      const rows = (stock.rows || []).filter((b) => String(b.product_id) === String(line.productId));
+      rows.sort((a, b) => {
+        const ae = a.expiry_date ? 0 : 1;
+        const be = b.expiry_date ? 0 : 1;
+        if (ae !== be) return ae - be;
+        return String(a.expiry_date || '').localeCompare(String(b.expiry_date || ''))
+          || String(a.batch_no || '').localeCompare(String(b.batch_no || ''));
+      });
+      const batch = rows[0];
+      if (!batch) return;
+      line.batchNo = batch.batch_no || null;
+      line.expiryDate = batch.expiry_date || null;
+      if (!line.categoryCode && batch.product_category_code) {
+        line.categoryCode = batch.product_category_code;
+        line.categoryName = batch.product_category_name || line.categoryName;
+        line.categoryId = batch.product_category_id || line.categoryId;
+      }
+      if (!line.registrationNo && batch.product_registration_no) line.registrationNo = batch.product_registration_no;
     }
 
     /**
@@ -1008,6 +1097,7 @@
         ui.h('div', { class: 'cl-total' }, U.money(total))));
       const meta = [
         line.sku ? `SKU ${line.sku}` : null,
+        line.categoryName ? U.sellingGroup({ code: line.categoryCode, name: line.categoryName }).label : null,
         line.variantName || null,
         `${U.money(line.unitPrice)} / ${line.unitCode}`,
       ];
@@ -1633,6 +1723,8 @@
           cash_tendered: p.cashTendered != null ? Number(p.cashTendered) : Number(p.amount),
         })),
         lines: cart.lines.map((l) => linePayload(l)),
+        receipt_lines: cart.lines.map((l) => receiptItem(l)),
+        receipt_licences: await branchLicences(),
         change_owed_amount: Number(cart.changeOwedAmount) || 0,
         claim_code: cart.claimCode || null,
         walk_in_name: cart.changeHolderName || cart.customerName || null,
@@ -1709,6 +1801,61 @@
       });
     }
 
+    function receiptItem(line) {
+      const group = U.sellingGroup({ code: line.categoryCode || line.category_code, name: line.categoryName || line.category_name });
+      const unitPrice = line.unit_price != null ? line.unit_price : line.unitPrice;
+      const qty = Number(line.quantity) || 0;
+      const discount = Number(line.line_discount || line.lineDiscount || 0);
+      return {
+        product_name: line.product_name || line.name,
+        variant_name: line.variant_name || line.variantName || null,
+        quantity: line.quantity,
+        unit_code: line.unit_code || line.unitCode || '',
+        unit_price: unitPrice,
+        line_total: line.line_total != null ? line.line_total : U.round2(qty * Number(unitPrice || 0) - discount),
+        line_discount: discount,
+        category_code: line.category_code || line.categoryCode || null,
+        category_name: line.category_name || line.categoryName || null,
+        selling_group: line.selling_group || group.code,
+        selling_group_label: line.selling_group_label || group.label,
+        batch_no: line.batch_no || line.batchNo || null,
+        expiry_date: line.expiry_date || line.expiryDate || null,
+        registration_no: line.registration_no || line.registrationNo || null,
+        serialNumbers: line.serialNumbers || line.serial_numbers || [],
+        serial_no: line.serial_no || ((line.serialNumbers || []).join(', ') || null),
+        prescription: line.prescription || null,
+        controlled_kyc: line.controlled_kyc || line.controlledKyc || null,
+        warranty_months: line.warranty_months || line.warrantyMonths || 0,
+      };
+    }
+
+    async function branchLicences() {
+      const rows = await SR.store.all('branch_compliance_records').catch(() => []);
+      const branchId = String(SR.state.activeBranchId || '');
+      const out = {};
+      for (const row of rows || []) {
+        if (Number(row.is_deleted) || !row.record_number) continue;
+        if (branchId && String(row.branch_id) !== branchId) continue;
+        out[row.record_type] = row.record_number;
+      }
+      return out;
+    }
+
+    function receiptSale(base, lines, licences) {
+      const items = (lines || []).map(receiptItem);
+      return Object.assign({}, base, {
+        items,
+        pcn_license_no: (licences && licences.PCN) || base.pcn_license_no || null,
+        nafdac_premises_no: (licences && licences.NAFDAC_PREMISES) || base.nafdac_premises_no || null,
+        prescriptions: items.map((item) => item.prescription).filter((row) => row && row.prescriber_name),
+        controlled_entries: items.filter((item) => item.controlled_kyc && item.controlled_kyc.buyer_name).map((item) => ({
+          product_name: item.product_name,
+          quantity_dispensed: item.quantity,
+          buyer_name: item.controlled_kyc.buyer_name,
+        })),
+      });
+    }
+
     // ---------------- receipt ----------------
     function showReceipt(result, payload, snapshot) {
       const taken = snapshot || checkoutSnapshot();
@@ -1733,18 +1880,14 @@
           vat_rate_percent: taken.totals.vatRate,
           discount_amount: payload.discount_amount,
           delivery_fee: payload.delivery_fee,
-          items: taken.lines.map((l) => ({
-            product_name: l.name, quantity: l.quantity, unit_code: l.unitCode,
-            unit_price: l.unitPrice, line_total: Number(l.quantity) * Number(l.unitPrice) - Number(l.lineDiscount || 0),
-            line_discount: l.lineDiscount, warranty_months: l.warrantyMonths,
-            serial_no: (l.serialNumbers || []).join(', ') || null,
-          })),
+          items: [],
           payments: taken.payments,
           change_owed: taken.changeOwedAmount || payload.change_owed_amount || 0,
           claim_code: taken.claimCode || payload.claim_code || null,
           balance_due: 0,
         };
-        SR.print.previewSale(offlineSale, {
+        const lines = (payload.receipt_lines && payload.receipt_lines.length) ? payload.receipt_lines : taken.lines;
+        SR.print.previewSale(receiptSale(offlineSale, lines, payload.receipt_licences), {
           brand, footer, title: 'Offline sale recorded', autoPrint: true,
           banner: `This sale is on the device and has not reached the office yet. Local reference ${String(result.clientId).slice(-8)}.`,
         });
@@ -1765,13 +1908,7 @@
           vat_rate_percent: taken.totals.vatRate,
           discount_amount: payload.discount_amount,
           delivery_fee: payload.delivery_fee,
-          items: taken.lines.map((l) => ({
-            product_name: l.name, quantity: l.quantity, unit_code: l.unitCode,
-            unit_price: l.unitPrice, line_total: Number(l.quantity) * Number(l.unitPrice) - Number(l.lineDiscount || 0),
-            line_discount: l.lineDiscount, warranty_months: l.warrantyMonths,
-            serial_no: (l.serialNumbers || []).join(', ') || null,
-            serialNumbers: l.serialNumbers || [],
-          })),
+          items: [],
           payments: taken.payments,
           change_given: result.changeGiven || 0,
           change_owed: result.changeOwed || taken.changeOwedAmount || 0,
@@ -1788,7 +1925,8 @@
         });
         title = `Sale ${result.receiptNo}`;
         try {
-          const shown = SR.print.previewSale(sale, { brand, footer, title, autoPrint: true });
+          const lines = (result.lines && result.lines.length) ? result.lines : ((payload.receipt_lines && payload.receipt_lines.length) ? payload.receipt_lines : taken.lines);
+          const shown = SR.print.previewSale(receiptSale(sale, lines, result.licences || payload.receipt_licences), { brand, footer, title, autoPrint: true });
           if (saleId) {
             const foot = document.querySelector('.modal-foot');
             if (foot) foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => { SR.app.navigate(`/sales/${saleId}`); } }, 'Open the sale'), foot.firstElementChild);

@@ -32,6 +32,7 @@ const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
 const salesService = require('../services/salesService');
+const selling = require('../../domain/selling');
 const { trustedReplay } = require('../lib/replay');
 const glService = require('../services/glService');
 
@@ -435,6 +436,8 @@ function mount(app, base = '/api') {
       changeOwed: result.changeOwed,
       claimCode: result.claimCode || null,
       claimExpiresAt: result.claimExpiresAt || null,
+      lines: result.lines || [],
+      licences: result.licences || null,
       credit: result.creditInfo ? { decision: result.creditInfo.decision, message: result.creditInfo.message, balanceAfter: result.creditInfo.balanceAfter } : null,
       warnings: (result.warnings || []).map((w) => (typeof w === 'string' ? { message: w, severity: 'WARN', code: 'ADVISORY' } : w)),
       lineCount: result.lineCount,
@@ -478,6 +481,16 @@ function mount(app, base = '/api') {
     if (cashier) { where.push('s.salesperson_id = ?'); params.push(String(cashier)); }
     const customerId = ctx.req.queryParam('customer_id');
     if (customerId) { where.push('s.customer_id = ?'); params.push(String(customerId)); }
+    const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
+    if (sellingGroup) {
+      const codes = selling.codesFor(sellingGroup);
+      where.push(`EXISTS (
+        SELECT 1 FROM sale_items si
+        JOIN product_categories pc ON pc.id = si.category_id
+        WHERE si.sale_id = s.id AND si.is_deleted = 0 AND pc.code IN (${codes.map(() => '?').join(',')})
+      )`);
+      params.push(...codes);
+    }
     if (boolField(ctx.req.queryParam('credit_only'))) where.push('s.balance_due > 0');
     const search = searchTerm(ctx);
     if (search) {
@@ -521,6 +534,23 @@ function mount(app, base = '/api') {
           COALESCE(SUM(CASE WHEN s.status = 'VOIDED' THEN s.total ELSE 0 END),0) AS voided_value,
           COALESCE(SUM(CASE WHEN s.status <> 'VOIDED' THEN s.delivery_fee ELSE 0 END),0) AS delivery_fees
         FROM sales s WHERE ${whereSql}`, params);
+    const categoryRows = await db.all(`SELECT COALESCE(pc.code, '') AS code, COALESCE(pc.name, 'Uncategorised') AS name,
+          ROUND(SUM(si.line_total), 2) AS amount, COUNT(DISTINCT si.sale_id) AS sales
+        FROM sale_items si
+        LEFT JOIN product_categories pc ON pc.id = si.category_id
+        WHERE si.is_deleted = 0 AND si.sale_id IN (SELECT s.id FROM sales s WHERE ${whereSql})
+        GROUP BY pc.code, pc.name`, params);
+    const categorySummary = [];
+    const byGroup = new Map();
+    for (const row of categoryRows || []) {
+      const group = selling.sellingGroup(row);
+      const prev = byGroup.get(group.code) || { code: group.code, label: group.label, amount: 0, sales: 0 };
+      prev.amount = round2(prev.amount + Number(row.amount || 0));
+      prev.sales += Number(row.sales) || 0;
+      byGroup.set(group.code, prev);
+    }
+    for (const row of byGroup.values()) categorySummary.push(row);
+    categorySummary.sort((a, b) => selling.groupOrder(a.code) - selling.groupOrder(b.code) || a.label.localeCompare(b.label));
 
     ctx.json({
       ...listResponse(rows, { limit, offset }, total),
@@ -533,6 +563,7 @@ function mount(app, base = '/api') {
         voidedValue: round2(Number(totals.voided_value)),
         deliveryFees: round2(Number(totals.delivery_fees)),
         averageSale: Number(totals.count) ? round2(Number(totals.revenue) / Number(totals.count)) : 0,
+        categories: categorySummary,
       },
       range: { from, to },
     });
@@ -550,14 +581,29 @@ function mount(app, base = '/api') {
         LEFT JOIN businesses biz ON biz.id = s.business_id
         WHERE s.id = ? AND s.is_deleted = 0`, [id]);
     if (!sale) throw new HttpError('That sale does not exist, or it has been deleted.', { status: 404, code: 'SALE_NOT_FOUND' });
+    const licenceRows = await db.all(
+      `SELECT record_type, record_number FROM branch_compliance_records
+        WHERE branch_id = ? AND is_deleted = 0 AND record_number IS NOT NULL
+          AND record_type IN ('PCN', 'NAFDAC_PREMISES', 'SUPERINTENDENT')`,
+      [String(sale.branch_id)],
+    ).catch(() => []);
+    for (const row of licenceRows || []) {
+      if (row.record_type === 'PCN') sale.pcn_license_no = row.record_number;
+      if (row.record_type === 'NAFDAC_PREMISES') sale.nafdac_premises_no = row.record_number;
+      if (row.record_type === 'SUPERINTENDENT') sale.superintendent_name = row.record_number;
+    }
     if (!scope.allBranches && sale.branch_id && !scope.branchIds.has(String(sale.branch_id))) {
       throw new HttpError('That sale belongs to another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
     }
 
     const [items, payments, delivery, debtorLedger, warranty, serials, changeOwedRows, gl] = await Promise.all([
-      db.all(`SELECT si.*, p.name AS product_name, p.sku, p.base_unit_name, p.warranty_months, v.name AS variant_name
+      db.all(`SELECT si.*, p.base_unit_name, p.warranty_months, p.registration_no,
+            v.name AS variant_name, pc.name AS category_name, pc.code AS category_code,
+            sb.batch_no, sb.expiry_date
           FROM sale_items si JOIN products p ON p.id = si.product_id
           LEFT JOIN product_variants v ON v.id = si.variant_id
+          LEFT JOIN product_categories pc ON pc.id = si.category_id
+          LEFT JOIN stock_batches sb ON sb.id = si.batch_id
           WHERE si.sale_id = ? AND si.is_deleted = 0 ORDER BY si.created_at, si.id`, [id]),
       db.all('SELECT * FROM sale_payments WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at, id', [id]),
       db.all('SELECT * FROM delivery_jobs WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at DESC', [id]),
@@ -584,7 +630,9 @@ function mount(app, base = '/api') {
 
     const [prescriptions, controlledRegister] = await Promise.all([
       db.all('SELECT * FROM prescriptions WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at, id', [id]).catch(() => []),
-      db.all('SELECT * FROM controlled_substance_register WHERE sale_id = ? AND is_deleted = 0 ORDER BY created_at, id', [id]).catch(() => []),
+      db.all(`SELECT r.*, p.name AS product_name FROM controlled_substance_register r
+          LEFT JOIN products p ON p.id = r.product_id
+          WHERE r.sale_id = ? AND r.is_deleted = 0 ORDER BY r.created_at, r.id`, [id]).catch(() => []),
     ]);
 
     ctx.json({

@@ -73,6 +73,43 @@
     return found;
   }
 
+  function itemGroup(item) {
+    if (item.selling_group && item.selling_group_label) {
+      return { code: item.selling_group, label: item.selling_group_label };
+    }
+    return U.sellingGroup({
+      code: item.category_code || item.categoryCode,
+      name: item.category_name || item.categoryName,
+    });
+  }
+
+  function groupItems(items) {
+    const order = U.sellingGroups().map((g) => g.code);
+    const buckets = new Map();
+    for (const item of items || []) {
+      const group = itemGroup(item);
+      const prev = buckets.get(group.code) || { code: group.code, label: group.label, items: [], total: 0 };
+      prev.items.push(item);
+      prev.total = U.round2(prev.total + Number(item.line_total != null ? item.line_total : (Number(item.quantity) || 0) * (Number(item.unit_price) || 0)));
+      buckets.set(group.code, prev);
+    }
+    return [...buckets.values()].sort((a, b) => {
+      const ai = order.indexOf(a.code);
+      const bi = order.indexOf(b.code);
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi) || a.label.localeCompare(b.label);
+    });
+  }
+
+  function itemTrace(item) {
+    const bits = [];
+    const cat = item.category_name || item.categoryName;
+    if (cat) bits.push(cat);
+    if (item.batch_no || item.batchNo) bits.push(`batch ${item.batch_no || item.batchNo}`);
+    if (item.expiry_date || item.expiryDate) bits.push(`exp ${String(item.expiry_date || item.expiryDate).slice(0, 10)}`);
+    if (item.registration_no || item.registrationNo) bits.push(`NAFDAC ${item.registration_no || item.registrationNo}`);
+    return bits;
+  }
+
   function wrapCentre(text, width) {
     const words = String(text || '').split(/\s+/).filter(Boolean);
     const lines = [];
@@ -99,6 +136,8 @@
     if (sale.branch_name) L.push(centre(sale.branch_name, width));
     if (sale.branch_address) L.push(centre(sale.branch_address, width));
     if (sale.branch_phone) L.push(centre(sale.branch_phone, width));
+    if (sale.pcn_license_no) L.push(centre(`PCN ${sale.pcn_license_no}`, width));
+    if (sale.nafdac_premises_no) L.push(centre(`NAFDAC premises ${sale.nafdac_premises_no}`, width));
     L.push(rule(width, '='));
     L.push(cols('Receipt', sale.receipt_no || '—', width));
     L.push(cols('Date', U.soldAt(sale.sold_at), width));
@@ -109,20 +148,30 @@
     if (sale.customer_phone) L.push(cols('Phone', sale.customer_phone, width));
     L.push(rule(width));
 
-    const items = sale.items || [];
-    if (!items.length) L.push(centre('No items', width));
-    for (const item of items) {
-      const name = item.product_name || item.name || 'Item';
-      L.push(name.length > width ? `${name.slice(0, width - 1)}…` : name);
-      if (item.variant_name) L.push(`  ${item.variant_name}`);
-      const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.base_unit_name || ''}`.trim();
-      const unit = U.money(item.unit_price, { kobo: true }).replace('₦', '@');
-      L.push(cols(`  ${qtyText} x ${unit}`, money(item.line_total), width));
-      for (const sn of serialsForItem(item, sale)) {
-        const line = `  S/N ${sn}`;
-        L.push(line.length > width ? `${line.slice(0, width - 1)}…` : line);
+    const groups = groupItems(sale.items || []);
+    if (!groups.length) L.push(centre('No items', width));
+    const split = groups.length > 1;
+    for (const group of groups) {
+      if (split) {
+        L.push(centre(group.label.toUpperCase(), width));
       }
-      if (Number(item.line_discount)) L.push(cols('  less discount', `-${money(item.line_discount)}`, width));
+      for (const item of group.items) {
+        const name = item.product_name || item.name || 'Item';
+        L.push(name.length > width ? `${name.slice(0, width - 1)}…` : name);
+        if (item.variant_name || item.variantName) L.push(`  ${item.variant_name || item.variantName}`);
+        const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.unitCode || item.base_unit_name || ''}`.trim();
+        const unit = U.money(item.unit_price != null ? item.unit_price : item.unitPrice, { kobo: true }).replace('₦', '@');
+        const lineTotal = item.line_total != null ? item.line_total : (Number(item.quantity) || 0) * (Number(item.unit_price != null ? item.unit_price : item.unitPrice) || 0);
+        L.push(cols(`  ${qtyText} x ${unit}`, money(lineTotal), width));
+        const trace = itemTrace(item).join(' · ');
+        if (trace) L.push(trace.length > width ? `  ${trace.slice(0, width - 3)}…` : `  ${trace}`);
+        for (const sn of serialsForItem(item, sale)) {
+          const line = `  S/N ${sn}`;
+          L.push(line.length > width ? `${line.slice(0, width - 1)}…` : line);
+        }
+        if (Number(item.line_discount || item.lineDiscount)) L.push(cols('  less discount', `-${money(item.line_discount || item.lineDiscount)}`, width));
+      }
+      if (split) L.push(cols(`  ${group.label} total`, money(group.total), width));
     }
 
     L.push(rule(width));
@@ -179,6 +228,22 @@
           to || `${months} month${months === 1 ? '' : 's'}`, width));
       }
       L.push(' Keep this receipt. A claim without it cannot be verified.');
+    }
+    const scripts = sale.prescriptions || [];
+    if (scripts.length) {
+      L.push(rule(width));
+      L.push('PRESCRIPTION RECORD');
+      for (const p of scripts) {
+        L.push(` Rx ${p.prescriber_name || '—'}${p.patient_name ? ` · ${p.patient_name}` : ''}`);
+      }
+    }
+    const controlled = sale.controlled_entries || sale.controlledRegister || [];
+    if (controlled.length) {
+      L.push(rule(width));
+      L.push('CONTROLLED SUBSTANCE');
+      for (const e of controlled) {
+        L.push(` ${e.product_name || 'Medicine'} x${U.qty(e.quantity_dispensed || e.quantity || 1)} · ${e.buyer_name || ''}`);
+      }
     }
     L.push(rule(width));
     L.push(centre(footer || 'Thank you for your custom.', width));
@@ -473,25 +538,50 @@
       h('div', { class: 'slip-brand' }, brand || 'StockRidge'),
       sale.branch_name ? h('div', { class: 'slip-sub' }, sale.branch_name) : null,
       sale.branch_address ? h('div', { class: 'slip-sub' }, sale.branch_address) : null,
-      sale.branch_phone ? h('div', { class: 'slip-sub' }, sale.branch_phone) : null);
+      sale.branch_phone ? h('div', { class: 'slip-sub' }, sale.branch_phone) : null,
+      sale.pcn_license_no ? h('div', { class: 'slip-sub' }, `PCN ${sale.pcn_license_no}`) : null,
+      sale.nafdac_premises_no ? h('div', { class: 'slip-sub' }, `NAFDAC premises ${sale.nafdac_premises_no}`) : null);
     const meta = h('div', { class: 'slip-meta' },
       row('Receipt', sale.receipt_no || '—'),
       row('Date', U.soldAt(sale.sold_at)),
       row('Cashier', sale.cashier_name || sale.sold_by_name || '—'),
+      row('Type', U.humanise(sale.sale_type || 'RETAIL')),
       row('Customer', sale.customer_name || 'Walk-in'),
       sale.customer_phone ? row('Phone', sale.customer_phone) : null);
     const items = h('div', { class: 'slip-items' });
-    for (const item of sale.items || []) {
-      const block = h('div', { class: 'slip-item' });
-      block.appendChild(h('div', { class: 'slip-item-name' }, item.product_name || item.name || 'Item'));
-      if (item.variant_name) block.appendChild(h('div', { class: 'slip-sub' }, item.variant_name));
-      const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.base_unit_name || ''}`.trim();
-      block.appendChild(row(`${qtyText} × ${U.money(item.unit_price)}`, U.money(item.line_total)));
-      const serials = serialsForItem(item, sale);
-      if (serials.length) {
-        block.appendChild(h('div', { class: 'slip-serial' }, serials.map((sn) => `S/N ${sn}`).join('  ·  ')));
+    const groups = groupItems(sale.items || []);
+    const split = groups.length > 1;
+    for (const group of groups) {
+      const section = h('div', { class: 'slip-group' });
+      if (split) section.appendChild(h('div', { class: 'slip-group-name' }, group.label));
+      for (const item of group.items) {
+        const block = h('div', { class: 'slip-item' });
+        block.appendChild(h('div', { class: 'slip-item-name' }, item.product_name || item.name || 'Item'));
+        if (item.variant_name || item.variantName) block.appendChild(h('div', { class: 'slip-sub' }, item.variant_name || item.variantName));
+        const qtyText = `${U.qty(item.quantity)} ${item.unit_code || item.unitCode || item.base_unit_name || ''}`.trim();
+        const unitPrice = item.unit_price != null ? item.unit_price : item.unitPrice;
+        const lineTotal = item.line_total != null ? item.line_total : (Number(item.quantity) || 0) * (Number(unitPrice) || 0);
+        block.appendChild(row(`${qtyText} × ${U.money(unitPrice)}`, U.money(lineTotal)));
+        const trace = itemTrace(item);
+        if (trace.length) block.appendChild(h('div', { class: 'slip-sub' }, trace.join(' · ')));
+        const serials = serialsForItem(item, sale);
+        if (serials.length) block.appendChild(h('div', { class: 'slip-serial' }, serials.map((sn) => `S/N ${sn}`).join('  ·  ')));
+        section.appendChild(block);
       }
-      items.appendChild(block);
+      if (split) section.appendChild(row(`${group.label} total`, U.money(group.total), 'slip-group-total'));
+      items.appendChild(section);
+    }
+    const scripts = sale.prescriptions || [];
+    if (scripts.length) {
+      items.appendChild(h('div', { class: 'slip-group' },
+        h('div', { class: 'slip-group-name' }, 'Prescription record'),
+        ...scripts.map((p) => h('div', { class: 'slip-sub' }, `Rx ${p.prescriber_name || '—'}${p.patient_name ? ` · ${p.patient_name}` : ''}`))));
+    }
+    const controlled = sale.controlled_entries || sale.controlledRegister || [];
+    if (controlled.length) {
+      items.appendChild(h('div', { class: 'slip-group' },
+        h('div', { class: 'slip-group-name' }, 'Controlled substance'),
+        ...controlled.map((e) => h('div', { class: 'slip-sub' }, `${e.product_name || 'Medicine'} × ${U.qty(e.quantity_dispensed || e.quantity || 1)} · ${e.buyer_name || ''}`))));
     }
     const totals = h('div', { class: 'slip-totals' },
       row('Subtotal', U.money(sale.subtotal)));
@@ -577,6 +667,7 @@
     .slip-item-name { font-weight: 700; font-size: 12pt; }
     .slip-serial { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10pt; }
     .slip-total { font-size: 16pt; font-weight: 750; }
+    .slip-group-name { font-size: 9pt; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 8px; }
     .slip-claim { text-align: center; margin-top: 8px; padding: 8px 0; border-top: 1px dashed #999; }
     .slip-claim-code { font-size: 18pt; font-weight: 800; letter-spacing: 0.12em; }
     .slip-foot { font-size: 10pt; }

@@ -737,6 +737,10 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .slip-due span:last-child { font-weight: 700; }
 .slip-foot { text-align: center; font-size: .78rem; color: #57534e; }
 .slip-words { margin-bottom: 6px; }
+.slip-group { margin-top: 8px; }
+.slip-group-name { font-size: .72rem; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; color: #57534e; margin-bottom: 4px; }
+.slip-group-total { font-weight: 700; }
+.pos-category { margin-bottom: 8px; }
 .slip-claim { text-align: center; margin-top: 8px; padding: 12px 10px; border: 1px dashed #a8a29e; border-radius: 8px; }
 .slip-claim-code { font-family: var(--mono); font-size: 1.55rem; font-weight: 800; letter-spacing: .16em; margin: 4px 0; }
 .receipt-pair { display: flex; flex-direction: row; gap: 9px; flex: 0 0 auto; align-items: center; }

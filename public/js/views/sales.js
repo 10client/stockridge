@@ -24,7 +24,7 @@
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Sales');
-    const state = { page: 0, pageSize: PAGE_SIZE, q: '', from: ctx.query.from || U.todayWat(-30), to: ctx.query.to || U.todayWat(), type: '', status: '', method: '', sort: 'date' };
+    const state = { page: 0, pageSize: PAGE_SIZE, q: '', from: ctx.query.from || U.todayWat(-30), to: ctx.query.to || U.todayWat(), type: '', status: '', method: '', sellingGroup: '', sort: 'date' };
 
     const wrap = ui.h('div', { class: 'stack' });
     const head = ui.h('div', { class: 'page-head' },
@@ -65,6 +65,11 @@
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
     for (const [v, l] of [['', 'Any status'], ['COMPLETED', 'Completed'], ['VOIDED', 'Voided'], ['PENDING_DELIVERY', 'Pending delivery']]) statusSel.appendChild(ui.h('option', { value: v }, l));
     fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Status'), statusSel));
+    const groupSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.page = 0; load(); } });
+    groupSel.appendChild(ui.h('option', { value: '' }, 'All selling categories'));
+    for (const group of U.sellingGroups()) groupSel.appendChild(ui.h('option', { value: group.code }, group.label));
+    if (state.sellingGroup) groupSel.value = state.sellingGroup;
+    fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), groupSel));
     filters.appendChild(fbody);
     wrap.appendChild(filters);
 
@@ -81,6 +86,7 @@
         from: state.from, to: state.to,
         sale_type: state.type || undefined,
         status: state.status || undefined,
+        selling_group: state.sellingGroup || undefined,
         limit: state.pageSize, offset: state.page * state.pageSize,
       }));
     }
@@ -104,6 +110,11 @@
           ui.kpi({ label: 'Revenue', value: U.money(data.summary.revenue || data.summary.gross), tone: 'good', small: true }),
           ui.kpi({ label: 'Collected', value: U.money(data.summary.collected || data.summary.paid), small: true }),
           ui.kpi({ label: 'Outstanding', value: U.money(data.summary.outstanding || data.summary.balance), tone: Number(data.summary.outstanding) > 0 ? 'warn' : null, small: true })));
+        const cats = data.summary.categories || [];
+        if (cats.length) {
+          summaryHost.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '8px' } },
+            ...cats.map((c) => ui.h('span', { class: 'badge badge-mute' }, `${c.label} ${U.money(c.amount)}`))));
+        }
       }
       const columns = [
         { key: 'receipt_no', label: 'Receipt', render: (r) => ui.h('span', { class: 'mono' }, r.receipt_no || '—') },
@@ -580,15 +591,54 @@
       });
     }
 
-    function repaintButton(sale, items, payments, serials) {
+    function repaintButton(sale, items, payments, serials, prescriptions, controlledRegister) {
       return ui.h('button', {
         class: 'btn btn-sm',
-        onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), {
+        onClick: () => SR.print.previewSale(Object.assign({}, sale, {
+          items, payments, serials,
+          prescriptions: prescriptions || [],
+          controlled_entries: controlledRegister || [],
+        }), {
           brand: (SR.state.settings || {}).business_name || 'StockRidge',
           footer: (SR.state.settings || {}).receipt_footer_text || '',
           title: `Receipt ${sale.receipt_no}`,
         }),
       }, 'Print');
+    }
+
+    function printQueued(record) {
+      const p = record.payload || {};
+      const items = (p.receipt_lines && p.receipt_lines.length) ? p.receipt_lines : (p.lines || []).map((line) => ({
+        product_name: line.product_name || line.name || 'Item',
+        quantity: line.quantity,
+        unit_code: line.unit_code || line.unitCode || '',
+        unit_price: line.unit_price != null ? line.unit_price : line.unitPrice,
+        line_total: line.line_total != null ? line.line_total : (Number(line.quantity) || 0) * (Number(line.unit_price != null ? line.unit_price : line.unitPrice) || 0),
+      }));
+      SR.print.previewSale({
+        receipt_no: `OFFLINE-${String(record.client_id || '').slice(-8)}`,
+        sold_at: p.sold_at || record.occurred_at,
+        sale_type: p.sale_type || 'RETAIL',
+        branch_name: SR.state.branchName ? SR.state.branchName() : (SR.state.activeBranchName && SR.state.activeBranchName()),
+        business_name: SR.state.businessName ? SR.state.businessName() : null,
+        cashier_name: (SR.state.user || {}).fullName,
+        customer_name: p.walk_in_name || p.customer_name || 'Walk-in',
+        customer_phone: p.walk_in_phone || p.customer_phone || null,
+        items,
+        payments: p.payments || [],
+        total: items.reduce((sum, item) => sum + (Number(item.line_total) || 0), 0) + (Number(p.delivery_fee) || 0) - (Number(p.discount_amount) || 0),
+        discount_amount: p.discount_amount,
+        delivery_fee: p.delivery_fee,
+        change_owed: p.change_owed_amount || 0,
+        claim_code: p.claim_code || null,
+        pcn_license_no: p.receipt_licences && p.receipt_licences.PCN,
+        nafdac_premises_no: p.receipt_licences && p.receipt_licences.NAFDAC_PREMISES,
+      }, {
+        brand: (SR.state.settings || {}).business_name || 'StockRidge',
+        footer: (SR.state.settings || {}).receipt_footer_text || '',
+        title: 'Queued sale',
+        banner: 'This sale is still on the device. The office copy will use the same lines once it syncs.',
+      });
     }
 
     function queuedCard(record) {
@@ -607,6 +657,7 @@
       ]));
       body.appendChild(ui.h('div', { class: 'btn-row' },
         ui.h('button', { class: 'btn btn-primary', onClick: async () => { await SR.sync.runOnce(); load(); } }, 'Sync now'),
+        ui.h('button', { class: 'btn', onClick: () => printQueued(record) }, 'Print'),
         ui.h('button', { class: 'btn', onClick: () => SR.app.navigate('/sync') }, 'Open the queue')));
       card.appendChild(body);
       return card;
