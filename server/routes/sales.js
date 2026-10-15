@@ -483,9 +483,10 @@ function mount(app, base = '/api') {
     if (customerId) { where.push('s.customer_id = ?'); params.push(String(customerId)); }
     const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
     if (sellingGroup) {
-      const clause = selling.codeClause('pc.code', sellingGroup);
+      const clause = selling.saleLineWhere(sellingGroup);
       where.push(`EXISTS (
         SELECT 1 FROM sale_items si
+        JOIN products p ON p.id = si.product_id
         LEFT JOIN product_categories pc ON pc.id = si.category_id
         WHERE si.sale_id = s.id AND si.is_deleted = 0 AND ${clause.sql}
       )`);
@@ -535,11 +536,13 @@ function mount(app, base = '/api') {
           COALESCE(SUM(CASE WHEN s.status <> 'VOIDED' THEN s.delivery_fee ELSE 0 END),0) AS delivery_fees
         FROM sales s WHERE ${whereSql}`, params);
     const categoryRows = await db.all(`SELECT COALESCE(pc.code, '') AS code, COALESCE(pc.name, 'Uncategorised') AS name,
+          p.nafdac_catalog_id AS nafdac_catalog_id,
           ROUND(SUM(si.line_total), 2) AS amount, COUNT(DISTINCT si.sale_id) AS sales
         FROM sale_items si
+        JOIN products p ON p.id = si.product_id
         LEFT JOIN product_categories pc ON pc.id = si.category_id
         WHERE si.is_deleted = 0 AND si.sale_id IN (SELECT s.id FROM sales s WHERE ${whereSql})
-        GROUP BY pc.code, pc.name`, params);
+        GROUP BY pc.code, pc.name, CASE WHEN p.nafdac_catalog_id IS NOT NULL THEN 1 ELSE 0 END`, params);
     const categorySummary = [];
     const byGroup = new Map();
     for (const row of categoryRows || []) {
@@ -597,7 +600,7 @@ function mount(app, base = '/api') {
     }
 
     const [items, payments, delivery, debtorLedger, warranty, serials, changeOwedRows, gl] = await Promise.all([
-      db.all(`SELECT si.*, p.base_unit_name, p.warranty_months, p.registration_no,
+      db.all(`SELECT si.*, p.base_unit_name, p.warranty_months, p.registration_no, p.nafdac_catalog_id,
             v.name AS variant_name, pc.name AS category_name, pc.code AS category_code,
             sb.batch_no, sb.expiry_date
           FROM sale_items si JOIN products p ON p.id = si.product_id

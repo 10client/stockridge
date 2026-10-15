@@ -855,7 +855,7 @@ async function attachStockProductNames(db, rows) {
     const chunk = ids.slice(i, i + 80);
     const found = await db.all(
       `SELECT p.id, p.name, p.sku, p.brand, p.model_no, p.selling_price, p.is_active, p.base_unit_name,
-              p.dispensing_class, p.is_controlled, p.requires_serial, p.registration_no, p.category_id,
+              p.dispensing_class, p.is_controlled, p.requires_serial, p.registration_no, p.category_id, p.nafdac_catalog_id,
               c.code AS category_code, c.name AS category_name
          FROM products p
          LEFT JOIN product_categories c ON c.id = p.category_id
@@ -882,6 +882,7 @@ async function attachStockProductNames(db, rows) {
       product_category_code: p.category_code,
       product_category_name: p.category_name,
       product_registration_no: p.registration_no,
+      product_nafdac_catalog_id: p.nafdac_catalog_id,
     });
   });
 }

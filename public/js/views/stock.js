@@ -210,7 +210,11 @@
             product_id: p.id, branch_id: branchId, name: p.name, sku: p.sku,
             category_name: (catById.get(String(p.category_id)) || {}).name || null,
             category_code: (catById.get(String(p.category_id)) || {}).code || null,
-            selling_group_label: U.sellingGroup(catById.get(String(p.category_id)) || {}).label,
+            nafdac_catalog_id: p.nafdac_catalog_id || null,
+            selling_group_label: U.sellingGroup({
+              code: (catById.get(String(p.category_id)) || {}).code,
+              nafdac_catalog_id: p.nafdac_catalog_id,
+            }).label,
             base_unit_name: p.base_unit_name, reorder_level: p.reorder_level,
             book_cost: p.cost_price, selling_price: p.selling_price,
             on_shelf: s.on_shelf, reserved: s.reserved, available,

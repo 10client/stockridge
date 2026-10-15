@@ -151,7 +151,7 @@
       const catById = new Map(cats.map((c) => [String(c.id), c]));
       const catName = new Map(cats.map((c) => [String(c.id), c.name]));
       if (state.sellingGroup) {
-        rows = rows.filter((p) => U.sellingGroup(catById.get(String(p.category_id)) || {}).code === state.sellingGroup);
+        rows = rows.filter((p) => U.sellingGroup(Object.assign({}, catById.get(String(p.category_id)) || {}, { nafdac_catalog_id: p.nafdac_catalog_id })).code === state.sellingGroup);
       }
       if (state.category) rows = rows.filter((p) => String(p.category_id) === String(state.category));
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
@@ -213,7 +213,7 @@
           { key: 'name', label: 'Product', className: 'wrap', render: (p) => {
             const cell = ui.h('div', {});
             cell.appendChild(ui.h('div', { style: { fontWeight: '600' } }, p.name));
-            cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_code || p.category_name ? U.sellingGroup(p).label : null, p.category_name].filter(Boolean).join(' · ')));
+            cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, U.sellingGroup(p).label, p.category_name].filter(Boolean).join(' · ')));
             const tags = [];
             if (Number(p.tracks_variants)) tags.push('variants');
             const serial = serialSwitch(p, { stop: true, after: () => load() });
@@ -401,11 +401,11 @@
       is_active: 1,
     } : {});
     if (greenbook) {
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This comes from the NAFDAC Greenbook. Set your own price. It is added to this shop only, not to the shared market list.'));
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This comes from the NAFDAC catalogue, so it is recorded as pharmaceutical even if you also file it on another shelf. Set your own price. It is added to this shop only, not to the shared market list.'));
     }
     const fields = [
       ui.field({ label: 'Name', name: 'name', value: base.name || '', required: true, span: true, placeholder: 'e.g. Hisense 1.5HP Split Air Conditioner' }),
-      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', options: [{ value: '', label: '— none —' }].concat(categories.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: c.name }))) }),
+      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', hint: greenbook ? 'Optional. The NAFDAC catalogue link already makes this pharmaceutical.' : 'A new product is pharmaceutical only when you file it under a medicine shelf — Analgesics, Vitamins, Injections and the rest. Provisions, drinks and other shelves are not.', options: [{ value: '', label: '— none —' }].concat(categories.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: `${U.sellingGroup(c).code === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} · ${c.name}` }))) }),
       ui.field({ label: 'Brand', name: 'brand', value: base.brand || '' }),
       ui.field({ label: 'Model number', name: 'model_no', value: base.model_no || '' }),
       ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: greenbook ? 'Left blank, one is taken from the NAFDAC number.' : 'Left blank, one is suggested from the name.' }),

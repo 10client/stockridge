@@ -1740,6 +1740,7 @@ function receiptLines(lines) {
     const group = selling.sellingGroup({
       code: line.product && line.product.category_code,
       name: line.product && line.product.category_name,
+      nafdac_catalog_id: line.product && line.product.nafdac_catalog_id,
     });
     return {
       product_name: line.productName,
@@ -1752,6 +1753,7 @@ function receiptLines(lines) {
       line_discount: line.discountAmount || 0,
       category_code: (line.product && line.product.category_code) || null,
       category_name: (line.product && line.product.category_name) || null,
+      nafdac_catalog_id: (line.product && line.product.nafdac_catalog_id) || null,
       selling_group: group.code,
       selling_group_label: group.label,
       batch_no: pick.batchNo || null,

@@ -269,8 +269,10 @@ function splitRevenue(lines, saleType, netRevenue) {
     const categoryCode = line.categoryCode || line.category_code
       || (line.product && (line.product.category_code || line.product.categoryCode))
       || null;
-    const group = selling.sellingGroup({ code: categoryCode, name: categoryName });
-    const key = `${channel}|${categoryId || ''}`;
+    const catalogId = line.nafdac_catalog_id || line.nafdacCatalogId
+      || (line.product && line.product.nafdac_catalog_id) || null;
+    const group = selling.sellingGroup({ code: categoryCode, name: categoryName, nafdac_catalog_id: catalogId });
+    const key = `${channel}|${group.code}|${categoryId || ''}`;
     const prev = buckets.get(key) || {
       channel, categoryId: categoryId || null, categoryName, categoryCode,
       sellingGroup: group.code, sellingGroupLabel: group.label, weight: 0,

@@ -77,10 +77,7 @@
     if (item.selling_group && item.selling_group_label) {
       return { code: item.selling_group, label: item.selling_group_label };
     }
-    return U.sellingGroup({
-      code: item.category_code || item.categoryCode,
-      name: item.category_name || item.categoryName,
-    });
+    return U.sellingGroup(item);
   }
 
   function groupItems(items) {

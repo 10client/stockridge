@@ -76,7 +76,7 @@ function mount(app, base = '/api') {
     const rows = await db.all(`
       SELECT p.id AS product_id, ? AS branch_id, p.sku, p.name, p.base_unit_name, p.reorder_level, p.selling_price,
              p.cost_price AS book_cost, p.requires_serial, p.tracks_variants, p.has_expiry,
-             c.name AS category_name, c.code AS category_code,
+             c.name AS category_name, c.code AS category_code, p.nafdac_catalog_id,
              COALESCE(SUM(sb.quantity), 0) AS on_shelf,
              COALESCE(SUM(sb.quantity_reserved), 0) AS reserved,
              COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) AS available,
@@ -168,15 +168,20 @@ function mount(app, base = '/api') {
       WHERE b.is_deleted = 0 AND b.is_active = 1 ${f.sql ? `AND ${f.sql}` : ''} ${named.branchId ? 'AND b.id = ?' : ''}
       GROUP BY b.id ORDER BY b.name`, named.branchId ? [...params, named.branchId] : params);
 
+    const shelfMarks = selling.PHARMACEUTICAL_CODES.map(() => '?').join(',');
+    const shelfParams = named.branchId
+      ? [...selling.PHARMACEUTICAL_CODES, named.branchId]
+      : selling.PHARMACEUTICAL_CODES.slice();
     const shelfRows = await db.all(`
       SELECT c.code AS category_code, COALESCE(c.name, 'Uncategorised') AS category_name,
+             CASE WHEN p.nafdac_catalog_id IS NOT NULL OR c.code IN (${shelfMarks}) THEN 'PHARMACEUTICALS' ELSE 'NON_PHARMACEUTICALS' END AS side,
              COALESCE(SUM(sb.quantity),0) AS units,
              COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost,
              COALESCE(SUM(sb.quantity * COALESCE(sb.selling_price_per_unit, 0)),0) AS at_retail
       FROM stock_batches sb JOIN products p ON p.id = sb.product_id
       LEFT JOIN product_categories c ON c.id = p.category_id
       WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''}
-      GROUP BY c.id ORDER BY at_cost DESC`, named.branchId ? [named.branchId] : []);
+      GROUP BY c.id, side ORDER BY at_cost DESC`, shelfParams);
     const byCategory = shelfRows.slice(0, 20).map((row) => ({
       name: row.category_name,
       category_code: row.category_code,
@@ -188,7 +193,9 @@ function mount(app, base = '/api') {
       code: group.code, name: group.label, label: group.label, units: 0, at_cost: 0, at_retail: 0,
     }));
     for (const row of shelfRows) {
-      const group = selling.sellingGroup(row);
+      const group = row.side === 'PHARMACEUTICALS'
+        ? { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' }
+        : selling.sellingGroup(row);
       const bucket = bySellingGroup.find((item) => item.code === group.code);
       if (!bucket) continue;
       bucket.units = round2(bucket.units + Number(row.units));

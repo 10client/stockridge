@@ -362,6 +362,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
     const group = selling.sellingGroup({
       code: line.product && line.product.category_code,
       name: line.product && line.product.category_name,
+      nafdac_catalog_id: line.product && line.product.nafdac_catalog_id,
     });
     cogsLines.push({
       accountCode: '5000', debit: line.totalCost, categoryId: line.categoryId,
@@ -386,7 +387,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
         accountCode: part.accountCode,
         credit: part.amount,
         categoryId: part.categoryId || null,
-        description: `Discount grossed back${part.sellingGroupLabel ? `, ${part.sellingGroupLabel}` : ''}${part.categoryName ? ` · ${part.categoryName}` : ''}`,
+        description: [part.sellingGroupLabel, 'Discount grossed back', part.categoryName].filter(Boolean).join(' · '),
       }))
       : [{ accountCode: '4000', credit: totals.discountAmount, description: 'Revenue reduced by discount' }];
     statements.push(...buildEntry({
@@ -431,7 +432,7 @@ function reverseSaleStatements({ sale, items, business, branch, user, reason, ac
         accountCode: part.accountCode,
         debit: part.amount,
         categoryId: part.categoryId || null,
-        description: `Revenue reversed${part.sellingGroupLabel ? `, ${part.sellingGroupLabel}` : ''}${part.categoryName ? ` · ${part.categoryName}` : ''}: ${reason}`,
+        description: [part.sellingGroupLabel, 'Revenue reversed', part.categoryName, reason].filter(Boolean).join(' · '),
       });
     }
   }
@@ -1006,8 +1007,9 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
 
 /**
  * Pharmaceuticals against non-pharmaceuticals, from the same ledger lines.
- * A drug category is one side. Every other categorised taking is the other.
- * Delivery income is not a side of the shop, so it stays out of this split.
+ * A line posted as Pharmaceuticals stays there even if its shelf category is
+ * not a drug shelf. Older lines, which have no side in the memo, fall back
+ * to the shelf category. Delivery income is not a side of the shop.
  */
 async function booksBySellingGroup(db, { businessId = null, branchId = null, startDate, endDate } = {}) {
   const selling = require('../../domain/selling');
@@ -1018,19 +1020,43 @@ async function booksBySellingGroup(db, { businessId = null, branchId = null, sta
   if (startDate) { where.push('e.entry_date >= ?'); params.push(String(startDate)); }
   if (endDate) { where.push('e.entry_date <= ?'); params.push(String(endDate)); }
   const rows = await db.all(`
-    SELECT c.code AS category_code, a.code AS account_code,
-           SUM(l.credit) AS credit, SUM(l.debit) AS debit
+    SELECT e.source_type, e.source_id, l.description, l.category_id, c.code AS category_code, a.code AS account_code,
+           l.credit AS credit, l.debit AS debit
     FROM gl_journal_lines l
     JOIN gl_journal_entries e ON e.id = l.journal_entry_id
     JOIN gl_accounts a ON a.id = l.account_id
     LEFT JOIN product_categories c ON c.id = l.category_id
-    WHERE ${where.join(' AND ')}
-    GROUP BY c.code, a.code`, params);
+    WHERE ${where.join(' AND ')}`, params);
+  const saleIds = [...new Set((rows || []).filter((row) => row.source_type === 'SALE' && row.source_id).map((row) => String(row.source_id)))];
+  const itemSides = new Map();
+  for (let i = 0; i < saleIds.length; i += 80) {
+    const chunk = saleIds.slice(i, i + 80);
+    const items = await db.all(`
+      SELECT si.sale_id, si.category_id, p.nafdac_catalog_id, pc.code AS category_code
+      FROM sale_items si
+      JOIN products p ON p.id = si.product_id
+      LEFT JOIN product_categories pc ON pc.id = si.category_id
+      WHERE si.is_deleted = 0 AND si.sale_id IN (${chunk.map(() => '?').join(',')})`, chunk);
+    for (const item of items || []) {
+      const key = `${item.sale_id}|${item.category_id || ''}`;
+      const prev = itemSides.get(key) || new Set();
+      prev.add(selling.sellingGroup(item).code);
+      itemSides.set(key, prev);
+    }
+  }
   const sides = selling.GROUPS.map((group) => ({
     code: group.code, label: group.label, revenue: 0, cogs: 0, grossProfit: 0,
   }));
   for (const row of rows || []) {
-    const group = selling.sellingGroup(row);
+    let group = journalSide(row);
+    const text = String(row.description || '');
+    if (!text.startsWith('Pharmaceuticals') && !text.startsWith('Non-pharmaceuticals')) {
+      const found = itemSides.get(`${row.source_id}|${row.category_id || ''}`);
+      if (found && found.size === 1) {
+        const code = [...found][0];
+        group = selling.GROUPS.find((item) => item.code === code) || group;
+      }
+    }
     const side = sides.find((item) => item.code === group.code);
     if (!side) continue;
     if (row.account_code === '5000') side.cogs = round2(side.cogs + Number(row.debit || 0) - Number(row.credit || 0));
@@ -1048,6 +1074,14 @@ async function booksBySellingGroup(db, { businessId = null, branchId = null, sta
  * income and clears the liability. The description says which, because the
  * source type stays SALE — the schema's list does not grow a word per feature.
  */
+function journalSide(row) {
+  const text = String((row && row.description) || '');
+  if (text.startsWith('Non-pharmaceuticals')) return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
+  if (text.startsWith('Pharmaceuticals')) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
+  const selling = require('../../domain/selling');
+  return selling.sellingGroup(row);
+}
+
 function postHeldDeposit({ business, branch, agreementId, amount, method, user, description, accountIds, releasing = false, toIncome = false }) {
   const { methodAccount } = require('../../domain/trade');
   const value = round2(Number(amount) || 0);

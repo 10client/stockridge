@@ -338,9 +338,9 @@
 
   /** A stable, sortable, human-ish unique id for locally created rows. */
   /** Eight characters a cashier can read aloud. Same alphabet as the server claim codes. */
-  // Same selling-category map as domain/selling.js. A mixed pharmacy records
-  // drugs apart from every other good. Shelf names stay on the line. The
-  // selling side is only Pharmaceuticals or Non-pharmaceuticals.
+  // Same rule as domain/selling.js. A NAFDAC catalogue row is pharmaceutical.
+  // A shop-added product is pharmaceutical only when it is filed under a
+  // pharmaceutical category. Everything else is the other side.
   const SELLING_GROUPS = [
     { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
     { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
@@ -350,8 +350,13 @@
     'DERMATOLOGY', 'INJECTIONS', 'RESPIRATORY', 'VITAMINS', 'PHARMACEUTICALS',
   ]);
 
-  function sellingGroup(category) {
-    const code = String((category && (category.code || category.category_code)) || '').trim().toUpperCase();
+  function sellingGroup(item) {
+    const catalogId = item && (item.nafdac_catalog_id != null ? item.nafdac_catalog_id
+      : (item.nafdacCatalogId != null ? item.nafdacCatalogId : item.product_nafdac_catalog_id));
+    if (catalogId != null && catalogId !== '' && Number(catalogId) !== 0) {
+      return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
+    }
+    const code = String((item && (item.code || item.category_code || item.categoryCode || item.product_category_code)) || '').trim().toUpperCase();
     if (PHARMACEUTICAL_CODES.has(code)) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
     return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
   }

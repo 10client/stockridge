@@ -102,7 +102,7 @@
         ui.h('label', { class: 'field pos-category' },
           ui.h('span', { class: 'field-label' }, 'Selling category'),
           categorySelect,
-          ui.h('span', { class: 'hint' }, 'Pharmaceuticals and non-pharmaceuticals are recorded apart. Pick a side to sell from that shelf.')),
+          ui.h('span', { class: 'hint' }, 'A NAFDAC catalogue drug is pharmaceutical. A shop-added drug counts only when it is filed under a pharmaceutical category. Everything else is the other side.')),
         scanBox,
         ui.h('div', { class: 'hint' }, serialsOn()
           ? 'A barcode scanner types and presses Enter. A serial number is looked up too.'
@@ -208,8 +208,8 @@
         ui.h('div', { class: 'ph-name' }, p.name),
         ui.h('div', { class: 'ph-meta' }, [
           p.sku ? `SKU ${p.sku}` : null,
-          (p.category_code || p.category_name) ? U.sellingGroup({ code: p.category_code, name: p.category_name }).label : null,
-          p.category_name && U.sellingGroup({ code: p.category_code, name: p.category_name }).label !== p.category_name ? p.category_name : null,
+          U.sellingGroup(p).label,
+          p.category_name && U.sellingGroup(p).label !== p.category_name ? p.category_name : null,
           p.brand || null,
           p.on_hand != null ? `${U.qty(p.on_hand)} on hand` : null,
           serialsOn() && Number(p.requires_serial) ? 'serial tracked' : null,
@@ -253,6 +253,7 @@
           categoryCode: b.product_category_code || '',
           categoryName: b.product_category_name || '',
           registrationNo: b.product_registration_no || null,
+          nafdacCatalogId: b.product_nafdac_catalog_id || null,
         };
         cur.on_hand += avail;
         if (!cur.name && b.product_name) cur.name = b.product_name;
@@ -265,6 +266,7 @@
         if (!cur.categoryCode && b.product_category_code) cur.categoryCode = b.product_category_code;
         if (!cur.categoryName && b.product_category_name) cur.categoryName = b.product_category_name;
         if (!cur.categoryId && b.product_category_id) cur.categoryId = b.product_category_id;
+        if (!cur.nafdacCatalogId && b.product_nafdac_catalog_id) cur.nafdacCatalogId = b.product_nafdac_catalog_id;
         const batchPrice = Number(b.selling_price_per_unit) || Number(b.product_selling_price) || 0;
         if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
         byProduct.set(id, cur);
@@ -316,7 +318,10 @@
         const blob = `${name} ${sku} ${brand} ${model} ${categoryName}`.toLowerCase();
         if (needle && !blob.includes(needle)) continue;
         if (!needle && !groupCode) continue;
-        if (groupCode && U.sellingGroup({ code: categoryCode, name: categoryName }).code !== groupCode) continue;
+        if (groupCode && U.sellingGroup({
+          code: categoryCode, name: categoryName,
+          nafdac_catalog_id: (product && product.nafdac_catalog_id) || info.nafdacCatalogId,
+        }).code !== groupCode) continue;
         const price = product && Number(product.selling_price) > 0
           ? Number(product.selling_price)
           : (info.price || 0);
@@ -341,6 +346,7 @@
           category_code: categoryCode || null,
           category_name: categoryName || null,
           registration_no: (product && product.registration_no) || info.registrationNo || null,
+          nafdac_catalog_id: (product && product.nafdac_catalog_id) || info.nafdacCatalogId || null,
         }));
         if (hits.length >= 20) break;
       }
@@ -802,6 +808,7 @@
           categoryId: product.category_id || null,
           categoryCode: product.category_code || null,
           categoryName: product.category_name || null,
+          nafdacCatalogId: product.nafdac_catalog_id || null,
           batchNo: product.batch_no || null,
           expiryDate: product.expiry_date || null,
           registrationNo: product.registration_no || null,
@@ -827,6 +834,7 @@
     }
 
     async function fillLineFacts(line, product) {
+      if (!line.nafdacCatalogId && product && product.nafdac_catalog_id) line.nafdacCatalogId = product.nafdac_catalog_id;
       if (!line.categoryCode && (line.categoryId || product.category_id)) {
         const cats = await SR.store.all('product_categories').catch(() => []);
         const cat = (cats || []).find((c) => String(c.id) === String(line.categoryId || product.category_id));
@@ -856,6 +864,7 @@
         line.categoryId = batch.product_category_id || line.categoryId;
       }
       if (!line.registrationNo && batch.product_registration_no) line.registrationNo = batch.product_registration_no;
+      if (!line.nafdacCatalogId && batch.product_nafdac_catalog_id) line.nafdacCatalogId = batch.product_nafdac_catalog_id;
     }
 
     /**
@@ -1096,7 +1105,7 @@
         ui.h('div', { class: 'cl-total' }, U.money(total))));
       const meta = [
         line.sku ? `SKU ${line.sku}` : null,
-        line.categoryName ? U.sellingGroup({ code: line.categoryCode, name: line.categoryName }).label : null,
+        U.sellingGroup({ code: line.categoryCode, name: line.categoryName, nafdac_catalog_id: line.nafdacCatalogId }).label,
         line.variantName || null,
         `${U.money(line.unitPrice)} / ${line.unitCode}`,
       ];
@@ -1801,7 +1810,11 @@
     }
 
     function receiptItem(line) {
-      const group = U.sellingGroup({ code: line.categoryCode || line.category_code, name: line.categoryName || line.category_name });
+      const group = U.sellingGroup({
+        code: line.categoryCode || line.category_code,
+        name: line.categoryName || line.category_name,
+        nafdac_catalog_id: line.nafdacCatalogId || line.nafdac_catalog_id,
+      });
       const unitPrice = line.unit_price != null ? line.unit_price : line.unitPrice;
       const qty = Number(line.quantity) || 0;
       const discount = Number(line.line_discount || line.lineDiscount || 0);
@@ -1815,6 +1828,7 @@
         line_discount: discount,
         category_code: line.category_code || line.categoryCode || null,
         category_name: line.category_name || line.categoryName || null,
+        nafdac_catalog_id: line.nafdac_catalog_id || line.nafdacCatalogId || null,
         selling_group: line.selling_group || group.code,
         selling_group_label: line.selling_group_label || group.label,
         batch_no: line.batch_no || line.batchNo || null,
