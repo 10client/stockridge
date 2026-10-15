@@ -388,14 +388,17 @@ function seedAdministrator() {
 
 function setJwtSecret() {
   log('5/7', 'Setting the Worker JWT secret');
-  // Generated here rather than left to the platform: without it the Worker
-  // derives a fallback, which works but signs every device out if the derivation
-  // ever changes. A stable secret is what keeps a 12-hour shop-day token valid
-  // across a deploy.
-  const existing = process.env.STOCKRIDGE_JWT_SECRET || randomBytes(48).toString('base64url');
+  // A stable secret is what keeps a 12-hour shop-day token valid across a deploy.
+  // Generating a fresh one here signs every device out. Only write the secret when
+  // this run was given the one the deployment already uses.
+  const existing = process.env.STOCKRIDGE_JWT_SECRET;
+  if (!existing) {
+    warn('STOCKRIDGE_JWT_SECRET is not set — leaving the Worker secret as it is, so this deploy does not sign every till out');
+    return null;
+  }
   const res = wrangler(['secret', 'put', 'JWT_SECRET', '--config', WRANGLER_CONFIG, ...ENV_FLAG], { input: `${existing}\n` });
   if (/error/i.test(res.output) && !/Success/i.test(res.output)) warn(res.output.slice(-300));
-  else ok('JWT_SECRET set (generated for this deployment)');
+  else ok('JWT_SECRET set from STOCKRIDGE_JWT_SECRET');
   return existing;
 }
 
@@ -617,7 +620,12 @@ async function main() {
   // stamp and serves assets cache-first, so a deploy that does not bump it hands every browser
   // that has already visited the build it already has — the new files land on the server and
   // never reach the screen. See tools/stamp-build.js.
-  const stamped = require('./stamp-build').stamp();
+  // The stamp clock is West Africa Time, not raw UTC. A stamp taken from
+  // Date.now() reads an hour earlier than the shop, and a browser that cached
+  // that earlier name never picks up the files this deploy just uploaded.
+  const { stamp, buildStamp } = require('./stamp-build');
+  const shifted = new Date(Date.now() + 60 * 60 * 1000);
+  const stamped = stamp(process.env.STOCKRIDGE_BUILD || buildStamp(shifted));
   console.log(`  build stamp   : ${stamped.stampValue}${stamped.changed.length ? '' : ' (unchanged)'}`);
   for (const f of stamped.changed) console.log(`                  updated ${f}`);
 
