@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Stock Ridge premium icon (transparent)</title>
+  <defs>
+    <!-- Main mountain faces -->
+    <linearGradient id="mtnLeft" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#46C474"/>
+      <stop offset="0.55" stop-color="#22914F"/>
+      <stop offset="1" stop-color="#0F5A32"/>
+    </linearGradient>
+    <linearGradient id="mtnRight" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#1B7A44"/>
+      <stop offset="0.6" stop-color="#0E5430"/>
+      <stop offset="1" stop-color="#083A22"/>
+    </linearGradient>
+
+    <!-- Side peaks: brighter than before so they read clearly -->
+    <linearGradient id="sideLit" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#4FD07F"/>
+      <stop offset="0.55" stop-color="#2AA05A"/>
+      <stop offset="1" stop-color="#136A3C"/>
+    </linearGradient>
+    <linearGradient id="sideShade" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#24934F"/>
+      <stop offset="0.55" stop-color="#127040"/>
+      <stop offset="1" stop-color="#0A4A29"/>
+    </linearGradient>
+
+    <!-- Snow -->
+    <linearGradient id="snowLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#DCE8F2"/>
+    </linearGradient>
+    <linearGradient id="snowRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C9D8E6"/>
+      <stop offset="1" stop-color="#A9BCCF"/>
+    </linearGradient>
+
+    <!-- Blocks -->
+    <linearGradient id="blockLeft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4EAF1"/>
+    </linearGradient>
+    <linearGradient id="blockRight" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C7D2DE"/>
+      <stop offset="1" stop-color="#9FB0C2"/>
+    </linearGradient>
+
+    <!-- Gold accent -->
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8A6A2B"/>
+      <stop offset="0.25" stop-color="#E9C46A"/>
+      <stop offset="0.5" stop-color="#FFF1B8"/>
+      <stop offset="0.75" stop-color="#E9C46A"/>
+      <stop offset="1" stop-color="#8A6A2B"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#000000" flood-opacity="0.4"/>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- No background: fully transparent canvas -->
+  <g transform="translate(256 256) scale(0.92) translate(-256 -256)">
+
+    <!-- Left side peak -->
+    <polygon points="126,166 28,432 126,432" fill="url(#sideLit)"/>
+    <polygon points="126,166 240,432 126,432" fill="url(#sideShade)"/>
+    <polygon points="126,166 104,226 114,210 126,240" fill="url(#snowLeft)"/>
+    <polygon points="126,166 152,226 138,210 126,240" fill="url(#snowRight)"/>
+    <line x1="126" y1="166" x2="126" y2="432" stroke="#B6F5CF" stroke-opacity="0.3" stroke-width="1.5"/>
+
+    <!-- Right side peak -->
+    <polygon points="386,166 272,432 386,432" fill="url(#sideLit)"/>
+    <polygon points="386,166 484,432 386,432" fill="url(#sideShade)"/>
+    <polygon points="386,166 360,226 374,210 386,240" fill="url(#snowLeft)"/>
+    <polygon points="386,166 408,226 398,210 386,240" fill="url(#snowRight)"/>
+    <line x1="386" y1="166" x2="386" y2="432" stroke="#B6F5CF" stroke-opacity="0.3" stroke-width="1.5"/>
+
+    <!-- Main mountain (casts a soft shadow onto the side peaks) -->
+    <g filter="url(#shadow)">
+      <polygon points="256,76 80,432 256,432" fill="url(#mtnLeft)"/>
+      <polygon points="256,76 432,432 256,432" fill="url(#mtnRight)"/>
+    </g>
+    <polygon points="256,76 168,254 256,432" fill="#FFFFFF" opacity="0.07"/>
+    <line x1="256" y1="76" x2="256" y2="432" stroke="#9AF0BF" stroke-opacity="0.35" stroke-width="1.5"/>
+
+    <!-- Main snow cap -->
+    <polygon points="256,76 216,156 238,142 256,176" fill="url(#snowLeft)"/>
+    <polygon points="256,76 296,156 274,142 256,176" fill="url(#snowRight)"/>
+
+    <!-- Stacked stock blocks -->
+    <g filter="url(#softShadow)">
+      <rect x="166" y="288" width="90" height="40" fill="url(#blockLeft)"/>
+      <rect x="166" y="336" width="90" height="52" fill="url(#blockLeft)"/>
+      <rect x="166" y="396" width="90" height="36" fill="url(#blockLeft)"/>
+      <rect x="256" y="288" width="90" height="40" fill="url(#blockRight)"/>
+      <rect x="256" y="336" width="90" height="52" fill="url(#blockRight)"/>
+      <rect x="256" y="396" width="90" height="36" fill="url(#blockRight)"/>
+    </g>
+    <rect x="166" y="288" width="180" height="2" fill="#FFFFFF" opacity="0.9"/>
+    <rect x="166" y="336" width="180" height="2" fill="#FFFFFF" opacity="0.7"/>
+    <rect x="166" y="396" width="180" height="2" fill="#FFFFFF" opacity="0.7"/>
+
+    <!-- Gold baseline spanning all three peaks -->
+    <rect x="28" y="434" width="456" height="8" rx="4" fill="url(#gold)"/>
+  </g>
+</svg>

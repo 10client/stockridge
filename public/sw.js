@@ -76,6 +76,7 @@ const SHELL = [
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/icon-maskable-512.png',
+  '/brand/mark.svg',
   '/brand/logo.jpg',
   '/brand/mark.png',
   // THE OFFLINE FALLBACK IS PART OF THE SHELL, and it was not. The navigation

@@ -698,7 +698,7 @@
         // uploading a file and saving a name are not the same edit, and the logo posts bytes.
         const logoBox = ui.h('div', { class: 'ctl' }, 'Logo');
         const preview = ui.h('img', { alt: 'The current logo', class: 'brand-logo-preview' });
-        preview.src = b.logoDataUrl || '/brand/logo.jpg';
+        preview.src = b.logoDataUrl || b.defaultLogoUrl || '/brand/mark.svg';
         const file = ui.h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', disabled: !canEdit, class: 'brand-logo-input' });
         const remove = ui.h('button', { class: 'btn btn-sm', hidden: !b.logoDataUrl, disabled: !canEdit, onClick: async () => {
           if (!(await ui.confirmDialog({ title: 'Remove the logo', message: 'The StockRidge logo will be used instead.', confirmLabel: 'Remove', danger: true }))) return;

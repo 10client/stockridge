@@ -123,7 +123,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
   color: #eaf6f1; z-index: 300;
 }
 .boot-inner { text-align: center; width: min(440px, 88vw); }
-.boot-logo { width: 100%; height: auto; display: block; margin: 0 auto 18px; border-radius: 14px; }
+.boot-logo { width: 112px; height: 112px; object-fit: contain; display: block; margin: 0 auto 12px; }
 .boot-title { font-size: 1.7rem; letter-spacing: .02em; margin: 0 0 6px; color: #fff; }
 .boot-line { color: #a9cfc2; font-size: .88rem; min-height: 1.3em; margin: 0 0 16px; }
 .boot-bar { height: 4px; border-radius: 4px; background: rgba(255,255,255,.16); overflow: hidden; }
@@ -140,14 +140,13 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .login-brand.is-custom { flex-direction: row; align-items: center; text-align: left; }
 [data-theme="dark"] .login-brand { color: var(--green-500); }
 .login-brand h1 { margin: 0; font-size: 1.28rem; color: var(--ink-900); }
-/* The default is the StockRidge lockup. A shop's own logo is a mark beside their name,
-   not a second banner, so it stays small. */
-#login-brand-logo { width: 100%; height: auto; max-height: 280px; object-fit: contain; border-radius: 12px; display: block; }
-#login-brand-logo.is-custom { width: 48px; height: 48px; max-height: 48px; object-fit: contain; border-radius: 8px; flex: none; }
+/* The default is the StockRidge icon. A shop's own logo stays a small mark beside their name. */
+#login-brand-logo { width: 112px; height: 112px; max-height: 112px; object-fit: contain; display: block; margin: 0 auto; }
+#login-brand-logo.is-custom { width: 48px; height: 48px; max-height: 48px; object-fit: contain; border-radius: 8px; flex: none; margin: 0; }
 .login-brand p { margin: 2px 0 0; font-size: .82rem; color: var(--ink-500); }
 .brand-logo-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-top: 6px; }
 .brand-logo-preview { max-width: 220px; max-height: 120px; object-fit: contain; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); padding: 4px; }
-.app-mark { width: 34px; height: 34px; object-fit: cover; border-radius: 8px; flex: none; }
+.app-mark { width: 34px; height: 34px; object-fit: contain; border-radius: 8px; flex: none; }
 .app-mark.is-custom { object-fit: contain; background: var(--surface-2); }
 .field { display: block; position: relative; margin-bottom: 16px; }
 .field-label { display: block; font-size: .8rem; font-weight: 600; color: var(--ink-500); margin-bottom: 6px; text-transform: uppercase; letter-spacing: .04em; }
@@ -946,7 +945,7 @@ img, video { max-width: 100%; height: auto; }
   .pos-hit .ph-price { margin-left: 0; }
   .login-screen { padding: 12px 10px; }
   .login-card { padding: 18px 14px 16px; }
-  #login-brand-logo { max-height: 168px; }
+  #login-brand-logo:not(.is-custom) { width: 88px; height: 88px; max-height: 88px; }
 }
 
 @media (max-width: 420px) {

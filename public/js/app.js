@@ -457,13 +457,12 @@
    * a dead line still shows the client's name — this is an offline-first product), then the
    * server. A failure changes nothing: the shell's markup is the fallback.
    */
-  const DEFAULT_LOGO = '/brand/logo.jpg';
-  const DEFAULT_MARK = '/brand/mark.png';
+  const DEFAULT_LOGO = '/brand/mark.svg';
+  const DEFAULT_MARK = '/brand/mark.svg';
 
   function applyBrandMark(b) {
     const custom = b && b.logoDataUrl ? b.logoDataUrl : '';
     const name = (b && b.name) || 'StockRidge';
-    const vendor = name.trim().toLowerCase() === 'stockridge';
     const img = document.getElementById('login-brand-logo');
     const brand = document.getElementById('login-brand');
     const nameEl = document.getElementById('login-brand-name');
@@ -475,9 +474,9 @@
     }
     if (brand) brand.classList.toggle('is-custom', Boolean(custom));
     setText('login-brand-name', name);
-    // The lockup already says STOCK RIDGE. A shop that has renamed itself, or
-    // uploaded its own mark, still needs the name in type.
-    if (nameEl) nameEl.hidden = !custom && vendor;
+    // The default mark is an icon. It does not contain the words, so the trading
+    // name stays in type even when the shop has not renamed itself.
+    if (nameEl) nameEl.hidden = false;
     const appMark = document.getElementById('app-mark');
     if (appMark) {
       appMark.src = custom || DEFAULT_MARK;

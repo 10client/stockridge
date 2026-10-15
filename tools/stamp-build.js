@@ -45,6 +45,7 @@ const ROOT = path.join(__dirname, '..');
 const SW = path.join(ROOT, 'public', 'sw.js');
 const APP = path.join(ROOT, 'public', 'js', 'app.js');
 const INDEX = path.join(ROOT, 'public', 'index.html');
+const HEALTH = path.join(ROOT, 'server', 'routes', 'health.js');
 
 function shortSha() {
   try {
@@ -77,18 +78,28 @@ function bareAsset(pathname) {
 }
 
 /**
+ * Brand and icon files are cached by the service worker under their bare path.
+ * A new drawing at the same URL is therefore the previous drawing until the
+ * next visit. Stamping them is what makes the new mark arrive with the deploy.
+ */
+function bareImage(pathname) {
+  return /\.(?:png|jpe?g|svg|webp)$/i.test(pathname) && /^\/(?:icons|brand)\//.test(pathname);
+}
+
+/**
  * Put `stampValue` on every asset URL in a file, whichever way the file spells them:
  * `src="/js/app.js"` and `href="/css/app.css"` in the HTML, `'/js/util.js'` in the worker's
  * precache list. Idempotent — an existing stamp is replaced, never doubled.
  */
 function stampAssetUrls(src, stampValue) {
   let out = src;
-  // HTML attributes
-  out = out.replace(/((?:src|href)=\")(\/(?:js|css)\/[^\"?#]+?)(?:\?v=[^\"&#]*)?\"/g,
-    (m, attr, pathname) => (bareAsset(pathname) ? `${attr}${pathname}?v=${stampValue}\"` : m));
-  // Quoted paths in JavaScript (the service worker's SHELL list)
-  out = out.replace(/'(\/(?:js|css)\/[^'?#]+?)(?:\?v=[^'&]*)?'/g,
-    (m, pathname) => (bareAsset(pathname) ? `'${pathname}?v=${stampValue}'` : m));
+  const keep = (pathname) => bareAsset(pathname) || bareImage(pathname);
+  // HTML attributes — scripts, styles, and the default mark.
+  out = out.replace(/((?:src|href)=\")(\/(?:js|css|icons|brand)\/[^\"?#]+?)(?:\?v=[^\"&#]*)?\"/g,
+    (m, attr, pathname) => (keep(pathname) ? `${attr}${pathname}?v=${stampValue}\"` : m));
+  // Quoted paths in JavaScript (the service worker's SHELL list, and the manifest icons).
+  out = out.replace(/'(\/(?:js|css|icons|brand)\/[^'?#]+?)(?:\?v=[^'&]*)?'/g,
+    (m, pathname) => (keep(pathname) ? `'${pathname}?v=${stampValue}'` : m));
   return out;
 }
 
@@ -105,7 +116,7 @@ function stamp(stampValue = buildStamp()) {
     if (next !== src) { fs.writeFileSync(file, next); changed.push(path.relative(ROOT, file)); }
   }
   // ---- and every asset URL, so the new files arrive on the first load after the deploy
-  for (const file of [INDEX, SW]) {
+  for (const file of [INDEX, SW, HEALTH]) {
     const src = fs.readFileSync(file, 'utf8');
     const next = stampAssetUrls(src, stampValue);
     if (next !== src) { fs.writeFileSync(file, next); changed.push(path.relative(ROOT, file)); }
