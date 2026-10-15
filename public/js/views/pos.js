@@ -93,7 +93,7 @@
       spellcheck: 'false',
     });
     const categorySelect = ui.h('select', { id: 'pos-retail-category' });
-    categorySelect.appendChild(ui.h('option', { value: '' }, 'All sellable categories'));
+    categorySelect.appendChild(ui.h('option', { value: '' }, 'Both sides'));
     const scanBox = ui.h('div', { class: 'pos-scan' }, scanInput,
       ui.h('button', { class: 'btn btn-primary scan-btn', onClick: () => doSearch(scanInput.value) }, 'Find'));
     const results = ui.h('div', { class: 'pos-results', hidden: true });
@@ -102,7 +102,7 @@
         ui.h('label', { class: 'field pos-category' },
           ui.h('span', { class: 'field-label' }, 'Selling category'),
           categorySelect,
-          ui.h('span', { class: 'hint' }, 'Drugs are recorded apart from provisions, drinks and other goods. Pick a category to sell from that shelf.')),
+          ui.h('span', { class: 'hint' }, 'Pharmaceuticals and non-pharmaceuticals are recorded apart. Pick a side to sell from that shelf.')),
         scanBox,
         ui.h('div', { class: 'hint' }, serialsOn()
           ? 'A barcode scanner types and presses Enter. A serial number is looked up too.'
@@ -284,11 +284,10 @@
         groups.set(group.code, prev);
       }
       const current = categorySelect.value;
-      categorySelect.replaceChildren(ui.h('option', { value: '' }, 'All sellable categories'));
+      categorySelect.replaceChildren(ui.h('option', { value: '' }, 'Both sides'));
       for (const group of U.sellingGroups()) {
         const row = groups.get(group.code);
-        if (!row) continue;
-        categorySelect.appendChild(ui.h('option', { value: group.code }, `${group.label} · ${row.count}`));
+        categorySelect.appendChild(ui.h('option', { value: group.code }, row ? `${group.label} · ${row.count}` : group.label));
       }
       if ([...categorySelect.options].some((opt) => opt.value === current)) categorySelect.value = current;
     }

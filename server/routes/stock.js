@@ -35,6 +35,7 @@ const { watNow, watToday, addDays, watToUtc } = require('../../domain/time');
 const { canAdjustStock } = require('../../domain/planLimits');
 const { oneOf } = require('../../domain/validation');
 const glService = require('../services/glService');
+const selling = require('../../domain/selling');
 const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
 const { planCataloguePrice } = require('../services/cataloguePrice');
 
@@ -65,11 +66,17 @@ function mount(app, base = '/api') {
     if (filter === 'quarantined') where.push("sb.status = 'QUARANTINED'");
     else where.push("sb.status NOT IN ('QUARANTINED','EXPIRED')");
     if (search) { where.push('(p.name LIKE ? OR p.sku LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
+    const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
+    if (sellingGroup) {
+      const clause = selling.productWhere(sellingGroup);
+      where.push(clause.sql);
+      params.push(...clause.params);
+    }
 
     const rows = await db.all(`
       SELECT p.id AS product_id, ? AS branch_id, p.sku, p.name, p.base_unit_name, p.reorder_level, p.selling_price,
              p.cost_price AS book_cost, p.requires_serial, p.tracks_variants, p.has_expiry,
-             c.name AS category_name,
+             c.name AS category_name, c.code AS category_code,
              COALESCE(SUM(sb.quantity), 0) AS on_shelf,
              COALESCE(SUM(sb.quantity_reserved), 0) AS reserved,
              COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) AS available,
@@ -94,14 +101,19 @@ function mount(app, base = '/api') {
     // shop it came from.
     [String(branch.id), ...params, limit, offset]);
 
-    ctx.json(listResponse(rows.map((r) => ({
-      ...r,
-      on_shelf: round2(Number(r.on_shelf)), reserved: round2(Number(r.reserved)),
-      available: round2(Number(r.available)), stock_value: round2(Number(r.stock_value)),
-      low_stock: Number(r.reorder_level) > 0 && Number(r.available) <= Number(r.reorder_level),
-      out_of_stock: Number(r.available) <= 0,
-      days_to_expiry: r.next_expiry ? Math.max(0, Math.round((Date.parse(r.next_expiry) - Date.parse(watToday())) / 86400000)) : null,
-    })), { limit, offset }));
+    ctx.json(listResponse(rows.map((r) => {
+      const group = selling.sellingGroup(r);
+      return {
+        ...r,
+        selling_group: group.code,
+        selling_group_label: group.label,
+        on_shelf: round2(Number(r.on_shelf)), reserved: round2(Number(r.reserved)),
+        available: round2(Number(r.available)), stock_value: round2(Number(r.stock_value)),
+        low_stock: Number(r.reorder_level) > 0 && Number(r.available) <= Number(r.reorder_level),
+        out_of_stock: Number(r.available) <= 0,
+        days_to_expiry: r.next_expiry ? Math.max(0, Math.round((Date.parse(r.next_expiry) - Date.parse(watToday())) / 86400000)) : null,
+      };
+    }), { limit, offset }));
   });
 
   /** Batch-level detail for one product: what is on the shelf, at what cost, expiring when. */
@@ -156,12 +168,33 @@ function mount(app, base = '/api') {
       WHERE b.is_deleted = 0 AND b.is_active = 1 ${f.sql ? `AND ${f.sql}` : ''} ${named.branchId ? 'AND b.id = ?' : ''}
       GROUP BY b.id ORDER BY b.name`, named.branchId ? [...params, named.branchId] : params);
 
-    const byCategory = await db.all(`
-      SELECT c.name AS category_name, COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost
+    const shelfRows = await db.all(`
+      SELECT c.code AS category_code, COALESCE(c.name, 'Uncategorised') AS category_name,
+             COALESCE(SUM(sb.quantity),0) AS units,
+             COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost,
+             COALESCE(SUM(sb.quantity * COALESCE(sb.selling_price_per_unit, 0)),0) AS at_retail
       FROM stock_batches sb JOIN products p ON p.id = sb.product_id
       LEFT JOIN product_categories c ON c.id = p.category_id
       WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''}
-      GROUP BY c.id ORDER BY at_cost DESC LIMIT 20`, named.branchId ? [named.branchId] : []);
+      GROUP BY c.id ORDER BY at_cost DESC`, named.branchId ? [named.branchId] : []);
+    const byCategory = shelfRows.slice(0, 20).map((row) => ({
+      name: row.category_name,
+      category_code: row.category_code,
+      units: round2(Number(row.units)),
+      at_cost: round2(Number(row.at_cost)),
+      at_retail: round2(Number(row.at_retail)),
+    }));
+    const bySellingGroup = selling.GROUPS.map((group) => ({
+      code: group.code, name: group.label, label: group.label, units: 0, at_cost: 0, at_retail: 0,
+    }));
+    for (const row of shelfRows) {
+      const group = selling.sellingGroup(row);
+      const bucket = bySellingGroup.find((item) => item.code === group.code);
+      if (!bucket) continue;
+      bucket.units = round2(bucket.units + Number(row.units));
+      bucket.at_cost = round2(bucket.at_cost + Number(row.at_cost));
+      bucket.at_retail = round2(bucket.at_retail + Number(row.at_retail));
+    }
 
     const totals = rows.reduce((a, r) => ({
       units: round2(a.units + Number(r.units)), at_cost: round2(a.at_cost + Number(r.at_cost)),
@@ -169,7 +202,7 @@ function mount(app, base = '/api') {
     }), { units: 0, at_cost: 0, at_retail: 0, reserved: 0 });
 
     ctx.json({
-      ok: true, asAt: asAt || watToday(), branches: rows, totals, byCategory,
+      ok: true, asAt: asAt || watToday(), branches: rows, totals, byCategory, bySellingGroup,
       potentialMargin: round2(totals.at_retail - totals.at_cost),
     });
   });

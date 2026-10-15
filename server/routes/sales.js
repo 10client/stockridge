@@ -483,13 +483,13 @@ function mount(app, base = '/api') {
     if (customerId) { where.push('s.customer_id = ?'); params.push(String(customerId)); }
     const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
     if (sellingGroup) {
-      const codes = selling.codesFor(sellingGroup);
+      const clause = selling.codeClause('pc.code', sellingGroup);
       where.push(`EXISTS (
         SELECT 1 FROM sale_items si
-        JOIN product_categories pc ON pc.id = si.category_id
-        WHERE si.sale_id = s.id AND si.is_deleted = 0 AND pc.code IN (${codes.map(() => '?').join(',')})
+        LEFT JOIN product_categories pc ON pc.id = si.category_id
+        WHERE si.sale_id = s.id AND si.is_deleted = 0 AND ${clause.sql}
       )`);
-      params.push(...codes);
+      params.push(...clause.params);
     }
     if (boolField(ctx.req.queryParam('credit_only'))) where.push('s.balance_due > 0');
     const search = searchTerm(ctx);

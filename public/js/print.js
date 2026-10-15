@@ -102,8 +102,10 @@
 
   function itemTrace(item) {
     const bits = [];
+    const group = itemGroup(item);
+    if (group.label) bits.push(group.label);
     const cat = item.category_name || item.categoryName;
-    if (cat) bits.push(cat);
+    if (cat && cat !== group.label) bits.push(cat);
     if (item.batch_no || item.batchNo) bits.push(`batch ${item.batch_no || item.batchNo}`);
     if (item.expiry_date || item.expiryDate) bits.push(`exp ${String(item.expiry_date || item.expiryDate).slice(0, 10)}`);
     if (item.registration_no || item.registrationNo) bits.push(`NAFDAC ${item.registration_no || item.registrationNo}`);

@@ -339,27 +339,21 @@
   /** A stable, sortable, human-ish unique id for locally created rows. */
   /** Eight characters a cashier can read aloud. Same alphabet as the server claim codes. */
   // Same selling-category map as domain/selling.js. A mixed pharmacy records
-  // drugs apart from provisions, drinks and toiletries. An unknown category
-  // keeps its own name, so a furniture shop is not forced into "Others".
+  // drugs apart from every other good. Shelf names stay on the line. The
+  // selling side is only Pharmaceuticals or Non-pharmaceuticals.
   const SELLING_GROUPS = [
-    { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals', members: ['ALIMENTARY', 'ANALGESICS', 'ANTIPARASITIC', 'CARDIOVASCULAR', 'CONTROLLED', 'DERMATOLOGY', 'INJECTIONS', 'RESPIRATORY', 'VITAMINS', 'PHARMACEUTICALS'] },
-    { code: 'FOOD_DRINKS', label: 'Food & Drinks', members: ['PROVISIONS', 'DRINKS', 'SNACKS', 'FROZEN', 'FOODSTUFFS', 'BEVERAGES', 'CONFECTIONERY', 'FOOD_DRINKS'] },
-    { code: 'BEAUTY_PERSONAL_CARE', label: 'Beauty & Personal Care', members: ['PERSONAL_CARE', 'COSMETICS', 'BEAUTY_PERSONAL_CARE'] },
-    { code: 'ACCESSORIES', label: 'Accessories', members: ['ACCESSORIES', 'BABY', 'BABY_PRODUCTS'] },
-    { code: 'OTHERS', label: 'Others', members: ['HOUSEHOLD', 'STATIONERY', 'OTHERS', 'PLASTICS_KITCHENWARE', 'ELECTRICALS_SMALL'] },
+    { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
+    { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
   ];
-  const SELLING_BY_CODE = new Map();
-  for (const group of SELLING_GROUPS) {
-    for (const code of group.members) SELLING_BY_CODE.set(code, group);
-  }
+  const PHARMACEUTICAL_CODES = new Set([
+    'ALIMENTARY', 'ANALGESICS', 'ANTIPARASITIC', 'CARDIOVASCULAR', 'CONTROLLED',
+    'DERMATOLOGY', 'INJECTIONS', 'RESPIRATORY', 'VITAMINS', 'PHARMACEUTICALS',
+  ]);
 
   function sellingGroup(category) {
     const code = String((category && (category.code || category.category_code)) || '').trim().toUpperCase();
-    const name = String((category && (category.name || category.category_name)) || '').trim();
-    const known = SELLING_BY_CODE.get(code);
-    if (known) return { code: known.code, label: known.label };
-    if (code || name) return { code: code || 'OTHERS', label: name || code };
-    return { code: 'OTHERS', label: 'Others' };
+    if (PHARMACEUTICAL_CODES.has(code)) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
+    return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
   }
 
   function sellingGroups() { return SELLING_GROUPS.map((g) => ({ code: g.code, label: g.label })); }

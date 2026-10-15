@@ -342,9 +342,13 @@ function mount(app, base = '/api') {
       businessId: String(business.id), startDate: from, endDate: to,
       branchId: branch && useBranch ? String(branch.id) : null,
     });
+    const bySellingGroup = await glService.booksBySellingGroup(db, {
+      businessId: String(business.id), startDate: from, endDate: to,
+      branchId: branch && useBranch ? String(branch.id) : null,
+    });
     ctx.json({
       ok: true, range: { from, to }, scope: useBranch && branch ? { branch: branch.name } : { business: business.name },
-      ...pl, byCategory,
+      ...pl, byCategory, bySellingGroup,
       commentary: pl.grossMarginPct != null
         ? `Gross margin is ${pl.grossMarginPct}% on ₦${round2(Number(pl.revenue || 0)).toLocaleString('en-NG')} of revenue for ${from} to ${to}.`
         : null,

@@ -307,12 +307,13 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
       credit: part.amount,
       categoryId: part.categoryId || null,
       description: [
+        part.sellingGroupLabel,
         part.channel === 'HIRE' ? 'Hire fee'
           : part.channel === 'LEASE' ? 'Lease rent'
             : part.channel === 'WHOLESALE' ? 'Wholesale' : 'Retail',
         part.categoryName,
         `receipt ${receiptNo}`,
-      ].filter(Boolean).join(', '),
+      ].filter(Boolean).join(' · '),
     }))
     : [{ accountCode: '4000', credit: Math.max(0, netRevenue), description: `Sales, receipt ${receiptNo}` }];
   const saleLines = [
@@ -343,9 +344,11 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
   // and fabrics can read those takings off the ledger, not only off the
   // till. Cost lines below carry the same category.
 
+  const sides = [...new Set(revenueParts.map((part) => part.sellingGroupLabel).filter(Boolean))];
   statements.push(...buildEntry({
     businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
-    description: `Sale receipt ${receiptNo}`, postedBy: user && user.id, accountIds, lines: saleLines,
+    description: sides.length ? `Sale receipt ${receiptNo} — ${sides.join(' and ')}` : `Sale receipt ${receiptNo}`,
+    postedBy: user && user.id, accountIds, lines: saleLines,
   }));
 
   // COGS and inventory relief, per line so the category axis is preserved.
@@ -355,14 +358,22 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
     const channel = String(line.channel || '').toUpperCase();
     if (channel === 'HIRE' || channel === 'LEASE') continue;
     if (line.totalCost <= 0) continue;
-    cogsLines.push({ accountCode: '5000', debit: line.totalCost, categoryId: line.categoryId, description: `${line.productName} — cost of sale` });
+    const selling = require('../../domain/selling');
+    const group = selling.sellingGroup({
+      code: line.product && line.product.category_code,
+      name: line.product && line.product.category_name,
+    });
+    cogsLines.push({
+      accountCode: '5000', debit: line.totalCost, categoryId: line.categoryId,
+      description: `${group.label} — ${line.productName} — cost of sale`,
+    });
   }
   const totalCogs = round2(cogsLines.reduce((a, l) => a + l.debit, 0));
   if (totalCogs > 0) {
     cogsLines.push({ accountCode: '1100', credit: totalCogs, description: 'Inventory relieved at cost' });
     statements.push(...buildEntry({
       businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
-      description: `Cost of goods sold, receipt ${receiptNo}`, postedBy: user && user.id, accountIds, lines: cogsLines,
+      description: `Cost of goods sold, receipt ${receiptNo}${sides.length ? ` — ${sides.join(' and ')}` : ''}`, postedBy: user && user.id, accountIds, lines: cogsLines,
     }));
   }
 
@@ -375,7 +386,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
         accountCode: part.accountCode,
         credit: part.amount,
         categoryId: part.categoryId || null,
-        description: `Discount grossed back${part.categoryName ? `, ${part.categoryName}` : ''}`,
+        description: `Discount grossed back${part.sellingGroupLabel ? `, ${part.sellingGroupLabel}` : ''}${part.categoryName ? ` · ${part.categoryName}` : ''}`,
       }))
       : [{ accountCode: '4000', credit: totals.discountAmount, description: 'Revenue reduced by discount' }];
     statements.push(...buildEntry({
@@ -420,7 +431,7 @@ function reverseSaleStatements({ sale, items, business, branch, user, reason, ac
         accountCode: part.accountCode,
         debit: part.amount,
         categoryId: part.categoryId || null,
-        description: `Revenue reversed${part.categoryName ? `, ${part.categoryName}` : ''}: ${reason}`,
+        description: `Revenue reversed${part.sellingGroupLabel ? `, ${part.sellingGroupLabel}` : ''}${part.categoryName ? ` · ${part.categoryName}` : ''}: ${reason}`,
       });
     }
   }
@@ -994,6 +1005,42 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
 }
 
 /**
+ * Pharmaceuticals against non-pharmaceuticals, from the same ledger lines.
+ * A drug category is one side. Every other categorised taking is the other.
+ * Delivery income is not a side of the shop, so it stays out of this split.
+ */
+async function booksBySellingGroup(db, { businessId = null, branchId = null, startDate, endDate } = {}) {
+  const selling = require('../../domain/selling');
+  const where = ["e.is_deleted = 0", "l.is_deleted = 0", "a.code IN ('4000','4010','4020','4030','5000')"];
+  const params = [];
+  if (businessId) { where.push('e.business_id = ?'); params.push(String(businessId)); }
+  if (branchId) { where.push('l.branch_id = ?'); params.push(String(branchId)); }
+  if (startDate) { where.push('e.entry_date >= ?'); params.push(String(startDate)); }
+  if (endDate) { where.push('e.entry_date <= ?'); params.push(String(endDate)); }
+  const rows = await db.all(`
+    SELECT c.code AS category_code, a.code AS account_code,
+           SUM(l.credit) AS credit, SUM(l.debit) AS debit
+    FROM gl_journal_lines l
+    JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+    JOIN gl_accounts a ON a.id = l.account_id
+    LEFT JOIN product_categories c ON c.id = l.category_id
+    WHERE ${where.join(' AND ')}
+    GROUP BY c.code, a.code`, params);
+  const sides = selling.GROUPS.map((group) => ({
+    code: group.code, label: group.label, revenue: 0, cogs: 0, grossProfit: 0,
+  }));
+  for (const row of rows || []) {
+    const group = selling.sellingGroup(row);
+    const side = sides.find((item) => item.code === group.code);
+    if (!side) continue;
+    if (row.account_code === '5000') side.cogs = round2(side.cogs + Number(row.debit || 0) - Number(row.credit || 0));
+    else side.revenue = round2(side.revenue + Number(row.credit || 0) - Number(row.debit || 0));
+  }
+  for (const side of sides) side.grossProfit = round2(side.revenue - side.cogs);
+  return sides;
+}
+
+/**
  * A security deposit taken or given back.
  *
  * It is not income. Taking it debits the drawer and credits the liability.
@@ -1035,5 +1082,5 @@ module.exports = {
   postCashMoveStatements, postCashOverShortStatements, postCashPayoutStatements, postCashAgainstAccountStatements,
   postDebtorPaymentStatements, postCreditorPaymentStatements,
   postWarrantyStatements, postInstalmentInterestStatements,
-  trialBalance, profitAndLoss, balanceSheet, revenueByCategory,
+  trialBalance, profitAndLoss, balanceSheet, revenueByCategory, booksBySellingGroup,
 };

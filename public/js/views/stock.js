@@ -31,6 +31,7 @@
     const state = {
       tab: ctx.query.tab || 'on-hand',
       filter: ctx.query.filter || '',
+      sellingGroup: ctx.query.selling_group || '',
       q: '',
       page: 0,
       pageSize: 50,
@@ -109,6 +110,12 @@
       qInput.value = state.q;
       qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; renderOnHand(); }, 320));
       toolbar.appendChild(qInput);
+      const sideSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.page = 0; renderOnHand(); } });
+      sideSel.appendChild(ui.h('option', { value: '', selected: !state.sellingGroup }, 'Both sides'));
+      for (const group of U.sellingGroups()) {
+        sideSel.appendChild(ui.h('option', { value: group.code, selected: group.code === state.sellingGroup }, group.label));
+      }
+      toolbar.appendChild(sideSel);
       const filterSel = ui.h('select', { onchange: (e) => { state.filter = e.target.value; state.page = 0; renderOnHand(); } });
       for (const [v, l] of [['', 'Everything'], ['low', 'At or below reorder level'], ['out', 'Out of stock'], ['overstock', 'Overstocked'], ['quarantined', 'Quarantined']]) {
         filterSel.appendChild(ui.h('option', { value: v, selected: v === state.filter }, l));
@@ -118,7 +125,7 @@
 
       let data = null; let offline = false;
       try {
-        data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
+        data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, selling_group: state.sellingGroup || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
       } catch (err) {
         if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderOnHand } })); return; }
         offline = true;
@@ -132,7 +139,7 @@
           { key: 'name', label: 'Product', className: 'wrap', render: (r) => {
             const cell = ui.h('div', {});
             cell.appendChild(ui.h('div', { style: { fontWeight: '600' } }, r.name));
-            cell.appendChild(ui.h('div', { class: 'hint' }, [r.sku, r.category_name, r.base_unit_name].filter(Boolean).join(' · ')));
+            cell.appendChild(ui.h('div', { class: 'hint' }, [r.sku, r.selling_group_label || (r.category_code ? U.sellingGroup(r).label : null), r.category_name, r.base_unit_name].filter(Boolean).join(' · ')));
             return cell;
           } },
           { key: 'on_shelf', label: 'On shelf', align: 'right', render: (r) => U.qty(r.on_shelf) },
@@ -178,7 +185,7 @@
       const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.branch_id) === String(branchId) });
       const products = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
       const cats = await SR.store.all('product_categories').catch(() => []);
-      const catName = new Map(cats.map((c) => [String(c.id), c.name]));
+      const catById = new Map(cats.map((c) => [String(c.id), c]));
       const needle = state.q.toLowerCase();
       const byProduct = new Map();
       for (const b of batches) {
@@ -201,7 +208,9 @@
           const available = s.on_shelf - s.reserved;
           return {
             product_id: p.id, branch_id: branchId, name: p.name, sku: p.sku,
-            category_name: catName.get(String(p.category_id)) || null,
+            category_name: (catById.get(String(p.category_id)) || {}).name || null,
+            category_code: (catById.get(String(p.category_id)) || {}).code || null,
+            selling_group_label: U.sellingGroup(catById.get(String(p.category_id)) || {}).label,
             base_unit_name: p.base_unit_name, reorder_level: p.reorder_level,
             book_cost: p.cost_price, selling_price: p.selling_price,
             on_shelf: s.on_shelf, reserved: s.reserved, available,
@@ -212,6 +221,7 @@
           };
         })
         .filter((r) => {
+          if (state.sellingGroup && U.sellingGroup(r).code !== state.sellingGroup) return false;
           if (state.filter === 'low') return r.low_stock;
           if (state.filter === 'out') return r.out_of_stock;
           return true;
@@ -236,6 +246,15 @@
         data.byCategory = Array.from(U.groupBy(stock.data, (r) => r.category_name || 'Uncategorised').entries())
           .map(([name, list]) => ({ name, at_cost: U.sum(list, (x) => x.stock_value), at_retail: U.sum(list, (x) => Number(x.selling_price) * Number(x.available)), units: U.sum(list, (x) => x.available) }))
           .sort((a, b) => b.at_cost - a.at_cost);
+        data.bySellingGroup = U.sellingGroups().map((group) => {
+          const list = stock.data.filter((row) => U.sellingGroup(row).code === group.code);
+          return {
+            code: group.code, name: group.label, label: group.label,
+            units: U.sum(list, (x) => x.available),
+            at_cost: U.sum(list, (x) => x.stock_value),
+            at_retail: U.sum(list, (x) => Number(x.selling_price) * Number(x.available)),
+          };
+        });
       }
       const t = data.totals || {};
       host.replaceChildren();
@@ -245,9 +264,26 @@
         ui.kpi({ label: 'At retail', value: U.money(t.atRetail || t.at_retail), small: true }),
         ui.kpi({ label: 'Margin if all sold', value: U.money(t.potentialMargin || (Number(t.atRetail || t.at_retail || 0) - Number(t.atCost || t.at_cost || 0))), tone: 'good', small: true }),
         ui.kpi({ label: 'Units on hand', value: U.qty(t.units), foot: `${U.plural(t.products || 0, 'product')}`, small: true })));
+      if (Array.isArray(data.bySellingGroup) && data.bySellingGroup.length) {
+        host.appendChild(ui.dataCard({
+          title: 'Pharmacy and supermarket',
+          table: ui.renderTable({
+            columns: [
+              { key: 'label', label: 'Side', render: (r) => r.label || r.name },
+              { key: 'units', label: 'Units', align: 'right', render: (r) => U.qty(r.units) },
+              { key: 'at_cost', label: 'At cost', align: 'right', render: (r) => U.money(r.at_cost || r.atCost) },
+              { key: 'at_retail', label: 'At retail', align: 'right', render: (r) => U.money(r.at_retail || r.atRetail) },
+              { key: 'margin', label: 'Margin', align: 'right', render: (r) => U.money(Number(r.at_retail || r.atRetail || 0) - Number(r.at_cost || r.atCost || 0)) },
+            ],
+            rows: data.bySellingGroup,
+            emptyTitle: 'No stock valued yet',
+            emptyMessage: 'Receive goods and each side of the shop is valued on its own.',
+          }),
+        }));
+      }
       if (Array.isArray(data.byCategory) && data.byCategory.length) {
         host.appendChild(ui.dataCard({
-          title: 'By category',
+          title: 'By shelf category',
           table: ui.renderTable({
             columns: [
               { key: 'name', label: 'Category', className: 'wrap' },

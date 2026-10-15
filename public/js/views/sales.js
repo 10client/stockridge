@@ -66,7 +66,7 @@
     for (const [v, l] of [['', 'Any status'], ['COMPLETED', 'Completed'], ['VOIDED', 'Voided'], ['PENDING_DELIVERY', 'Pending delivery']]) statusSel.appendChild(ui.h('option', { value: v }, l));
     fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Status'), statusSel));
     const groupSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.page = 0; load(); } });
-    groupSel.appendChild(ui.h('option', { value: '' }, 'All selling categories'));
+    groupSel.appendChild(ui.h('option', { value: '' }, 'Both sides'));
     for (const group of U.sellingGroups()) groupSel.appendChild(ui.h('option', { value: group.code }, group.label));
     if (state.sellingGroup) groupSel.value = state.sellingGroup;
     fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), groupSel));

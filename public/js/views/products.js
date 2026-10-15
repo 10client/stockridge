@@ -69,7 +69,7 @@
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Catalogue');
-    const state = { page: 0, pageSize: PAGE_SIZE, q: ctx.query.q || '', category: '', low: false, highlightId: null };
+    const state = { page: 0, pageSize: PAGE_SIZE, q: ctx.query.q || '', category: '', sellingGroup: '', low: false, highlightId: null };
 
     const wrap = ui.h('div', { class: 'stack' });
     wrap.appendChild(ui.h('div', { class: 'page-head' },
@@ -93,6 +93,10 @@
     });
     qInput.value = state.q;
     toolbar.firstElementChild.appendChild(ui.h('div', { class: 'grow' }, qInput));
+    const sideSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.category = ''; state.page = 0; state.highlightId = null; fillCategories().then(load); } });
+    sideSel.appendChild(ui.h('option', { value: '' }, 'Both sides'));
+    for (const group of U.sellingGroups()) sideSel.appendChild(ui.h('option', { value: group.code }, group.label));
+    toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Side'), sideSel));
     const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; state.highlightId = null; load(); } });
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), catSel));
     wrap.appendChild(toolbar);
@@ -106,12 +110,13 @@
     async function fillCategories() {
       try {
         const data = await SR.api.get('/api/categories', { query: SR.state.query() });
-        const rows = byName(data.data || []);
+        const rows = byName(data.data || []).filter((c) => !state.sellingGroup || U.sellingGroup(c).code === state.sellingGroup);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, `${c.name}${c.product_count ? ` (${c.product_count})` : ''}`));
         return rows;
       } catch (err) {
-        const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) }));
+        const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) }))
+          .filter((c) => !state.sellingGroup || U.sellingGroup(c).code === state.sellingGroup);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, c.name));
         return rows;
@@ -143,7 +148,11 @@
       const needle = state.q.toLowerCase();
       let rows = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
       const cats = await SR.store.all('product_categories').catch(() => []);
+      const catById = new Map(cats.map((c) => [String(c.id), c]));
       const catName = new Map(cats.map((c) => [String(c.id), c.name]));
+      if (state.sellingGroup) {
+        rows = rows.filter((p) => U.sellingGroup(catById.get(String(p.category_id)) || {}).code === state.sellingGroup);
+      }
       if (state.category) rows = rows.filter((p) => String(p.category_id) === String(state.category));
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
       const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.branch_id) === String(SR.state.activeBranchId) });
@@ -184,6 +193,7 @@
             sort: 'name',
             q: state.q || undefined,
             category_id: state.category || undefined,
+            selling_group: state.sellingGroup || undefined,
             limit: state.pageSize,
             offset: state.page * state.pageSize,
             nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined,
@@ -203,7 +213,7 @@
           { key: 'name', label: 'Product', className: 'wrap', render: (p) => {
             const cell = ui.h('div', {});
             cell.appendChild(ui.h('div', { style: { fontWeight: '600' } }, p.name));
-            cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_name].filter(Boolean).join(' · ')));
+            cell.appendChild(ui.h('div', { class: 'hint' }, [p.sku, p.brand, p.model_no, p.category_code || p.category_name ? U.sellingGroup(p).label : null, p.category_name].filter(Boolean).join(' · ')));
             const tags = [];
             if (Number(p.tracks_variants)) tags.push('variants');
             const serial = serialSwitch(p, { stop: true, after: () => load() });

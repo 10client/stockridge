@@ -258,6 +258,7 @@ function describeMix(channels) {
  * so the credits still equal the net.
  */
 function splitRevenue(lines, saleType, netRevenue) {
+  const selling = require('./selling');
   const buckets = new Map();
   for (const line of lines || []) {
     const channel = channelOf(line, saleType);
@@ -265,8 +266,15 @@ function splitRevenue(lines, saleType, netRevenue) {
     const categoryName = line.categoryName || line.category_name
       || (line.product && (line.product.category_name || line.product.categoryName))
       || null;
+    const categoryCode = line.categoryCode || line.category_code
+      || (line.product && (line.product.category_code || line.product.categoryCode))
+      || null;
+    const group = selling.sellingGroup({ code: categoryCode, name: categoryName });
     const key = `${channel}|${categoryId || ''}`;
-    const prev = buckets.get(key) || { channel, categoryId: categoryId || null, categoryName, weight: 0 };
+    const prev = buckets.get(key) || {
+      channel, categoryId: categoryId || null, categoryName, categoryCode,
+      sellingGroup: group.code, sellingGroupLabel: group.label, weight: 0,
+    };
     prev.weight = round2(prev.weight + Number(line.lineTotal || line.line_total || 0));
     if (!prev.categoryName && categoryName) prev.categoryName = categoryName;
     buckets.set(key, prev);
@@ -289,6 +297,8 @@ function splitRevenue(lines, saleType, netRevenue) {
         channel: bucket.channel,
         categoryId: bucket.categoryId,
         categoryName: bucket.categoryName,
+        sellingGroup: bucket.sellingGroup,
+        sellingGroupLabel: bucket.sellingGroupLabel,
         accountCode: revenueAccount(bucket.channel),
         amount,
       });

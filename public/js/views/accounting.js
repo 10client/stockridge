@@ -190,10 +190,28 @@
       stack.appendChild(groupTable('Revenue', data.revenue || [], data.totalRevenue, 'Sell something and it appears here.'));
       stack.appendChild(groupTable('Cost of goods sold', data.cogs || [], data.totalCogs, 'Cost of sales follows the stock you sold, valued at what it cost to land.'));
       stack.appendChild(groupTable('Operating expenses', data.expenses || [], data.totalExpenses, 'Rent, diesel, wages — everything that is not stock.'));
+      if ((data.bySellingGroup || []).length) {
+        stack.appendChild(ui.h('p', { class: 'sub' }, 'One shop, two records. These takings and costs come from the ledger. A discount or a delivery fee stays in the profit and loss above, because it is not a side of the shelf.'));
+        stack.appendChild(ui.dataCard({
+          title: 'Pharmacy and supermarket',
+          table: ui.renderTable({
+            columns: [
+              { key: 'label', label: 'Side' },
+              { key: 'revenue', label: 'Takings', align: 'right', render: (r) => U.money(r.revenue) },
+              { key: 'cogs', label: 'Cost of goods', align: 'right', render: (r) => U.money(r.cogs) },
+              { key: 'grossProfit', label: 'Gross profit', align: 'right', render: (r) => U.money(r.grossProfit) },
+            ],
+            rows: data.bySellingGroup,
+            foot: ['Both sides', U.money(U.sum(data.bySellingGroup, (r) => r.revenue)), U.money(U.sum(data.bySellingGroup, (r) => r.cogs)), U.money(U.sum(data.bySellingGroup, (r) => r.grossProfit))],
+            emptyTitle: 'No categorised takings yet',
+            emptyMessage: 'A sale posts each side to the ledger. Drugs stay apart from supermarket goods.',
+          }),
+        }));
+      }
       if ((data.byCategory || []).length) {
         stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
-          ui.h('h2', {}, 'Revenue by product category'),
-          ui.h('p', { class: 'sub' }, 'Category sales, from the ledger. Provisions and fabrics are separate lines because they were posted that way.'),
+          ui.h('h2', {}, 'Revenue by shelf category'),
+          ui.h('p', { class: 'sub' }, 'The same ledger, read by the shelf the goods were filed on. Analgesics and provisions stay separate under the two sides.'),
           ui.bars((data.byCategory || []).map((c) => ({
             label: c.category_name || c.category || c.name || 'Uncategorised',
             value: c.revenue_net_of_vat != null ? c.revenue_net_of_vat : (c.revenue || c.amount || 0),

@@ -220,9 +220,9 @@ function mount(app, base = '/api') {
     const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
     if (sellingGroup) {
       const selling = require('../../domain/selling');
-      const codes = selling.codesFor(sellingGroup);
-      where.push(`EXISTS (SELECT 1 FROM product_categories pcg WHERE pcg.id = p.category_id AND pcg.is_deleted = 0 AND pcg.code IN (${codes.map(() => '?').join(',')}))`);
-      params.push(...codes);
+      const clause = selling.productWhere(sellingGroup);
+      where.push(clause.sql);
+      params.push(...clause.params);
     }
     if (activeOnly) where.push('p.is_active = 1');
     if (search) {
