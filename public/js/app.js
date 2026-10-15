@@ -31,14 +31,16 @@
   SR.BUILD = 'ridge-20261014-2051-22ff2ec';
 
   // -------------------------------------------------------------------
-  // DOWNLOAD — only where the device can install, and has not
+  // INSTALL
   // -------------------------------------------------------------------
-  // Chromium tells us, once, with `beforeinstallprompt`. That event is the
-  // compatibility test: it does not fire in a browser that cannot install, and
-  // it does not fire when the app is already installed. Safari never fires it,
-  // but an iPhone, iPad or Mac Safari can still add the app from the share
-  // sheet, so those get the button and the steps. An in-app browser (WhatsApp,
-  // Instagram) cannot install anything, so it gets no button.
+  // The top bar offers Download only when this visit can still install: the
+  // browser has handed us a prompt, or it is Safari. The sidebar Install button
+  // is a different question. Deleting the home-screen icon does not uninstall
+  // the app, and a browser that still has that old copy will not fire
+  // `beforeinstallprompt` again — so a button that waits for that event is
+  // hidden at the only moment someone needs to put the icon back. The sidebar
+  // button stays for every browser that can install, including inside an
+  // already-installed window, and the steps say how to clear the leftover copy.
   let installPrompt = null;
   let browserOfferedInstall = false;
 
@@ -69,18 +71,34 @@
     return /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|OPR|Firefox|FxiOS|Android/i.test(ua);
   }
 
+  function chromiumCanInstall() {
+    if (inAppBrowser() || !window.isSecureContext) return false;
+    const ua = navigator.userAgent || '';
+    if (/Firefox|FxiOS/i.test(ua)) return false;
+    return /Chrome|Chromium|CriOS|Edg|EdgiOS|SamsungBrowser|OPR|Opera/i.test(ua);
+  }
+
   function installCompatible() {
     if (runningAsInstalledApp()) return false;
     if (installPrompt || browserOfferedInstall) return true;
     return safariCanInstall();
   }
 
+  /** The sidebar button is the way back after a deleted icon. It does not wait
+   *  for a prompt the browser will refuse to send while the old install remains. */
+  function sidebarInstallVisible() {
+    if (inAppBrowser() || !window.isSecureContext) return false;
+    return chromiumCanInstall() || safariCanInstall() || Boolean(installPrompt);
+  }
+
   function paintInstallButton() {
-    const show = installCompatible();
-    for (const id of ['install-btn', 'nav-install', 'login-install']) {
-      const el = document.getElementById(id);
-      if (el) el.hidden = !show;
-    }
+    const fresh = installCompatible();
+    const top = document.getElementById('install-btn');
+    const login = document.getElementById('login-install');
+    const nav = document.getElementById('nav-install');
+    if (top) top.hidden = !fresh;
+    if (login) login.hidden = !fresh;
+    if (nav) nav.hidden = !sidebarInstallVisible();
   }
 
   window.addEventListener('beforeinstallprompt', (event) => {
@@ -117,23 +135,21 @@
         body.appendChild(ui.h('p', { class: 'hint' }, 'If Add to Home Screen is not in the sheet, open this page in Safari and use Share there.'));
       }
     } else {
-      body.appendChild(ui.h('p', {}, 'This browser can install StockRidge. If the download window did not open, use the browser menu.'));
-      steps.appendChild(ui.h('li', {}, 'Open the browser menu.'));
-      steps.appendChild(ui.h('li', {}, 'Choose Install app, or Add to Home screen.'));
-      steps.appendChild(ui.h('li', {}, 'Confirm. The icon opens StockRidge on its own, and it keeps working offline.'));
+      body.appendChild(ui.h('p', {}, 'If you installed StockRidge and then deleted the icon, the browser may still be holding that copy. It will not offer a new install until the old one is removed.'));
+      steps.appendChild(ui.h('li', {}, 'Open the browser menu. If Install app is there, choose it and confirm.'));
+      steps.appendChild(ui.h('li', {}, 'If the menu says Open in app instead, the old copy is still installed. On a phone, open Settings, then Apps, find StockRidge and uninstall it. On a computer, type chrome://apps or edge://apps in the address bar, find StockRidge, and remove it.'));
+      steps.appendChild(ui.h('li', {}, 'Come back to this page and tap Install again. That puts the icon back, and the till keeps working offline.'));
     }
     body.appendChild(steps);
     closeNav();
-    ui.openModal({ title: 'Download StockRidge', body, size: 'narrow' });
+    ui.openModal({ title: 'Install StockRidge', body, size: 'narrow' });
   }
 
   async function downloadApp() {
-    if (runningAsInstalledApp()) {
-      paintInstallButton();
-      return;
-    }
     const prompt = installPrompt;
-    if (prompt) {
+    // A window that is already the installed app will not be given a prompt.
+    // Falling through shows how to remove the leftover copy and install again.
+    if (prompt && !runningAsInstalledApp()) {
       // prompt() has to run inside the tap. Anything awaited before it, and the
       // browser treats the download as not requested by the person.
       installPrompt = null;

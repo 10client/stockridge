@@ -270,7 +270,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 @media (min-width: 901px) {
   #nav-toggle, #nav-close { display: none; }
   .scrim { display: none !important; }
-  /* On a wide screen the sidebar is the nav, and it already carries Download.
+  /* On a wide screen the sidebar is the nav, and it already carries Install.
      The top bar is for the shop, the branch and the queue — not a second copy. */
   #install-btn { display: none !important; }
 }
