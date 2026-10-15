@@ -337,6 +337,15 @@
   function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
   /** A stable, sortable, human-ish unique id for locally created rows. */
+  /** Eight characters a cashier can read aloud. Same alphabet as the server claim codes. */
+  function claimCode(length = 8) {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint8Array(length);
+    if (global.crypto && global.crypto.getRandomValues) global.crypto.getRandomValues(bytes);
+    else for (let i = 0; i < length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
+  }
+
   function localId(prefix = 'loc') {
     const rand = Math.random().toString(16).slice(2, 10);
     return `${prefix}_${Date.now().toString(36)}${rand}`;
@@ -382,7 +391,7 @@
     todayWat, nowWatSql, nowIso, addDays, daysBetween,
     esc, attr, titleCase, humanise, plural, initials,
     clamp, round2, sum, uniq, groupBy, by, slug,
-    amountInWords, download, readFileAsText, debounce, sleep, localId,
+    amountInWords, download, readFileAsText, debounce, sleep, localId, claimCode,
     normalisePhone, isPhone, hashCode, bytes,
   };
 }(window));

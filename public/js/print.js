@@ -144,6 +144,12 @@
     }
     if (Number(sale.change_given)) L.push(cols('Change', money(sale.change_given), width));
     if (Number(sale.change_owed)) L.push(cols('Change owed', money(sale.change_owed), width));
+    if (sale.claim_code) {
+      L.push(centre('COLLECTION CODE', width));
+      L.push(centre(String(sale.claim_code), width));
+      L.push(centre('Quote this code to collect the change.', width));
+      if (sale.claim_expires_at) L.push(centre(`Collect by ${sale.claim_expires_at}`, width));
+    }
     if (Number(sale.balance_due)) {
       L.push(rule(width));
       L.push(cols('BALANCE DUE', money(sale.balance_due), width));
@@ -208,6 +214,15 @@
     L.push(rule(width));
     L.push(cols('TOTAL', money(cart.expectedTotal), width));
     for (const p of cart.payments || []) L.push(cols(`  ${U.humanise(p.method)}`, money(p.amount), width));
+    if (Number(cart.change_owed_amount || cart.changeOwedAmount)) {
+      L.push(cols('Change owed', money(cart.change_owed_amount || cart.changeOwedAmount), width));
+    }
+    if (cart.claim_code || cart.claimCode) {
+      const code = cart.claim_code || cart.claimCode;
+      L.push(centre('COLLECTION CODE', width));
+      L.push(centre(String(code), width));
+      L.push(centre('Quote this code to collect the change.', width));
+    }
     L.push(rule(width));
     L.push(centre('Not yet sent to the office.', width));
     L.push(centre('It will sync automatically.', width));
@@ -344,6 +359,18 @@
 
   /** Open a preview modal with a Print button — the path a cashier actually
    *  uses, because it lets them see the ₦ sign survived before it reaches paper. */
+  function cancelBesidePrint(onCancel, onPrint) {
+    return SR.ui.h('div', { class: 'receipt-pair' },
+      SR.ui.h('button', { class: 'btn', onClick: onCancel }, 'Cancel'),
+      SR.ui.h('button', { class: 'btn btn-primary', onClick: onPrint }, 'Print'));
+  }
+
+  function markReceipt(modal) {
+    if (modal && modal.dialog) modal.dialog.classList.add('receipt-sheet');
+    const root = document.getElementById('modal-root');
+    if (root) root.classList.add('is-receipt');
+  }
+
   function preview(text, { title = 'Receipt', filename = null, onPrint = null } = {}) {
     const body = SR.ui.h('div', {});
     body.appendChild(SR.ui.h('div', { class: 'receipt', id: 'receipt-preview' }, text));
@@ -353,8 +380,20 @@
     if (filename) {
       actions.push(SR.ui.h('button', { class: 'btn', onClick: () => U.download(filename, text, 'text/plain;charset=utf-8') }, 'Save .txt'));
     }
-    actions.push(SR.ui.h('button', { class: 'btn btn-primary', onClick: () => { if (onPrint) onPrint(); printText(text, { title }); } }, 'Print'));
-    return SR.ui.openModal({ title, body, footer: actions, size: 'narrow' });
+    let opened;
+    actions.push(cancelBesidePrint(
+      () => { if (opened) opened.close(); },
+      () => { if (onPrint) onPrint(); printText(text, { title }); },
+    ));
+    opened = SR.ui.openModal({
+      title, body, footer: actions, size: 'narrow',
+      onClose: () => {
+        const root = document.getElementById('modal-root');
+        if (root) root.classList.remove('is-receipt');
+      },
+    });
+    markReceipt(opened);
+    return opened;
   }
 
   /** Print a full A4 report: a heading, a filter line and a table. */
@@ -468,6 +507,13 @@
     }
     if (Number(sale.change_given)) pay.appendChild(row('Change', U.money(sale.change_given)));
     if (Number(sale.change_owed)) pay.appendChild(row('Change owed', U.money(sale.change_owed)));
+    if (sale.claim_code) {
+      pay.appendChild(h('div', { class: 'slip-claim' },
+        h('div', { class: 'slip-sub' }, 'Collection code'),
+        h('div', { class: 'slip-claim-code' }, String(sale.claim_code)),
+        h('div', { class: 'slip-sub' }, 'Quote this code to collect the change.'),
+        sale.claim_expires_at ? h('div', { class: 'slip-sub' }, `Collect by ${sale.claim_expires_at}`) : null));
+    }
     if (Number(sale.balance_due)) pay.appendChild(row('Balance due', U.money(sale.balance_due), 'slip-due'));
     const foot = h('div', { class: 'slip-foot' },
       h('div', { class: 'slip-words' }, U.amountInWords(sale.total)),
@@ -479,16 +525,19 @@
    * The receipt the cashier shows the customer, and the text the printer gets.
    * One function so the counter and the sales screen cannot drift apart.
    */
-  function previewSale(sale, { brand = 'StockRidge', footer = null, title = null, autoPrint = false } = {}) {
+  function previewSale(sale, { brand = 'StockRidge', footer = null, title = null, autoPrint = false, banner = null } = {}) {
     const text = saleReceipt(sale, { brand, footer });
     const heading = title || `Receipt ${sale.receipt_no || ''}`.trim();
-    const body = SR.ui.h('div', { class: 'stack' }, slipNode(sale, { brand, footer }));
+    const body = SR.ui.h('div', { class: 'stack' });
+    if (banner) body.appendChild(SR.ui.h('div', { class: 'alert alert-warn' }, banner));
+    body.appendChild(slipNode(sale, { brand, footer }));
     const actions = [
       SR.ui.h('button', { class: 'btn', onClick: () => SR.ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
       SR.ui.h('button', { class: 'btn', onClick: () => U.download(`${heading.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
-      SR.ui.h('button', { class: 'btn btn-primary', onClick: () => printSlip(sale, { brand, footer, title: heading }) }, 'Print'),
+      cancelBesidePrint(() => { if (modal) modal.close(); }, () => printSlip(sale, { brand, footer, title: heading })),
     ];
-    const modal = SR.ui.openModal({
+    let modal;
+    modal = SR.ui.openModal({
       title: heading,
       body,
       footer: actions,
@@ -528,6 +577,8 @@
     .slip-item-name { font-weight: 700; font-size: 12pt; }
     .slip-serial { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10pt; }
     .slip-total { font-size: 16pt; font-weight: 750; }
+    .slip-claim { text-align: center; margin-top: 8px; padding: 8px 0; border-top: 1px dashed #999; }
+    .slip-claim-code { font-size: 18pt; font-weight: 800; letter-spacing: 0.12em; }
     .slip-foot { font-size: 10pt; }
   `;
 

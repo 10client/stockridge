@@ -737,6 +737,13 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .slip-due span:last-child { font-weight: 700; }
 .slip-foot { text-align: center; font-size: .78rem; color: #57534e; }
 .slip-words { margin-bottom: 6px; }
+.slip-claim { text-align: center; margin-top: 8px; padding: 12px 10px; border: 1px dashed #a8a29e; border-radius: 8px; }
+.slip-claim-code { font-family: var(--mono); font-size: 1.55rem; font-weight: 800; letter-spacing: .16em; margin: 4px 0; }
+.receipt-pair { display: flex; flex-direction: row; gap: 9px; flex: 0 0 auto; align-items: center; }
+@media (max-width: 560px) {
+  .modal-foot .receipt-pair { flex-direction: row; width: 100%; }
+  .modal-foot .receipt-pair .btn { width: auto; flex: 1 1 0; }
+}
 /* The receipt is printed from its own frame. This node must never sit in the
    page under the nav — that is what made a paid sale look like the slip had
    fallen out of the till and onto the bottom of the screen. */
@@ -867,6 +874,8 @@ button.is-pressed { position: relative; }
   .page-head .actions { margin-left: 0; width: 100%; }
   .modal-foot { flex-direction: column-reverse; }
   .modal-foot .btn { width: 100%; }
+  .modal-foot .receipt-pair { display: flex; flex-direction: row; width: 100%; gap: 9px; }
+  .modal-foot .receipt-pair .btn { width: auto; flex: 1 1 0; }
 }
 
 /* =====================================================================

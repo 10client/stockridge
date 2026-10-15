@@ -1060,6 +1060,9 @@ async function complete(db, params) {
     deviceId = null, soldAt = null,
     tradeModes = null, releaseAgreementId = null,
     walkInName = null, walkInPhone = null,
+    claimCode: suppliedClaimCode = null,
+    claimAlreadyRedeemed = false,
+    offlineReplay = false,
   } = params;
 
   // Resolved before anything else: which till this sale belongs to depends on
@@ -1109,25 +1112,27 @@ async function complete(db, params) {
   // depends on how much of it the till is going to owe straight back, so
   // validating payments first reports a perfectly ordinary "paid ₦3,000 for a
   // ₦2,500 sale, ₦500 owed back" as a ₦500 overpayment.
-  const changeOwed = round2(Math.max(0, Number(changeOwedAmount) || 0));
-  if (changeOwed > 0 && !customer) {
-    // THE MESSAGE USED TO PROMISE SOMETHING THE CODE REFUSED.
-    //
-    // It said "needs a customer name and phone", so a clerk would type a name and a phone
-    // number into the sale — and be refused anyway, because the check below requires a
-    // CUSTOMER RECORD, not two typed fields. A refusal that names a remedy the caller
-    // cannot carry out is worse than a blunt one: it sends them round the loop twice and
-    // teaches them the system is arbitrary.
-    //
-    // The rule itself is right and is not being changed. Change owed is the shop holding
-    // somebody else's money, payable on a claim code, and it has to be attributable: a
-    // name typed at the counter cannot be chased, cannot be found again, and cannot be
-    // reconciled when the claim is redeemed. So the message now says what to do — put the
-    // customer on the sale (their record, or the phone number they are already known by,
-    // which `resolveCustomer` looks up).
-    throw err('Change owed has to be attributable to a customer: the shop is holding their money until they come back for it. Put the customer on the sale — choose their record, or the phone number they are already known by — and the claim code will be redeemable.', 'CHANGE_OWED_NEEDS_CUSTOMER');
+  let changeOwed = round2(Math.max(0, Number(changeOwedAmount) || 0));
+  // A sale already taken offline may have recorded the notes the customer handed
+  // over, and nothing else. Refusing it as an overpayment leaves that cash in the
+  // drawer with no claim. Hold the difference and issue a code.
+  const tenderedPreview = round2((payments || []).reduce((sum, leg) => {
+    const method = String((leg && leg.method) || '').toUpperCase();
+    if (method === 'CREDIT') return sum;
+    return sum + (Number(leg && leg.amount) || 0);
+  }, 0));
+  if (changeOwed <= 0 && offlineReplay && tenderedPreview > round2(prepared.totals.total + 0.009)) {
+    changeOwed = round2(tenderedPreview - prepared.totals.total);
   }
-  if (changeOwed > totals.total) throw err('Change owed cannot exceed the sale total.', 'CHANGE_OWED_EXCEEDS_TOTAL');
+  const holderName = String((customer && customer.name) || walkInName || (offlineReplay ? 'Walk-in customer' : '')).trim();
+  if (changeOwed > 0 && holderName.length < 2) {
+    throw err('Change owed needs a name the cashier can read back when the customer comes for the money. Put the customer on the sale, or type their name, and a collection code is printed on the receipt.', 'CHANGE_OWED_NEEDS_NAME');
+  }
+  if (changeOwed > prepared.totals.total && !offlineReplay) throw err('Change owed cannot exceed the sale total.', 'CHANGE_OWED_EXCEEDS_TOTAL');
+  const expiryDays = Number(settings.change_owed_expiry_days) || 30;
+  const claimExpiresAt = changeOwed > 0 ? expiryDate(expiryDays) : null;
+  const claimCode = changeOwed > 0 ? await reserveClaimCode(db, suppliedClaimCode) : null;
+  const claimRedeemed = changeOwed > 0 && Boolean(claimAlreadyRedeemed);
 
 
   const paymentResult = validatePayments({
@@ -1510,18 +1515,28 @@ async function complete(db, params) {
 
     // ---- change owed
     if (changeOwed > 0) {
-      const claimCode = shortCode(8);
-      const expiryDays = Number(settings.change_owed_expiry_days) || 30;
       tx.queue(`INSERT INTO change_owed (
           id, branch_id, business_id, sale_id, customer_id, customer_name, customer_phone,
-          amount, claim_code, status, expires_at, created_by, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?, 'OUTSTANDING', date('now', ?), ?, datetime('now'), datetime('now'))`, [
+          amount, claim_code, status, redeemed_at, redeemed_by, expires_at, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
         newId(), String(branch.id), String(business.id), saleId,
         customer ? String(customer.id) : null,
-        customer ? customer.name : String(params.walkInName || 'Walk-in customer'),
-        customer ? customer.phone : (params.walkInPhone || null),
-        changeOwed, claimCode, `+${expiryDays} days`, String(user.id),
+        holderName,
+        customer ? customer.phone : (walkInPhone || null),
+        changeOwed, claimCode,
+        claimRedeemed ? 'REDEEMED' : 'OUTSTANDING',
+        claimRedeemed ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null,
+        claimRedeemed ? String(user.id) : null,
+        claimExpiresAt, String(user.id),
       ]);
+      if (claimRedeemed) {
+        for (const s of glService.postCashPayoutStatements({
+          businessId: String(business.id), branchId: String(branch.id), amount: changeOwed,
+          cash: 'TILL', accountCode: '2210', sourceType: 'SALE', sourceId: saleId,
+          description: `Change handed back before the sale synced, claim ${claimCode}`,
+          accountIds, user,
+        })) tx.queue(s.sql, s.params);
+      }
     }
 
     // ---- till counters
@@ -1613,6 +1628,8 @@ async function complete(db, params) {
       paid: paymentResult.paid,
       balanceDue: paymentResult.balanceDue,
       changeOwed,
+      claimCode,
+      claimExpiresAt,
       creditInfo,
       // Preparation warnings plus any the payment split raised. Dropping the
       // payment advisories here would mean a sale recorded as "credit" but
@@ -1694,6 +1711,30 @@ function totalsByMethod(legs) {
  * A client that states a figure itself still wins — some counters hand back from a
  * different drawer, and the person who was standing there outranks arithmetic.
  */
+const CLAIM_CODE = /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{8}$/;
+
+function expiryDate(days) {
+  const n = Math.max(0, Number(days) || 30);
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Keep a code the receipt already printed. A collision gets a fresh one. */
+async function reserveClaimCode(db, supplied) {
+  const wanted = String(supplied || '').trim().toUpperCase();
+  if (CLAIM_CODE.test(wanted)) {
+    const taken = await db.first('SELECT id FROM change_owed WHERE claim_code = ? AND is_deleted = 0', [wanted]);
+    if (!taken) return wanted;
+  }
+  for (let i = 0; i < 6; i += 1) {
+    const next = shortCode(8);
+    const taken = await db.first('SELECT id FROM change_owed WHERE claim_code = ? AND is_deleted = 0', [next]);
+    if (!taken) return next;
+  }
+  return shortCode(8);
+}
+
 function deriveChangeGiven(legs, changeOwed) {
   const cashLegs = legs.filter((l) => l.method === 'CASH');
   if (!cashLegs.length) return legs;
@@ -1939,5 +1980,5 @@ async function voidSale(db, { saleId, user, settings, reason, scope, restoreStoc
 module.exports = {
   SALE_TYPES, PAYMENT_METHODS,
   prepare, complete, voidSale, validatePayments, totalsByMethod, dominantMethod, isAnotherTime,
-  serialEventFields, serialHeadHash,
+  serialEventFields, serialHeadHash, reserveClaimCode, expiryDate,
 };

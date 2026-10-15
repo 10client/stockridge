@@ -103,7 +103,14 @@
         } }, `Pay ${U.money(claim.amount)}`);
         result.appendChild(ui.h('div', { class: 'row' }, method, reference, pay));
       } catch (err) {
-        result.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That code could not be looked up.'));
+        const local = (err && (err.isOffline || err.status === 404) && SR.store.findLocalClaim)
+          ? await SR.store.findLocalClaim(code).catch(() => null)
+          : null;
+        if (!local || !Number(local.issued_here)) {
+          result.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That code could not be looked up.'));
+          return;
+        }
+        showLocalClaim(local, result, onDone);
       } finally { findBtn.disabled = false; }
     }
 
@@ -111,6 +118,54 @@
     const modal = ui.openModal({ title: 'A customer is collecting change', body, size: 'narrow', onClose: () => finish() });
     setTimeout(() => input.focus(), 40);
     function finish() { if (settled) return; settled = true; modal.close(); }
+  }
+
+  function showLocalClaim(claim, result, onDone) {
+    result.replaceChildren(ui.kv([
+      ['Customer', claim.customer_name],
+      ['Amount', U.money(claim.amount)],
+      ['Code', claim.claim_code],
+      ['Taken', claim.created_at ? U.date(claim.created_at) : 'on this till'],
+    ]));
+    if (claim.status === 'REDEEMED') {
+      result.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'This code was already handed back on this till.'));
+      return;
+    }
+    result.appendChild(ui.h('div', { class: 'alert alert-info' }, 'This code was printed on this till and has not reached the office yet. Handing the cash back here marks the queued sale so it cannot be paid twice when it syncs.'));
+    const pay = ui.h('button', { class: 'btn btn-primary', onClick: async () => {
+      pay.disabled = true;
+      try {
+        await markQueuedClaimRedeemed(claim.claim_code);
+        ui.ok('Handed back on this till. The queued sale will close the claim when it reaches the office.');
+        if (onDone) onDone();
+      } catch (err) {
+        result.appendChild(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That could not be marked.'));
+        pay.disabled = false;
+      }
+    } }, `Handed ${U.money(claim.amount)} back`);
+    result.appendChild(pay);
+  }
+
+  async function markQueuedClaimRedeemed(code) {
+    const wanted = String(code || '').trim().toUpperCase();
+    const rows = await SR.store.outboxAll();
+    for (const row of rows) {
+      const payload = row.payload || {};
+      if (String(payload.claim_code || '').toUpperCase() !== wanted) continue;
+      if (row.type !== 'SALE' && row.type !== 'SALE_PAYMENT') continue;
+      await SR.store.updateOutbox(row.client_id, {
+        payload: Object.assign({}, payload, { claim_already_redeemed: true }),
+      });
+    }
+    if (SR.store.saveLocalClaim) {
+      const local = await SR.store.findLocalClaim(wanted);
+      await SR.store.saveLocalClaim(Object.assign({}, local || {}, {
+        claim_code: wanted,
+        status: 'REDEEMED',
+        redeemed_at: new Date().toISOString(),
+        issued_here: 1,
+      }));
+    }
   }
 
   /** The reason, asked for in a form that will not submit without one. */
@@ -228,6 +283,11 @@
                 actions.push(ui.h('button', { class: 'btn btn-primary', onClick: async (ev) => {
                   ev.currentTarget.disabled = true;
                   try {
+                    if (String(r.id).indexOf('local-') === 0) {
+                      ui.warn('This code has not reached the office yet. Look it up with Find the claim and mark it handed back there.');
+                      ev.currentTarget.disabled = false;
+                      return;
+                    }
                     const done = await SR.api.post(`/api/change-owed/${r.id}/settle`, { method: 'CASH' });
                     ui.ok(done.message || 'Paid.');
                     close();

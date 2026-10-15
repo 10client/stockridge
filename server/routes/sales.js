@@ -308,6 +308,9 @@ async function buildEngineParams(db, ctx, body, { forComplete }) {
     params.payments = normalisePayments(body.payments);
     params.creditOverrideReason = strField(body.credit_override_reason || body.creditOverrideReason, { field: 'Credit override reason', maxLength: 300 });
     params.changeOwedAmount = numField(body.change_owed_amount ?? body.changeOwedAmount, { field: 'Change owed', min: 0 });
+    params.claimCode = strField(body.claim_code || body.claimCode, { field: 'Claim code', maxLength: 16 });
+    params.claimAlreadyRedeemed = Boolean(body.claim_already_redeemed || body.claimAlreadyRedeemed);
+    params.offlineReplay = Boolean(await trustedReplay(ctx));
     params.deviceId = strField(body.device_id || body.deviceId || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
     // The till sends `sold_at` on every sale, including the one happening now.
     // A present stamp is not a backdate. It is another time only when it is
@@ -430,6 +433,8 @@ function mount(app, base = '/api') {
       paid: result.paid,
       balanceDue: result.balanceDue,
       changeOwed: result.changeOwed,
+      claimCode: result.claimCode || null,
+      claimExpiresAt: result.claimExpiresAt || null,
       credit: result.creditInfo ? { decision: result.creditInfo.decision, message: result.creditInfo.message, balanceAfter: result.creditInfo.balanceAfter } : null,
       warnings: (result.warnings || []).map((w) => (typeof w === 'string' ? { message: w, severity: 'WARN', code: 'ADVISORY' } : w)),
       lineCount: result.lineCount,
@@ -718,7 +723,15 @@ function mount(app, base = '/api') {
     // row-scoped rule in resolveBranch.
     const branch = await resolveBranch(db, ctx, { fallback: sale.branch_id });
     const business = await resolveBusiness(db, ctx, branch);
-    const payments = normalisePayments(body.payments);
+    let payments = normalisePayments(body.payments);
+    if (!payments.length && body.amount != null) {
+      payments = normalisePayments([{
+        method: body.method || body.payment_method || 'CASH',
+        amount: body.amount,
+        reference: body.reference,
+        cash_tendered: body.cash_tendered != null ? body.cash_tendered : body.amount,
+      }]);
+    }
     if (!payments.length) throw new HttpError('Send at least one payment.', { status: 400, code: 'NO_PAYMENT' });
 
     const creditLegs = payments.filter((p) => p.method === 'CREDIT');
@@ -750,6 +763,16 @@ function mount(app, base = '/api') {
     // has no interactive transaction at all.
     const priorBalance = round2(Number(customer.credit_balance) || 0);
     const balanceAfter = round2(priorBalance - applied);
+    const holderName = String(body.customer_name || body.customerName || customer.name || 'Customer').trim();
+    const holderPhone = body.customer_phone || body.customerPhone || customer.phone || null;
+    const claimRedeemed = Boolean(body.claim_already_redeemed || body.claimAlreadyRedeemed);
+    let claimCode = null;
+    let claimExpiresAt = null;
+    if (excess > 0) {
+      const settingsRow = await db.first('SELECT change_owed_expiry_days FROM client_settings WHERE id = 1');
+      claimExpiresAt = salesService.expiryDate(Number(settingsRow && settingsRow.change_owed_expiry_days) || 30);
+      claimCode = await salesService.reserveClaimCode(db, body.claim_code || body.claimCode);
+    }
 
     await db.transaction(async (tx) => {
       for (const pay of payments) {
@@ -761,7 +784,7 @@ function mount(app, base = '/api') {
           pay.method, pay.amount, pay.reference, pay.bankName,
           pay.cashTendered != null && Number.isFinite(pay.cashTendered) ? Number(pay.cashTendered) : pay.amount,
           String(user.id),
-          excess > 0 ? `Settling ${sale.receipt_no}; \u20a6${excess.toLocaleString('en-NG')} overpaid to the customer account.` : `Settling ${sale.receipt_no}`,
+          excess > 0 ? `Settling ${sale.receipt_no}; \u20a6${excess.toLocaleString('en-NG')} held as change owed, claim ${claimCode}.` : `Settling ${sale.receipt_no}`,
         ]);
       }
 
@@ -783,18 +806,35 @@ function mount(app, base = '/api') {
       ]);
       tx.queue("UPDATE customers SET credit_balance = ?, updated_at = datetime('now') WHERE id = ?", [balanceAfter, String(customer.id)]);
 
-      if (excess > 0) {
-        // The overpayment becomes a customer credit. Dropping it would leave cash
-        // in the drawer that no ledger row explains — the surplus variance nobody
-        // investigates until it is large enough to matter.
-        tx.queue(`INSERT INTO debtor_ledger (
-            id, branch_id, business_id, customer_id, entry_type, reference_id, amount, balance_after, notes, created_by, created_at, updated_at)
-          VALUES (?,?,?,?, 'ADJUSTMENT', ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
-          newId(), String(branch.id), String(business.id), String(customer.id), id,
-          -excess, round2(balanceAfter - excess),
-          `Overpayment on ${sale.receipt_no}, held as a customer credit`, String(user.id),
+      if (excess > 0 && claimCode) {
+        tx.queue(`INSERT INTO change_owed (
+            id, branch_id, business_id, sale_id, customer_id, customer_name, customer_phone,
+            amount, claim_code, status, redeemed_at, redeemed_by, expires_at, created_by, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+          newId(), String(branch.id), String(business.id), id,
+          String(customer.id), holderName, holderPhone,
+          excess, claimCode,
+          claimRedeemed ? 'REDEEMED' : 'OUTSTANDING',
+          claimRedeemed ? new Date().toISOString().slice(0, 19).replace('T', ' ') : null,
+          claimRedeemed ? String(user.id) : null,
+          claimExpiresAt, String(user.id),
         ]);
-        tx.queue("UPDATE customers SET credit_balance = credit_balance - ?, updated_at = datetime('now') WHERE id = ?", [excess, String(customer.id)]);
+        const cashKey = { CASH: 'TILL', BANK_TRANSFER: 'BANK', CHEQUE: 'BANK', POS_TERMINAL: 'POS', MOBILE_MONEY: 'MOBILE_MONEY', USSD: 'MOBILE_MONEY' }[payments[0].method] || 'TILL';
+        for (const st of glService.postCashAgainstAccountStatements({
+          businessId: String(business.id), branchId: String(branch.id), amount: excess,
+          cash: cashKey, accountCode: '2210', direction: 'IN',
+          sourceType: 'SALE', sourceId: id,
+          description: `Change owed on ${sale.receipt_no}, claim ${claimCode}`,
+          accountIds, user,
+        })) tx.queue(st.sql, st.params);
+        if (claimRedeemed) {
+          for (const st of glService.postCashPayoutStatements({
+            businessId: String(business.id), branchId: String(branch.id), amount: excess,
+            cash: cashKey, accountCode: '2210', sourceType: 'SALE', sourceId: id,
+            description: `Change handed back before the payment synced, claim ${claimCode}`,
+            accountIds, user,
+          })) tx.queue(st.sql, st.params);
+        }
       }
 
       for (const st of glService.postDebtorPaymentStatements({
@@ -828,8 +868,11 @@ function mount(app, base = '/api') {
 
     ctx.json({
       ok: true, receiptId,
-      message: `₦${applied.toLocaleString('en-NG')} received against ${sale.receipt_no}.${applied >= outstanding ? ' That invoice is now settled.' : ` ₦${round2(outstanding - applied).toLocaleString('en-NG')} still outstanding.`}${excess > 0 ? ` ₦${excess.toLocaleString('en-NG')} was overpaid and is held as a customer credit.` : ''}`,
+      message: `₦${applied.toLocaleString('en-NG')} received against ${sale.receipt_no}.${applied >= outstanding ? ' That invoice is now settled.' : ` ₦${round2(outstanding - applied).toLocaleString('en-NG')} still outstanding.`}${excess > 0 ? ` ₦${excess.toLocaleString('en-NG')} is change owed. Collection code ${claimCode}.` : ''}`,
       applied, excess, balanceDue: round2(outstanding - applied),
+      changeOwed: excess > 0 ? excess : 0,
+      claimCode: claimCode || null,
+      claimExpiresAt: claimExpiresAt || null,
     });
   }));
 

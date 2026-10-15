@@ -299,7 +299,11 @@ function mount(app, base = '/api') {
             clientId: key, type: kind, status: replayed === 'true' ? 'ALREADY_APPLIED' : 'APPLIED',
             httpStatus: status,
             message: (parsed && parsed.message) || 'Applied.',
-            result: parsed && parsed.saleId ? { saleId: parsed.saleId, receiptNo: parsed.receiptNo } : undefined,
+            result: parsed && (parsed.saleId || parsed.claimCode) ? {
+              saleId: parsed.saleId, receiptNo: parsed.receiptNo,
+              claimCode: parsed.claimCode || null, changeOwed: parsed.changeOwed || null,
+              claimExpiresAt: parsed.claimExpiresAt || null,
+            } : undefined,
             warnings: (parsed && parsed.warnings) || [],
           });
         } else {

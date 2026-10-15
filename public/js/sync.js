@@ -144,6 +144,28 @@
       if (!key) continue;
       if (r.status === 'APPLIED' || r.status === 'ALREADY_APPLIED') {
         applied += 1;
+        const item = queued.find((q) => q.client_id === key);
+        const payload = (item && item.payload) || {};
+        const claim = r.result && r.result.claimCode;
+        if (claim && SR.store.saveLocalClaim) {
+          const owed = Number(r.result.changeOwed || payload.change_owed_amount) || 0;
+          if (owed > 0) {
+            await SR.store.saveLocalClaim({
+              claim_code: claim,
+              amount: owed,
+              customer_name: payload.walk_in_name || payload.customer_name || 'Walk-in customer',
+              customer_phone: payload.walk_in_phone || payload.customer_phone || null,
+              sale_id: r.result.saleId || null,
+              receipt_no: r.result.receiptNo || null,
+              expires_at: r.result.claimExpiresAt || null,
+              synced: 1,
+              status: payload.claim_already_redeemed ? 'REDEEMED' : 'OUTSTANDING',
+            }).catch(() => {});
+          }
+          if (!payload.claim_code && SR.ui && SR.ui.ok) {
+            SR.ui.ok(`A queued sale left change owed. Collection code ${claim}.`);
+          }
+        }
         await SR.store.markSynced(key, r.result ? r.result.saleId || r.result.receiptNo || null : null);
       } else if (r.status === 'QUARANTINED') {
         // THE SERVER WILL QUARANTINE IT AGAIN EVERY TIME, SO IT MUST NOT BE RETRIED.

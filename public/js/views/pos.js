@@ -62,6 +62,9 @@
       manualPriceOverrides: {},
       creditOverrideReason: null,
       changeOwedAmount: 0,
+      claimCode: null,
+      changeHolderName: null,
+      changeHolderPhone: null,
       startedAt: U.nowWatSql(),
     };
   }
@@ -1424,8 +1427,19 @@
 
       const creditBox = ui.h('div', {});
       wrapEl.appendChild(creditBox);
+      const changeBox = ui.h('div', {});
+      wrapEl.appendChild(changeBox);
 
       function remaining() { return U.round2(t.total - cart.payments.reduce((a, p) => a + Number(p.amount || 0), 0)); }
+
+      function pushLeg(method, amount, ref, extra) {
+        cart.payments.push(Object.assign({ method, amount: U.round2(amount), reference: ref || null }, extra || {}));
+        referenceInput.value = '';
+        amountInput.value = String(U.round2(Math.max(0, remaining())));
+        save();
+        paintRunning();
+        paintTotals();
+      }
 
       function addPayment(method, amount) {
         const amt = U.round2(Number(amount) || 0);
@@ -1433,14 +1447,57 @@
         if (amt <= 0) { ui.warn('Enter an amount.'); return; }
         const ref = referenceInput.value.trim() || null;
         if (['POS_TERMINAL', 'BANK_TRANSFER', 'CHEQUE', 'MOBILE_MONEY', 'USSD'].includes(method) && !ref) {
-          // Advisory, not blocking: the shop may be using a terminal that does
-          // not print a reference, and refusing the sale would be worse.
           ui.warn(`${METHOD_LABEL[method]} with no reference. It is recorded, but a reference makes a settlement query answerable.`);
         }
-        cart.payments.push({ method, amount: amt, reference: ref });
-        referenceInput.value = '';
-        amountInput.value = String(U.round2(Math.max(0, remaining())));
-        save(); paintRunning(); paintTotals();
+        const due = Math.max(0, remaining());
+        const excess = U.round2(amt - due);
+        if (excess > 0.009 && ['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(cart.saleType)) {
+          ui.warn(`${U.money(excess)} is more than this ${cart.saleType.toLowerCase()} sale still needs. Correct the amount — extra on a credit sale is not change to hold.`);
+          return;
+        }
+        if (excess > 0.009) {
+          askAboutExcess(method, amt, due, excess, ref);
+          return;
+        }
+        pushLeg(method, amt, ref);
+      }
+
+      function askAboutExcess(method, tendered, due, excess, ref) {
+        const nameInput = ui.h('input', {
+          type: 'text',
+          value: cart.changeHolderName || cart.customerName || '',
+          placeholder: 'Customer name',
+          autocomplete: 'name',
+        });
+        const phoneInput = ui.h('input', {
+          type: 'tel',
+          value: cart.changeHolderPhone || cart.customerPhone || '',
+          placeholder: 'Phone (optional)',
+          autocomplete: 'tel',
+        });
+        changeBox.replaceChildren(
+          ui.h('div', { class: 'alert alert-warn' },
+            `${U.money(tendered)} is ${U.money(excess)} more than the ${U.money(due)} still due.`),
+          ui.h('p', {}, 'Hold that difference for the customer and print a code they can bring back, or give the change now.'),
+          ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Name on the claim'), nameInput),
+          ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Phone'), phoneInput),
+          ui.h('div', { class: 'row' },
+            ui.h('button', { class: 'btn', onClick: () => {
+              if (due <= 0.009) { ui.warn('Nothing is left to pay. Remove a payment if that figure was a mistake.'); return; }
+              pushLeg(method, due, ref, { cashTendered: tendered, changeGiven: excess });
+              changeBox.replaceChildren();
+            } }, `Give ${U.money(excess)} now`),
+            ui.h('button', { class: 'btn btn-primary', onClick: () => {
+              const name = String(nameInput.value || '').trim();
+              if (name.length < 2) { ui.warn('Type the customer’s name. The code is how they collect the change, and the name is how you know it is them.'); return; }
+              if (!cart.claimCode) cart.claimCode = U.claimCode();
+              cart.changeOwedAmount = U.round2((Number(cart.changeOwedAmount) || 0) + excess);
+              cart.changeHolderName = name;
+              cart.changeHolderPhone = String(phoneInput.value || '').trim() || null;
+              pushLeg(method, tendered, ref, { cashTendered: tendered, changeGiven: 0 });
+              changeBox.replaceChildren();
+            } }, 'Hold it and print a code')),
+        );
       }
 
       function paintButtons() {
@@ -1462,7 +1519,15 @@
                 ui.h('div', { class: 'cl-total' }, U.money(p.amount)),
                 ui.h('button', {
                   class: 'link-btn', style: { display: 'block', marginLeft: 'auto' },
-                  onClick: () => { cart.payments.splice(i, 1); save(); paintRunning(); paintTotals(); },
+                  onClick: () => {
+                    cart.payments.splice(i, 1);
+                    const tendered = cart.payments.reduce((a, p) => a + Number(p.amount || 0), 0);
+                    if (tendered <= t.total + 0.009) {
+                      cart.changeOwedAmount = 0;
+                      cart.claimCode = null;
+                    }
+                    save(); paintRunning(); paintTotals();
+                  },
                 }, 'Remove'))));
           });
         }
@@ -1500,6 +1565,7 @@
         completeBtn.textContent = 'Recording…';
         try {
           const done = await completeSale();
+          if (!done) return;
           outcome = 'paid';
           m.close();
           // Only now, with the payment sheet gone, is a modal free to occupy the
@@ -1560,9 +1626,23 @@
         notes: cart.notes || null,
         credit_override_reason: (creditReasonInput && creditReasonInput.value.trim()) || cart.creditOverrideReason || null,
         manual_price_overrides: cart.manualPriceOverrides,
-        payments: cart.payments.map((p) => ({ method: p.method, amount: Number(p.amount), reference: p.reference || null })),
+        payments: cart.payments.map((p) => ({
+          method: p.method,
+          amount: Number(p.amount),
+          reference: p.reference || null,
+          cash_tendered: p.cashTendered != null ? Number(p.cashTendered) : Number(p.amount),
+        })),
         lines: cart.lines.map((l) => linePayload(l)),
+        change_owed_amount: Number(cart.changeOwedAmount) || 0,
+        claim_code: cart.claimCode || null,
+        walk_in_name: cart.changeHolderName || cart.customerName || null,
+        walk_in_phone: cart.changeHolderPhone || cart.customerPhone || null,
       };
+      const tenderedNow = payload.payments.reduce((a, p) => a + (p.method === 'CREDIT' ? 0 : Number(p.amount) || 0), 0);
+      if (U.round2(tenderedNow - t.total - payload.change_owed_amount) > 0.01) {
+        ui.warn('The payments are more than the sale, and the difference is not held as change owed. Use Hold it and print a code, or give the change now.');
+        return null;
+      }
 
       const online = SR.api.isOnline();
       let result;
@@ -1603,11 +1683,30 @@
         label: `Sale · ${cart.lines.length} line(s) · ${U.money(computedTotals().total)}`,
         occurredAt: payload.sold_at,
       });
+      await rememberClaim(payload, { offline: true }).catch(() => {});
       return { offline: true, queued: true, clientId: record.client_id, cachedSale: payload, total: computedTotals().total };
     }
 
     function UI_afterSale() {
       void 0;
+    }
+
+    async function rememberClaim(source, extra) {
+      const code = (extra && extra.claimCode) || source.claim_code || source.claimCode;
+      const amount = Number((extra && extra.changeOwed) || source.change_owed_amount || source.changeOwed) || 0;
+      if (!code || amount <= 0) return null;
+      return SR.store.saveLocalClaim({
+        claim_code: String(code).toUpperCase(),
+        amount,
+        customer_name: source.walk_in_name || source.customer_name || source.changeHolderName || (extra && extra.customerName) || 'Customer',
+        customer_phone: source.walk_in_phone || source.customer_phone || null,
+        status: extra && extra.redeemed ? 'REDEEMED' : 'OUTSTANDING',
+        expires_at: (extra && extra.claimExpiresAt) || null,
+        sale_id: (extra && extra.saleId) || null,
+        receipt_no: (extra && extra.receiptNo) || null,
+        synced: extra && extra.offline ? 0 : 1,
+        branch_id: SR.state.activeBranchId,
+      });
     }
 
     // ---------------- receipt ----------------
@@ -1620,17 +1719,36 @@
       let saleId = result.saleId || null;
 
       if (result.offline) {
-        text = SR.print.pendingReceipt({
-          client_id: result.clientId,
-          occurred_at: payload.sold_at,
-          device_id: payload.device_id,
-          payload: {
-            lines: taken.lines,
-            payments: taken.payments,
-            expectedTotal: result.total,
-          },
-        }, { brand });
-        title = 'Offline sale recorded';
+        const offlineSale = {
+          receipt_no: `OFFLINE-${String(result.clientId).slice(-8)}`,
+          sold_at: payload.sold_at,
+          branch_name: SR.state.activeBranchName(),
+          cashier_name: (SR.state.user || {}).fullName,
+          customer_name: taken.changeHolderName || taken.customerName,
+          customer_phone: taken.changeHolderPhone || taken.customerPhone,
+          sale_type: taken.saleType,
+          subtotal: taken.totals.subtotal,
+          total: result.total,
+          vat_amount: taken.totals.vat,
+          vat_rate_percent: taken.totals.vatRate,
+          discount_amount: payload.discount_amount,
+          delivery_fee: payload.delivery_fee,
+          items: taken.lines.map((l) => ({
+            product_name: l.name, quantity: l.quantity, unit_code: l.unitCode,
+            unit_price: l.unitPrice, line_total: Number(l.quantity) * Number(l.unitPrice) - Number(l.lineDiscount || 0),
+            line_discount: l.lineDiscount, warranty_months: l.warrantyMonths,
+            serial_no: (l.serialNumbers || []).join(', ') || null,
+          })),
+          payments: taken.payments,
+          change_owed: taken.changeOwedAmount || payload.change_owed_amount || 0,
+          claim_code: taken.claimCode || payload.claim_code || null,
+          balance_due: 0,
+        };
+        SR.print.previewSale(offlineSale, {
+          brand, footer, title: 'Offline sale recorded', autoPrint: true,
+          banner: `This sale is on the device and has not reached the office yet. Local reference ${String(result.clientId).slice(-8)}.`,
+        });
+        return;
       } else {
         const sale = result.sale || Object.assign({}, payload, {
           receipt_no: result.receiptNo,
@@ -1638,8 +1756,8 @@
           branch_name: SR.state.activeBranchName(),
           branch_code: (SR.state.activeBranch() || {}).code,
           cashier_name: (SR.state.user || {}).fullName,
-          customer_name: taken.customerName,
-          customer_phone: taken.customerPhone,
+          customer_name: taken.changeHolderName || taken.customerName,
+          customer_phone: taken.changeHolderPhone || taken.customerPhone,
           sale_type: taken.saleType,
           subtotal: taken.totals.subtotal,
           total: result.total != null ? result.total : taken.totals.total,
@@ -1656,8 +1774,17 @@
           })),
           payments: taken.payments,
           change_given: result.changeGiven || 0,
-          change_owed: result.changeOwed || 0,
+          change_owed: result.changeOwed || taken.changeOwedAmount || 0,
+          claim_code: result.claimCode || taken.claimCode || payload.claim_code || null,
+          claim_expires_at: result.claimExpiresAt || null,
           balance_due: result.balanceDue || 0,
+        });
+        void rememberClaim(Object.assign({}, payload, sale), {
+          claimCode: sale.claim_code,
+          changeOwed: sale.change_owed,
+          claimExpiresAt: result.claimExpiresAt,
+          saleId: result.saleId,
+          receiptNo: result.receiptNo,
         });
         title = `Sale ${result.receiptNo}`;
         try {
@@ -1701,7 +1828,9 @@
         footer: [
           ui.h('button', { class: 'btn', onClick: () => U.download(`${title.replace(/\s+/g, '-').toLowerCase()}.txt`, text, 'text/plain;charset=utf-8') }, 'Save'),
           ui.h('button', { class: 'btn', onClick: () => ui.copyToClipboard(text, 'Receipt copied — paste it into WhatsApp.') }, 'Copy'),
-          ui.h('button', { class: 'btn btn-primary', onClick: () => SR.print.printText(text, { title }) }, 'Print'),
+          ui.h('div', { class: 'receipt-pair' },
+            ui.h('button', { class: 'btn', onClick: () => shown && shown.close() }, 'Cancel'),
+            ui.h('button', { class: 'btn btn-primary', onClick: () => SR.print.printText(text, { title }) }, 'Print')),
         ],
       });
       if (shown && shown.dialog) shown.dialog.classList.add('receipt-sheet');

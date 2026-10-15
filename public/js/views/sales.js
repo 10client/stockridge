@@ -187,6 +187,13 @@
       const sale = data.sale || data;
       const items = data.items || sale.items || [];
       const payments = data.payments || sale.payments || [];
+      const claims = data.changeOwed || [];
+      const openClaim = claims.find((c) => c.status === 'OUTSTANDING' && c.claim_code) || claims.find((c) => c.claim_code);
+      if (openClaim) {
+        sale.claim_code = sale.claim_code || openClaim.claim_code;
+        sale.change_owed = sale.change_owed || openClaim.amount;
+        sale.claim_expires_at = sale.claim_expires_at || openClaim.expires_at;
+      }
       const journal = data.journal || [];
       const serials = data.serials || [];
       const prescriptions = data.prescriptions || [];
@@ -413,6 +420,19 @@
         ui.field({ label: 'Method', name: 'method', value: 'CASH', options: ['CASH', 'POS_TERMINAL', 'BANK_TRANSFER', 'MOBILE_MONEY', 'USSD', 'CHEQUE'].map((m) => ({ value: m, label: U.humanise(m) })) }),
         ui.field({ label: 'Reference', name: 'reference', span: true, hint: 'Terminal auth code, transfer reference or cheque number.' }));
       wrapEl.appendChild(grid);
+      const extra = ui.h('div', { hidden: true });
+      const nameInput = ui.h('input', { type: 'text', value: sale.customer_name || '', placeholder: 'Customer name', autocomplete: 'name' });
+      const phoneInput = ui.h('input', { type: 'tel', value: sale.customer_phone || '', placeholder: 'Phone (optional)', autocomplete: 'tel' });
+      extra.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'This is more than the balance. The difference is change owed. A collection code is printed on the receipt.'));
+      extra.appendChild(ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Name on the claim'), nameInput));
+      extra.appendChild(ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Phone'), phoneInput));
+      wrapEl.appendChild(extra);
+      const amountInput = grid.querySelector('[name="amount"]');
+      function paintExtra() {
+        const amount = Number(amountInput && amountInput.value);
+        extra.hidden = !(amount > Number(sale.balance_due) + 0.009);
+      }
+      if (amountInput) amountInput.addEventListener('input', paintExtra);
       const m = ui.openModal({
         title: 'Take a payment',
         body: wrapEl,
@@ -425,21 +445,58 @@
               const v = ui.readFormStrings(wrapEl);
               const amount = Number(v.amount);
               if (!(amount > 0)) { ui.warn('Enter an amount.'); return; }
-              if (amount > Number(sale.balance_due) + 0.01) {
-                const go = await ui.confirmDialog({
-                  title: 'More than the balance',
-                  message: `${U.money(amount)} is more than the ${U.money(sale.balance_due)} owed.`,
-                  detail: 'The extra will be recorded as change owed to the customer rather than treated as a payment.',
-                  confirmLabel: 'Record it',
-                });
-                if (!go) return;
+              const excess = U.round2(amount - Number(sale.balance_due));
+              let claimCode = null;
+              if (excess > 0.009) {
+                const name = String(nameInput.value || '').trim();
+                if (name.length < 2) { ui.warn('Type the customer’s name. The code is how they collect the change.'); return; }
+                claimCode = U.claimCode();
               }
+              const body = {
+                payments: [{ method: v.method, amount, reference: v.reference || null, cash_tendered: amount }],
+                claim_code: claimCode,
+                change_owed_amount: excess > 0.009 ? excess : 0,
+                customer_name: String(nameInput.value || sale.customer_name || '').trim() || null,
+                customer_phone: String(phoneInput.value || sale.customer_phone || '').trim() || null,
+              };
               try {
-                await SR.api.post(`/api/sales/${encodeURIComponent(sale.id)}/pay`, {
-                  amount, method: v.method, reference: v.reference || null,
-                }, { queue: 'auto' });
-                ui.ok('Payment recorded.');
+                const result = await SR.api.post(`/api/sales/${encodeURIComponent(sale.id)}/pay`, body, { queue: 'auto' });
+                const code = (result && (result.claimCode || result.claim_code)) || claimCode;
+                const owed = excess > 0.009 ? excess : 0;
+                if (code && owed > 0 && SR.store.saveLocalClaim) {
+                  await SR.store.saveLocalClaim({
+                    claim_code: code,
+                    amount: owed,
+                    customer_name: body.customer_name || sale.customer_name || 'Customer',
+                    customer_phone: body.customer_phone,
+                    sale_id: sale.id,
+                    receipt_no: sale.receipt_no,
+                    expires_at: result && (result.claimExpiresAt || result.claim_expires_at) || null,
+                    synced: result && result.queued ? 0 : 1,
+                    status: 'OUTSTANDING',
+                  });
+                }
                 m.close();
+                if (code && owed > 0) {
+                  SR.print.previewSale({
+                    receipt_no: sale.receipt_no,
+                    sold_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+                    customer_name: body.customer_name || sale.customer_name,
+                    customer_phone: body.customer_phone || sale.customer_phone,
+                    total: amount,
+                    items: [],
+                    payments: [{ method: v.method, amount, reference: v.reference || null }],
+                    change_owed: owed,
+                    claim_code: code,
+                    claim_expires_at: result && (result.claimExpiresAt || result.claim_expires_at) || null,
+                    balance_due: 0,
+                  }, {
+                    title: `Change owed · ${code}`,
+                    banner: result && result.queued ? 'The payment is on this device until the line is back. The collection code is already valid here.' : null,
+                  });
+                } else {
+                  ui.ok('Payment recorded.');
+                }
                 load();
               } catch (err) { ui.apiError(err); }
             },

@@ -439,10 +439,38 @@
     return false;
   }
 
+  /** A claim this till issued before the office has the row. Lookup is by the printed code. */
+  async function saveLocalClaim(claim) {
+    const code = String(claim.claim_code || '').trim().toUpperCase();
+    if (!code) return null;
+    const row = Object.assign({
+      id: `local-${code}`,
+      claim_code: code,
+      status: 'OUTSTANDING',
+      issued_here: 1,
+      synced: 0,
+      created_at: new Date().toISOString(),
+    }, claim, { id: `local-${code}`, claim_code: code, issued_here: 1 });
+    await putMany('change_owed', [row]);
+    return row;
+  }
+
+  async function localClaims() {
+    return all('change_owed', { where: (r) => Number(r.issued_here) === 1 && !Number(r.is_deleted) });
+  }
+
+  async function findLocalClaim(code) {
+    const wanted = String(code || '').trim().toUpperCase();
+    if (!wanted) return null;
+    const rows = await localClaims();
+    return rows.find((r) => String(r.claim_code || '').toUpperCase() === wanted) || null;
+  }
+
   SR.store = {
     DB_NAME, DB_VERSION, OUTBOX_CAP,
     open, tx,
     putMany, all, first, get, remove, rememberShopPrice, clearTable, clearAll, tableStats,
+    saveLocalClaim, localClaims, findLocalClaim,
     enqueue, pending, outboxAll, outboxCount, updateOutbox, removeOutbox,
     markFailed, markSynced, purgeSynced, requeue,
     metaGet, metaSet, metaAll,
