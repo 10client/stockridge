@@ -647,6 +647,11 @@
     const noMatch = ui.h('div', { class: 'alert', hidden: true }, 'Nothing matches that. Try “discount”, “VAT”, “till” or “logo”.');
     let form = null;
     let brandingBefore = null;
+    // The values the form was filled with. Compared against the live inputs, not
+    // against SR.state.settings: that object is the public subset from sign-in,
+    // and it omits notes. A saved note then counted as one unsaved change on
+    // every visit, and saving it did not clear the count.
+    let settingsBefore = null;
 
     function onKey(ev) {
       if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === 's') {
@@ -705,18 +710,38 @@
       applySearch();
     }
 
+    function sameSetting(saved, current) {
+      if (saved === current) return true;
+      const savedEmpty = saved == null || saved === '';
+      const currentEmpty = current == null || current === '';
+      if (savedEmpty && currentEmpty) return true;
+      if (typeof saved === 'number' || typeof current === 'number') {
+        const a = Number(saved);
+        const b = Number(current);
+        if (Number.isFinite(a) && Number.isFinite(b)) return a === b;
+      }
+      return String(saved == null ? '' : saved) === String(current == null ? '' : current);
+    }
+
+    function snapshotSettings() {
+      settingsBefore = {};
+      if (!form) return;
+      const values = ui.readForm(form);
+      for (const k of Object.keys(values)) {
+        if (BRANDING_FIELDS.indexOf(k) !== -1) continue;
+        settingsBefore[k] = values[k];
+      }
+    }
+
     function changedPayload() {
       const settings = {};
       const branding = {};
-      if (!form) return { settings, branding };
+      if (!form || !settingsBefore) return { settings, branding };
       const values = ui.readForm(form);
-      const s = SR.state.settings || {};
       for (const [k, v] of Object.entries(values)) {
         if (BRANDING_FIELDS.indexOf(k) !== -1) continue;
-        if (v === null && (s[k] == null || String(s[k]) === '')) continue;
-        if (typeof v === 'number' && Number(s[k]) === Number(v)) continue;
-        if (typeof v === 'string' && String(s[k] == null ? '' : s[k]) === v) continue;
-        if (v !== null && typeof v !== 'number' && typeof v !== 'string' && Number(s[k]) === Number(v)) continue;
+        if (!Object.prototype.hasOwnProperty.call(settingsBefore, k)) continue;
+        if (sameSetting(settingsBefore[k], v)) continue;
         settings[k] = v;
       }
       if (brandingBefore) {
@@ -838,8 +863,12 @@
         card.appendChild(body);
         form.appendChild(card);
       }
+      for (const el of form.querySelectorAll('input, textarea, select')) {
+        if (!el.getAttribute('autocomplete')) el.setAttribute('autocomplete', 'off');
+      }
       host.replaceChildren(noMatch, form);
       showTab(active);
+      snapshotSettings();
       paintDirty();
     }
 
@@ -934,6 +963,9 @@
           admin_contact_phone: admin.contactPhone || '',
           admin_contact_email: admin.contactEmail || '',
         };
+        for (const el of grid.querySelectorAll('input, textarea, select')) {
+          if (!el.getAttribute('autocomplete')) el.setAttribute('autocomplete', 'off');
+        }
         inner.replaceChildren(ui.h('div', { class: 'stack' }, grid, logoBox));
         applySearch();
         paintDirty();
