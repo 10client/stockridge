@@ -7,7 +7,7 @@
 //
 //   /branches    where the business trades, and each shop's geofence
 //   /businesses  the legal entities — each with its own books
-//   /settings    the controls: what staff may do, VAT, credit caps
+//   /settings    the controls, one tab at a time: staff, VAT, credit caps
 //   /audit       what has happened, hash-chained so it cannot be edited
 //
 // The settings section is the one that decides what the rest of the system
@@ -64,6 +64,8 @@
   // does instead of pretending to be a preference.
   const SETTING_GROUPS = [
     {
+      id: 'modules',
+      tab: 'Modules',
       title: 'Modules',
       blurb: 'What this deployment does. A module switched off is refused by the server, not merely hidden on the screen.',
       items: [
@@ -78,6 +80,8 @@
       ],
     },
     {
+      id: 'staff',
+      tab: 'Staff',
       title: 'What staff may do without asking',
       blurb: 'Each of these is enforced by the server. A cashier who is not allowed to discount is refused, not just shown a hidden button.',
       items: [
@@ -94,6 +98,8 @@
       ],
     },
     {
+      id: 'managers',
+      tab: 'Managers',
       title: 'What managers may do without asking',
       blurb: 'A manager is not the owner. Turn these off and the manager is refused on the server and told to ask you.',
       items: [
@@ -104,6 +110,8 @@
       ],
     },
     {
+      id: 'tax',
+      tab: 'Tax',
       title: 'Tax',
       blurb: 'Nigeria: VAT 7.5%. Withholding tax rates are held as data, not code, so a change in the Finance Act is an update rather than a release.',
       items: [
@@ -113,6 +121,8 @@
       ],
     },
     {
+      id: 'credit',
+      tab: 'Credit',
       title: 'Credit, layaway and instalments',
       blurb: 'How long a customer has, and how much of a commitment you take before goods leave the shop.',
       items: [
@@ -132,6 +142,8 @@
       ],
     },
     {
+      id: 'stock',
+      tab: 'Stock',
       title: 'Stock and expiry warnings',
       blurb: 'What the system tells you before it becomes a problem.',
       items: [
@@ -143,6 +155,8 @@
       ],
     },
     {
+      id: 'cash',
+      tab: 'Cash',
       title: 'Cash and banking',
       blurb: 'The drawer, the safe and the bank.',
       items: [
@@ -151,6 +165,8 @@
       ],
     },
     {
+      id: 'notes',
+      tab: 'Notes',
       title: 'Business identity',
       blurb: 'Appears on receipts, labels and returns.',
       // THE TRADING NAME, THE RECEIPT FOOTER AND THE SUPPORT CONTACT ARE NOT HERE. They are
@@ -575,21 +591,198 @@
   // =====================================================================
   async function renderSettings(ctx) {
     ctx.setTitle('Settings');
-    const wrap = ui.h('div', { class: 'stack' });
     const canEdit = SR.state.atLeast('OWNER');
-    wrap.appendChild(ui.h('div', { class: 'page-head' },
-      ui.h('div', {},
-        ui.h('h1', {}, 'Settings'),
-        ui.h('p', { class: 'sub' }, 'The controls. Every change here is audited with its previous value — "who allowed staff to write off stock?" has an answer in this system.')),
-      ui.h('div', { class: 'actions' },
-        canEdit ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => save() }, 'Save changes') : null)));
+    const tabs = [{ id: 'shop', label: 'Shop', find: 'shop branding logo trading name receipt footer contact' }]
+      .concat(SETTING_GROUPS.map((group) => ({
+        id: group.id,
+        label: group.tab,
+        find: `${group.tab} ${group.title} ${group.blurb}`.toLowerCase(),
+      })));
+    let active = ctx.query.tab || '';
+    try { active = active || sessionStorage.getItem('sr.settingsTab') || ''; } catch (e) { /* private mode */ }
+    if (!tabs.some((tab) => tab.id === active)) active = 'shop';
 
-    const host = ui.h('div', {});
+    const wrap = ui.h('div', { class: 'settings-page stack' });
+    const unsaved = ui.h('span', { class: 'settings-unsaved', hidden: true });
+    const saveBtn = ui.h('button', {
+      class: 'btn btn-primary settings-save',
+      hidden: !canEdit,
+      onClick: () => save(),
+    }, 'Save changes');
+    const find = ui.h('input', {
+      type: 'search',
+      placeholder: 'Find a setting — discount, VAT, logo…',
+      autocomplete: 'off',
+      'aria-label': 'Find a setting',
+    });
+    const tabList = ui.h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'Settings sections' });
+    const tabButtons = new Map();
+    for (const tab of tabs) {
+      const btn = ui.h('button', {
+        class: 'tab',
+        type: 'button',
+        role: 'tab',
+        id: `settings-tab-${tab.id}`,
+        'aria-controls': `settings-panel-${tab.id}`,
+        'aria-selected': 'false',
+        onClick: () => showTab(tab.id, { focus: false }),
+      }, tab.label);
+      tabButtons.set(tab.id, btn);
+      tabList.appendChild(btn);
+    }
+    const dock = ui.h('div', { class: 'settings-dock' },
+      ui.h('div', { class: 'settings-dock-head' },
+        ui.h('div', { class: 'settings-dock-title' },
+          ui.h('h1', {}, 'Settings'),
+          ui.h('p', { class: 'sub' }, canEdit
+            ? 'One section at a time. Save stays here, however far you scroll.'
+            : 'You can look through these. An owner has to save a change.')),
+        ui.h('div', { class: 'settings-dock-actions' }, unsaved, saveBtn)),
+      ui.h('div', { class: 'settings-find' }, find),
+      tabList);
+    wrap.appendChild(dock);
+
+    const host = ui.h('div', { class: 'settings-host' });
     wrap.appendChild(host);
+    const noMatch = ui.h('div', { class: 'alert', hidden: true }, 'Nothing matches that. Try “discount”, “VAT”, “till” or “logo”.');
     let form = null;
+    let brandingBefore = null;
+
+    function onKey(ev) {
+      if ((ev.ctrlKey || ev.metaKey) && String(ev.key).toLowerCase() === 's') {
+        ev.preventDefault();
+        if (canEdit) save();
+      }
+    }
+    document.addEventListener('keydown', onKey);
+    if (ctx.onCleanup) ctx.onCleanup(() => document.removeEventListener('keydown', onKey));
+
+    function tagItem(node, text) {
+      node.classList.add('setting-item');
+      node.dataset.find = String(text || '').toLowerCase();
+      return node;
+    }
+
+    function showTab(id, { focus = false } = {}) {
+      if (!tabs.some((tab) => tab.id === id)) id = 'shop';
+      active = id;
+      try { sessionStorage.setItem('sr.settingsTab', id); } catch (e) { /* fine */ }
+      try {
+        const url = new URL(global.location.href);
+        url.searchParams.set('tab', id);
+        history.replaceState({}, '', url.pathname + url.search);
+      } catch (e) { /* the tab still changes */ }
+      for (const tab of tabs) {
+        const btn = tabButtons.get(tab.id);
+        const on = tab.id === id;
+        if (btn) {
+          btn.classList.toggle('is-active', on);
+          btn.setAttribute('aria-selected', on ? 'true' : 'false');
+          if (on && btn.parentElement) {
+            const list = btn.parentElement;
+            const left = btn.offsetLeft;
+            const right = left + btn.offsetWidth;
+            if (left < list.scrollLeft) list.scrollLeft = Math.max(0, left - 8);
+            else if (right > list.scrollLeft + list.clientWidth) list.scrollLeft = right - list.clientWidth + 8;
+          }
+        }
+      }
+      if (form) {
+        for (const panel of form.querySelectorAll('.settings-panel')) {
+          panel.hidden = panel.dataset.tab !== id;
+        }
+      }
+      if (focus) {
+        const btn = tabButtons.get(id);
+        if (btn) btn.focus();
+      }
+      const main = document.getElementById('main');
+      const panel = form && form.querySelector(`.settings-panel[data-tab="${id}"]`);
+      if (main && panel && !panel.hidden) {
+        const gap = panel.getBoundingClientRect().top - dock.getBoundingClientRect().bottom;
+        if (gap < -4) main.scrollTop += gap;
+      }
+      applySearch();
+    }
+
+    function changedPayload() {
+      const settings = {};
+      const branding = {};
+      if (!form) return { settings, branding };
+      const values = ui.readForm(form);
+      const s = SR.state.settings || {};
+      for (const [k, v] of Object.entries(values)) {
+        if (BRANDING_FIELDS.indexOf(k) !== -1) continue;
+        if (v === null && (s[k] == null || String(s[k]) === '')) continue;
+        if (typeof v === 'number' && Number(s[k]) === Number(v)) continue;
+        if (typeof v === 'string' && String(s[k] == null ? '' : s[k]) === v) continue;
+        if (v !== null && typeof v !== 'number' && typeof v !== 'string' && Number(s[k]) === Number(v)) continue;
+        settings[k] = v;
+      }
+      if (brandingBefore) {
+        for (const k of BRANDING_FIELDS) {
+          if (!Object.prototype.hasOwnProperty.call(values, k)) continue;
+          const next = values[k] == null ? '' : String(values[k]);
+          const prev = brandingBefore[k] == null ? '' : String(brandingBefore[k]);
+          if (next !== prev) branding[k] = values[k] == null ? '' : values[k];
+        }
+      }
+      return { settings, branding };
+    }
+
+    function paintDirty() {
+      const { settings, branding } = changedPayload();
+      const n = Object.keys(settings).length + Object.keys(branding).length;
+      unsaved.hidden = !n || !canEdit;
+      unsaved.textContent = n === 1 ? '1 unsaved change' : `${n} unsaved changes`;
+      saveBtn.classList.toggle('is-attention', n > 0);
+    }
+
+    function applySearch({ jump = false } = {}) {
+      const q = String(find.value || '').trim().toLowerCase();
+      if (!form) return;
+      let any = !q;
+      for (const tab of tabs) {
+        const panel = form.querySelector(`.settings-panel[data-tab="${tab.id}"]`);
+        const btn = tabButtons.get(tab.id);
+        if (!panel) continue;
+        const tabHit = !q || String(panel.dataset.find || '').indexOf(q) !== -1;
+        let hits = 0;
+        for (const item of panel.querySelectorAll('.setting-item')) {
+          const show = !q || tabHit || String(item.dataset.find || '').indexOf(q) !== -1;
+          item.hidden = !show;
+          if (show) hits += 1;
+        }
+        const none = panel.querySelector('.settings-none');
+        if (none) none.hidden = !q || hits > 0 || panel.hidden;
+        if (btn) btn.classList.toggle('is-dim', Boolean(q) && hits === 0);
+        if (hits) any = true;
+      }
+      noMatch.hidden = any;
+      const current = form.querySelector(`.settings-panel[data-tab="${active}"]`);
+      const currentHits = current ? current.querySelectorAll('.setting-item:not([hidden])').length : 0;
+      if (jump && q && !currentHits) {
+        const next = tabs.find((tab) => {
+          const btn = tabButtons.get(tab.id);
+          return btn && !btn.classList.contains('is-dim');
+        });
+        if (next && next.id !== active) showTab(next.id);
+      }
+    }
+
+    find.addEventListener('input', () => applySearch({ jump: true }));
+    find.addEventListener('keydown', (ev) => {
+      if (ev.key !== 'Enter') return;
+      ev.preventDefault();
+      const next = tabs.find((tab) => {
+        const btn = tabButtons.get(tab.id);
+        return btn && !btn.classList.contains('is-dim');
+      });
+      if (next) showTab(next.id);
+    });
 
     async function load() {
-      host.replaceChildren(ui.skeleton(8));
+      host.replaceChildren(ui.skeleton(6));
       let data;
       try {
         data = await SR.api.get('/api/settings', { query: SR.state.query({}) });
@@ -599,118 +792,122 @@
       }
       const s = data.settings || {};
       form = ui.h('div', { class: 'stack' });
-
-      if (!canEdit) {
-        form.appendChild(ui.h('div', { class: 'alert alert-info' }, 'Settings are read-only for your role. Ask an owner to change anything here.'));
-      }
+      form.addEventListener('input', paintDirty);
+      form.addEventListener('change', paintDirty);
+      form.appendChild(renderBrandingCard());
 
       for (const group of SETTING_GROUPS) {
-        const card = ui.h('div', { class: 'card' });
+        const card = ui.h('div', {
+          class: 'card settings-panel',
+          'data-tab': group.id,
+          'data-find': `${group.tab} ${group.title} ${group.blurb}`.toLowerCase(),
+          role: 'tabpanel',
+          id: `settings-panel-${group.id}`,
+          'aria-labelledby': `settings-tab-${group.id}`,
+          hidden: true,
+        });
         const body = ui.h('div', { class: 'card-body' });
         body.appendChild(ui.h('h2', {}, group.title));
         body.appendChild(ui.h('p', { class: 'sub' }, group.blurb));
         const grid = ui.h('div', { class: 'form-grid' });
         for (const item of group.items) {
-          // A FACT has no key and no input — see the note above the list. It sits in
-          // the same grid, at the same size, and says what the system does where a
-          // switch used to promise a choice that was never there.
           if (item.type === 'fact') {
-            grid.appendChild(ui.h('div', { class: 'span-2' },
+            grid.appendChild(tagItem(ui.h('div', { class: 'span-2 setting-fact' },
               ui.h('div', { class: 'ctl' }, item.label),
-              ui.h('div', { class: 'hint' }, item.text)));
+              ui.h('div', { class: 'hint' }, item.text)), `${item.label} ${item.text}`));
             continue;
           }
-          // A KEY THE DEPLOYMENT DOES NOT HAVE IS NOT SILENTLY DROPPED.
-          //
-          // This line used to read `if (!(item.key in s)) continue;` — so a control
-          // whose key was missing simply did not appear, and nothing anywhere said
-          // so. A test now refuses to let the two lists disagree, and this branch
-          // reports the disagreement on the page if one ever slips through.
           if (!(item.key in s)) {
-            grid.appendChild(ui.h('div', { class: 'span-2' },
+            grid.appendChild(tagItem(ui.h('div', { class: 'span-2' },
               ui.h('div', { class: 'ctl' }, item.label),
-              ui.h('div', { class: 'err' }, `This control is not available on this deployment: the server has no "${item.key}" setting. Support has been told by this message; nothing you do here can change it.`)));
+              ui.h('div', { class: 'err' }, `This control is not available on this deployment: the server has no “${item.key}” setting.`)), item.label));
             continue;
           }
+          let field;
           if (item.type === 'flag') {
-            grid.appendChild(ui.field({ label: item.label, name: item.key, type: 'checkbox', value: Number(s[item.key]) ? 1 : 0, disabled: !canEdit, hint: item.hint || null }));
+            field = ui.field({ label: item.label, name: item.key, type: 'checkbox', value: Number(s[item.key]) ? 1 : 0, disabled: !canEdit, hint: item.hint || null });
           } else if (item.type === 'number') {
-            grid.appendChild(ui.field({ label: item.label, name: item.key, type: 'number', step: 'any', min: item.min == null ? null : String(item.min), max: item.max == null ? null : String(item.max), value: s[item.key] == null ? '' : String(s[item.key]), disabled: !canEdit, hint: item.hint || null }));
+            field = ui.field({ label: item.label, name: item.key, type: 'number', step: 'any', min: item.min == null ? null : String(item.min), max: item.max == null ? null : String(item.max), value: s[item.key] == null ? '' : String(s[item.key]), disabled: !canEdit, hint: item.hint || null });
           } else {
-            grid.appendChild(ui.field({ label: item.label, name: item.key, value: s[item.key] == null ? '' : String(s[item.key]), disabled: !canEdit, hint: item.hint || null }));
+            field = ui.field({ label: item.label, name: item.key, value: s[item.key] == null ? '' : String(s[item.key]), disabled: !canEdit, hint: item.hint || null });
           }
+          grid.appendChild(tagItem(field, `${item.label} ${item.hint || ''} ${item.key}`));
         }
         body.appendChild(grid);
+        body.appendChild(ui.h('p', { class: 'hint settings-none', hidden: true }, 'Nothing in this section matches. Another tab may.'));
         card.appendChild(body);
         form.appendChild(card);
       }
-      // THE BRANDING CARD GOES FIRST — before the feature switches — because it is the one
-      // thing here that changes what a customer sees. It is loaded separately from
-      // `GET /api/branding/full`: the settings payload does not carry the logo (hundreds of
-      // KB) and reading it through the settings endpoint would put it in every boot.
-      form.insertBefore(renderBrandingCard(), form.firstChild);
-      host.replaceChildren(form);
+      host.replaceChildren(noMatch, form);
+      showTab(active);
+      paintDirty();
     }
 
-    /**
-     * THE SIGN-IN SCREEN, THE RECEIPTS AND THE HEADER, IN ONE CARD.
-     *
-     * `server/routes/branding.js` has five routes and a careful set of rules — GET is public
-     * so the sign-in screen can be branded, PUT and the logo are OWNER-only because renaming
-     * the shop renames it for every branch and every receipt, the logo is validated by magic
-     * bytes rather than the claimed MIME type — and NO SCREEN CALLED ANY OF THEM. Every one of
-     * the five read "not reached by any screen" in the coverage report: a complete backend
-     * with no way to use it. This is that way.
-     *
-     * The fields are the fields the route accepts, no more and no fewer: `business_name`,
-     * `receipt_footer_text`, `admin_contact_name`, `admin_contact_phone`, `admin_contact_email`
-     * go to PUT, and the logo goes to POST/DELETE `/api/branding/logo`. The audit checks that
-     * agreement in both directions, because a form field the server ignores is a form that
-     * lies, and a server field no form sends is a feature nobody can reach.
-     */
     function renderBrandingCard() {
-      const card = ui.h('div', { class: 'card' });
+      const card = ui.h('div', {
+        class: 'card settings-panel',
+        'data-tab': 'shop',
+        'data-find': 'shop branding logo trading name receipt footer contact',
+        role: 'tabpanel',
+        id: 'settings-panel-shop',
+        'aria-labelledby': 'settings-tab-shop',
+        hidden: true,
+      });
       const body = ui.h('div', { class: 'card-body' });
-      body.appendChild(ui.h('h2', {}, 'Branding — the shop’s name, logo and receipts'));
-      body.appendChild(ui.h('p', { class: 'sub' }, 'What your customers see: the sign-in screen, the header, and the foot of every receipt.'));
-      const host = ui.h('div', {});
-      body.appendChild(host);
+      body.appendChild(ui.h('h2', {}, 'The shop’s name, logo and receipts'));
+      body.appendChild(ui.h('p', { class: 'sub' }, 'What customers see: the sign-in screen, the header, and the foot of every receipt. The logo saves as soon as you choose a file. The name and contact save with Save changes.'));
+      const inner = ui.h('div', {});
+      body.appendChild(inner);
+      body.appendChild(ui.h('p', { class: 'hint settings-none', hidden: true }, 'Nothing in this section matches. Another tab may.'));
       card.appendChild(body);
 
       async function loadBranding() {
-        host.replaceChildren(ui.skeleton(4));
+        inner.replaceChildren(ui.skeleton(4));
         let b;
         try {
           b = await SR.api.get('/api/branding/full');
         } catch (err) {
-          host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadBranding } }));
+          inner.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadBranding } }));
           return;
         }
         const admin = b.admin || {};
-        const grid = ui.h('div', { class: 'form-grid' },
-          ui.field({ label: 'Trading name', name: 'business_name', value: b.name || '', disabled: !canEdit, hint: 'Appears on the sign-in screen, the header and every receipt. Leave it unset and the name of your first business is used.' }),
-          ui.field({ label: 'Receipt footer', name: 'receipt_footer_text', value: (admin.receiptFooter || b.receiptFooter || ''), disabled: !canEdit, hint: 'A thank-you, a returns policy, a phone number. Up to 500 characters.' }),
-          ui.field({ label: 'Contact name', name: 'admin_contact_name', value: admin.contactName || '', disabled: !canEdit, hint: 'Who a customer or an auditor should ask for.' }),
-          ui.field({ label: 'Contact phone', name: 'admin_contact_phone', value: admin.contactPhone || '', disabled: !canEdit }),
-          ui.field({ label: 'Contact email', name: 'admin_contact_email', value: admin.contactEmail || '', disabled: !canEdit }));
+        const grid = ui.h('div', { class: 'form-grid' });
+        const fields = [
+          ['Trading name', 'business_name', b.name || '', 'Appears on the sign-in screen, the header and every receipt. Leave it unset and the name of your first business is used.'],
+          ['Receipt footer', 'receipt_footer_text', admin.receiptFooter || b.receiptFooter || '', 'A thank-you, a returns policy, a phone number. Up to 500 characters.'],
+          ['Contact name', 'admin_contact_name', admin.contactName || '', 'Who a customer or an auditor should ask for.'],
+          ['Contact phone', 'admin_contact_phone', admin.contactPhone || '', ''],
+          ['Contact email', 'admin_contact_email', admin.contactEmail || '', ''],
+        ];
+        for (const [label, name, value, hint] of fields) {
+          grid.appendChild(tagItem(ui.field({ label, name, value, disabled: !canEdit, hint: hint || null }), `${label} ${hint} ${name}`));
+        }
 
-        // THE LOGO IS ITS OWN CONTROL, because it is its own route and its own decision:
-        // uploading a file and saving a name are not the same edit, and the logo posts bytes.
-        const logoBox = ui.h('div', { class: 'ctl' }, 'Logo');
+        const logoBox = tagItem(ui.h('div', { class: 'span-2' }), 'logo shop mark sign-in image');
+        logoBox.appendChild(ui.h('div', { class: 'ctl' }, 'Logo'));
         const preview = ui.h('img', { alt: 'The current logo', class: 'brand-logo-preview' });
         const fallback = (b.defaultLogoUrl && String(b.defaultLogoUrl).indexOf('/brand/mark') === 0) ? b.defaultLogoUrl : '/brand/mark.svg';
-        preview.src = b.logoDataUrl || (SR.BUILD && fallback.indexOf('v=') < 0 ? fallback + '?v=' + SR.BUILD : fallback);
+        const fallbackSrc = SR.BUILD && fallback.indexOf('v=') < 0 ? fallback + '?v=' + SR.BUILD : fallback;
+        preview.src = b.logoDataUrl || fallbackSrc;
         const file = ui.h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', disabled: !canEdit, class: 'brand-logo-input' });
-        const remove = ui.h('button', { class: 'btn btn-sm', hidden: !b.logoDataUrl, disabled: !canEdit, onClick: async () => {
+        const hint = ui.h('div', { class: 'hint' }, b.logoDataUrl
+          ? 'PNG, JPEG, WebP or GIF, up to 512 KB. SVG is refused: it can carry a script. Choosing a file saves the logo immediately.'
+          : 'This is the StockRidge logo. Upload a PNG, JPEG, WebP or GIF to replace it. SVG is refused: it can carry a script. Choosing a file saves it immediately.');
+        const remove = ui.h('button', { class: 'btn btn-sm', type: 'button', hidden: !b.logoDataUrl, disabled: !canEdit, onClick: async () => {
           if (!(await ui.confirmDialog({ title: 'Remove the logo', message: 'The StockRidge logo will be used instead.', confirmLabel: 'Remove', danger: true }))) return;
-          try { const res = await SR.api.del('/api/branding/logo'); ui.ok(res.message || 'Logo removed.'); loadBranding(); }
-          catch (err) { ui.apiError(err); }
+          try {
+            const res = await SR.api.del('/api/branding/logo');
+            ui.ok(res.message || 'Logo removed.');
+            preview.src = fallbackSrc;
+            remove.hidden = true;
+            hint.textContent = 'This is the StockRidge logo. Upload a PNG, JPEG, WebP or GIF to replace it. Choosing a file saves it immediately.';
+            await SR.state.load({ force: true }).catch(() => {});
+            if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
+          } catch (err) { ui.apiError(err); }
         } }, 'Remove logo');
         file.addEventListener('change', async () => {
           const f = file.files && file.files[0];
           if (!f) return;
-          // The server sniffs the magic bytes; this check exists to give a person a sentence
-          // instead of a 400, and it is deliberately permissive — the server is the authority.
           if (f.size > 512 * 1024) { ui.warn('That image is larger than 512 KB. Use a smaller one — it is loaded on the sign-in screen.'); file.value = ''; return; }
           try {
             const dataUrl = await new Promise((resolve, reject) => {
@@ -721,44 +918,25 @@
             });
             const res = await SR.api.post('/api/branding/logo', { logoDataUrl: dataUrl });
             ui.ok(res.message || 'Logo updated.');
-            loadBranding();
+            preview.src = res.logoDataUrl || dataUrl;
+            remove.hidden = false;
+            hint.textContent = 'PNG, JPEG, WebP or GIF, up to 512 KB. Choosing a file saves the logo immediately.';
+            await SR.state.load({ force: true }).catch(() => {});
+            if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
           } catch (err) { ui.apiError(err); } finally { file.value = ''; }
         });
-        logoBox.appendChild(ui.h('div', { class: 'brand-logo-row' }, preview, ui.h('div', { class: 'stack' }, file, ui.h('div', { class: 'hint' }, b.logoDataUrl
-          ? 'PNG, JPEG, WebP or GIF. SVG is refused on purpose: it can carry a script, and this image is shown on the sign-in screen.'
-          : 'This is the StockRidge logo. Upload a PNG, JPEG, WebP or GIF to replace it on the sign-in screen. SVG is refused: it can carry a script.'), remove)));
+        logoBox.appendChild(ui.h('div', { class: 'brand-logo-row' }, preview, ui.h('div', { class: 'stack' }, file, hint, remove)));
 
-        // ONLY WHAT CHANGED IS SENT. The route audits every field it receives, and a trail full
-        // of unchanged rows is a trail nobody reads — the same rule the feature switches above
-        // follow. `before` is built from the fields `GET /api/branding/full` actually answers.
-        const before = {
+        brandingBefore = {
           business_name: b.name || '',
           receipt_footer_text: admin.receiptFooter || b.receiptFooter || '',
           admin_contact_name: admin.contactName || '',
           admin_contact_phone: admin.contactPhone || '',
           admin_contact_email: admin.contactEmail || '',
         };
-        const saveBtn = ui.h('button', { class: 'btn btn-sm btn-primary', disabled: !canEdit, onClick: async () => {
-          const values = ui.readForm(grid);
-          const sent = {};
-          for (const k of BRANDING_FIELDS) {
-            if (String(values[k] == null ? '' : values[k]) !== String(before[k] == null ? '' : before[k])) sent[k] = values[k];
-          }
-          if (!Object.keys(sent).length) { ui.info('Nothing has changed.'); return; }
-          await ui.withBusy(saveBtn, async () => {
-            try {
-              const res = await SR.api.put('/api/branding', sent);
-              ui.ok(res.message || 'Branding updated.');
-              await SR.state.load({ force: true });   // the header and the chrome repaint
-              if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
-              loadBranding();
-            } catch (err) { ui.apiError(err); }
-          });
-        } }, 'Save branding');
-
-        host.replaceChildren(ui.h('div', { class: 'stack' }, grid, ui.h('div', { class: 'span-2' }, logoBox),
-          ui.h('div', { class: 'card-foot' }, saveBtn,
-            ui.h('span', { class: 'hint' }, 'Every change here is audited with the previous value.'))));
+        inner.replaceChildren(ui.h('div', { class: 'stack' }, grid, logoBox));
+        applySearch();
+        paintDirty();
       }
 
       loadBranding();
@@ -766,36 +944,39 @@
     }
 
     async function save() {
-      if (!form) return;
-      const values = ui.readForm(form);
-      // Only send what changed: the server audits each field it receives, and an
-      // audit trail full of "unchanged" rows is a trail nobody reads.
-      const body = {};
-      const s = SR.state.settings || {};
-      for (const [k, v] of Object.entries(values)) {
-        if (v === null && String(s[k] || '') === '') continue;
-        if (typeof v === 'number' && Number(s[k]) === Number(v)) continue;
-        if (typeof v === 'string' && String(s[k] || '') === v) continue;
-        body[k] = v;
+      if (!form || !canEdit) return;
+      const { settings, branding } = changedPayload();
+      if (!Object.keys(settings).length && !Object.keys(branding).length) {
+        ui.info('Nothing has changed.');
+        return;
       }
-      if (!Object.keys(body).length) { ui.info('Nothing has changed.'); return; }
-      await ui.withBusy(form, async () => {
-        try {
-          // THE PAYLOAD IS THE SECOND ARGUMENT. `SR.api.put(path, body, opts)`.
-          // This said `{ body }` — an object whose only key is `body` — so the
-          // request carried `{ body: {...} }` and the server saw one key named
-          // "body". Saving from this screen has therefore never worked: the settings
-          // route ignored the unknown key and answered "Nothing to change", and the
-          // owner concluded that the system had quietly disagreed with them. The
-          // Stage-10 sweep for this defect looked for `{ body:` WITH A COLON and
-          // this is the shorthand form, which is why it survived. The contract test
-          // now catches both.
-          const res = await SR.api.put('/api/settings', body);
-          ui.ok(res.message || 'Settings saved.');
+      saveBtn.disabled = true;
+      const savedLabel = saveBtn.textContent;
+      saveBtn.textContent = 'Saving…';
+      try {
+        await ui.withBusy(form, async () => {
+          const messages = [];
+          if (Object.keys(settings).length) {
+            const res = await SR.api.put('/api/settings', settings);
+            messages.push(res.message || 'Settings saved.');
+          }
+          if (Object.keys(branding).length) {
+            const res = await SR.api.put('/api/branding', branding);
+            messages.push(res.message || 'Branding updated.');
+            if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
+          }
+          ui.ok(messages.join(' '));
           await SR.state.load({ force: true });
-          load();
-        } catch (err) { ui.apiError(err); }
-      });
+          if (typeof SR.app.paintIdentity === 'function') SR.app.paintIdentity();
+          await load();
+        });
+      } catch (err) {
+        ui.apiError(err);
+      } finally {
+        saveBtn.textContent = savedLabel || 'Save changes';
+        saveBtn.disabled = !canEdit;
+        paintDirty();
+      }
     }
 
     await load();

@@ -981,6 +981,77 @@ img, video { max-width: 100%; height: auto; }
   .pos { grid-template-columns: minmax(0, 1fr) 440px; gap: 18px; }
 }
 
+/* Settings: sections are tabs, and Save stays put while the section scrolls. */
+.settings-dock {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: var(--page);
+  padding: 4px 0 0;
+  margin: 0 0 14px;
+  border-bottom: 1px solid var(--line);
+  box-shadow: 0 12px 18px -16px rgba(16, 26, 32, .5);
+}
+.settings-dock-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.settings-dock-title { min-width: 0; flex: 1 1 auto; }
+.settings-dock-title h1 { margin: 0; font-size: 1.28rem; }
+.settings-dock-title .sub { margin: 2px 0 0; }
+.settings-dock-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.settings-unsaved {
+  font-size: .78rem;
+  font-weight: 750;
+  color: var(--amber-700);
+  white-space: nowrap;
+}
+.settings-save { min-height: 40px; }
+.settings-save.is-attention { box-shadow: 0 0 0 3px var(--amber-100); }
+.settings-find { margin-bottom: 6px; }
+.settings-find input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.settings-find input:focus { border-color: var(--green-600); box-shadow: 0 0 0 3px var(--green-100); outline: none; }
+.settings-dock .tabs {
+  margin: 0 -2px 0;
+  padding-bottom: 0;
+  border-bottom: 0;
+  scrollbar-width: none;
+}
+.settings-dock .tabs::-webkit-scrollbar { display: none; }
+.settings-dock .tab { min-height: 40px; }
+.settings-dock .tab.is-dim { opacity: .4; }
+.setting-fact {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border-left: 3px solid var(--green-600);
+}
+.setting-fact .ctl { margin-bottom: 2px; }
+.setting-fact .hint { margin: 0; }
+.settings-panel[hidden],
+.setting-item[hidden] { display: none !important; }
+@media (max-width: 640px) {
+  .settings-dock-head { flex-wrap: wrap; }
+  .settings-dock-actions { width: 100%; }
+  .settings-save { flex: 1 1 auto; }
+  .settings-dock-title .sub { display: none; }
+}
+
 @media (min-width: 2000px) {
   :root { --sidenav-w: 268px; }
   .view { max-width: 1760px; }
