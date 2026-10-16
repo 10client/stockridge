@@ -43,6 +43,7 @@ const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, utcNow, toUtcSql, utcToWat, claimedWatToUtcSql } = require('../../domain/time');
 const { signReplay } = require('../lib/replay');
+const saleIssues = require('../services/saleIssues');
 
 /**
  * Tables whose rows a device may write directly, and the columns it may write.
@@ -220,13 +221,21 @@ function mount(app, base = '/api') {
           // the shop believed had happened, and a manager may need to re-enter it by
           // hand. Conflict storage already exists for exactly this "the server wins
           // but keep what the device sent" case, so it is used rather than a new table.
+          const conflictId = newId();
           await db.run(`INSERT INTO sync_conflicts (
               id, table_name, row_id, branch_id, device_id, losing_version_json, winning_version_json, detected_at)
             VALUES (?,?,?,?,?,?,?, datetime('now'))`, [
-            newId(), 'offline_queue', key, branch ? String(branch.id) : null, deviceId,
+            conflictId, 'offline_queue', key, branch ? String(branch.id) : null, deviceId,
             JSON.stringify({ type: kind, occurred_at: occurredAt, payload: op.payload || op.data || op.body || null }),
             JSON.stringify({ applied: false, reason: 'STALE_AFTER_CLEANUP', last_cleanup_at: lastCleanupAt, quarantined_at: new Date().toISOString() }),
           ]);
+          try {
+            await saleIssues.noteQuarantine(db, {
+              conflictId, clientId: key, branchId: branch ? String(branch.id) : null, kind, occurredAt,
+            });
+          } catch (e) {
+            if (!saleIssues.missingTable(e)) console.error('[sale-issues]', e && e.message);
+          }
           results.operations.push({
             clientId: key, type: kind, status: 'QUARANTINED', code: 'STALE_AFTER_CLEANUP',
             message: `This was queued before the data cleanup of ${utcToWat(lastCleanupAt) || lastCleanupAt} (Lagos time) and was NOT applied — replaying it would put back records that were deliberately removed. It is stored under Sync → Conflicts for a manager to review and re-enter by hand if it is still true.`,
@@ -408,13 +417,20 @@ function mount(app, base = '/api') {
         const deviceLost = baseUpdatedAt && serverUpdatedAt && String(serverUpdatedAt) > String(baseUpdatedAt);
         if (deviceLost) {
           conflicts += 1;
+          const conflictId = newId();
+          const conflictBranch = branch ? String(branch.id) : (existing.branch_id || null);
           await db.run(`INSERT INTO sync_conflicts (
               id, table_name, row_id, branch_id, device_id, losing_version_json, winning_version_json, detected_at)
             VALUES (?,?,?,?,?,?,?, datetime('now'))`, [
-            newId(), table, String(rowId), branch ? String(branch.id) : (existing.branch_id || null), deviceId,
+            conflictId, table, String(rowId), conflictBranch, deviceId,
             JSON.stringify({ data, clientUpdatedAt, baseUpdatedAt }),
             JSON.stringify(existing),
           ]);
+          try {
+            await saleIssues.noteConflict(db, { conflictId, table, rowId, branchId: conflictBranch });
+          } catch (e) {
+            if (!saleIssues.missingTable(e)) console.error('[sale-issues]', e && e.message);
+          }
           results.mutations.push({
             table, id: rowId, status: 'CONFLICT', code: 'SERVER_WON',
             message: `That row was changed on the server after this device last saw it, so the server's version was kept. The device's version is stored under Sync → Conflicts. Refetch the row.`,

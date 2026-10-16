@@ -34,6 +34,7 @@ const admin = require('./admin');
 const catalog = require('./catalog');
 const stock = require('./stock');
 const sales = require('./sales');
+const saleIssues = require('./saleIssues');
 const till = require('./till');
 const customers = require('./customers');
 const finance = require('./finance');
@@ -292,6 +293,7 @@ function buildRoutes(app, env = {}) {
   catalog.mount(app, '/api');
   stock.mount(app, '/api');
   sales.mount(app, '/api');
+  saleIssues.mount(app, '/api');
   agreements.mount(app, '/api');
   till.mount(app, '/api');
   customers.mount(app, '/api');

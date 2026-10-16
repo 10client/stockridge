@@ -32,6 +32,7 @@ const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
 const salesService = require('../services/salesService');
+const saleIssues = require('../services/saleIssues');
 const selling = require('../../domain/selling');
 const { trustedReplay } = require('../lib/replay');
 const glService = require('../services/glService');
@@ -420,6 +421,24 @@ function mount(app, base = '/api') {
         soldAt: result.soldAt, backdated: result.backdated, deviceId: params.deviceId,
       },
     });
+
+    // A late posting, a sale with no till, a balance, or change still owed is
+    // a flagged sale from the moment it is rung. The scan picks up anything
+    // this misses, including sales recorded before the flag existed. A missing
+    // table must not fail the sale — the receipt is already the record.
+    try {
+      await saleIssues.noteCompletedSale(db, {
+        saleId: result.saleId,
+        businessId: String(params.business.id),
+        branchId: result.branchId,
+        latePosting: result.latePosting,
+        tillSessionId: result.tillSessionId,
+        balanceDue: result.balanceDue,
+        changeOwed: result.changeOwed,
+      });
+    } catch (e) {
+      if (!saleIssues.missingTable(e)) console.error('[sale-issues]', e && e.message);
+    }
 
     if (ctx.get('idempotencyReplayed')) {
       ctx.header('Idempotency-Replayed', 'true');

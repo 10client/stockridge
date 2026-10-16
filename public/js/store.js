@@ -257,6 +257,7 @@
       ref: ref || null,
       occurred_at: occurredAt || SR.util.nowWatSql(),
       device_id: deviceId || SR.device.current().id,
+      user_id: (SR.state.user && SR.state.user.id) || null,
       status: 'PENDING',
       attempts: 0,
       last_error: null,

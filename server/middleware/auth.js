@@ -132,6 +132,10 @@ async function startSession(db, user, secret, { deviceId = null, userAgent = nul
   return { token, sessionId };
 }
 
+function presentedDevice(deviceId) {
+  return deviceId ? String(deviceId).slice(0, 120) : null;
+}
+
 async function login(db, { username, pin, secret, deviceId = null, userAgent = null, remember = false }) {
   const uname = String(username || '').trim().toLowerCase();
   if (!uname) throw new HttpError('Enter your username.', { status: 400, code: 'USERNAME_REQUIRED' });
@@ -171,15 +175,21 @@ async function login(db, { username, pin, secret, deviceId = null, userAgent = n
   const user = await loadUser(db, row.id);
   if (!user) throw new HttpError('This account could not be loaded. Ask a manager to check it.', { status: 403, code: 'ACCOUNT_UNAVAILABLE' });
 
+  const previous = await db.first('SELECT device_id FROM user_sessions WHERE user_id = ?', [String(user.id)]);
+  const presented = presentedDevice(deviceId);
+  // Same device signing in again is not a takeover. A different device is:
+  // the row below replaces the session, and the other device is signed out
+  // on its next request. The PIN is never stored to make that possible.
+  const otherDevice = Boolean(previous && previous.device_id && presented && previous.device_id !== presented);
   const { token, sessionId } = await startSession(db, user, secret, { deviceId, userAgent, remember: Boolean(remember) });
   await db.run("UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [String(user.id)]);
 
   const scope = await resolveScope(db, user);
-  return { token, sessionId, user, scope, deviceId };
+  return { token, sessionId, user, scope, deviceId, otherDevice };
 }
 
-/** Verify a token and confirm its session is still the active one. */
-async function authenticate(db, token, secret) {
+/** Verify a token and confirm its session is still the active one, on the device it was issued to. */
+async function authenticate(db, token, secret, { deviceId = null } = {}) {
   let payload;
   try {
     payload = await verifyToken(token, secret);
@@ -193,7 +203,7 @@ async function authenticate(db, token, secret) {
     throw new HttpError('This account has been deactivated. Ask a manager to reactivate it if that is a mistake.', { status: 403, code: 'ACCOUNT_DEACTIVATED' });
   }
   if (payload.sid) {
-    const session = await db.first('SELECT session_id FROM user_sessions WHERE user_id = ?', [String(user.id)]);
+    const session = await db.first('SELECT session_id, device_id FROM user_sessions WHERE user_id = ?', [String(user.id)]);
 
     // A MISSING ROW IS A REVOKED TOKEN, AND THIS IS THE ONLY PLACE THAT SAYS SO.
     //
@@ -218,7 +228,21 @@ async function authenticate(db, token, secret) {
     }
     if (session.session_id !== payload.sid) {
       throw new HttpError(
-        'You have been signed out because this account signed in somewhere else. If that was not you, tell a manager — your PIN may be known to somebody else.',
+        'This account is signed in on another device, so this one has been signed out. Sign in here only if this should be the device that uses the account. If you did not sign in elsewhere, tell a manager — your PIN may be known to somebody else.',
+        { status: 401, code: 'SESSION_SUPERSEDED' },
+      );
+    }
+    // ONE ACCOUNT, ONE DEVICE. The session id already stops a second sign-in.
+    // This stops the other half: a copied 30-day token used from a browser
+    // that is not the device the session was issued to. A session with no
+    // device yet (a row from before the device was stored) is left alone, so
+    // a deploy does not sign the current till out. The same device may keep
+    // several tabs — they send the same device id.
+    const bound = session.device_id ? String(session.device_id) : '';
+    const presented = presentedDevice(deviceId);
+    if (bound && presented !== bound) {
+      throw new HttpError(
+        'This account is signed in on another device, so this one has been signed out. Sign in here only if this should be the device that uses the account. If you did not sign in elsewhere, tell a manager — your PIN may be known to somebody else.',
         { status: 401, code: 'SESSION_SUPERSEDED' },
       );
     }
@@ -252,7 +276,9 @@ function authRequired({ secret } = {}) {
     const jwtSecret = secret || (ctx.env && (ctx.env.JWT_SECRET || ctx.env.jwtSecret));
     if (!jwtSecret) throw new HttpError('The server has no JWT secret configured.', { status: 500, code: 'NO_SECRET' });
 
-    const { user } = await authenticate(ctx.env.DB || ctx.env.db, token, jwtSecret);
+    const { user } = await authenticate(ctx.env.DB || ctx.env.db, token, jwtSecret, {
+      deviceId: ctx.req.header('X-Device-Id') || null,
+    });
     const scope = await resolveScope(ctx.env.DB || ctx.env.db, user);
     ctx.set('user', user);
     ctx.set('scope', scope);

@@ -184,6 +184,7 @@
     { path: '/pos', title: 'Sell', group: 'Today', view: 'pos', icon: 'cart', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/till', title: 'Till & safe', group: 'Today', view: 'till', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/sales', title: 'Sales', group: 'Today', view: 'sales', icon: 'receipt', roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/sales/issues', title: 'Flagged sales', group: 'Today', view: 'sales', icon: 'receipt', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/hire-book', title: 'Hire book', group: 'Today', view: 'hire-book', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'hireBook' },
 
     { path: '/products', title: 'Catalogue', group: 'Stock', view: 'products', icon: 'tag', roles: ['MANAGER', 'OWNER'] },
@@ -392,7 +393,7 @@
       host.scrollTop = 0;
     } catch (err) {
       if (token !== renderToken) return;
-      if (err && err.isAuth) { handleAuthFailure(); return; }
+      if (err && err.isAuth) { void handleAuthFailure({ reason: err.code, token: err.token, message: err.message }); return; }
       host.replaceChildren();
       host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: () => render() } }));
       if (err && err.code !== 'OFFLINE') console.error(`[view:${hit.route.view}]`, err);
@@ -536,6 +537,7 @@
     showBoot(false);
     document.getElementById('shell').hidden = true;
     document.getElementById('login-screen').hidden = false;
+    paintDisplacedNotice();
     applyRememberedLogin();
     const u = document.getElementById('login-username');
     if (u && !u.value) setTimeout(() => u.focus(), 60);
@@ -1104,7 +1106,56 @@
   // -------------------------------------------------------------------
   // AUTH
   // -------------------------------------------------------------------
-  function handleAuthFailure() {
+  function displacedNotice() {
+    return 'This account is signed in on another device, so this one has been signed out. Sign in here only if this should be the device that uses the account.';
+  }
+
+  function paintDisplacedNotice() {
+    const form = document.getElementById('login-form');
+    if (!form) return;
+    let note = document.getElementById('login-displaced');
+    let displaced = false;
+    try { displaced = sessionStorage.getItem('sr.displaced') === '1'; } catch (e) { /* private mode */ }
+    if (!displaced) {
+      if (note) note.remove();
+      return;
+    }
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'login-displaced';
+      note.className = 'alert alert-warn';
+      note.style.marginBottom = '12px';
+      form.prepend(note);
+    }
+    note.textContent = displacedNotice();
+  }
+
+  async function stampDisplacedQueue() {
+    const me = await SR.store.metaGet('me').catch(() => null);
+    const userId = (SR.state.user && SR.state.user.id) || (me && me.user && me.user.id);
+    if (!userId) return;
+    const rows = await SR.store.outboxAll().catch(() => []);
+    for (const row of rows) {
+      if (row.status === 'SYNCED') continue;
+      if (row.user_id && row.user_id !== userId) continue;
+      await SR.store.updateOutbox(row.client_id, { user_id: row.user_id || userId, held_reason: 'DISPLACED' });
+    }
+  }
+
+  async function handleAuthFailure(detail) {
+    const failedToken = detail && detail.token;
+    const current = SR.api.loadToken();
+    // Another tab on this same device just signed in. Its token is the live one.
+    // Signing out here would throw away the session the person just started.
+    if (failedToken && current && failedToken !== current) {
+      global.location.reload();
+      return;
+    }
+    const superseded = detail && detail.reason === 'SESSION_SUPERSEDED';
+    if (superseded) {
+      try { sessionStorage.setItem('sr.displaced', '1'); } catch (e) { /* the login screen still says it */ }
+      await stampDisplacedQueue();
+    }
     SR.api.setToken(null);
     SR.state.clear();
     SR.sync.stop();
@@ -1115,7 +1166,7 @@
     if (badge) { badge.hidden = true; badge.textContent = '0'; }
     closeBell();
     showLogin();
-    ui.warn('Your session has ended. Sign in again to continue.');
+    ui.warn(superseded ? (detail.message || displacedNotice()) : 'Your session has ended. Sign in again to continue.');
   }
 
   async function doLogin(ev) {
@@ -1142,6 +1193,7 @@
     try {
       const result = await SR.api.login({ username, pin, remember });
       writeTill({ username, remember });
+      try { sessionStorage.removeItem('sr.displaced'); } catch (e) { /* fine */ }
       SR.api.setToken(result.token, { remember });
       void form;
       await SR.state.load({ force: true });
@@ -1151,7 +1203,9 @@
       SR.sync.start();
       SR.sync.runOnce({ silent: true }).catch(() => {});
       navigate('/dashboard', { replace: true });
-      ui.ok(`Welcome, ${result.user ? result.user.fullName : username}.`);
+      ui.ok(result.otherDevice
+        ? `Welcome. This account was signed in on another device — that device has been signed out.`
+        : `Welcome, ${(result.profile && result.profile.fullName) || (result.user && result.user.fullName) || username}.`);
     } catch (err) {
       if (err && err.isOffline) {
         // An offline sign-in is allowed ONLY where this device already holds a
@@ -1188,7 +1242,7 @@
       const go = await ui.confirmDialog({
         title: 'Work still waiting to sync',
         message: `There ${pending.pending === 1 ? 'is 1 item' : `are ${pending.pending} items`} on this device that the server has not seen yet.`,
-        detail: 'Signing out does not delete them, but the next person to sign in on this device will send them. If this is a shared counter till, sync first.',
+        detail: 'Signing out does not delete them. Sales recorded by this account stay on this device and upload when this account signs in here again. They are not sent as the next person. Sync first if the line is up.',
         confirmLabel: 'Sync now, then sign out',
         cancelLabel: 'Stay signed in',
       });
@@ -1405,9 +1459,18 @@
         if (err && err.isAuth) {
           // A real refusal from the server. An offline miss is not one of those:
           // the till keeps the last session and sells from the stock it holds.
+          // A remembered 30-day token must not keep a displaced device signed in
+          // once the server can be reached. Offline, the till still sells, and
+          // the queue stays tagged to this account so the next person does not
+          // upload it as themselves.
           const reachable = await SR.api.probe({ force: true });
-          if (reachable) SR.api.setToken(null);
-          else restored = Boolean(await SR.state.loadFromMirror());
+          if (reachable) {
+            if (err.code === 'SESSION_SUPERSEDED') {
+              try { sessionStorage.setItem('sr.displaced', '1'); } catch (e) { /* fine */ }
+              await stampDisplacedQueue();
+            }
+            SR.api.setToken(null);
+          } else restored = Boolean(await SR.state.loadFromMirror());
         } else {
           // The server could not be reached. Fall back to the mirror, because a
           // counter at 7 a.m. with no line still has a day's work to do.
@@ -1461,7 +1524,7 @@
     SR.api.on('plan', () => { refreshSubscriptionChrome(); });
     const subLink = document.getElementById('subscription-bar-link');
     if (subLink) subLink.addEventListener('click', () => navigate('/plan'));
-    SR.api.on('auth', () => handleAuthFailure());
+    SR.api.on('auth', (detail) => { void handleAuthFailure(detail || {}); });
     SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); });
     SR.state.on('business', () => {
       paintIdentity();

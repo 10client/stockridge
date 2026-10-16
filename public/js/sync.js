@@ -85,7 +85,8 @@
     if (!SR.api.isOnline()) return { ok: false, offline: true, applied: 0, rejected: 0 };
     if (!SR.api.hasToken()) return { ok: false, offline: false, needsAuth: true, applied: 0, rejected: 0 };
 
-    const queued = await SR.store.pending({ limit: batchSize });
+    const me = SR.state.user && SR.state.user.id;
+    const queued = (await SR.store.pending()).filter((item) => !me || !item.user_id || item.user_id === me).slice(0, batchSize);
     if (!queued.length) return { ok: true, applied: 0, rejected: 0, empty: true };
 
     const branchId = SR.state.activeBranchId;

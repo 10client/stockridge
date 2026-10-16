@@ -115,8 +115,11 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => retryAllFailed() }, 'Retry all of them')));
       }
 
-      const failed = items.filter((i) => i.status === 'FAILED');
-      const waiting = items.filter((i) => i.status !== 'FAILED' && i.status !== 'SYNCED');
+      const me = SR.state.user && SR.state.user.id;
+      const held = items.filter((i) => i.status !== 'SYNCED' && i.user_id && me && i.user_id !== me);
+      const heldIds = new Set(held.map((i) => i.client_id));
+      const failed = items.filter((i) => i.status === 'FAILED' && !heldIds.has(i.client_id));
+      const waiting = items.filter((i) => i.status !== 'FAILED' && i.status !== 'SYNCED' && !heldIds.has(i.client_id));
       const synced = items.filter((i) => i.status === 'SYNCED');
 
       const queueTable = (rows, { emptyTitle, emptyMessage, showReason }) => ui.renderTable({
@@ -148,6 +151,18 @@
         onRowClick: (i) => showItem(i),
       });
 
+      if (held.length) {
+        stack.appendChild(ui.h('div', { class: 'alert alert-warn' },
+          'These were recorded by another sign-in on this device. They will not upload as you. They upload when that account signs in on this device again. A manager can discard one only after the sale has been rung again, and must say so.'));
+        stack.appendChild(ui.dataCard({
+          title: 'Held for another account',
+          table: queueTable(held, {
+            emptyTitle: '',
+            emptyMessage: '',
+            showReason: false,
+          }),
+        }));
+      }
       if (failed.length) {
         stack.appendChild(ui.dataCard({ title: 'Refused by the server', table: queueTable(failed, { emptyTitle: '', emptyMessage: '', showReason: true }) }));
       }
@@ -314,14 +329,42 @@
     }
 
     async function discardItem(item) {
+      const me = SR.state.user && SR.state.user.id;
+      const otherAccount = item.user_id && me && item.user_id !== me;
+      const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
+      const manager = role === 'MANAGER' || role === 'OWNER' || role === 'ADMIN';
+      if (otherAccount && !manager) {
+        ui.warn('This belongs to another account. A manager discards it, and only after the sale has been rung again.');
+        return;
+      }
+      let reason = '';
+      if (otherAccount) {
+        reason = await ui.promptDialog({
+          title: 'Discard a sale from another account',
+          label: 'What did you do with it?',
+          placeholder: 'Rung again on receipt …',
+          required: true,
+          multiline: true,
+          hint: 'This never reached the server. Discarding it removes it from this device for good.',
+        });
+        if (!reason || reason.length < 8) {
+          if (reason != null) ui.warn('Say what you did with it, in at least a few words.');
+          return;
+        }
+      }
       const confirmed = await ui.confirmDialog({
         title: 'Discard this queued item',
         message: `Throw away ${item.label || U.humanise(item.type)}?`,
         confirmLabel: 'Discard it',
         danger: true,
-        detail: 'Discarding removes it from this device only. If the server already accepted it, the record is safe there and this does nothing; if it never reached the server, the record is gone for good.',
+        detail: otherAccount
+          ? 'This never reached the server. Discarding it removes it from this device for good.'
+          : 'Discarding removes it from this device only. If the server already accepted it, the record is safe there and this does nothing; if it never reached the server, the record is gone for good.',
       });
       if (!confirmed) return;
+      if (otherAccount) {
+        await SR.store.log({ kind: 'DISCARD', status: 'HELD', message: reason, ref: item.client_id }).catch(() => {});
+      }
       try {
         await SR.sync.discard(item.client_id);
         ui.warn('Discarded from this device.');

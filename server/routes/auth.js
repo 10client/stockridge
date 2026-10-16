@@ -127,6 +127,7 @@ function mount(app, base = '/api/auth', makeEnv = null) {
           navigation: navigationFor(result.user.role),
         },
         scope: serialiseScope(result.scope),
+        otherDevice: Boolean(result.otherDevice),
       });
     } catch (e) {
       await recordLoginAttempt(db, { username, userId: null, succeeded: false, ipAddress, userAgent });
@@ -322,7 +323,9 @@ function mount(app, base = '/api/auth', makeEnv = null) {
     const env = ctx.env;
     const token = ctx.req.header('Authorization')?.replace(/^Bearer\s+/i, '') || ctx.req.header('X-Stockridge-Token');
     if (!token) throw new HttpError('No token supplied.', { status: 401, code: 'NO_TOKEN' });
-    const { user } = await authenticate(db, token, env.JWT_SECRET || env.jwtSecret);
+    const { user } = await authenticate(db, token, env.JWT_SECRET || env.jwtSecret, {
+      deviceId: ctx.req.header('X-Device-Id') || null,
+    });
     const scope = await resolveScope(db, user);
     ctx.json({ ok: true, userId: user.id, role: user.role, username: user.username, scope: serialiseScope(scope) });
   });

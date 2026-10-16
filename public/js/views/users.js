@@ -417,7 +417,7 @@
       const rows = data.data || [];
       host.replaceChildren(ui.h('div', { class: 'stack' },
         ui.h('div', { class: 'alert alert-info' },
-          'A session is a device holding a valid sign-in. Revoking one is how you remove access from a phone that has been lost, sold or borrowed — the token stops working immediately.'),
+          'An account can be signed in on one device at a time. Signing in on a second device signs the first one out, including a remembered 30-day session. Revoking the row below is how you remove access from a phone that has been lost, sold or borrowed — the token stops working immediately.'),
         ui.dataCard({
           title: `${rows.length} signed in`,
           // EVERY COLUMN READS A FIELD THE API ACTUALLY SENDS. This table used to show

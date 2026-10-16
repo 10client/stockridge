@@ -22,6 +22,8 @@
   const PAGE_SIZE = 50;
 
   async function render(ctx) {
+    if (ctx.route && ctx.route.path === '/sales/issues') return renderIssues(ctx);
+    if (ctx.params.id === 'issues') return renderIssues(ctx);
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Sales');
     const state = { page: 0, pageSize: PAGE_SIZE, q: '', from: ctx.query.from || U.todayWat(-30), to: ctx.query.to || U.todayWat(), type: '', status: '', method: '', sellingGroup: '', sort: 'date' };
@@ -33,6 +35,7 @@
         ui.h('p', { class: 'sub' }, 'Every receipt rung through the branches you can see.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.app.navigate('/pos') }, 'New sale'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales/issues') }, 'Flagged sales'),
         ui.h('button', {
           class: 'btn btn-sm',
           onClick: () => SR.exporter.list({
@@ -229,6 +232,7 @@
         host.appendChild(ui.h('div', { class: 'alert alert-warn' },
           `${U.money(sale.balance_due)} is still owed on this receipt. Take it from Actions — that is the only place this receipt is settled.`));
       }
+      host.appendChild(saleIssuesCard(sale));
 
       const totals = ui.h('div', { class: 'grid grid-5' },
         ui.kpi({ label: 'Total', value: U.money(sale.total), small: true }),
@@ -664,6 +668,242 @@
     }
 
     return wrap;
+  }
+
+  function saleIssuesCard(sale) {
+    const card = ui.h('div', {});
+    SR.api.get('/api/sale-issues', { query: { sale_id: sale.id, status: 'OPEN', branch_scope: 'all' } })
+      .then((data) => {
+        const rows = (data && data.data) || [];
+        if (!rows.length) { card.replaceChildren(); return; }
+        const body = ui.h('div', { class: 'stack' });
+        body.appendChild(ui.h('div', { class: 'alert alert-warn' },
+          'This receipt is flagged. Fix what it names, then clear it. Clearing does not delete the sale.'));
+        for (const issue of rows) body.appendChild(issueLine(issue, () => saleIssuesCardReload(card, sale)));
+        card.replaceChildren(ui.dataCard({ title: 'Flagged', table: body }));
+      })
+      .catch(() => { card.replaceChildren(); });
+    return card;
+  }
+
+  function saleIssuesCardReload(card, sale) {
+    const next = saleIssuesCard(sale);
+    card.replaceWith(next);
+  }
+
+  function roleAtLeast(min) {
+    const order = { STAFF: 1, MANAGER: 2, OWNER: 3, ADMIN: 4 };
+    const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
+    return (order[role] || 0) >= (order[min] || 99);
+  }
+
+  function issueLine(issue, onDone) {
+    const row = ui.h('div', { class: 'stack', style: 'padding:10px 0;border-top:1px solid var(--line, #e6e1d8)' });
+    row.appendChild(ui.h('strong', {}, issue.summary || U.humanise(issue.code)));
+    row.appendChild(ui.h('p', { class: 'hint' }, issue.how || ''));
+    if (issue.detail) row.appendChild(ui.h('p', {}, issue.detail));
+    const actions = ui.h('div', { class: 'row', style: 'flex-wrap:wrap;gap:8px' });
+    if (issue.saleId) {
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales/' + encodeURIComponent(issue.saleId)) }, 'Open receipt'));
+    }
+    if (issue.code === 'CHANGE_UNCOLLECTED') {
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.app.navigate('/change-owed') }, 'Open change owed'));
+    }
+    if (issue.code === 'SYNC_CONFLICT' || issue.code === 'QUARANTINED_REPLAY') {
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sync') }, 'Open sync'));
+    }
+    if (issue.status === 'OPEN' && (issue.canCorrect || issue.canClear)) {
+      actions.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openIssueFix(issue, onDone) }, issue.canClear ? 'Fix and clear' : 'Fix'));
+    }
+    row.appendChild(actions);
+    return row;
+  }
+
+  async function openIssueFix(issue, onDone) {
+    const body = ui.h('div', { class: 'stack' });
+    body.appendChild(ui.h('p', {}, issue.how || ''));
+    if (issue.detail) body.appendChild(ui.h('p', { class: 'hint' }, issue.detail));
+    const inputs = [];
+    if (issue.code === 'MISSING_REFERENCE' && issue.canCorrect) {
+      for (const payment of issue.payments || []) {
+        if (!payment.needsReference) continue;
+        const input = ui.h('input', { value: payment.reference || '', placeholder: 'Terminal, transfer or cheque reference' });
+        body.appendChild(ui.h('label', { class: 'ctl' }, `${U.humanise(payment.method)} · ${U.money(payment.amount)}`));
+        body.appendChild(input);
+        inputs.push({ id: payment.id, input });
+      }
+    }
+    let nameInput = null;
+    let phoneInput = null;
+    let extraNote = null;
+    if (issue.canCorrect && issue.saleId) {
+      nameInput = ui.h('input', { value: issue.customerName || '' });
+      phoneInput = ui.h('input', { value: issue.customerPhone || '' });
+      extraNote = ui.h('textarea', { rows: 2, placeholder: 'A note on this receipt, if the name is not the problem' });
+      body.appendChild(ui.h('label', { class: 'ctl' }, 'Customer name on this receipt'));
+      body.appendChild(nameInput);
+      body.appendChild(ui.h('label', { class: 'ctl' }, 'Phone on this receipt'));
+      body.appendChild(phoneInput);
+      body.appendChild(ui.h('div', { class: 'hint' }, 'This changes the receipt only. It does not rename the customer, and it does not change the total.'));
+      body.appendChild(extraNote);
+    }
+    let journalInput = null;
+    let clearNote = null;
+    if (issue.canClear) {
+      if (issue.needsReference) {
+        journalInput = ui.h('input', { placeholder: 'Journal entry number' });
+        body.appendChild(ui.h('label', { class: 'ctl' }, 'Journal entry that covers this sale'));
+        body.appendChild(journalInput);
+      }
+      clearNote = ui.h('textarea', { rows: 3, placeholder: 'What you checked' });
+      body.appendChild(ui.h('label', { class: 'ctl' }, 'What you checked'));
+      body.appendChild(clearNote);
+      if (issue.clearRole) body.appendChild(ui.h('div', { class: 'hint' }, `A ${String(issue.clearRole).toLowerCase()} clears this. The sale stays in the book.`));
+    } else if (issue.clearRole && !roleAtLeast(issue.clearRole)) {
+      body.appendChild(ui.h('div', { class: 'hint' }, `A ${String(issue.clearRole).toLowerCase()} clears this after the data is fixed.`));
+    }
+
+    const save = ui.h('button', { class: 'btn btn-primary', onClick: saveCorrection }, 'Save the correction');
+    const clearBtn = issue.canClear
+      ? ui.h('button', { class: 'btn', onClick: clearFlag }, 'Clear the flag')
+      : null;
+    const modal = ui.openModal({
+      title: issue.receiptNo ? `Flagged · ${issue.receiptNo}` : (issue.summary || 'Flagged sale'),
+      body,
+      footer: [clearBtn, issue.canCorrect || inputs.length ? save : null].filter(Boolean),
+      size: 'narrow',
+    });
+
+    async function saveCorrection() {
+      save.disabled = true;
+      try {
+        const payload = { payments: inputs.map((row) => ({ id: row.id, reference: row.input.value.trim() })) };
+        if (nameInput) payload.customer_name = nameInput.value.trim();
+        if (phoneInput) payload.customer_phone = phoneInput.value.trim();
+        if (extraNote && extraNote.value.trim()) payload.note = extraNote.value.trim();
+        await SR.api.post('/api/sale-issues/' + encodeURIComponent(issue.id) + '/correct', payload);
+        ui.ok('Saved. The total was not changed.');
+        modal.close();
+        if (onDone) onDone();
+      } catch (err) {
+        ui.apiError(err);
+      } finally {
+        save.disabled = false;
+      }
+    }
+
+    async function clearFlag() {
+      const note = clearNote ? clearNote.value.trim() : '';
+      if (note.length < 8) { ui.warn('Say what you checked, in at least a few words.'); return; }
+      clearBtn.disabled = true;
+      try {
+        await SR.api.post('/api/sale-issues/' + encodeURIComponent(issue.id) + '/clear', {
+          note,
+          reference: journalInput ? journalInput.value.trim() : undefined,
+        });
+        ui.ok('Cleared. The sale is still in the book.');
+        modal.close();
+        if (onDone) onDone();
+      } catch (err) {
+        ui.apiError(err);
+      } finally {
+        clearBtn.disabled = false;
+      }
+    }
+  }
+
+  async function renderIssues(ctx) {
+    ctx.setTitle('Flagged sales');
+    const state = { status: 'OPEN' };
+    const wrap = ui.h('div', { class: 'stack' });
+    wrap.appendChild(ui.h('div', { class: 'page-head' },
+      ui.h('div', {},
+        ui.h('h1', {}, 'Flagged sales'),
+        ui.h('p', { class: 'sub' }, 'Fix the data, then clear the flag. A voided sale stays in the book. Nothing here deletes a sale or changes what was paid.')),
+      ui.h('div', { class: 'actions' },
+        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales') }, 'All sales'),
+        ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => load() }, 'Check again'))));
+    const tabs = ui.h('div', { class: 'tabs' });
+    for (const [key, label] of [['OPEN', 'Open'], ['CLEARED', 'Cleared']]) {
+      tabs.appendChild(ui.h('button', {
+        class: `tab ${state.status === key ? 'is-active' : ''}`,
+        onClick: (ev) => {
+          state.status = key;
+          for (const b of ev.currentTarget.parentElement.children) b.classList.remove('is-active');
+          ev.currentTarget.classList.add('is-active');
+          load();
+        },
+      }, label));
+    }
+    wrap.appendChild(tabs);
+    const host = ui.h('div', { class: 'stack' });
+    wrap.appendChild(host);
+    await load();
+    return wrap;
+
+    async function load() {
+      host.replaceChildren(ui.skeleton(5));
+      let data;
+      try {
+        data = await SR.api.get('/api/sale-issues', { query: Object.assign({ status: state.status }, SR.state.query()) });
+      } catch (err) {
+        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
+        return;
+      }
+      const rows = data.data || [];
+      const stack = ui.h('div', { class: 'stack' });
+      if (!rows.length) {
+        stack.appendChild(ui.empty({
+          title: state.status === 'OPEN' ? 'Nothing is flagged' : 'Nothing has been cleared',
+          message: 'A late posting, a balance still owed, change not collected, a transfer with no reference, a missing journal, or a sale held back after a cleanup shows up here.',
+        }));
+        host.replaceChildren(stack);
+        return;
+      }
+      if (state.status === 'OPEN') {
+        const groups = new Map();
+        for (const issue of rows) groups.set(issue.code, (groups.get(issue.code) || 0) + 1);
+        for (const [code, count] of groups) {
+          const sample = rows.find((row) => row.code === code);
+          if (!sample || !sample.canClear || count < 2 || sample.needsReference) continue;
+          stack.appendChild(ui.h('div', { class: 'alert' },
+            ui.h('div', {}, `${count} open “${sample.summary}” flags. Clear them together only after you have checked them.`),
+            ui.h('button', { class: 'btn btn-sm', onClick: () => clearGroup(code, sample.summary) }, 'Clear these')));
+        }
+      }
+      for (const issue of rows) {
+        const card = ui.h('div', { class: 'card' });
+        const body = ui.h('div', { class: 'card-body stack' });
+        body.appendChild(ui.h('div', { class: 'row', style: 'justify-content:space-between;gap:8px;flex-wrap:wrap' },
+          ui.h('strong', {}, issue.receiptNo || 'Not a receipt yet'),
+          ui.badge(issue.status === 'OPEN' ? 'Open' : 'Cleared', issue.status === 'OPEN' ? 'badge-warn' : 'badge-mute')));
+        body.appendChild(ui.h('div', {}, issue.summary));
+        if (issue.soldAt) body.appendChild(ui.h('div', { class: 'hint' }, U.soldAt(issue.soldAt)));
+        if (issue.customerName) body.appendChild(ui.h('div', { class: 'hint' }, issue.customerName));
+        body.appendChild(issueLine(issue, load));
+        if (issue.status === 'CLEARED' && issue.clearNote) body.appendChild(ui.h('p', { class: 'hint' }, issue.clearNote));
+        card.appendChild(body);
+        stack.appendChild(card);
+      }
+      host.replaceChildren(stack);
+    }
+
+    async function clearGroup(code, summary) {
+      const note = await ui.promptDialog({
+        title: `Clear every “${summary}”`,
+        label: 'What you checked',
+        required: true,
+        multiline: true,
+        hint: 'This clears the flags in the branches you can see. It does not delete the sales.',
+      });
+      if (!note) return;
+      if (note.length < 8) { ui.warn('Say what you checked, in at least a few words.'); return; }
+      try {
+        const result = await SR.api.post('/api/sale-issues/clear-matching', { code, note });
+        ui.ok(`Cleared ${result.cleared}. The sales are still in the book.`);
+        load();
+      } catch (err) { ui.apiError(err); }
+    }
   }
 
   SR.views = SR.views || {};

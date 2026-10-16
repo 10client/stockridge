@@ -25,6 +25,7 @@ const { atLeast, navigationFor } = require('../../domain/roles');
 const { planUsage, getSettings } = require('../../domain/planLimits');
 const { ageBalance } = require('../../domain/credit');
 const glService = require('../services/glService');
+const saleIssues = require('../services/saleIssues');
 
 const COUNTS = "s.is_deleted = 0 AND s.status <> 'VOIDED'";
 
@@ -299,6 +300,19 @@ function mount(app, base = '/api') {
     if (Number(pendingDevices) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'devices', severity: 'INFO', count: Number(pendingDevices), label: `${pendingDevices} device(s) awaiting approval`, route: '/attendance?tab=devices' });
     const flaggedAttendance = await db.scalar(`SELECT COUNT(*) FROM staff_attendance a WHERE a.is_deleted = 0 AND a.flagged = 1 AND a.reviewed_by IS NULL ${useBranch ? 'AND a.branch_id = ?' : (business ? 'AND a.business_id = ?' : '')}`, useBranch ? [useBranch] : (business ? [String(business.id)] : []));
     if (Number(flaggedAttendance) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'attendance', severity: 'WARN', count: Number(flaggedAttendance), label: `${flaggedAttendance} clock-in(s) flagged for review`, route: '/attendance?filter=unreviewed' });
+    let openSaleIssues = 0;
+    try {
+      await saleIssues.scan(db, ctx);
+      const issueWhere = ["si.status = 'OPEN'"];
+      const issueParams = [];
+      const issueScope = scopeFilter(scope, { alias: 'si' });
+      if (issueScope.sql) { issueWhere.push(issueScope.sql); issueParams.push(...issueScope.params); }
+      openSaleIssues = Number(await db.scalar(`SELECT COUNT(*) FROM sale_issues si WHERE ${issueWhere.join(' AND ')}`, issueParams)) || 0;
+    } catch (e) {
+      if (!saleIssues.missingTable(e)) console.error('[sale-issues]', e && e.message);
+      openSaleIssues = 0;
+    }
+    if (openSaleIssues > 0) actions.push({ key: 'sale_issues', severity: 'WARN', count: openSaleIssues, label: `${openSaleIssues} flagged sale(s) need the data fixed before they can be cleared`, route: '/sales/issues' });
 
     const myTill = await db.first("SELECT * FROM till_sessions WHERE branch_id = ? AND user_id = ? AND status = 'OPEN' AND is_deleted = 0 ORDER BY opened_at DESC LIMIT 1",
       [String(branch ? branch.id : user.branch_id), String(user.id)]);
