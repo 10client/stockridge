@@ -46,6 +46,7 @@ const SW = path.join(ROOT, 'public', 'sw.js');
 const APP = path.join(ROOT, 'public', 'js', 'app.js');
 const INDEX = path.join(ROOT, 'public', 'index.html');
 const HEALTH = path.join(ROOT, 'server', 'routes', 'health.js');
+const BRANDING = path.join(ROOT, 'server', 'routes', 'branding.js');
 
 function shortSha() {
   try {
@@ -116,7 +117,7 @@ function stamp(stampValue = buildStamp()) {
     if (next !== src) { fs.writeFileSync(file, next); changed.push(path.relative(ROOT, file)); }
   }
   // ---- and every asset URL, so the new files arrive on the first load after the deploy
-  for (const file of [INDEX, SW, HEALTH]) {
+  for (const file of [INDEX, SW, HEALTH, BRANDING]) {
     const src = fs.readFileSync(file, 'utf8');
     const next = stampAssetUrls(src, stampValue);
     if (next !== src) { fs.writeFileSync(file, next); changed.push(path.relative(ROOT, file)); }

@@ -457,8 +457,16 @@
    * a dead line still shows the client's name — this is an offline-first product), then the
    * server. A failure changes nothing: the shell's markup is the fallback.
    */
-  const DEFAULT_LOGO = '/brand/mark.svg';
-  const DEFAULT_MARK = '/brand/mark.svg';
+  // The stamp has to travel with the file. The service worker precaches the
+  // stamped URL, and a bare path is a different cache key — offline, that is a
+  // missing logo. A cached branding payload from before this mark existed must
+  // not send the till back to the old wordmark either.
+  function defaultMarkUrl(b) {
+    const fromApi = b && b.defaultLogoUrl;
+    const chosen = (fromApi && String(fromApi).indexOf('/brand/mark') === 0) ? String(fromApi) : '/brand/mark.svg';
+    if (!SR.BUILD || /[?&]v=/.test(chosen)) return chosen;
+    return chosen + '?v=' + SR.BUILD;
+  }
 
   function applyBrandMark(b) {
     const custom = b && b.logoDataUrl ? b.logoDataUrl : '';
@@ -468,7 +476,7 @@
     const nameEl = document.getElementById('login-brand-name');
     if (img) {
       img.hidden = false;
-      img.src = custom || DEFAULT_LOGO;
+      img.src = custom || defaultMarkUrl(b);
       img.alt = name;
       img.classList.toggle('is-custom', Boolean(custom));
     }
@@ -479,7 +487,7 @@
     if (nameEl) nameEl.hidden = false;
     const appMark = document.getElementById('app-mark');
     if (appMark) {
-      appMark.src = custom || DEFAULT_MARK;
+      appMark.src = custom || defaultMarkUrl(b);
       appMark.alt = name;
       appMark.classList.toggle('is-custom', Boolean(custom));
     }

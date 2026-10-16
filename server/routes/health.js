@@ -118,6 +118,7 @@ function mount(app, base = '/api') {
       theme_color: '#07290c',
       categories: ['business', 'productivity', 'finance'],
       icons: [
+        { src: '/icons/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
         { src: '/icons/icon-192.png?v=ridge-20261015-1122-635cda7', sizes: '192x192', type: 'image/png', purpose: 'any' },
         { src: '/icons/icon-512.png?v=ridge-20261015-1122-635cda7', sizes: '512x512', type: 'image/png', purpose: 'any' },
         { src: '/icons/icon-maskable-512.png?v=ridge-20261015-1122-635cda7', sizes: '512x512', type: 'image/png', purpose: 'maskable' },

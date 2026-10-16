@@ -141,7 +141,7 @@ function mountGuarded(app, base = '/api/branding') {
     });
   });
 
-  /** Remove the logo, reverting to the wordmark. */
+  /** Remove the uploaded logo. The sign-in screen falls back to the StockRidge mark. */
   app.delete(`${base}/logo`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');

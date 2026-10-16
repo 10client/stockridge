@@ -530,10 +530,24 @@
       SR.ui.h('span', {}, value));
   }
 
+  /**
+   * The mark on a receipt. A shop's own logo when they have uploaded one;
+   * otherwise the StockRidge mark, at the same stamped URL the shell precaches
+   * so an offline print still has a picture. Width and height are set on the
+   * element because the SVG's own size is 512 — without them a missing style
+   * would push a short receipt onto a second page.
+   */
+  function receiptLogoSrc() {
+    const settings = (SR.state && SR.state.settings) || {};
+    if (settings.logo_data_url) return settings.logo_data_url;
+    return SR.BUILD ? '/brand/mark.svg?v=' + SR.BUILD : '/brand/mark.svg';
+  }
+
   /** The receipt as a slip, not a wall of monospace. Print still uses the text. */
   function slipNode(sale, { brand = 'StockRidge', footer = null } = {}) {
     const h = SR.ui.h;
     const head = h('div', { class: 'slip-head' },
+      h('img', { class: 'slip-logo', src: receiptLogoSrc(), alt: '', width: '56', height: '56' }),
       h('div', { class: 'slip-brand' }, brand || 'StockRidge'),
       sale.branch_name ? h('div', { class: 'slip-sub' }, sale.branch_name) : null,
       sale.branch_address ? h('div', { class: 'slip-sub' }, sale.branch_address) : null,
@@ -656,6 +670,7 @@
     html, body { margin: 0; padding: 0; width: 100%; height: auto; background: #fff; color: #111; }
     .slip { width: 100%; max-width: none; margin: 0; background: #fff; color: #111; border: 0; border-radius: 0; box-shadow: none; padding: 0; }
     .slip-head, .slip-foot { text-align: center; }
+    .slip-logo { width: 56px; height: 56px; object-fit: contain; display: block; margin: 0 auto 4px; }
     .slip-brand { font-weight: 750; font-size: 18pt; }
     .slip-sub { color: #444; font-size: 10pt; margin-top: 2px; }
     .slip-rule { border: 0; border-top: 1px dashed #999; margin: 8px 0; }
