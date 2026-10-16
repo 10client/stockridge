@@ -27,6 +27,483 @@
     ['PARTIALLY_RECEIVED', 'Part received'], ['RECEIVED', 'Received'], ['CANCELLED', 'Cancelled'],
   ];
 
+  // A purchase order does not invent a unit. Stock is held in the product's base
+  // unit, and the server refuses a code that is not on that product's ladder.
+  // The raise form used to offer a free text box defaulting to PIECE, so a
+  // person could type PCS over a unit the catalogue had already set, and the
+  // order was refused after the supplier had been promised the goods.
+  const BASE_UNIT_CHOICES = [
+    { code: 'PIECE', name: 'Piece', plural: 'Pieces' },
+    { code: 'TABLET', name: 'Tablet', plural: 'Tablets' },
+    { code: 'CAPSULE', name: 'Capsule', plural: 'Capsules' },
+    { code: 'BOTTLE', name: 'Bottle', plural: 'Bottles' },
+    { code: 'SACHET', name: 'Sachet', plural: 'Sachets' },
+    { code: 'TUBE', name: 'Tube', plural: 'Tubes' },
+    { code: 'VIAL', name: 'Vial', plural: 'Vials' },
+    { code: 'BAG', name: 'Bag', plural: 'Bags' },
+    { code: 'KILOGRAM', name: 'Kilogram', plural: 'Kilograms' },
+    { code: 'LITRE', name: 'Litre', plural: 'Litres' },
+    { code: 'METRE', name: 'Metre', plural: 'Metres' },
+  ];
+  const PACK_UNIT_CHOICES = [
+    { code: 'PACK', name: 'Pack', plural: 'Packs' },
+    { code: 'STRIP', name: 'Strip', plural: 'Strips' },
+    { code: 'CARTON', name: 'Carton', plural: 'Cartons' },
+    { code: 'BOX', name: 'Box', plural: 'Boxes' },
+    { code: 'ROLL', name: 'Roll', plural: 'Rolls' },
+    { code: 'DOZEN', name: 'Dozen', plural: 'Dozens', suggest: 12 },
+  ];
+
+  function titleWord(value) {
+    const text = String(value || '').trim();
+    if (!text) return '';
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function countWord(n, one, many) {
+    const single = one || 'unit';
+    return Math.abs(Number(n)) === 1 ? single : (many || `${single}s`);
+  }
+
+  function pluralise(name) {
+    const word = String(name || '').trim();
+    if (!word) return '';
+    if (/[^aeiou]y$/i.test(word)) return `${word.slice(0, -1)}ies`;
+    if (/(s|x|z|ch|sh)$/i.test(word)) return `${word}es`;
+    return `${word}s`;
+  }
+
+  function codeFromWord(word) {
+    return String(word || '').trim().toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20);
+  }
+
+  function wordOk(word) {
+    const text = String(word || '').trim();
+    if (text.length < 2 || text.length > 24) return false;
+    return /^[A-Za-z][A-Za-z0-9 ./-]*$/.test(text);
+  }
+
+  function matchChoice(name, choices) {
+    const key = String(name || '').trim().toLowerCase();
+    if (!key) return null;
+    return choices.find((c) => c.name.toLowerCase() === key || c.plural.toLowerCase() === key || c.code.toLowerCase() === key) || null;
+  }
+
+  function normaliseUnits(rows) {
+    return (rows || [])
+      .filter((u) => u && !Number(u.is_deleted) && u.isDeleted !== true)
+      .map((u) => {
+        const factor = Number(u.quantity_in_base != null ? u.quantity_in_base : u.quantityInBase);
+        const name = u.name || u.code || '';
+        return {
+          code: String(u.code || '').trim().toUpperCase(),
+          name: name || String(u.code || ''),
+          plural: u.plural_name || u.pluralName || (name ? `${name}s` : ''),
+          factor,
+          isDefault: Number(u.is_default_sell) === 1 || u.isDefaultSell === true,
+          sellable: u.is_sellable == null && u.isSellable == null
+            ? true
+            : (u.isSellable !== undefined ? u.isSellable !== false : Number(u.is_sellable) !== 0),
+        };
+      })
+      .filter((u) => u.code && Number.isFinite(u.factor) && u.factor > 0)
+      .sort((a, b) => a.factor - b.factor || a.code.localeCompare(b.code));
+  }
+
+  function pickCatalogueUnit(units, fallbackCode) {
+    const sellable = units.filter((u) => u.sellable);
+    const pool = sellable.length ? sellable : units;
+    const wanted = String(fallbackCode || '').toUpperCase();
+    return pool.find((u) => u.isDefault)
+      || pool.find((u) => u.code === wanted)
+      || pool[0]
+      || null;
+  }
+
+  function applyChosenUnit(line, unit) {
+    line.unit_code = unit ? unit.code : '';
+    line.unit_name = unit ? unit.name : '';
+    line.unit_plural = unit ? (unit.plural || `${unit.name}s`) : '';
+    line.unit_factor = unit ? (Number(unit.factor) || 1) : 1;
+  }
+
+  function rememberBase(line, units, fallbackName) {
+    const base = (units || []).slice().sort((a, b) => a.factor - b.factor)[0];
+    line.base_name = (base && base.name) || titleWord(fallbackName) || line.unit_name || 'base unit';
+    line.base_plural = (base && base.plural) || (line.base_name ? `${line.base_name}s` : 'base units');
+  }
+
+  function blankOrderLine() {
+    return {
+      product_id: '', name: '', pickedName: '', sku: '', quantity: 1,
+      unit_code: '', unit_name: '', unit_plural: '', unit_factor: 1,
+      expected_unit_cost: 0, units: [], unit_state: 'empty', unit_full_ladder: false,
+      base_name: '', base_plural: '', measured: false, measure_code: '', business_id: null, guided: null, unit_error: '',
+    };
+  }
+
+  function clearPick(line) {
+    const kept = { name: line.name, quantity: line.quantity, expected_unit_cost: line.expected_unit_cost };
+    Object.assign(line, blankOrderLine(), kept);
+  }
+
+  function suggestGuided(baseName) {
+    const hit = matchChoice(baseName, BASE_UNIT_CHOICES);
+    return {
+      baseChoice: hit ? hit.code : (String(baseName || '').trim() ? '__other__' : 'PIECE'),
+      baseWord: hit ? '' : titleWord(baseName),
+      mode: '',
+      packChoice: 'CARTON',
+      packWord: '',
+      packFactor: '',
+    };
+  }
+
+  function resolveChoice(choice, word, list) {
+    if (choice === '__other__') {
+      if (!wordOk(word)) return { ok: false, error: 'Type the unit as a word, such as Piece or Carton. A code on its own is not enough.' };
+      const code = codeFromWord(word);
+      if (!code) return { ok: false, error: 'That word does not make a unit the catalogue can store.' };
+      const name = titleWord(String(word).trim());
+      return { ok: true, unit: { code, name, plural: pluralise(name) } };
+    }
+    const found = (list || []).find((c) => c.code === choice);
+    if (!found) return { ok: false, error: 'Choose a unit from the list.' };
+    return { ok: true, unit: { code: found.code, name: found.name, plural: found.plural, suggest: found.suggest } };
+  }
+
+  function buildGuidedLadder(guided) {
+    const spec = guided || {};
+    const base = resolveChoice(spec.baseChoice || '', spec.baseWord, BASE_UNIT_CHOICES);
+    if (!base.ok) return base;
+    if (spec.mode !== 'same' && spec.mode !== 'pack') {
+      return { ok: false, error: 'Say whether you are ordering in that unit, or in a pack of them.' };
+    }
+    const levels = [{ code: base.unit.code, name: base.unit.name, plural: base.unit.plural, factor: 1 }];
+    let order = levels[0];
+    if (spec.mode === 'pack') {
+      const pack = resolveChoice(spec.packChoice || '', spec.packWord, PACK_UNIT_CHOICES);
+      if (!pack.ok) return pack;
+      if (pack.unit.code === base.unit.code) {
+        return { ok: false, error: `${pack.unit.name} is the same unit as ${base.unit.name}. Order in ${base.unit.name}, or use a different word for the pack.` };
+      }
+      const factor = Number(spec.packFactor);
+      if (!Number.isInteger(factor) || factor < 2) {
+        return { ok: false, error: `Say how many ${base.unit.plural.toLowerCase()} are in one ${pack.unit.name.toLowerCase()}. It has to be a whole number of 2 or more.` };
+      }
+      if (factor > 100000) {
+        return { ok: false, error: `${U.qty(factor)} is too large for one ${pack.unit.name.toLowerCase()}. Check the pack size.` };
+      }
+      order = { code: pack.unit.code, name: pack.unit.name, plural: pack.unit.plural, factor };
+      levels.push(order);
+    }
+    return {
+      ok: true,
+      baseName: base.unit.name.toLowerCase(),
+      orderCode: order.code,
+      orderName: order.name,
+      orderPlural: order.plural,
+      orderFactor: order.factor,
+      units: levels,
+      payload: levels.map((level) => ({
+        code: level.code,
+        name: level.name,
+        pluralName: level.plural,
+        plural_name: level.plural,
+        quantityInBase: level.factor,
+        quantity_in_base: level.factor,
+        isDefaultSell: level.code === order.code,
+        is_default_sell: level.code === order.code ? 1 : 0,
+        isSellable: true,
+        is_sellable: 1,
+      })),
+    };
+  }
+
+  function previewGuided(line) {
+    if (!line || line.unit_state !== 'guided') return;
+    const built = buildGuidedLadder(line.guided);
+    if (!built.ok) {
+      applyChosenUnit(line, null);
+      return;
+    }
+    line.base_name = titleWord(built.baseName);
+    line.base_plural = built.units[0].plural;
+    applyChosenUnit(line, {
+      code: built.orderCode,
+      name: built.orderName,
+      plural: built.orderPlural,
+      factor: built.orderFactor,
+    });
+  }
+
+  function conversionSentence(line) {
+    const name = line.unit_name || '';
+    const plural = line.unit_plural || (name ? `${name}s` : 'units');
+    const base = line.base_name || name || 'base unit';
+    const basePlural = line.base_plural || (base ? `${base}s` : 'base units');
+    const factor = Number(line.unit_factor) || 1;
+    const qty = Number(line.quantity) || 0;
+    if (!name) return '';
+    const baseQty = Math.round(qty * factor * 10000) / 10000;
+    if (!(qty > 0)) {
+      return factor === 1
+        ? `Quantity and cost are per ${name.toLowerCase()}. 1 ${name.toLowerCase()} is the base unit stock is held in.`
+        : `Quantity and cost are per ${name.toLowerCase()}. 1 ${name.toLowerCase()} is ${U.qty(factor)} ${countWord(factor, base, basePlural).toLowerCase()}.`;
+    }
+    if (factor === 1) {
+      return `${U.qty(qty)} ${countWord(qty, name, plural).toLowerCase()} ordered. Stock is held in ${countWord(baseQty, base, basePlural).toLowerCase()}, so that is ${U.qty(baseQty)} on the shelf. The cost is per ${name.toLowerCase()}.`;
+    }
+    const verb = Math.abs(Number(qty)) === 1 ? 'is' : 'are';
+    return `${U.qty(qty)} ${countWord(qty, name, plural).toLowerCase()} ${verb} ${U.qty(baseQty)} ${countWord(baseQty, base, basePlural).toLowerCase()} on the shelf. The cost is per ${name.toLowerCase()}, not per ${String(base).toLowerCase()}.`;
+  }
+
+  function allowsFraction(line) {
+    return Boolean(line.measure_code) && String(line.unit_code || '').toUpperCase() === String(line.measure_code).toUpperCase();
+  }
+
+  function quantityWarning(line) {
+    if (!line.unit_name || allowsFraction(line)) return '';
+    const qty = Number(line.quantity);
+    if (!(qty > 0) || Number.isInteger(qty)) return '';
+    return `${line.unit_name} must be a whole number — ${U.qty(qty)} is not.`;
+  }
+
+  function guidedConfirm(built) {
+    if (!built.ok) return built.error;
+    if (built.orderFactor > 1) {
+      return `1 ${built.orderName.toLowerCase()} = ${U.qty(built.orderFactor)} ${built.units[0].plural.toLowerCase()}. Quantity and cost on this line are per ${built.orderName.toLowerCase()}. Raising the order saves this on the product. Later orders cannot change it here.`;
+    }
+    return `Quantity and cost are per ${built.orderName.toLowerCase()}. 1 ${built.orderName.toLowerCase()} is the base unit stock is held in. Raising the order saves this on the product. Later orders cannot change it here.`;
+  }
+
+  function unitOptionLabel(unit, line) {
+    const factor = Number(unit.factor) || 1;
+    if (factor === 1) return `${unit.name} — the base unit`;
+    const base = line.base_name || 'base unit';
+    const basePlural = line.base_plural || `${base}s`;
+    return `${unit.name} — 1 ${unit.name.toLowerCase()} is ${U.qty(factor)} ${countWord(factor, base, basePlural).toLowerCase()}`;
+  }
+
+  function ladderSentence(line) {
+    const base = line.base_name || 'base unit';
+    const basePlural = line.base_plural || `${base}s`;
+    return (line.units || []).map((u) => {
+      if (Number(u.factor) === 1) return `${u.name} (the base unit)`;
+      return `${u.name} (1 = ${U.qty(u.factor)} ${countWord(u.factor, base, basePlural).toLowerCase()})`;
+    }).join(' · ');
+  }
+
+  function searchUnitNote(product) {
+    const base = product.base_unit_name || product.base_unit || '';
+    if (product.default_unit_code) {
+      const factor = Number(product.default_unit_factor) || 1;
+      const name = factor === 1 && base ? titleWord(base) : U.humanise(product.default_unit_code);
+      return factor > 1
+        ? `${name} · ${U.qty(factor)} ${base || 'base units'} each`
+        : `${name} · set in the catalogue`;
+    }
+    if (base) return `${titleWord(base)} · unit not on the ladder yet`;
+    return 'unit not set';
+  }
+
+  function orderedPhrase(item) {
+    const qty = item.quantity != null ? item.quantity : item.quantity_ordered;
+    const base = item.base_unit_name || '';
+    const inBase = Number(item.quantity_in_base);
+    const q = Number(qty);
+    const same = !Number.isFinite(inBase) || !Number.isFinite(q) || Math.abs(inBase - q) <= 0.0001;
+    // A factor of 1 means the order unit is the base unit. The receipt word
+    // (base_unit_name) is the one to show: the code can be PIECE while the
+    // catalogue calls it Unit.
+    const name = item.unit_name
+      || (same && base ? titleWord(base) : '')
+      || (item.unit_code ? U.humanise(item.unit_code) : '');
+    const ordered = `${U.qty(qty)}${name ? ` ${name}` : ''}`;
+    if (base && Number.isFinite(inBase) && Number.isFinite(q) && !same) {
+      return `${ordered} · ${U.qty(inBase)} ${base}`;
+    }
+    return ordered;
+  }
+
+  function basePhrase(item) {
+    const base = item.base_unit_name || '';
+    return `${U.qty(item.quantity_in_base)}${base ? ` ${base}` : ''}`;
+  }
+
+  function lockKnownDefault(line, product) {
+    const code = String((product && product.default_unit_code) || '').toUpperCase();
+    if (!code) return false;
+    const factor = Number(product.default_unit_factor) || 1;
+    const baseWord = titleWord(product.base_unit_name || product.base_unit || '');
+    const name = factor === 1 && baseWord ? baseWord : U.humanise(code);
+    const unit = { code, name, plural: pluralise(name), factor, isDefault: true, sellable: true };
+    line.units = [unit];
+    line.unit_state = 'locked';
+    line.unit_full_ladder = false;
+    line.base_name = baseWord || name;
+    line.base_plural = pluralise(line.base_name);
+    applyChosenUnit(line, unit);
+    return true;
+  }
+
+  async function loadCatalogueUnits(productId) {
+    try {
+      const detail = await SR.api.get(`/api/products/${encodeURIComponent(productId)}`);
+      const product = detail.product || {};
+      const measure = detail.measures || null;
+      return {
+        loaded: true,
+        units: normaliseUnits(detail.units || []),
+        baseName: product.base_unit_name || '',
+        businessId: product.business_id,
+        measureCode: measure ? String(measure.sell_unit_code || measure.sellUnitCode || '').toUpperCase() : '',
+      };
+    } catch (err) {
+      const units = await SR.store.all('product_units', {
+        where: (u) => !Number(u.is_deleted) && String(u.product_id) === String(productId),
+      }).catch(() => []);
+      const row = await SR.store.get('products', productId).catch(() => null);
+      if (units.length || (err && err.isOffline)) {
+        return {
+          loaded: true,
+          units: normaliseUnits(units),
+          baseName: (row && row.base_unit_name) || '',
+          businessId: row ? row.business_id : null,
+          measureCode: '',
+        };
+      }
+      return { loaded: false, error: err, units: [], baseName: '', businessId: null, measureCode: '' };
+    }
+  }
+
+  async function applyCatalogueUnit(line, product) {
+    const pack = await loadCatalogueUnits(line.product_id);
+    line.measure_code = String(pack.measureCode || '').toUpperCase();
+    line.measured = Boolean(line.measure_code);
+    if (pack.businessId != null) line.business_id = pack.businessId;
+    else if (product && product.business_id != null) line.business_id = product.business_id;
+    const fallbackName = pack.baseName || (product && (product.base_unit_name || product.base_unit)) || '';
+    if (pack.loaded && pack.units.length) {
+      const sellable = pack.units.filter((u) => u.sellable);
+      line.units = pack.units;
+      line.unit_full_ladder = true;
+      rememberBase(line, pack.units, fallbackName);
+      if (!sellable.length) {
+        line.unit_state = 'unsellable';
+        applyChosenUnit(line, null);
+        return;
+      }
+      line.unit_state = 'locked';
+      applyChosenUnit(line, pickCatalogueUnit(sellable, product && product.default_unit_code));
+      return;
+    }
+    if (!pack.loaded && lockKnownDefault(line, product)) return;
+    if (!pack.loaded) {
+      line.unit_state = 'missing';
+      line.unit_error = (pack.error && pack.error.message) || 'The catalogue unit could not be loaded.';
+      line.units = [];
+      line.unit_full_ladder = false;
+      applyChosenUnit(line, null);
+      return;
+    }
+    line.units = [];
+    line.unit_full_ladder = false;
+    line.base_name = titleWord(fallbackName);
+    line.base_plural = line.base_name ? `${line.base_name}s` : '';
+    if (!line.business_id) {
+      line.unit_state = 'shared';
+      applyChosenUnit(line, null);
+      return;
+    }
+    line.unit_state = 'guided';
+    line.guided = suggestGuided(fallbackName);
+    applyChosenUnit(line, null);
+  }
+
+  async function commitGuidedUnit(line) {
+    const built = buildGuidedLadder(line.guided);
+    if (!built.ok) throw new Error(built.error);
+    await SR.api.put(`/api/products/${encodeURIComponent(line.product_id)}`, {
+      base_unit_name: built.baseName,
+      units: built.payload,
+    });
+    const detail = await SR.api.get(`/api/products/${encodeURIComponent(line.product_id)}`).catch(() => null);
+    const units = normaliseUnits((detail && detail.units) || built.units.map((u) => ({
+      code: u.code,
+      name: u.name,
+      plural_name: u.plural,
+      quantity_in_base: u.factor,
+      is_default_sell: u.code === built.orderCode ? 1 : 0,
+      is_sellable: 1,
+    })));
+    if (detail && Array.isArray(detail.units) && SR.store.putMany) {
+      await SR.store.putMany('product_units', detail.units).catch(() => {});
+    }
+    line.units = units;
+    line.unit_state = 'locked';
+    line.unit_full_ladder = true;
+    line.guided = null;
+    line.measure_code = detail && detail.measures
+      ? String(detail.measures.sell_unit_code || detail.measures.sellUnitCode || '').toUpperCase()
+      : '';
+    line.measured = Boolean(line.measure_code);
+    rememberBase(line, units, built.baseName);
+    applyChosenUnit(line, pickCatalogueUnit(units, built.orderCode));
+  }
+
+  function unitProblem(line) {
+    if (!line.product_id) return '';
+    if (line.unit_state === 'locked' && line.unit_code) {
+      if (line.units.length && !line.units.some((u) => u.sellable !== false && u.code === line.unit_code)) {
+        return `${line.name} is not using a unit from its catalogue.`;
+      }
+      return quantityWarning(line);
+    }
+    if (line.unit_state === 'missing') {
+      return `${line.name}: the catalogue unit could not be loaded. Try again on that line before raising. A typed unit would be refused if the product already has one.`;
+    }
+    if (line.unit_state === 'shared') {
+      return `${line.name} is on the shared market list and has no unit. Copy it into this shop’s catalogue and set the unit there before ordering.`;
+    }
+    if (line.unit_state === 'unsellable') {
+      return `${line.name} has catalogue units, but none of them can be ordered. Set a sellable unit on the product first.`;
+    }
+    if (line.unit_state === 'guided') {
+      const built = buildGuidedLadder(line.guided);
+      if (!built.ok) return `${line.name}: ${built.error}`;
+      return quantityWarning(line);
+    }
+    if (!line.unit_code) return `${line.name} has no unit yet. Pick it again so the catalogue unit can be used.`;
+    return quantityWarning(line);
+  }
+
+  function syncGuidedFromDom(root, orderLines) {
+    if (!root) return;
+    root.querySelectorAll('[data-unit-host]').forEach((host) => {
+      const line = orderLines[Number(host.getAttribute('data-line-index'))];
+      if (!line || line.unit_state !== 'guided') return;
+      const g = line.guided || (line.guided = suggestGuided(line.base_name));
+      const read = (sel) => {
+        const el = host.querySelector(sel);
+        return el ? el.value : null;
+      };
+      const baseChoice = read('[data-base-choice]');
+      if (baseChoice != null) g.baseChoice = baseChoice;
+      const baseWord = read('[data-base-word]');
+      if (baseWord != null) g.baseWord = baseWord;
+      const mode = read('[data-order-mode]');
+      if (mode != null) g.mode = mode;
+      const packChoice = read('[data-pack-choice]');
+      if (packChoice != null) g.packChoice = packChoice;
+      const packWord = read('[data-pack-word]');
+      if (packWord != null) g.packWord = packWord;
+      const factor = read('[data-pack-factor]');
+      if (factor != null) g.packFactor = factor;
+      previewGuided(line);
+    });
+  }
+
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Purchase orders');
@@ -72,7 +549,7 @@
             { key: 'expected_date', label: 'Expected' }, { key: 'status', label: 'Status' },
             { key: 'subtotal', label: 'Subtotal' }, { key: 'vat_total', label: 'VAT' },
             { key: 'wht_amount', label: 'WHT' }, { key: 'total', label: 'Total' },
-            { key: 'units_ordered', label: 'Units ordered' }, { key: 'units_received', label: 'Units received' },
+            { key: 'units_ordered', label: 'Base units ordered' }, { key: 'units_received', label: 'Base units received' },
           ],
         });
       } catch (err) { ui.apiError(err); }
@@ -106,7 +583,7 @@
         ui.kpi({ label: 'Outstanding orders', value: String(open.length), foot: U.money(value) + ' still to arrive', small: true }),
         ui.kpi({ label: 'Late', value: String(late.length), tone: late.length ? 'bad' : 'good', foot: late.length ? 'chase these first' : 'nothing overdue', small: true }),
         ui.kpi({ label: 'Received this period', value: String(rows.filter((r) => r.status === 'RECEIVED').length), tone: 'good', small: true }),
-        ui.kpi({ label: 'Units on order', value: U.qty(U.sum(open, (r) => r.outstanding_units)), small: true })));
+        ui.kpi({ label: 'Units on order', value: U.qty(U.sum(open, (r) => r.outstanding_units)), foot: 'in each product’s base unit', small: true })));
 
       const table = ui.renderTable({
         columns: [
@@ -129,7 +606,7 @@
             const pct = U.clamp((got / ordered) * 100, 0, 100);
             const bar = ui.h('div', { style: { width: '70px', height: '8px', borderRadius: '4px', background: 'var(--slate-200)', display: 'inline-block', verticalAlign: 'middle', marginRight: '6px' } },
               ui.h('div', { style: { width: `${pct}%`, height: '100%', borderRadius: '4px', background: got >= ordered ? 'var(--green-600)' : 'var(--teal-600)' } }));
-            return ui.h('span', {}, bar, ui.h('span', { class: 'hint' }, `${U.qty(got)}/${U.qty(ordered)}`));
+            return ui.h('span', {}, bar, ui.h('span', { class: 'hint' }, `${U.qty(got)}/${U.qty(ordered)} base units`));
           } },
           { key: 'subtotal', label: 'Subtotal', align: 'right', render: (r) => U.money(r.subtotal) },
           { key: 'total', label: 'Total', align: 'right', render: (r) => ui.h('strong', {}, U.money(r.total)) },
@@ -237,9 +714,10 @@
       const linesBody = ui.h('div', { class: 'card-body stack' });
       linesCard.appendChild(linesBody);
       wrapEl.appendChild(linesCard);
+      const unitRule = 'The unit comes from the catalogue. If the product already has one, this order uses it and it cannot be changed here. If it has none, choose it on the line — a typed code the catalogue does not know is refused. Quantity and cost are in the unit shown. Stock is stored in the base unit, and the line says what that quantity becomes.';
       wrapEl.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('nafdac')
-        ? 'Pick the product from the list under its name. Every NAFDAC registration is already in this shop’s catalogue, unpriced until you set a price, and it is not on the shared market list. A typed name is not ordered until you pick it.'
-        : 'Pick the product from the list under its name. A typed name and a price are not on the order until you do. Quantities are converted to the product\'s base unit when the order is saved.'));
+        ? `Every NAFDAC registration is already in this shop’s catalogue, unpriced until you set a price, and it is not on the shared market list. A typed name is not ordered until you pick it. ${unitRule}`
+        : `Pick the product from the list under its name. A typed name is not ordered until you do. ${unitRule}`));
 
       const totalsBar = ui.h('div', { class: 'alert alert-info' }, 'No lines yet.');
 
@@ -272,7 +750,8 @@
             id: created.id,
             name: created.name || product.name,
             sku: product.sku || '',
-            default_unit_code: product.default_unit_code || 'PIECE',
+            base_unit_name: product.base_unit || product.base_unit_name || '',
+            business_id: SR.state.activeBusinessId,
             cost_price: Number(line.expected_unit_cost) || 0,
           };
         }
@@ -280,9 +759,19 @@
         line.name = chosen.name;
         line.pickedName = chosen.name;
         line.sku = chosen.sku || product.sku || '';
-        line.unit_code = chosen.default_unit_code || product.default_unit_code || line.unit_code || 'PIECE';
+        line.business_id = chosen.business_id != null ? chosen.business_id : product.business_id;
         if (!Number(line.expected_unit_cost)) line.expected_unit_cost = Number(chosen.cost_price) || Number(product.cost_price) || 0;
         if (!Number(line.quantity)) line.quantity = 1;
+        // The list row knows the default code, not the ladder. Load the ladder
+        // before the line is painted, so a catalogue unit is locked rather than
+        // offered as a box the person can type over.
+        await applyCatalogueUnit(line, {
+          default_unit_code: chosen.default_unit_code || product.default_unit_code || '',
+          default_unit_factor: chosen.default_unit_factor || product.default_unit_factor,
+          base_unit_name: chosen.base_unit_name || product.base_unit_name || product.base_unit || '',
+          base_unit: product.base_unit || '',
+          business_id: line.business_id,
+        });
       }
       function paintStatus() {
         const ready = lines.filter(onOrder).length;
@@ -290,6 +779,251 @@
           raiseBtn.textContent = ready ? `Raise the order · ${ready} line${ready === 1 ? '' : 's'}` : 'Raise the order';
         }
       }
+      function pickedHint(line) {
+        if (!line.product_id) {
+          return String(line.name || '').trim()
+            ? `"${line.name}" is not on the order yet — pick it from the list. A typed name is not ordered.`
+            : 'Nothing is ordered on this line until you pick a product.';
+        }
+        const unit = line.unit_name ? ` Ordered in ${line.unit_name}.` : '';
+        const cost = Number(line.expected_unit_cost)
+          ? ` ${U.money(line.expected_unit_cost)} per ${(line.unit_name || 'unit').toLowerCase()}.`
+          : '';
+        return `On this order: ${line.name}${line.sku ? ` · ${line.sku}` : ''}.${unit}${cost}`;
+      }
+
+      function refreshLineChrome(card, line) {
+        if (line.unit_state === 'guided') previewGuided(line);
+        if (!card) return;
+        const qtyLabel = card.querySelector('[data-qty-label]');
+        const costLabel = card.querySelector('[data-cost-label]');
+        const hint = card.querySelector('[data-picked-hint]');
+        const math = card.querySelector('[data-unit-math]');
+        const warn = card.querySelector('[data-unit-warn]');
+        const qty = card.querySelector('[data-qty]');
+        if (qtyLabel) qtyLabel.textContent = line.unit_name ? `Qty (${countWord(2, line.unit_name, line.unit_plural).toLowerCase()})` : 'Qty';
+        if (costLabel) costLabel.textContent = line.unit_name ? `Cost per ${line.unit_name.toLowerCase()} ₦` : 'Unit cost ₦';
+        if (hint) hint.textContent = pickedHint(line);
+        if (math) math.textContent = (line.unit_state === 'locked' || (line.unit_state === 'guided' && line.unit_name)) ? conversionSentence(line) : '';
+        if (warn) warn.textContent = quantityWarning(line);
+        const confirm = card.querySelector('[data-unit-confirm]');
+        if (confirm && line.unit_state === 'guided') confirm.textContent = guidedConfirm(buildGuidedLadder(line.guided));
+        if (qty) qty.step = allowsFraction(line) ? 'any' : '1';
+      }
+
+      function paintGuidedUnit(host, line, card) {
+        const g = line.guided || (line.guided = suggestGuided(line.base_name));
+        host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit · not set in the catalogue'));
+        host.appendChild(ui.h('div', { class: 'hint' }, 'This product has no unit the order can use. Choose what you are counting. It is saved on the product when you raise the order, and later orders use that unit and cannot change it here. A free-typed code is refused.'));
+        if (SR.api.isOnline && !SR.api.isOnline()) {
+          host.appendChild(ui.h('div', { class: 'err' }, 'Saving this unit needs a connection. The order cannot be raised offline.'));
+        }
+
+        const baseSel = ui.h('select', { 'aria-label': 'What one of these is counted as', dataset: { baseChoice: '1' } });
+        for (const c of BASE_UNIT_CHOICES) {
+          baseSel.appendChild(ui.h('option', { value: c.code, selected: g.baseChoice === c.code }, c.name));
+        }
+        baseSel.appendChild(ui.h('option', { value: '__other__', selected: g.baseChoice === '__other__' }, 'Another word…'));
+        baseSel.addEventListener('change', () => {
+          g.baseChoice = baseSel.value;
+          previewGuided(line);
+          paintUnit(host, line, card);
+          paintTotals();
+        });
+        host.appendChild(ui.h('label', { class: 'ctl' }, 'What is one of these counted as?'));
+        host.appendChild(baseSel);
+        if (g.baseChoice === '__other__') {
+          const word = ui.h('input', {
+            type: 'text', value: g.baseWord || '', placeholder: 'For example, Tin',
+            autocomplete: 'off', 'aria-label': 'Unit word', dataset: { baseWord: '1' },
+          });
+          word.addEventListener('input', () => {
+            g.baseWord = word.value;
+            previewGuided(line);
+            refreshLineChrome(card, line);
+            paintTotals();
+          });
+          host.appendChild(word);
+          host.appendChild(ui.h('div', { class: 'hint' }, 'Use the word you would say to a supplier. Piece, not PCS.'));
+        }
+
+        const baseLabel = (() => {
+          const built = resolveChoice(g.baseChoice, g.baseWord, BASE_UNIT_CHOICES);
+          return built.ok ? built.unit.name.toLowerCase() : 'that unit';
+        })();
+        const mode = ui.h('select', { 'aria-label': 'Order in the same unit or a pack', dataset: { orderMode: '1' } });
+        mode.appendChild(ui.h('option', { value: '', selected: !g.mode }, 'Choose…'));
+        mode.appendChild(ui.h('option', { value: 'same', selected: g.mode === 'same' }, `In ${baseLabel} — the same unit`));
+        mode.appendChild(ui.h('option', { value: 'pack', selected: g.mode === 'pack' }, 'In a pack of them'));
+        mode.addEventListener('change', () => {
+          g.mode = mode.value;
+          previewGuided(line);
+          paintUnit(host, line, card);
+          paintTotals();
+        });
+        host.appendChild(ui.h('label', { class: 'ctl' }, 'Are you ordering in that unit, or in a pack?'));
+        host.appendChild(mode);
+
+        if (g.mode === 'pack') {
+          const packSel = ui.h('select', { 'aria-label': 'Pack name', dataset: { packChoice: '1' } });
+          for (const c of PACK_UNIT_CHOICES) {
+            packSel.appendChild(ui.h('option', {
+              value: c.code,
+              selected: g.packChoice === c.code,
+            }, c.suggest ? `${c.name} — usually ${c.suggest}` : c.name));
+          }
+          packSel.appendChild(ui.h('option', { value: '__other__', selected: g.packChoice === '__other__' }, 'Another word…'));
+          packSel.addEventListener('change', () => {
+            g.packChoice = packSel.value;
+            const choice = PACK_UNIT_CHOICES.find((c) => c.code === packSel.value);
+            if (choice && choice.suggest && !String(g.packFactor || '').trim()) g.packFactor = String(choice.suggest);
+            previewGuided(line);
+            paintUnit(host, line, card);
+            paintTotals();
+          });
+          host.appendChild(ui.h('label', { class: 'ctl' }, 'What is the pack called?'));
+          host.appendChild(packSel);
+          if (g.packChoice === '__other__') {
+            const word = ui.h('input', {
+              type: 'text', value: g.packWord || '', placeholder: 'For example, Crate',
+              autocomplete: 'off', 'aria-label': 'Pack word', dataset: { packWord: '1' },
+            });
+            word.addEventListener('input', () => {
+              g.packWord = word.value;
+              previewGuided(line);
+              refreshLineChrome(card, line);
+              paintTotals();
+            });
+            host.appendChild(word);
+          }
+          const counted = (() => {
+            const built = resolveChoice(g.baseChoice, g.baseWord, BASE_UNIT_CHOICES);
+            return built.ok ? built.unit.plural.toLowerCase() : 'base units';
+          })();
+          const factor = ui.h('input', {
+            type: 'number', min: '2', step: '1', value: g.packFactor || '',
+            placeholder: 'For example 24', 'aria-label': 'How many base units in one pack',
+            dataset: { packFactor: '1' },
+          });
+          factor.addEventListener('input', () => {
+            g.packFactor = factor.value;
+            previewGuided(line);
+            refreshLineChrome(card, line);
+            paintTotals();
+          });
+          host.appendChild(ui.h('label', { class: 'ctl' }, `How many ${counted} are in one pack?`));
+          host.appendChild(factor);
+          host.appendChild(ui.h('div', { class: 'hint' }, 'A whole number of 2 or more. 1 is the same unit, not a pack.'));
+        }
+
+        previewGuided(line);
+        const built = buildGuidedLadder(g);
+        host.appendChild(ui.h('div', { class: 'hint', dataset: { unitConfirm: '1' } }, guidedConfirm(built)));
+        host.appendChild(ui.h('div', { class: 'hint', dataset: { unitMath: '1' }, 'aria-live': 'polite' }, line.unit_name ? conversionSentence(line) : ''));
+        host.appendChild(ui.h('div', { class: 'err', dataset: { unitWarn: '1' } }, quantityWarning(line)));
+      }
+
+      function paintUnit(host, line, card) {
+        if (!host) return;
+        if (!Array.isArray(line.units)) line.units = [];
+        host.replaceChildren();
+        host.className = 'po-unit span-all';
+        if (line.unit_state === 'locked') host.classList.add('is-locked');
+        else if (line.unit_state && line.unit_state !== 'empty') host.classList.add('is-need');
+
+        if (!line.product_id || line.unit_state === 'empty') {
+          host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit'));
+          host.appendChild(ui.h('div', { class: 'hint' }, 'The unit appears when you pick a product. It comes from the catalogue. It is not typed here.'));
+          refreshLineChrome(card, line);
+          return;
+        }
+        if (line.unit_state === 'missing') {
+          host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit'));
+          host.appendChild(ui.h('div', { class: 'err' }, line.unit_error || 'The catalogue unit could not be loaded.'));
+          host.appendChild(ui.h('div', { class: 'hint' }, 'A typed unit would be refused if this product already has one. Load the catalogue unit, then order in that.'));
+          host.appendChild(ui.h('button', {
+            class: 'btn btn-sm', type: 'button',
+            onClick: async (ev) => {
+              ev.currentTarget.disabled = true;
+              ev.currentTarget.textContent = 'Loading…';
+              try {
+                await applyCatalogueUnit(line, {
+                  default_unit_code: line.unit_code,
+                  base_unit_name: line.base_name,
+                  business_id: line.business_id,
+                });
+                paintUnit(host, line, card);
+                paintTotals();
+              } catch (err) {
+                ui.apiError(err);
+                ev.currentTarget.disabled = false;
+                ev.currentTarget.textContent = 'Try again';
+              }
+            },
+          }, 'Try again'));
+          refreshLineChrome(card, line);
+          return;
+        }
+        if (line.unit_state === 'shared') {
+          host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit'));
+          host.appendChild(ui.h('div', { class: 'err' }, 'This name is on the shared market list and has no unit. Copy it into this shop’s catalogue and set the unit there before ordering. A unit typed here would not stick, and it must not be written onto the shared list.'));
+          refreshLineChrome(card, line);
+          return;
+        }
+        if (line.unit_state === 'unsellable') {
+          const names = line.units.map((u) => u.name).filter(Boolean).join(', ');
+          host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit'));
+          host.appendChild(ui.h('div', { class: 'po-unit-name' }, names || 'Receiving units only'));
+          host.appendChild(ui.h('div', { class: 'err' }, 'These units are set in the catalogue, but none of them can be ordered. Set a sellable unit on the product first. This line cannot invent a different one.'));
+          refreshLineChrome(card, line);
+          return;
+        }
+        if (line.unit_state === 'locked') {
+          const sellable = line.units.filter((u) => u.sellable);
+          const canChoose = line.unit_full_ladder && sellable.length > 1;
+          host.appendChild(ui.h('label', { class: 'ctl' }, canChoose ? 'Unit · set in the catalogue' : 'Unit · locked from the catalogue'));
+          if (canChoose) {
+            const sel = ui.h('select', { 'aria-label': `Unit for ${line.name || 'this line'}` });
+            for (const u of sellable) {
+              sel.appendChild(ui.h('option', { value: u.code, selected: u.code === line.unit_code }, unitOptionLabel(u, line)));
+            }
+            sel.addEventListener('change', () => {
+              const unit = sellable.find((u) => u.code === sel.value);
+              if (!unit) return;
+              applyChosenUnit(line, unit);
+              paintUnit(host, line, card);
+              paintTotals();
+            });
+            host.appendChild(sel);
+            host.appendChild(ui.h('div', { class: 'hint' }, 'These units are already on the product. Choose which one this line is ordered in. A unit that is not listed cannot be typed.'));
+          } else {
+            host.appendChild(ui.h('div', { class: 'po-unit-name' }, line.unit_name || line.unit_code || 'Unit'));
+            host.appendChild(ui.h('div', { class: 'hint' }, line.unit_full_ladder
+              ? `${line.unit_name || 'This unit'} is set in the catalogue. This order uses it. It cannot be changed here.`
+              : `${line.unit_name || 'This unit'} is the catalogue default. The rest of the unit list could not be loaded, so this line stays on that unit and cannot be changed.`));
+          }
+          if (line.unit_full_ladder && line.units.length) {
+            host.appendChild(ui.h('div', { class: 'hint' }, `On this product: ${ladderSentence(line)}.`));
+          }
+          const blocked = line.units.filter((u) => !u.sellable).map((u) => u.name).filter(Boolean);
+          if (blocked.length) {
+            host.appendChild(ui.h('div', { class: 'hint' }, `${blocked.join(', ')} ${blocked.length === 1 ? 'is a receiving unit and is' : 'are receiving units and are'} not offered on an order.`));
+          }
+          host.appendChild(ui.h('div', { class: 'hint', dataset: { unitMath: '1' }, 'aria-live': 'polite' }, conversionSentence(line)));
+          host.appendChild(ui.h('div', { class: 'err', dataset: { unitWarn: '1' } }, quantityWarning(line)));
+          refreshLineChrome(card, line);
+          return;
+        }
+        if (line.unit_state === 'guided') {
+          paintGuidedUnit(host, line, card);
+          refreshLineChrome(card, line);
+          return;
+        }
+        host.appendChild(ui.h('label', { class: 'ctl' }, 'Unit'));
+        host.appendChild(ui.h('div', { class: 'err' }, 'This line has no unit. Pick the product again.'));
+        refreshLineChrome(card, line);
+      }
+
       function paintLines() {
         linesBody.replaceChildren();
         lines.forEach((line, i) => {
@@ -308,11 +1042,7 @@
           });
           search.setAttribute('data-line-search', '1');
           const results = ui.h('div', { class: 'pos-results', hidden: true });
-          const hint = ui.h('div', { class: 'hint' }, line.product_id
-            ? `On this order: ${line.name}${line.sku ? ` · ${line.sku}` : ''} at ${U.money(line.expected_unit_cost)} each.`
-            : (String(line.name || '').trim()
-              ? `"${line.name}" is not on the order yet — pick it from the list. A typed name is not ordered.`
-              : 'Nothing is ordered on this line until you pick a product.'));
+          const hint = ui.h('div', { class: 'hint', dataset: { pickedHint: '1' } }, pickedHint(line));
           card.appendChild(search);
           card.appendChild(results);
           card.appendChild(hint);
@@ -321,15 +1051,19 @@
             const term = search.value.trim();
             line.name = search.value;
             if (line.product_id && term !== line.pickedName) {
-              line.product_id = '';
+              clearPick(line);
+              line.name = search.value;
               card.classList.remove('on-order');
-              hint.textContent = term
-                ? `"${term}" is not on the order yet — pick it from the list. A typed name is not ordered.`
-                : 'Nothing is ordered on this line until you pick a product.';
+              const badge = card.querySelector('.badge');
+              if (badge) {
+                badge.className = 'badge badge-warn';
+                badge.textContent = U.humanise('Not chosen yet');
+              }
               search.dataset.unlinked = '1';
+              paintUnit(card.querySelector('[data-unit-host]'), line, card);
               paintTotals();
             }
-            if (term.length < 2) { results.hidden = true; results.replaceChildren(); return; }
+                        if (term.length < 2) { results.hidden = true; results.replaceChildren(); return; }
             let rows = [];
             try { rows = await findProducts(term); }
             catch (err) { results.hidden = false; results.replaceChildren(ui.h('div', { class: 'hint' }, (err && err.message) || 'The catalogue could not be searched.')); return; }
@@ -354,7 +1088,7 @@
                 },
               }, ui.h('div', { class: 'grow' },
                 ui.h('div', { class: 'ph-name' }, product.name),
-                ui.h('div', { class: 'ph-meta' }, [(product.nafdac_catalog_id || Number(product.from_greenbook)) ? 'NAFDAC' : null, product.sku, product.base_unit_name].filter(Boolean).join(' · '))),
+                ui.h('div', { class: 'ph-meta' }, [(product.nafdac_catalog_id || Number(product.from_greenbook)) ? 'NAFDAC' : null, product.sku, searchUnitNote(product)].filter(Boolean).join(' · '))),
               ui.h('span', { class: 'ph-price' }, U.money(product.cost_price))));
             }
             results.hidden = false;
@@ -362,24 +1096,38 @@
 
           const lineTotal = ui.h('strong', {}, U.money((Number(line.quantity) || 0) * (Number(line.expected_unit_cost) || 0)));
           const showLine = () => { lineTotal.textContent = U.money((Number(line.quantity) || 0) * (Number(line.expected_unit_cost) || 0)); };
-          const qty = ui.h('input', { type: 'number', step: 'any', min: '0', value: String(line.quantity || ''), style: { width: '90px' } });
-          qty.addEventListener('input', () => { line.quantity = Number(qty.value) || 0; showLine(); paintTotals(); });
-          const unit = ui.h('input', { value: line.unit_code || 'PIECE', style: { width: '110px' } });
-          unit.addEventListener('input', () => { line.unit_code = unit.value.toUpperCase(); });
-          const cost = ui.h('input', { type: 'number', step: '0.01', min: '0', value: U.numInput(line.expected_unit_cost), style: { width: '130px' } });
-          cost.addEventListener('input', () => { line.expected_unit_cost = Number(cost.value) || 0; showLine(); paintTotals(); });
-          card.appendChild(ui.h('div', { class: 'form-grid' },
-            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Qty'), qty),
-            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit'), unit),
-            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Unit cost ₦'), cost),
-            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Line'), lineTotal)));
+          const qty = ui.h('input', {
+            type: 'number', step: allowsFraction(line) ? 'any' : '1', min: '0',
+            value: String(line.quantity || ''), dataset: { qty: '1' },
+          });
+          qty.addEventListener('input', () => {
+            line.quantity = Number(qty.value) || 0;
+            showLine();
+            refreshLineChrome(card, line);
+            paintTotals();
+          });
+          const cost = ui.h('input', { type: 'number', step: '0.01', min: '0', value: U.numInput(line.expected_unit_cost) });
+          cost.addEventListener('input', () => {
+            line.expected_unit_cost = Number(cost.value) || 0;
+            showLine();
+            refreshLineChrome(card, line);
+            paintTotals();
+          });
+          const unitHost = ui.h('div', { dataset: { unitHost: '1', lineIndex: String(i) } });
+          const grid = ui.h('div', { class: 'form-grid' },
+            unitHost,
+            ui.h('div', {}, ui.h('label', { class: 'ctl', dataset: { qtyLabel: '1' } }, 'Qty'), qty),
+            ui.h('div', {}, ui.h('label', { class: 'ctl', dataset: { costLabel: '1' } }, 'Unit cost ₦'), cost),
+            ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Line'), lineTotal));
+          card.appendChild(grid);
+          paintUnit(unitHost, line, card);
           linesBody.appendChild(card);
         });
         if (!lines.length) linesBody.appendChild(ui.h('p', { class: 'hint' }, 'No lines yet. Add the products you are ordering.'));
         linesBody.appendChild(ui.h('button', {
           class: 'btn btn-sm', type: 'button',
           onClick: () => {
-            lines.push({ product_id: '', name: '', pickedName: '', quantity: 1, unit_code: 'PIECE', expected_unit_cost: 0 });
+            lines.push(blankOrderLine());
             paintLines();
             const boxes = linesBody.querySelectorAll('[data-line-search]');
             const last = boxes[boxes.length - 1];
@@ -410,14 +1158,16 @@
             ? 'One line has a name or a price but no product chosen, so it is not in this total and will not be ordered.'
             : `${unnamed.length} lines have a name or a price but no product chosen, so they are not in this total and will not be ordered.`));
         }
-        paintStatus();
+        const unitNote = lines.map(unitProblem).find(Boolean);
+        if (unitNote) totalsBar.appendChild(ui.h('div', { class: 'hint' }, unitNote));
+                paintStatus();
       }
       for (const name of ['freight_total', 'discount_total']) {
         const el = wrapEl.querySelector(`[name="${name}"]`);
         if (el) el.addEventListener('input', paintTotals);
       }
       wrapEl.appendChild(totalsBar);
-      lines.push({ product_id: '', name: '', pickedName: '', quantity: 1, unit_code: 'PIECE', expected_unit_cost: 0 });
+      lines.push(blankOrderLine());
       paintLines();
 
       const m = ui.openModal({
@@ -450,11 +1200,45 @@
                   : 'Add at least one product. Type its name, pick it from the list, then set the quantity and the price.');
                 return;
               }
+              syncGuidedFromDom(wrapEl, lines);
               const items = ready;
+              const unitNote = items.map(unitProblem).find(Boolean);
+              if (unitNote) { ui.warn(unitNote); return; }
+              const guidedKey = new Map();
+              for (const l of items) {
+                if (l.unit_state !== 'guided') continue;
+                const built = buildGuidedLadder(l.guided);
+                const key = built.ok ? `${built.orderCode}:${built.orderFactor}:${built.baseName}` : 'incomplete';
+                const prev = guidedKey.get(l.product_id);
+                if (prev && prev !== key) {
+                  ui.warn(`${l.name} is on more than one line, with different units. Use the same unit on each line.`);
+                  return;
+                }
+                guidedKey.set(l.product_id, key);
+              }
               if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
               ev.currentTarget.disabled = true;
               ev.currentTarget.textContent = 'Saving…';
+              let committed = false;
               try {
+                const saved = new Map();
+                for (const l of items) {
+                  if (l.unit_state !== 'guided') continue;
+                  const already = saved.get(l.product_id);
+                  if (already) {
+                    l.units = already.units;
+                    l.unit_state = 'locked';
+                    l.unit_full_ladder = true;
+                    l.guided = null;
+                    l.base_name = already.base_name;
+                    l.base_plural = already.base_plural;
+                    applyChosenUnit(l, pickCatalogueUnit(already.units, already.unit_code));
+                    continue;
+                  }
+                  await commitGuidedUnit(l);
+                  committed = true;
+                  saved.set(l.product_id, l);
+                }
                 const result = await SR.api.post('/api/purchase-orders', {
                   branch_id: SR.state.activeBranchId,
                   business_id: SR.state.activeBusinessId,
@@ -466,7 +1250,7 @@
                   notes: v.notes || null,
                   items: items.map((l) => ({
                     product_id: String(l.product_id),
-                    unit_code: l.unit_code || 'PIECE',
+                    unit_code: l.unit_code,
                     quantity: Number(l.quantity),
                     expected_unit_cost: Number(l.expected_unit_cost) || 0,
                   })),
@@ -475,6 +1259,7 @@
                 m.close();
                 load();
               } catch (err) {
+                if (committed) paintLines();
                 ui.apiError(err);
                 ev.currentTarget.disabled = false;
                 paintStatus();
@@ -567,8 +1352,8 @@
             { key: 'product_name', label: 'Item', className: 'wrap', render: (i) => ui.h('div', {},
               ui.h('div', { style: { fontWeight: '600' } }, i.product_name || i.name),
               ui.h('div', { class: 'hint' }, [i.sku, i.variant_name].filter(Boolean).join(' · '))) },
-            { key: 'quantity', label: 'Ordered', align: 'right', render: (i) => `${U.qty(i.quantity != null ? i.quantity : i.quantity_ordered)} ${i.unit_code || ''}` },
-            { key: 'quantity_in_base', label: 'In base units', align: 'right', render: (i) => U.qty(i.quantity_in_base) },
+            { key: 'quantity', label: 'Ordered', align: 'right', render: (i) => orderedPhrase(i) },
+            { key: 'quantity_in_base', label: 'In base units', align: 'right', render: (i) => basePhrase(i) },
             { key: 'quantity_received', label: 'Received', align: 'right', render: (i) => {
               const got = Number(i.quantity_received);
               const want = Number(i.quantity_in_base);
@@ -635,8 +1420,8 @@
         subtitle: [po.supplier_name, po.branch_name, `Expected ${po.expected_date || 'no date'}`].filter(Boolean).join(' · '),
         columns: [
           { key: 'product_name', label: 'Item' },
-          { key: 'quantity', label: 'Qty', value: (i) => `${U.qty(i.quantity != null ? i.quantity : i.quantity_ordered)} ${i.unit_code || ''}` },
-          { key: 'quantity_in_base', label: 'Base units', value: (i) => U.qty(i.quantity_in_base) },
+          { key: 'quantity', label: 'Ordered', value: (i) => orderedPhrase(i) },
+          { key: 'quantity_in_base', label: 'In base units', value: (i) => basePhrase(i) },
           { key: 'expected_unit_cost', label: 'Unit cost', value: (i) => U.amount(i.expected_unit_cost) },
           { key: 'expected_total_cost', label: 'Line total', value: (i) => U.amount(i.expected_total_cost) },
         ],
@@ -715,14 +1500,14 @@
         body.appendChild(ui.h('div', { class: 'row' },
           ui.h('div', { class: 'grow' },
             ui.h('strong', {}, i.product_name || i.name),
-            ui.h('div', { class: 'hint' }, `Outstanding ${U.qty(round4(Number(i.quantity_in_base) - Number(i.quantity_received)))} ${i.base_unit_name || 'units'} of ${U.qty(i.quantity_in_base)} ordered`))));
+            ui.h('div', { class: 'hint' }, `Still to come: ${basePhrase({ quantity_in_base: round4(Number(i.quantity_in_base) - Number(i.quantity_received)), base_unit_name: i.base_unit_name })}. Ordered as ${orderedPhrase(i)}.`))));
 
         const serialName = `serials_${i.id}`;
         const grid = ui.h('div', { class: 'form-grid' });
         grid.appendChild(ui.field({
           label: `Quantity received (${i.base_unit_name || 'units'})`, name: `qty_${i.id}`, type: 'number', step: 'any', min: '0',
           value: String(entry.quantityBase),
-          hint: 'In base units. If the supplier delivered a different pack size, enter the pieces, not the cartons.',
+          hint: `Enter ${i.base_unit_name || 'base units'}, not the order pack. The order was ${orderedPhrase(i)}.`,
         }));
         grid.appendChild(ui.field({ label: 'Cost per unit (₦)', name: `cost_${i.id}`, type: 'number', step: '0.000001', min: '0', value: String(entry.costPerUnit) }));
         grid.appendChild(ui.field({ label: 'Freight per unit (₦)', name: `freight_${i.id}`, type: 'number', step: '0.000001', min: '0', value: '0' }));

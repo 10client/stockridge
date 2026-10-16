@@ -642,6 +642,16 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .modal.full { width: min(1080px, 100%); }
 .po-line { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 12px; background: var(--surface); }
 .po-line.on-order { border-color: var(--green-600); }
+.po-unit {
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.po-unit.is-locked { border-color: var(--green-600); }
+.po-unit.is-need { border-color: var(--amber-500); }
+.po-unit .hint, .po-unit .err { margin: 0; }
+.po-unit-name { font-weight: 700; font-size: .95rem; }
+.po-unit select, .po-unit input { max-width: 440px; }
 .modal.narrow { width: min(430px, 100%); }
 .modal-root.is-receipt {
   align-items: stretch;
