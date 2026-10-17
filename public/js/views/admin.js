@@ -442,7 +442,7 @@
           type: 'checkbox',
           value: billed ? 1 : 0,
           span: true,
-          hint: 'On for a warehouse, a wholesale desk, a building-materials yard, a furniture showroom and an electronics plaza. The desk prints a bill and holds the goods. The customer pays. The receipt prints, then a release note, and only then do the goods leave. A pharmacy counter, a supermarket and a general shop stay pay-and-receipt unless you turn this on.',
+          hint: 'On for a warehouse, a wholesale desk, a building-materials yard, a furniture showroom, an electronics plaza, a water-packing plant and a bakery. The desk prints a bill and holds the goods. The customer pays. The receipt prints, then a release note, and only then do the goods leave. A pharmacy counter, a supermarket and a general shop stay pay-and-receipt unless you turn this on.',
         })));
       }
 
@@ -563,6 +563,7 @@
           (p.complianceFields || []).length
             ? `Compliance: ${(p.complianceFields || []).join(', ')}`
             : 'No extra compliance fields'),
+        p.dispatch ? ui.h('p', { class: 'hint' }, `Dispatch: ${p.dispatch}. The owner confirms one type, or a mix of two.`) : null,
         ui.h('div', { class: 'row vertical-flows' },
           features.slice(0, 6).map((f) => ui.badge(U.humanise(f), 'badge-info')),
           features.length > 6 ? ui.h('span', { class: 'hint' }, `+${features.length - 6} more`) : null));

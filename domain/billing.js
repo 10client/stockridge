@@ -24,6 +24,11 @@ const BILL_FIRST_PROFILES = Object.freeze([
   'BUILDING_MATERIALS',
   'FURNITURE',
   'ELECTRONICS',
+  // A water plant and a bakery release the load only after the cashier
+  // has the money. The feature on the profile is the switch; this list is
+  // the same fact for a profile object that has not been spread yet.
+  'WATER_PACKING',
+  'BAKERY',
 ]);
 
 const BILL_STATUSES = Object.freeze(['OPEN', 'PAYING', 'PAID', 'CANCELLED', 'EXPIRED']);

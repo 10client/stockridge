@@ -45,6 +45,7 @@
 // =====================================================================
 
 const { round2 } = require('./money');
+const { summariseModes } = require('./dispatch');
 
 // ---------------------------------------------------------------------
 // FEATURE FLAGS — the vocabulary every profile draws from
@@ -133,6 +134,34 @@ const LADDERS = Object.freeze({
   // rice). One bag is the base unit; there is no smaller thing to count.
   BAG_ONLY: [
     { code: 'BAG', name: 'Bag', plural: 'Bags', quantityInBase: 1, isDefaultSell: true },
+  ],
+  // A sachet-water plant counts every sachet and sells the market bag of 20.
+  // A single sachet stays sellable at the gate and at a hawker's bowl.
+  WATER_SACHET: [
+    { code: 'SACHET', name: 'Sachet', plural: 'Sachets', quantityInBase: 1 },
+    { code: 'BAG', name: 'Bag of 20', plural: 'Bags', quantityInBase: 20, isDefaultSell: true },
+  ],
+  // PET table water. The counter sells a bottle. A depot takes a pack of 12.
+  WATER_BOTTLE: [
+    { code: 'BOTTLE', name: 'Bottle', plural: 'Bottles', quantityInBase: 1, isDefaultSell: true },
+    { code: 'PACK', name: 'Pack of 12', plural: 'Packs', quantityInBase: 12 },
+  ],
+  // 1.5 litre bottles travel in sixes, not in the 50cl pack of 12.
+  WATER_LARGE: [
+    { code: 'BOTTLE', name: 'Bottle', plural: 'Bottles', quantityInBase: 1, isDefaultSell: true },
+    { code: 'PACK', name: 'Pack of 6', plural: 'Packs', quantityInBase: 6 },
+  ],
+  WATER_JERRY: [
+    { code: 'JERRYCAN', name: 'Jerrycan', plural: 'Jerrycans', quantityInBase: 1, isDefaultSell: true },
+  ],
+  // The counter sells a loaf. A depot, a school or a hotel takes a nylon of 10.
+  BAKERY_LOAF: [
+    { code: 'LOAF', name: 'Loaf', plural: 'Loaves', quantityInBase: 1, isDefaultSell: true },
+    { code: 'NYLON', name: 'Nylon of 10', plural: 'Nylons', quantityInBase: 10 },
+  ],
+  BAKERY_PIECE: [
+    { code: 'PIECE', name: 'Piece', plural: 'Pieces', quantityInBase: 1, isDefaultSell: true },
+    { code: 'PACK', name: 'Pack of 6', plural: 'Packs', quantityInBase: 6 },
   ],
   CABLE: [
     { code: 'METRE', name: 'Metre', plural: 'Metres', quantityInBase: 1, isDefaultSell: true },
@@ -242,6 +271,10 @@ const COMPLIANCE_FIELDS = Object.freeze({
   SCUML: { type: 'SCUML', label: 'SCUML Certificate', expires: true, hint: 'EFCC Special Control Unit Against Money Laundering — required for dealers in high-value goods' },
   PCN: { type: 'PCN', label: 'PCN Premises Licence', expires: true, hint: 'Pharmacists Council of Nigeria premises licence' },
   SUPERINTENDENT: { type: 'SUPERINTENDENT', label: 'Superintendent Pharmacist', expires: true, hint: 'The pharmacist named on the premises licence' },
+  // Packaged water is NIS 306, enforced with NAFDAC. NIS 554 is drinking
+  // water from a utility or a tanker, and it says so: it excludes packaged water.
+  NIS_PACKAGED_WATER: { type: 'NIS_PACKAGED_WATER', label: 'SON / NIS 306 packaged water', expires: true, hint: 'Nigerian Industrial Standard for potable packaged water. Not a pharmacy licence.' },
+  FOOD_HANDLERS: { type: 'FOOD_HANDLERS', label: 'Food handlers’ medicals', expires: true, hint: 'Current medical certificates for people who pack water or handle dough and finished bread' },
 });
 
 // ---------------------------------------------------------------------
@@ -300,6 +333,17 @@ const CUSTOMER_CLASS_SETS = Object.freeze({
     { code: 'LESSEE', name: 'Lessee', discountPct: 0, creditAllowed: true, termsDays: 7, defaultCreditLimit: 1000000 },
     { code: 'CORPORATE', name: 'Corporate lessee', discountPct: 5, creditAllowed: true, termsDays: 30, defaultCreditLimit: 5000000 },
   ],
+  // A factory gate in one morning: a hawker buying two bags for cash, a
+  // kiosk on three-day terms, a depot on a fortnight, and a school or a
+  // hotel that wants an invoice. The class picks the price before the
+  // cashier types the quantity.
+  ROUTE_TRADE: [
+    { code: 'WALK_IN', name: 'Counter', discountPct: 0, creditAllowed: false, termsDays: 0 },
+    { code: 'KIOSK', name: 'Kiosk / hawker', discountPct: 5, creditAllowed: true, termsDays: 3, defaultCreditLimit: 80000 },
+    { code: 'RETAILER', name: 'Retailer', discountPct: 8, creditAllowed: true, termsDays: 7, defaultCreditLimit: 250000 },
+    { code: 'WHOLESALE', name: 'Wholesale depot', discountPct: 12, creditAllowed: true, termsDays: 14, defaultCreditLimit: 1500000 },
+    { code: 'INSTITUTION', name: 'School, hotel or event', discountPct: 8, creditAllowed: true, termsDays: 14, defaultCreditLimit: 500000 },
+  ],
 });
 
 // ---------------------------------------------------------------------
@@ -329,6 +373,10 @@ const EXPENSE_CATEGORY_SETS = Object.freeze({
   // A yard that sends goods out and brings them back. The shop's own rent is
   // still RENT. EQUIPMENT_HIRE here is money paid to somebody else.
   HIRE_YARD: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'TRANSPORT_LOGISTICS', 'SECURITY', 'CLEANING', 'REPAIRS_MAINTENANCE', 'BANK_CHARGES', 'LOADERS_PORTERS', 'EQUIPMENT_HIRE', 'SHRINKAGE', 'MISC'],
+  // A plant. DRIVER_WAGES is the salary of a driver on a vehicle the
+  // business owns. A partner rider is not in that line: their pay is a
+  // share of the sales they delivered, recorded when the drop is closed.
+  PRODUCTION: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'DRIVER_WAGES', 'TRANSPORT_LOGISTICS', 'PACKAGING_MATERIALS', 'WATER_TREATMENT', 'BAKERY_GAS', 'REPAIRS_MAINTENANCE', 'SHRINKAGE', 'SECURITY', 'CLEANING', 'BANK_CHARGES', 'MISC'],
 });
 
 // =====================================================================
@@ -936,6 +984,122 @@ const PROFILES = Object.freeze({
   },
 
   // -------------------------------------------------------------------
+  // WATER_PACKING — sachet (pure water) and bottled table water
+  // -------------------------------------------------------------------
+  // One plant, two packs. The market bag is 20 sachets. Bottles sell by
+  // the piece and by the pack. NAFDAC registers the premises and the
+  // product; NIS 306 is the packaged-water standard. This is not a
+  // pharmacy and it does not open the Greenbook.
+  //
+  // The gate prints a bill, the cashier takes the money, then the load
+  // is released onto a vehicle. The suggested mix is an owned pickup
+  // (the driver is paid a wage) and partner kekes (paid on the sales
+  // they deliver). The owner confirms one or two types. Starter prices
+  // are samples: a bag prices at 20 times the sachet, and a depot price
+  // is the wholesale class, not a second hidden ladder.
+  WATER_PACKING: {
+    code: 'WATER_PACKING',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
+    label: 'Water packing (sachet and bottle)',
+    blurb: 'Sachet pure water and bottled table water from one plant. Sell a sachet, a bag of 20, a bottle or a pack. The gate bills, takes payment, then releases the load. NAFDAC packaged water — not a pharmacy.',
+    baseUnit: 'sachet',
+    defaultLadder: LADDERS.WATER_SACHET,
+    dispatch: true,
+    dispatchDefaults: Object.freeze([
+      { vehicleClass: 'PICKUP', arrangement: 'OWNED' },
+      { vehicleClass: 'TRICYCLE', arrangement: 'PARTNER', salesSharePct: 8 },
+    ]),
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      expiryTracking: true, batchTracking: true, quarantine: true, recalls: true,
+      wholesalePricing: true, bulkyDelivery: true, commissionTracking: true,
+      billBeforeReceipt: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'NAFDAC_PREMISES', 'NIS_PACKAGED_WATER', 'FOOD_HANDLERS', 'TRADING_PERMIT', 'FIRE_CERT']),
+    registrationAuthorities: Object.freeze(['NAFDAC', 'SON']),
+    variantAxes: Object.freeze([]),
+    customerClasses: CUSTOMER_CLASS_SETS.ROUTE_TRADE,
+    expenseCategories: EXPENSE_CATEGORY_SETS.PRODUCTION,
+    returnReasons: Object.freeze(['DEFECTIVE', 'WRONG_ITEM', 'DAMAGED_IN_TRANSIT', 'RECALL', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 2,
+    categories: Object.freeze([
+      { code: 'SACHET_WATER', name: 'Sachet water (pure water)' },
+      { code: 'BOTTLED_WATER', name: 'Bottled table water' },
+      { code: 'DISPENSER_WATER', name: 'Dispenser and jerrycan' },
+      { code: 'PACKAGING', name: 'Film, bags and labels' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Sachet water 50cl', sku: 'WP-SW-001', category: 'SACHET_WATER', cost: 14, price: 25, reorder: 200, ladder: 'WATER_SACHET', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Sachet water 60cl', sku: 'WP-SW-002', category: 'SACHET_WATER', cost: 16, price: 30, reorder: 120, ladder: 'WATER_SACHET', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Table water 50cl bottle', sku: 'WP-BW-001', category: 'BOTTLED_WATER', cost: 55, price: 100, reorder: 40, ladder: 'WATER_BOTTLE', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Table water 75cl bottle', sku: 'WP-BW-002', category: 'BOTTLED_WATER', cost: 80, price: 150, reorder: 40, ladder: 'WATER_BOTTLE', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Table water 1.5L bottle', sku: 'WP-BW-003', category: 'BOTTLED_WATER', cost: 120, price: 250, reorder: 24, ladder: 'WATER_LARGE', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Dispenser refill 19L', sku: 'WP-DW-001', category: 'DISPENSER_WATER', cost: 600, price: 1200, reorder: 20, ladder: 'WATER_JERRY', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Dispenser bottle 19L', sku: 'WP-DW-002', category: 'DISPENSER_WATER', cost: 1800, price: 3500, reorder: 8, ladder: 'WATER_JERRY', bulky: true },
+      { name: 'Printed sachet film (roll)', sku: 'WP-PK-001', category: 'PACKAGING', cost: 18000, price: 18000, reorder: 4, ladder: 'EACH_ONLY', sale: false },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
+  // BAKERY — bake, then sell retail and wholesale
+  // -------------------------------------------------------------------
+  // The oven and the counter are the same business. A walk-in buys one
+  // loaf. A depot, a kiosk, a school or a hotel takes a nylon of 10
+  // before the crumb goes stale. Pies and snacks sell by the piece and
+  // by the pack of 6. Returns are short because bread does not wait.
+  //
+  // Suggested dispatch: an owned van for the wholesale round (driver on
+  // a wage) and partner motorcycles for the neighbourhood (paid on the
+  // sales they deliver). The owner confirms one or two types.
+  BAKERY: {
+    code: 'BAKERY',
+    tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
+    label: 'Bakery (retail and wholesale)',
+    blurb: 'Bake, then sell at the counter and to depots, kiosks, schools and hotels. A loaf, a nylon of 10, a pie or a pack. The shift bills the load, takes payment, then the van or the bike leaves with the bread.',
+    baseUnit: 'loaf',
+    defaultLadder: LADDERS.BAKERY_LOAF,
+    dispatch: true,
+    dispatchDefaults: Object.freeze([
+      { vehicleClass: 'VAN', arrangement: 'OWNED' },
+      { vehicleClass: 'BIKE', arrangement: 'PARTNER', salesSharePct: 10 },
+    ]),
+    features: Object.freeze({
+      ...ALL_FEATURES_OFF,
+      expiryTracking: true, batchTracking: true, quarantine: true, recalls: true,
+      wholesalePricing: true, bulkyDelivery: true, commissionTracking: true,
+      billBeforeReceipt: true,
+    }),
+    complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'NAFDAC_PREMISES', 'FOOD_HANDLERS', 'TRADING_PERMIT', 'FIRE_CERT']),
+    registrationAuthorities: Object.freeze(['NAFDAC', 'SON']),
+    variantAxes: Object.freeze([]),
+    customerClasses: CUSTOMER_CLASS_SETS.ROUTE_TRADE,
+    expenseCategories: EXPENSE_CATEGORY_SETS.PRODUCTION,
+    returnReasons: Object.freeze(['DEFECTIVE', 'WRONG_ITEM', 'DAMAGED_IN_TRANSIT', 'CUSTOMER_CHANGE_OF_MIND', 'OTHER']),
+    defaultWarrantyMonths: 0,
+    defaultReturnWindowDays: 1,
+    categories: Object.freeze([
+      { code: 'BREAD', name: 'Bread' },
+      { code: 'PASTRY', name: 'Pies, rolls and doughnuts' },
+      { code: 'SNACKS', name: 'Chin-chin and small chops' },
+      { code: 'CAKES', name: 'Cakes' },
+      { code: 'INGREDIENTS', name: 'Flour, sugar and yeast' },
+    ]),
+    seedProducts: Object.freeze([
+      { name: 'Agege bread', sku: 'BK-BR-001', category: 'BREAD', cost: 450, price: 900, reorder: 40, ladder: 'BAKERY_LOAF', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Sliced family loaf', sku: 'BK-BR-002', category: 'BREAD', cost: 700, price: 1400, reorder: 24, ladder: 'BAKERY_LOAF', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Butter bread', sku: 'BK-BR-003', category: 'BREAD', cost: 500, price: 1000, reorder: 24, ladder: 'BAKERY_LOAF', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
+      { name: 'Meat pie', sku: 'BK-PA-001', category: 'PASTRY', cost: 180, price: 400, reorder: 30, ladder: 'BAKERY_PIECE', expiry: true },
+      { name: 'Doughnut', sku: 'BK-PA-002', category: 'PASTRY', cost: 120, price: 300, reorder: 30, ladder: 'BAKERY_PIECE', expiry: true },
+      { name: 'Chin-chin 500g', sku: 'BK-SN-001', category: 'SNACKS', cost: 700, price: 1500, reorder: 16, ladder: 'EACH_ONLY', expiry: true },
+      { name: 'Small chops pack', sku: 'BK-SN-002', category: 'SNACKS', cost: 1200, price: 2500, reorder: 12, ladder: 'EACH_ONLY', expiry: true },
+      { name: 'Plain cake loaf', sku: 'BK-CK-001', category: 'CAKES', cost: 1500, price: 3000, reorder: 8, ladder: 'EACH_ONLY', expiry: true },
+      { name: 'Flour 50kg', sku: 'BK-IN-001', category: 'INGREDIENTS', cost: 42000, price: 48000, reorder: 6, ladder: 'BAG_ONLY', expiry: true },
+      { name: 'Sugar 50kg', sku: 'BK-IN-002', category: 'INGREDIENTS', cost: 48000, price: 55000, reorder: 4, ladder: 'BAG_ONLY', expiry: true },
+    ]),
+  },
+
+  // -------------------------------------------------------------------
   // GENERAL_RETAIL — the blank, fully-configurable profile
   // -------------------------------------------------------------------
   // Exists so a deployment is never forced into a vertical that does not
@@ -1068,6 +1232,7 @@ function describeProfile(code) {
     blurb: p.blurb,
     baseUnit: p.baseUnit,
     tradeModes: Array.isArray(p.tradeModes) ? p.tradeModes : ['RETAIL'],
+    dispatch: p.dispatch ? summariseModes(p.dispatchDefaults) : null,
     enabledFeatures: FEATURE_FLAGS.filter((f) => p.features[f]),
     disabledFeatures: FEATURE_FLAGS.filter((f) => !p.features[f]),
     categoryCount: p.categories.length,
