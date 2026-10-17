@@ -33,4 +33,4 @@ On sample as `ridge-20261017-1419-1c58091`. Water packing and bakery can be crea
 
 ## Stage 2 status
 
-Dispatch confirmation, fleet, and partner payout are in the tree. An owner saves one or two modes. A manager adds a vehicle that matches a saved mode. Marking a drop delivered calculates a partner’s share of the goods, excluding the delivery fee, and records that payout once as a transport expense. An owned driver is not paid from the drop. Not on sample until the next deploy.
+On sample as `ridge-20261017-1426-722d373`. An owner saves one or two modes. A manager adds a vehicle that matches a saved mode. Marking a drop delivered calculates a partner’s share of the goods, excluding the delivery fee, and records that payout once as a transport expense. An owned driver is not paid from the drop. Production was not deployed.
