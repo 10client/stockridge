@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --green-900: #04180a;
   --green-800: #07290c;
   --green-700: #0d5a22;
@@ -46,6 +47,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --green-900: #03140a;
   --green-800: #07290c;
   --green-700: #168033;
@@ -564,6 +566,80 @@ input[type="text"], input[type="number"], input[type="date"], input[type="search
 }
 textarea { min-height: 74px; resize: vertical; }
 select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--ink-500) 50%), linear-gradient(135deg, var(--ink-500) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+
+/* Typed values must follow the theme, not the operating system's field colour.
+   Date, time, search, password and a disabled box otherwise keep black ink on
+   the dark surface, or light ink on a light native box. Switches are excluded:
+   they are drawn, not typed. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"]),
+select,
+textarea {
+  color: var(--ink-900);
+  caret-color: var(--ink-900);
+  background-color: var(--surface);
+  -webkit-text-fill-color: var(--ink-900);
+}
+input::-webkit-datetime-edit,
+input::-webkit-datetime-edit-fields-wrapper,
+input::-webkit-datetime-edit-text,
+input::-webkit-datetime-edit-month-field,
+input::-webkit-datetime-edit-day-field,
+input::-webkit-datetime-edit-year-field,
+input::-webkit-datetime-edit-hour-field,
+input::-webkit-datetime-edit-minute-field,
+input::-webkit-datetime-edit-second-field,
+input::-webkit-datetime-edit-ampm-field {
+  color: var(--ink-900);
+  -webkit-text-fill-color: var(--ink-900);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-500);
+  -webkit-text-fill-color: var(--ink-500);
+  opacity: 1;
+}
+input:not([type="checkbox"]):not([type="radio"]):disabled,
+select:disabled,
+textarea:disabled {
+  color: var(--ink-700);
+  -webkit-text-fill-color: var(--ink-700);
+  background-color: var(--surface-3);
+  opacity: 1;
+}
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+textarea:-webkit-autofill,
+select:-webkit-autofill {
+  -webkit-text-fill-color: var(--ink-900) !important;
+  caret-color: var(--ink-900);
+  box-shadow: 0 0 0 1000px var(--surface) inset;
+  transition: background-color 9999s ease-out 0s;
+}
+select option,
+select optgroup {
+  color: var(--ink-900);
+  background-color: var(--surface);
+}
+[data-theme="dark"] ::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type="search"]::-webkit-search-cancel-button,
+[data-theme="dark"] input[type="number"]::-webkit-inner-spin-button {
+  filter: invert(1) brightness(1.6);
+  opacity: .9;
+}
+input[type="file"] {
+  color: var(--ink-700);
+  -webkit-text-fill-color: var(--ink-700);
+}
+input[type="file"]::file-selector-button {
+  color: var(--ink-900);
+  -webkit-text-fill-color: var(--ink-900);
+  background: var(--surface-3);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-right: 10px;
+}
 label.ctl { display: block; font-size: .78rem; font-weight: 650; color: var(--ink-500); margin-bottom: 5px; text-transform: uppercase; letter-spacing: .035em; }
 .check { display: flex; align-items: flex-start; gap: 10px; font-size: .88rem; font-weight: 500; }
 .check input[type="checkbox"] {
