@@ -26,7 +26,7 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, searchTerm, optionalCoordinates } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, searchTerm, optionalCoordinates, inScope } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
@@ -1167,6 +1167,161 @@ function mount(app, base = '/api') {
   });
 
   /**
+   * Attach the load. Manager or above only.
+   *
+   * The cashier sells. The driver records what happened on the drop. Neither
+   * of them decides who carries it, which vehicle, or how many of each product
+   * went out. Those are attached here, and the phone, the plate and how the
+   * person is paid follow the staff record and the vehicle — they are not
+   * typed again.
+   */
+  app.post(`${base}/deliveries/:id/assignment`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('Only a manager or above can attach staff, the vehicle and the product amounts to a dispatch.', { status: 403, code: 'LOAD_NEEDS_MANAGER' });
+    }
+    const id = String(ctx.req.param('id'));
+    const job = await db.first('SELECT * FROM delivery_jobs WHERE id = ? AND is_deleted = 0', [id]);
+    if (!job) throw new HttpError('That delivery job does not exist.', { status: 404, code: 'DELIVERY_NOT_FOUND' });
+    if (!inScope(ctx.get('scope'), job)) throw new HttpError('That delivery belongs to another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+    if (['DELIVERED', 'CANCELLED', 'RETURNED'].includes(String(job.status).toUpperCase())) {
+      throw new HttpError('This drop is already closed. The staff, the vehicle and the amounts stay as they were when it left.', { status: 409, code: 'LOAD_CLOSED' });
+    }
+    const body = await ctx.req.json();
+    const business = await db.first('SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ?', [String(job.business_id)]);
+    let overrides = null;
+    if (business && business.profile_overrides_json) {
+      try { overrides = JSON.parse(business.profile_overrides_json); } catch (e) { overrides = null; }
+    }
+    const saved = normaliseModes(overrides && overrides.dispatch && overrides.dispatch.modes);
+    const confirmed = saved.ok ? saved.modes : null;
+
+    let vehicle = null;
+    if (body.vehicle_id) {
+      vehicle = await db.first('SELECT * FROM delivery_vehicles WHERE id = ? AND is_deleted = 0', [String(body.vehicle_id)]);
+      if (!vehicle || String(vehicle.business_id) !== String(job.business_id) || !Number(vehicle.is_active)) {
+        throw new HttpError('That vehicle is not on this business’s fleet.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
+      }
+      if (confirmed && !modeMatches(confirmed, vehicle.vehicle_class, vehicle.arrangement)) {
+        throw new HttpError('That vehicle is not in the mix the owner confirmed.', { status: 400, code: 'VEHICLE_NOT_IN_MIX' });
+      }
+    } else if (confirmed) {
+      throw new HttpError('Attach a vehicle from the fleet. This business confirmed a dispatch mix, and a load with no vehicle has nobody to pay.', { status: 400, code: 'DISPATCH_REQUIRED' });
+    }
+
+    const arrangement = vehicle ? String(vehicle.arrangement || '').toUpperCase() : null;
+    const staffId = body.driver_user_id || body.staff_id || null;
+    let staff = null;
+    if (staffId) {
+      staff = await db.first('SELECT id, full_name, phone, role, job_title, business_id, branch_id, is_active FROM users WHERE id = ? AND is_deleted = 0', [String(staffId)]);
+      if (!staff || !Number(staff.is_active) || String(staff.role) === 'ADMIN') {
+        throw new HttpError('That staff member is not active on this business.', { status: 404, code: 'STAFF_NOT_FOUND' });
+      }
+      if (staff.business_id && String(staff.business_id) !== String(job.business_id)) {
+        throw new HttpError('That staff member belongs to another business.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+      }
+      if (!inScope(ctx.get('scope'), { business_id: staff.business_id || job.business_id, branch_id: staff.branch_id || job.branch_id })) {
+        throw new HttpError('That staff member is outside your branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+      }
+    }
+    if (arrangement === 'OWNED' && !staff) {
+      throw new HttpError('Attach the staff member who is taking this vehicle. An owned vehicle is driven by someone on the wage roll, not by a name typed on the drop.', { status: 400, code: 'STAFF_REQUIRED' });
+    }
+    if (!vehicle && !staff) {
+      throw new HttpError('Attach the staff member, or the vehicle, before saving the load.', { status: 400, code: 'LOAD_INCOMPLETE' });
+    }
+
+    const lines = await db.all(`SELECT i.id, i.product_id, i.quantity, i.quantity_in_base, i.unit_code, i.sale_item_id,
+        si.quantity AS sale_quantity, si.quantity_in_base AS sale_base
+      FROM delivery_job_items i
+      LEFT JOIN sale_items si ON si.id = i.sale_item_id
+      WHERE i.delivery_job_id = ? AND i.is_deleted = 0 ORDER BY i.id`, [id]);
+    const sent = Array.isArray(body.items) ? body.items : null;
+    if (lines.length && (!sent || !sent.length)) {
+      throw new HttpError('Set the amount of each product on this load. The sale quantity is the ceiling — a manager decides how much of it goes on this vehicle.', { status: 400, code: 'QUANTITY_REQUIRED' });
+    }
+    const byId = new Map((sent || []).map((row) => [String(row.id), row]));
+    const updates = [];
+    for (const line of lines) {
+      const row = byId.get(String(line.id));
+      if (!row) throw new HttpError('Every product on this dispatch needs an amount. Leave none of them off the load.', { status: 400, code: 'QUANTITY_REQUIRED' });
+      const qty = Number(row.quantity);
+      const sold = Number(line.sale_quantity) || Number(line.quantity) || 0;
+      const soldBase = Number(line.sale_base) || Number(line.quantity_in_base) || sold;
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new HttpError('Each amount has to be more than zero. Take a product off by recording a return, not by attaching nothing.', { status: 400, code: 'INVALID_QUANTITY' });
+      }
+      if (qty - sold > 0.0001) {
+        throw new HttpError('That amount is more than this sale put on the dispatch. The load cannot carry goods the sale did not take off the shelf.', { status: 400, code: 'QUANTITY_OVER_SALE' });
+      }
+      const ratio = sold > 0 ? qty / sold : 1;
+      updates.push({
+        id: String(line.id),
+        quantity: round2(qty),
+        quantityInBase: round2(soldBase * ratio),
+        reduced: sold - qty > 0.0001,
+        sold,
+      });
+    }
+
+    const driverName = staff ? staff.full_name : (vehicle && vehicle.driver_name) || null;
+    const driverPhone = staff && staff.phone ? staff.phone : (vehicle && vehicle.driver_phone) || null;
+    if ((arrangement === 'PARTNER' || vehicle) && !driverName) {
+      throw new HttpError('This vehicle has no driver on it. Attach a staff member, or put the partner’s name on the vehicle first.', { status: 400, code: 'DRIVER_REQUIRED' });
+    }
+    const mode = confirmed && vehicle
+      ? confirmed.find((item) => item.vehicleClass === vehicle.vehicle_class && item.arrangement === vehicle.arrangement)
+      : null;
+    const share = arrangement === 'PARTNER'
+      ? (mode && mode.salesSharePct != null ? mode.salesSharePct : (vehicle && vehicle.sales_share_pct))
+      : null;
+    const note = `\n[${watNow()}] Load attached by ${user.full_name || user.username}: ${driverName || 'no staff'} on ${vehicle ? (vehicle.plate_no || vehicle.name) : 'no vehicle'}.`;
+
+    await db.transaction(async (tx) => {
+      tx.queue(`UPDATE delivery_jobs SET
+          driver_user_id = ?, driver_name = ?, driver_phone = ?,
+          vehicle_id = ?, vehicle_class = ?, arrangement = ?, pay_basis = ?, sales_share_pct = ?, vehicle_no = ?,
+          load_attached_at = datetime('now'), load_attached_by = ?,
+          notes = COALESCE(notes, '') || ?,
+          updated_at = datetime('now')
+        WHERE id = ? AND is_deleted = 0`, [
+        staff ? String(staff.id) : null,
+        driverName,
+        driverPhone,
+        vehicle ? String(vehicle.id) : null,
+        vehicle ? vehicle.vehicle_class : null,
+        arrangement,
+        arrangement === 'PARTNER' ? 'SALES_SHARE' : (arrangement === 'OWNED' ? 'WAGE' : null),
+        share,
+        vehicle ? (vehicle.plate_no || vehicle.name) : null,
+        String(user.id),
+        note,
+        id,
+      ]);
+      for (const row of updates) {
+        tx.queue(`UPDATE delivery_job_items SET quantity = ?, quantity_in_base = ?, updated_at = datetime('now') WHERE id = ? AND is_deleted = 0`, [
+          row.quantity, row.quantityInBase, row.id,
+        ]);
+      }
+    });
+
+    await recordFromCtx(ctx, {
+      action: 'DELIVERY_LOAD_ATTACHED', entityType: 'DELIVERY_JOB', entityId: id,
+      branchId: job.branch_id, businessId: job.business_id,
+      before: { driver_user_id: job.driver_user_id, vehicle_id: job.vehicle_id, driver_name: job.driver_name },
+      after: { driver_user_id: staff ? staff.id : null, vehicle_id: vehicle ? vehicle.id : null, driver_name: driverName, items: updates },
+    });
+    const short = updates.filter((row) => row.reduced);
+    ctx.json({
+      ok: true,
+      driver_name: driverName,
+      vehicle_no: vehicle ? (vehicle.plate_no || vehicle.name) : null,
+      message: `${job.job_no} is attached to ${driverName || 'the vehicle'}${vehicle ? ` on ${vehicle.plate_no || vehicle.name}` : ''}. ${updates.length ? `${updates.length} product line${updates.length === 1 ? '' : 's'} on the load.` : ''}${short.length ? ' A smaller amount than the sale does not put the rest back on the shelf.' : ''}`,
+    });
+  }));
+
+  /**
    * Move a delivery job through its lifecycle.
    *
    * There is no status-history table in this schema, so the transition is
@@ -1211,8 +1366,15 @@ function mount(app, base = '/api') {
     }
     const proof = strField(body.proof_of_delivery || body.proofUrl, { field: 'Proof of delivery', maxLength: 500 });
     const deliveredTo = strField(body.delivered_to, { field: 'Received by', maxLength: 160 });
-    const assignedDriver = strField(body.driver_name, { field: 'Driver', maxLength: 120 });
-    const driverPhone = strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 });
+    // The load is attached on its own screen, by a manager or above. A status
+    // update — including one from a manager — does not also reassign the
+    // staff, the vehicle or the amounts. Two writers is how a driver ends up
+    // on a bike they were never given.
+    const assignmentTouched = ['driver_name', 'driver_phone', 'driver_user_id', 'vehicle_id', 'vehicle_no', 'vehicle_class', 'arrangement', 'items', 'lines']
+      .filter((key) => body[key] != null && body[key] !== '');
+    if (assignmentTouched.length) {
+      throw new HttpError('A manager or above attaches the staff, the vehicle and the product amounts. This only records what happened on the drop.', { status: 403, code: 'LOAD_NEEDS_MANAGER' });
+    }
 
     const policy = policyForBusiness(await db.first('SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ?', [String(job.business_id)]));
     const askedTerm = normaliseTerm(body.settlement || body.selling_terms);
@@ -1233,7 +1395,7 @@ function mount(app, base = '/api') {
     if (dropTerm === 'SPOT' && !policy.spot) {
       throw new HttpError('This business sells on credit. An upfront drop is turned off.', { status: 400, code: 'SPOT_NOT_OFFERED' });
     }
-    const assignment = await dispatchAssignment(db, job, body, status);
+    const assignment = await dispatchAssignment(db, job, {}, status, { fromJob: true });
     const gps = optionalCoordinates(body);
     if (!gps.ok) throw new HttpError(gps.error, { status: 400, code: 'GPS_INVALID' });
     const transactionNote = strField(body.transaction_note, { field: 'Transaction note', maxLength: 500 });
@@ -1255,16 +1417,8 @@ function mount(app, base = '/api') {
     if (status === 'DELIVERED') sets.push("delivered_at = datetime('now')");
     if (deliveredTo) { sets.push('delivered_to = ?'); params.push(deliveredTo); }
     if (proof) { sets.push('proof_of_delivery = ?'); params.push(proof); }
-    if (assignment.driver_name) { sets.push('driver_name = ?'); params.push(assignment.driver_name); }
-    else if (assignedDriver) { sets.push('driver_name = ?'); params.push(assignedDriver); }
-    if (assignment.driver_phone) { sets.push('driver_phone = ?'); params.push(assignment.driver_phone); }
-    else if (driverPhone) { sets.push('driver_phone = ?'); params.push(driverPhone); }
-    if (assignment.vehicle_id) { sets.push('vehicle_id = ?'); params.push(assignment.vehicle_id); }
-    if (assignment.vehicle_class) { sets.push('vehicle_class = ?'); params.push(assignment.vehicle_class); }
-    if (assignment.arrangement) { sets.push('arrangement = ?'); params.push(assignment.arrangement); }
-    if (assignment.pay_basis) { sets.push('pay_basis = ?'); params.push(assignment.pay_basis); }
-    if (assignment.sales_share_pct != null) { sets.push('sales_share_pct = ?'); params.push(assignment.sales_share_pct); }
-    if (assignment.vehicle_no) { sets.push('vehicle_no = ?'); params.push(assignment.vehicle_no); }
+    // Status does not attach the load. Partner pay still needs the arrangement
+    // already on the job, which a manager set before the goods left.
     if (assignment.driver_pay != null) { sets.push('driver_pay = ?'); params.push(assignment.driver_pay); }
     if (gps.present) {
       sets.push('latitude = ?'); params.push(gps.latitude);
@@ -1348,7 +1502,7 @@ function mount(app, base = '/api') {
       action: 'DELIVERY_STATUS_CHANGED', entityType: 'DELIVERY_JOB', entityId: id,
       branchId: job.branch_id, businessId: job.business_id,
       before: { status: previousStatus },
-      after: { status, note, deliveredTo, proof, driver: assignedDriver, stockReturned: ['RETURNED', 'CANCELLED'].includes(status) },
+      after: { status, note, deliveredTo, proof, stockReturned: ['RETURNED', 'CANCELLED'].includes(status) },
     });
 
     const paper = dropTerm ? paperOf({
@@ -1515,7 +1669,8 @@ function mount(app, base = '/api') {
  * that is leaving the gate has to name a vehicle from that mix, because
  * the person who carried it is either on a wage or owed a share.
  */
-async function dispatchAssignment(db, job, body, status) {
+async function dispatchAssignment(db, job, body, status, opts = {}) {
+  const fromJob = Boolean(opts.fromJob);
   const business = await db.first('SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ?', [job.business_id]);
   let overrides = null;
   if (business && business.profile_overrides_json) {
@@ -1524,28 +1679,35 @@ async function dispatchAssignment(db, job, body, status) {
   const saved = normaliseModes(overrides && overrides.dispatch && overrides.dispatch.modes);
   const confirmed = saved.ok ? saved.modes : null;
   let vehicle = null;
-  if (body.vehicle_id) {
-    vehicle = await db.first('SELECT * FROM delivery_vehicles WHERE id = ? AND is_deleted = 0', [String(body.vehicle_id)]);
+  const vehicleId = fromJob ? job.vehicle_id : (body.vehicle_id || job.vehicle_id);
+  if (vehicleId) {
+    vehicle = await db.first('SELECT * FROM delivery_vehicles WHERE id = ? AND is_deleted = 0', [String(vehicleId)]);
     if (!vehicle || String(vehicle.business_id) !== String(job.business_id)) {
       throw new HttpError('That vehicle is not on this business’s fleet.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
     }
   }
   const vehicleClass = vehicle
     ? vehicle.vehicle_class
-    : (body.vehicle_class ? String(body.vehicle_class).toUpperCase() : (job.vehicle_class || null));
+    : (fromJob ? (job.vehicle_class || null) : (body.vehicle_class ? String(body.vehicle_class).toUpperCase() : (job.vehicle_class || null)));
   const arrangement = vehicle
     ? vehicle.arrangement
-    : (body.arrangement ? String(body.arrangement).toUpperCase() : (job.arrangement || null));
+    : (fromJob ? (job.arrangement || null) : (body.arrangement ? String(body.arrangement).toUpperCase() : (job.arrangement || null)));
   if (confirmed && (body.vehicle_id || body.vehicle_class || body.arrangement)) {
     if (!modeMatches(confirmed, vehicleClass, arrangement)) {
       throw new HttpError('That vehicle is not in the mix the owner confirmed.', { status: 400, code: 'VEHICLE_NOT_IN_MIX' });
     }
   }
   const leaving = ['PICKED', 'IN_TRANSIT', 'DELIVERED'].includes(status);
+  if (fromJob && confirmed && leaving && !job.load_attached_at) {
+    throw new HttpError('A manager or above has to attach the staff, the vehicle and the product amounts before this load leaves.', { status: 409, code: 'LOAD_NOT_ATTACHED' });
+  }
   if (confirmed && leaving && !vehicleClass) {
     throw new HttpError('Name the vehicle before the load leaves. This business confirmed a dispatch mix, and a drop with no vehicle has nobody to pay.', { status: 400, code: 'DISPATCH_REQUIRED' });
   }
-  if (confirmed && status === 'DELIVERED' && arrangement && !strField(body.driver_name, { field: 'Driver', maxLength: 120 }) && !(vehicle && vehicle.driver_name) && !job.driver_name) {
+  const namedDriver = fromJob
+    ? (job.driver_name || (vehicle && vehicle.driver_name))
+    : (strField(body.driver_name, { field: 'Driver', maxLength: 120 }) || (vehicle && vehicle.driver_name) || job.driver_name);
+  if (confirmed && status === 'DELIVERED' && arrangement && !namedDriver) {
     throw new HttpError('Name the driver. An owned vehicle needs the person on the wage roll, and a partner needs the person the share is paid to.', { status: 400, code: 'DRIVER_REQUIRED' });
   }
   const mode = confirmed && confirmed.find((item) => item.vehicleClass === vehicleClass && item.arrangement === arrangement);
@@ -1568,8 +1730,8 @@ async function dispatchAssignment(db, job, body, status) {
     pay_basis: arrangement === 'PARTNER' ? 'SALES_SHARE' : (arrangement === 'OWNED' ? 'WAGE' : null),
     sales_share_pct: share,
     vehicle_no: strField(body.vehicle_no, { field: 'Vehicle', maxLength: 40 }) || (vehicle && (vehicle.plate_no || vehicle.name)) || null,
-    driver_name: strField(body.driver_name, { field: 'Driver', maxLength: 120 }) || (vehicle && vehicle.driver_name) || null,
-    driver_phone: strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 }) || (vehicle && vehicle.driver_phone) || null,
+    driver_name: (fromJob ? job.driver_name : strField(body.driver_name, { field: 'Driver', maxLength: 120 })) || (vehicle && vehicle.driver_name) || null,
+    driver_phone: (fromJob ? job.driver_phone : strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 })) || (vehicle && vehicle.driver_phone) || null,
     driver_pay: driverPay,
   };
 }

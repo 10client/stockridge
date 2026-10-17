@@ -58,3 +58,8 @@ Still not in this plan: a fifth stored role, editing migrations 0001–0017, the
 On sample as `ridge-20261017-1517-8befc9e`. Not production.
 
 A cashier or a dispatch rider can sell on the spot or on credit, where the vertical allows both. A bakery and a water plant allow both. Other verticals follow whether a customer class is allowed credit, and an owner can turn either way on or off. The choice is stored on the sale and on the drop. Paid on the spot prints a receipt. A credit supply prints an invoice, and that paper stays an invoice even after the balance is later zero. Money taken later prints its own receipt, not a second invoice.
+
+
+## Who attaches the load
+
+A manager, an owner, or the administrator attaches the staff, the vehicle, and the amount of each product. The phone, the plate, and whether the person is on a wage or a share follow those records. A cashier or a driver can still record what happened on the drop — status, who received it, the pin, and whether it was credit or paid on the spot — but cannot change who was sent, which vehicle, or how much went out. A confirmed dispatch mix cannot leave until that attachment is saved. A smaller amount than the sale does not put the rest back on the shelf.

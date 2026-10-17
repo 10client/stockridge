@@ -67,7 +67,7 @@ const LWW_TABLES = {
   delivery_jobs: {
     // A driver in the field updating a drop status is the canonical offline
     // write. Money columns are excluded: the fee is set when the job is created.
-    pk: 'id', columns: ['status', 'driver_name', 'driver_phone', 'delivered_at', 'delivered_to', 'proof_of_delivery', 'notes', 'attempts', 'latitude', 'longitude', 'transaction_note', 'settlement'],
+    pk: 'id', columns: ['status', 'delivered_at', 'delivered_to', 'proof_of_delivery', 'notes', 'attempts', 'latitude', 'longitude', 'transaction_note', 'settlement'],
     scopeColumn: 'branch_id',
   },
   stocktake_lines: {
