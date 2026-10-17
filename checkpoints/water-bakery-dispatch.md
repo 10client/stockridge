@@ -37,7 +37,7 @@ On sample as `ridge-20261017-1426-722d373`. An owner saves one or two modes. A m
 
 ## Stage 3 status
 
-Shipping to sample. Not production.
+On sample as `ridge-20261017-1454-31072cf`. Not production.
 
 A Nigerian plant often supplies a shop on credit and does not release the next batch until that supply is paid. A hawker who pays cash the same day is not held. This is trade credit, not consignment: the books already keep the debt on the customer. There is no second ledger.
 
