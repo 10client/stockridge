@@ -661,6 +661,8 @@ function mount(app, base = '/api') {
       ok: true, id: ledgerId,
       message: `₦${amount.toLocaleString('en-NG')} received from ${customer.name}.${sale ? ` Applied to ${sale.receipt_no}.` : ''}${onAccount > 0 ? ` ₦${onAccount.toLocaleString('en-NG')} is held as a credit on their account.` : ''} They now owe ₦${round2(balanceAfter - onAccount).toLocaleString('en-NG')}.`,
       balanceBefore, applied, onAccount, balanceAfter: round2(balanceAfter - onAccount),
+      balance: round2(balanceAfter - onAccount),
+      receipt_no: sale ? sale.receipt_no : null,
       chequePending: method === 'CHEQUE',
       warning: method === 'CHEQUE' ? 'A cheque is recorded as pending clearance. It stays on the account until the bank confirms it — do not release goods against an uncleared cheque.' : null,
     }, 201);

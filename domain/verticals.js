@@ -1001,7 +1001,7 @@ const PROFILES = Object.freeze({
     code: 'WATER_PACKING',
     tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Water packing (sachet and bottle)',
-    blurb: 'Sachet pure water and bottled table water from one plant. Sell a sachet, a bag of 20, a bottle or a pack. The gate bills, takes payment, then releases the load. A shop on credit does not collect the next batch until that supply is paid. Cash is not held. NAFDAC packaged water — not a pharmacy.',
+    blurb: 'Sachet pure water and bottled table water from one plant. Sell a sachet, a bag of 20, a bottle or a pack. The cashier or the dispatch rider can take payment on the spot, which prints a receipt, or supply on credit, which prints an invoice. A shop on credit does not collect the next batch until that supply is paid. Cash is not held. NAFDAC packaged water — not a pharmacy.',
     baseUnit: 'sachet',
     defaultLadder: LADDERS.WATER_SACHET,
     dispatch: true,
@@ -1009,6 +1009,10 @@ const PROFILES = Object.freeze({
     // supply is paid. Cash is not held. An owner can turn this off.
     creditUntilPaid: true,
     manufacturing: true,
+    // A hawker pays at the gate. A shop often takes the bags and pays after
+    // selling them. The cashier and the dispatch rider each choose, and the
+    // paper follows: a receipt if it was paid, an invoice if it was credit.
+    selling: Object.freeze({ spot: true, credit: true }),
     dispatchDefaults: Object.freeze([
       { vehicleClass: 'PICKUP', arrangement: 'OWNED' },
       { vehicleClass: 'TRICYCLE', arrangement: 'PARTNER', salesSharePct: 8 },
@@ -1066,12 +1070,16 @@ const PROFILES = Object.freeze({
     code: 'BAKERY',
     tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Bakery (retail and wholesale)',
-    blurb: 'Bake, then sell at the counter and to depots, kiosks, schools and hotels. A loaf, a nylon of 10, a pie or a pack. The shift bills the load, takes payment, then the van or the bike leaves with the bread. A depot on credit does not collect the next batch until that supply is paid. Cash is not held.',
+    blurb: 'Bake, then sell at the counter and to depots, kiosks, schools and hotels. A loaf, a nylon of 10, a pie or a pack. The cashier or the dispatch rider can take payment on the spot, which prints a receipt, or leave the bread on credit, which prints an invoice. That choice is kept from the sale to the drop. A depot on credit does not collect the next batch until that supply is paid. Cash is not held.',
     baseUnit: 'loaf',
     defaultLadder: LADDERS.BAKERY_LOAF,
     dispatch: true,
     creditUntilPaid: true,
     manufacturing: true,
+    // The counter can take cash for one loaf. The van can leave a nylon
+    // with a depot on credit. Either person chooses, and that choice is
+    // the paper the customer is given: a receipt, or an invoice.
+    selling: Object.freeze({ spot: true, credit: true }),
     dispatchDefaults: Object.freeze([
       { vehicleClass: 'VAN', arrangement: 'OWNED' },
       { vehicleClass: 'BIKE', arrangement: 'PARTNER', salesSharePct: 10 },
@@ -1227,6 +1235,17 @@ function resolveProfile(code, overrides) {
   }
   if (Object.prototype.hasOwnProperty.call(overrides, 'manufacturing')) {
     out.manufacturing = Boolean(overrides.manufacturing);
+  }
+  // Spot and credit are the paper the customer is given. They are not
+  // feature flags. A missing key leaves the profile's own answer, which
+  // for a route is both, and for a counter follows whether any customer
+  // class is allowed credit.
+  if (Object.prototype.hasOwnProperty.call(overrides, 'sellOnSpot') || Object.prototype.hasOwnProperty.call(overrides, 'sellOnCredit')) {
+    const { sellingPolicy } = require('./settlement');
+    const basePolicy = sellingPolicy(base);
+    const spot = Object.prototype.hasOwnProperty.call(overrides, 'sellOnSpot') ? Boolean(overrides.sellOnSpot) : basePolicy.spot;
+    const credit = Object.prototype.hasOwnProperty.call(overrides, 'sellOnCredit') ? Boolean(overrides.sellOnCredit) : basePolicy.credit;
+    out.selling = { spot: spot || !credit, credit: Boolean(credit) };
   }
   return out;
 }

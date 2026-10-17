@@ -167,7 +167,11 @@
               const terms = d.supply_terms || (due > 0.009 ? 'CREDIT' : (d.sale_type === 'CREDIT' ? 'CREDIT' : (d.sale_total != null ? 'CASH' : '')));
               if (!terms) return '—';
               const goods = d.goods_value != null ? d.goods_value : null;
-              const bits = [U.humanise(String(terms).toLowerCase())];
+              const bits = [];
+              const chosen = d.settlement || d.sale_settlement;
+              if (chosen === 'CREDIT') bits.push('Invoice');
+              else if (chosen === 'SPOT') bits.push('Receipt');
+              bits.push(U.humanise(String(terms).toLowerCase()));
               if (goods != null) bits.push(U.money(goods));
               if (due > 0.009) bits.push(`${U.money(due)} still owed`);
               return bits.join(' · ');
@@ -515,6 +519,7 @@
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/deliveries') }, 'Back'),
           job.sale_id ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/sales/${job.sale_id}`) }, 'The sale') : null,
+          job.sale_id ? ui.h('button', { class: 'btn btn-sm', onClick: () => printDropPaper(job) }, 'Print the paper') : null,
           nextStatus ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => move(job, nextStatus, load) }, `Mark ${U.humanise(nextStatus).toLowerCase()}`) : null,
           ui.h('button', { class: 'btn btn-sm', onClick: () => move(job, null, load) }, 'Change status'),
           job.arrangement === 'PARTNER' && job.status === 'DELIVERED' && Number(job.driver_pay) > 0 && !job.partner_expense_id
@@ -538,6 +543,7 @@
           ['City', job.city], ['State', job.state],
           ['Scheduled for', job.scheduled_for ? U.dateTime(job.scheduled_for) : null],
           ['Delivered at', job.delivered_at ? U.watClock(job.delivered_at) : null],
+          ['How it was sold', job.settlement === 'CREDIT' || job.sale_settlement === 'CREDIT' ? 'On credit — invoice' : (job.settlement === 'SPOT' || job.sale_settlement === 'SPOT' ? 'Paid on the spot — receipt' : 'Not recorded yet')],
           ['This drop', [job.supply_terms ? U.humanise(String(job.supply_terms).toLowerCase()) : (job.sale_type ? U.humanise(String(job.sale_type).toLowerCase()) : null), job.goods_value != null ? U.money(job.goods_value) : (job.sale_total != null ? U.money(job.sale_total) : null)].filter(Boolean).join(' · ') || null],
           ['Paid', job.amount_paid != null ? U.money(job.amount_paid) : (job.sale_paid != null ? U.money(job.sale_paid) : null)],
           ['Still owed', job.balance_due != null ? U.money(job.balance_due) : (job.sale_balance != null ? U.money(job.sale_balance) : null)],
@@ -657,6 +663,45 @@
       });
     }
 
+    function termsField(job) {
+      const recorded = job.settlement || job.sale_settlement;
+      if (recorded) {
+        return ui.h('p', { class: 'hint span-2' }, recorded === 'CREDIT'
+          ? 'Recorded on credit when the sale started. The paper with the goods is an invoice, not a receipt.'
+          : 'Recorded as paid on the spot. The paper with the goods is a receipt.');
+      }
+      const biz = SR.state.activeBusiness && SR.state.activeBusiness();
+      const mods = biz && biz.modules;
+      if (!mods || !mods.dispatchChoosesTerms) return null;
+      return ui.field({
+        label: 'How was this drop sold?',
+        name: 'settlement',
+        value: '',
+        span: true,
+        options: [
+          { value: '', label: 'Choose how this drop was sold' },
+          { value: 'SPOT', label: 'Paid on the spot — receipt' },
+          { value: 'CREDIT', label: 'On credit — invoice, not a receipt' },
+        ],
+        hint: 'The cashier or the rider chooses. It is kept from this drop to the sale, and it is the paper the customer is given.',
+      });
+    }
+
+    async function printDropPaper(job) {
+      if (!job.sale_id) { ui.warn('This drop has no sale to print.'); return; }
+      try {
+        const res = await SR.api.get(`/api/sales/${encodeURIComponent(job.sale_id)}`);
+        const sale = res.sale || res;
+        sale.items = res.items || sale.items || [];
+        sale.payments = res.payments || sale.payments || [];
+        if (!sale.settlement) sale.settlement = job.settlement || job.sale_settlement || null;
+        SR.print.previewSale(sale, {
+          brand: (SR.state.settings || {}).business_name || 'StockRidge',
+          footer: (SR.state.settings || {}).receipt_footer_text || '',
+        });
+      } catch (err) { ui.apiError(err); }
+    }
+
     function move(job, preset, after) {
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The board only moves forward. Walking a job backwards hides a failed drop unless a manager does it deliberately.'));
@@ -672,7 +717,8 @@
         ui.field({ label: 'Note', name: 'note', type: 'textarea', span: true, hint: 'Required for FAILED, RETURNED and CANCELLED. A failed drop with no reason cannot be chased up or charged back to the transporter.' }),
         ui.field({ label: 'Latitude (optional)', name: 'latitude', value: job.latitude != null ? String(job.latitude) : '', placeholder: 'Shop pin, if you have one' }),
         ui.field({ label: 'Longitude (optional)', name: 'longitude', value: job.longitude != null ? String(job.longitude) : '' }),
-        ui.field({ label: 'What happened on this drop', name: 'transaction_note', type: 'textarea', span: true, value: job.transaction_note || '', placeholder: 'Paid cash at the shop, or still owing for this batch' })));
+        ui.field({ label: 'What happened on this drop', name: 'transaction_note', type: 'textarea', span: true, value: job.transaction_note || '', placeholder: 'Paid cash at the shop, or still owing for this batch' }),
+        termsField(job)));
       const m = ui.openModal({
         title: 'Update this delivery',
         body: wrapEl,
@@ -683,6 +729,10 @@
             class: 'btn btn-primary',
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
+              if (String(v.status || '').toUpperCase() === 'DELIVERED' && wrapEl.querySelector('[name="settlement"]') && !v.settlement) {
+                ui.warn('Say whether this drop was paid on the spot or supplied on credit. The paper the customer is given depends on it.');
+                return;
+              }
               ev.currentTarget.disabled = true;
               try {
                 const result = await SR.api.post(`/api/deliveries/${encodeURIComponent(job.id)}/status`, {
@@ -697,10 +747,14 @@
                   latitude: v.latitude || null,
                   longitude: v.longitude || null,
                   transaction_note: v.transaction_note || null,
+                  settlement: v.settlement || null,
                 });
                 ui.ok(result.message || `Marked ${U.humanise(v.status).toLowerCase()}.`);
                 m.close();
                 if (after) after();
+                if (String(v.status).toUpperCase() === 'DELIVERED' && job.sale_id) {
+                  printDropPaper(Object.assign({}, job, { settlement: result.settlement || v.settlement || job.settlement }));
+                }
               } catch (err) {
                 ui.apiError(err);
                 ev.currentTarget.disabled = false;

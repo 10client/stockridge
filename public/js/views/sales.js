@@ -124,6 +124,7 @@
         { key: 'branch_name', label: 'Branch' },
         { key: 'customer_name', label: 'Customer', className: 'wrap' },
         { key: 'sale_type', label: 'Type', render: (r) => ui.badge(r.sale_type, r.sale_type === 'RETAIL' ? 'badge-mute' : 'badge-info') },
+        { key: 'settlement', label: 'Paper', render: (r) => SR.print.documentOf(r).title },
         { key: 'cashier_name', label: 'Cashier' },
         { key: 'item_count', label: 'Items', align: 'right' },
         { key: 'total', label: 'Total', align: 'right', render: (r) => U.money(r.total) },
@@ -316,6 +317,8 @@
           ['Customer', sale.customer_name || 'Walk-in'],
           ['Customer phone', sale.customer_phone || null],
           ['Sale type', U.humanise(sale.sale_type)],
+          ['Paper', SR.print.documentOf(sale).title],
+          ['Terms', SR.print.documentOf(sale).line],
           ['Payment method', U.humanise(sale.payment_method || '—')],
           ['Subtotal', U.money(sale.subtotal)],
           ['Line discounts', U.money(sale.discount_amount)],
@@ -371,7 +374,7 @@
       actions.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Actions')));
       const abody = ui.h('div', { class: 'card-body' });
       abody.appendChild(ui.h('div', { class: 'btn-row' },
-        ui.h('button', { class: 'btn', onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), { brand: (SR.state.settings || {}).business_name || 'StockRidge', footer: (SR.state.settings || {}).receipt_footer_text || '', title: `Receipt ${sale.receipt_no}` }) }, 'Print receipt'),
+        ui.h('button', { class: 'btn', onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), { brand: (SR.state.settings || {}).business_name || 'StockRidge', footer: (SR.state.settings || {}).receipt_footer_text || '' }) }, 'Print the paper'),
         ui.h('button', {
           class: 'btn',
           onClick: () => openReturn(sale, items),
@@ -623,7 +626,7 @@
         }), {
           brand: (SR.state.settings || {}).business_name || 'StockRidge',
           footer: (SR.state.settings || {}).receipt_footer_text || '',
-          title: `Receipt ${sale.receipt_no}`,
+          title: null,
         }),
       }, 'Print');
     }

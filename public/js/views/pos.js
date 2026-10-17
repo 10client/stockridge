@@ -31,10 +31,25 @@
   const U = SR.util;
 
   const TYPES = ['RETAIL', 'WHOLESALE', 'CREDIT', 'INSTALMENT', 'LAYAWAY', 'EXCHANGE'];
+  function sellingChoice() {
+    const biz = SR.state.activeBusiness && SR.state.activeBusiness();
+    const mods = biz && biz.modules;
+    const known = mods && (Object.prototype.hasOwnProperty.call(mods, 'sellOnSpot') || Object.prototype.hasOwnProperty.call(mods, 'sellOnCredit'));
+    const spot = known ? Boolean(mods.sellOnSpot) : true;
+    const credit = known ? Boolean(mods.sellOnCredit) : true;
+    return {
+      spot,
+      credit,
+      both: spot && credit,
+      dispatch: known ? Boolean(mods.dispatchChoosesTerms) : false,
+    };
+  }
   function saleTypes() {
+    const policy = sellingChoice();
     return TYPES.filter((type) => {
       if (type === 'WHOLESALE') return SR.state.moduleOn('wholesale');
       if (type === 'INSTALMENT' || type === 'LAYAWAY') return SR.state.moduleOn('instalments');
+      if (type === 'CREDIT') return policy.credit;
       return true;
     });
   }
@@ -49,6 +64,7 @@
     return {
       lines: [],
       saleType: 'RETAIL',
+      settlement: 'SPOT',
       customerId: null,
       customerName: null,
       customerPhone: null,
@@ -133,6 +149,8 @@
     const totalsBody = ui.h('div', { class: 'card-body' });
     const totalsEl = ui.h('div', { class: 'totals' });
     totalsBody.appendChild(totalsEl);
+    const termsHost = ui.h('div', { id: 'pos-terms' });
+    totalsBody.appendChild(termsHost);
     totalsBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '14px' } },
       ui.h('button', { class: 'btn btn-primary btn-lg grow', id: 'pos-complete', onClick: () => primaryAction() }, 'Take payment'),
       ui.h('button', { class: 'btn btn-lg', id: 'pos-pay-desk', hidden: true, onClick: () => openTender() }, 'Pay at this desk'),
@@ -1207,6 +1225,7 @@
         customerName: cart.customerName,
         customerPhone: cart.customerPhone,
         saleType: cart.saleType,
+        settlement: cart.settlement,
         discountAmount: cart.discountAmount,
         deliveryFee: cart.deliveryFee,
       };
@@ -1374,6 +1393,45 @@
       return { subtotal, delivery, discount, total, deposit, collect, vat, net, vatRate, vatEnabled, paid, balance: U.round2(collect - paid) };
     }
 
+    function ensureSettlement() {
+      const policy = sellingChoice();
+      if (cart.settlement !== 'SPOT' && cart.settlement !== 'CREDIT') {
+        cart.settlement = policy.credit && !policy.spot ? 'CREDIT' : 'SPOT';
+      }
+      if (cart.settlement === 'CREDIT' && !policy.credit) cart.settlement = 'SPOT';
+      if (cart.settlement === 'SPOT' && !policy.spot && policy.credit) cart.settlement = 'CREDIT';
+      if (cart.settlement === 'CREDIT' && cart.saleType === 'RETAIL') cart.saleType = 'CREDIT';
+      if (cart.settlement === 'SPOT' && cart.saleType === 'CREDIT') cart.saleType = 'RETAIL';
+    }
+
+    function paintTerms() {
+      const host = document.getElementById('pos-terms');
+      if (!host) return;
+      ensureSettlement();
+      const policy = sellingChoice();
+      host.replaceChildren();
+      if (!policy.spot && !policy.credit) return;
+      const row = ui.h('div', { class: 'stack', style: { marginTop: '10px' } });
+      row.appendChild(ui.h('div', { class: 'hint' }, policy.both
+        ? 'How is this sold? Paid on the spot prints a receipt. On credit prints an invoice. The choice is kept on the sale and on the drop.'
+        : (policy.credit ? 'This business sells on credit. The paper is an invoice until the money is taken.' : 'This business sells on the spot. The paper is a receipt.')));
+      if (policy.both) {
+        const buttons = ui.h('div', { class: 'btn-row' });
+        buttons.appendChild(ui.h('button', {
+          class: cart.settlement === 'SPOT' ? 'btn btn-sm btn-primary' : 'btn btn-sm',
+          type: 'button',
+          onClick: () => { cart.settlement = 'SPOT'; if (cart.saleType === 'CREDIT') cart.saleType = 'RETAIL'; save(); paint(); },
+        }, 'Paid on the spot'));
+        buttons.appendChild(ui.h('button', {
+          class: cart.settlement === 'CREDIT' ? 'btn btn-sm btn-primary' : 'btn btn-sm',
+          type: 'button',
+          onClick: () => { cart.settlement = 'CREDIT'; if (cart.saleType === 'RETAIL') cart.saleType = 'CREDIT'; save(); paint(); },
+        }, 'On credit'));
+        row.appendChild(buttons);
+      }
+      host.appendChild(row);
+    }
+
     function paintTotals() {
       const t = computedTotals();
       totalsEl.replaceChildren();
@@ -1385,17 +1443,20 @@
       if (t.delivery) totalsEl.appendChild(row('Delivery', U.money(t.delivery)));
       if (t.vatEnabled && t.vat) totalsEl.appendChild(row(`VAT included @ ${t.vatRate}%`, U.money(t.vat)));
       totalsEl.appendChild(row('Customer', cart.customerName || 'Walk-in'));
+      ensureSettlement();
       totalsEl.appendChild(row('Sale', U.humanise(cart.saleType)));
+      totalsEl.appendChild(row('Terms', cart.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot'));
       const method = dominantMethod();
       if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
       const pay = document.getElementById('pos-complete');
       const desk = document.getElementById('pos-pay-desk');
       const billsBtn = document.getElementById('pos-open-bills');
-      const billMode = billsFirst() && !cartIsBooking();
+      const billMode = billsFirst() && !cartIsBooking() && cart.settlement !== 'CREDIT';
       if (billsBtn) billsBtn.hidden = !billsFirst();
       if (desk) desk.hidden = !billMode || !cart.lines.length;
       if (pay) {
-        if (billMode) pay.textContent = cart.lines.length ? `Print bill · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Print bill';
+        if (cart.settlement === 'CREDIT') pay.textContent = cart.lines.length ? `Supply on credit · ${U.money(t.total)}` : 'Supply on credit';
+        else if (billMode) pay.textContent = cart.lines.length ? `Print bill · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Print bill';
         else pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Take payment';
       }
     }
@@ -1414,6 +1475,7 @@
       }
       if (cart.deliveryRequired) infoBody.appendChild(ui.h('div', { class: 'hint' }, `Delivery to: ${cart.deliveryAddress || cart.customerName || '—'}`));
       infoCard.hidden = infoBody.childElementCount === 0;
+      paintTerms();
     }
 
     function dominantMethod() {
@@ -1589,6 +1651,9 @@
             onClick: () => {
               const v = ui.readFormStrings(wrapEl);
               cart.saleType = v.saleType || 'RETAIL';
+              if (cart.saleType === 'CREDIT') cart.settlement = 'CREDIT';
+              if (cart.saleType === 'RETAIL' && cart.settlement === 'CREDIT') cart.settlement = 'SPOT';
+              ensureSettlement();
               cart.discountAmount = Number(v.discountAmount) || 0;
               cart.discountReason = v.discountReason || null;
               cart.deliveryFee = SR.state.moduleOn('deliveries') ? (Number(v.deliveryFee) || 0) : 0;
@@ -1793,11 +1858,14 @@
         running.appendChild(rr('Balance', U.money(Math.max(0, bal)), 'grand'));
 
         creditBox.replaceChildren();
-        if (bal > 0.01) {
+        if (bal > 0.01 && cart.settlement !== 'CREDIT' && !['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(cart.saleType)) {
+          creditBox.appendChild(ui.h('div', { class: 'alert alert-warn' },
+            `₦${U.amount(Math.max(0, bal))} is still unpaid. This sale is paid on the spot, so it cannot be completed short. Take the rest, or go back and choose On credit so the paper is an invoice.`));
+        } else if (bal > 0.01) {
           const overLimit = cart.customerId ? null : 'A credit sale needs a customer, so the debt can be followed up.';
           creditBox.appendChild(ui.h('div', { class: 'alert alert-warn' },
             `₦${U.amount(Math.max(0, bal))} is unpaid. `,
-            overLimit ? overLimit : 'Completing now writes the balance to the customer\'s ledger as a debt.'));
+            overLimit ? overLimit : 'Completing now writes the balance to the customer\'s ledger as a debt, and the paper is an invoice, not a receipt.'));
           if (overLimit) {
             const pick = ui.h('button', { class: 'btn btn-sm', onClick: async () => { await pickCustomer(); m.close(); openTender(); } }, 'Choose a customer');
             creditBox.appendChild(pick);
@@ -1871,6 +1939,8 @@
       return billsFirst() && !cartIsBooking() && cart.lines.length > 0;
     }
     function primaryAction() {
+      ensureSettlement();
+      if (cart.settlement === 'CREDIT') return openTender();
       if (billsFirst() && !cartIsBooking()) return raiseBill();
       return openTender();
     }
@@ -2080,7 +2150,10 @@
         cashier_name: (SR.state.user || {}).fullName,
         customer_name: bill.customer_name,
         customer_phone: bill.customer_phone,
-        sale_type: bill.sale_type,
+        sale_type: result.saleType || bill.sale_type,
+        settlement: result.settlement || null,
+        paper: result.paper || null,
+        amount_paid: result.paid != null ? result.paid : null,
         subtotal: bill.subtotal,
         total: result.total != null ? result.total : bill.total,
         vat_amount: result.vat && result.vat.vatAmount,
@@ -2092,8 +2165,10 @@
         claim_code: result.claimCode || null,
       };
       SR.print.previewSale(sale, {
-        brand, footer, title: `Receipt ${result.receiptNo || ''}`, autoPrint: true,
-        banner: `Paid against bill ${bill.bill_no}. Print the release note before the goods leave. The bill is not a receipt.`,
+        brand, footer, autoPrint: true,
+        banner: result.paper && result.paper.kind === 'INVOICE'
+          ? `${result.paper.line} Bill ${bill.bill_no} is not a receipt.`
+          : `Paid against bill ${bill.bill_no}. Print the release note before the goods leave. The bill is not a receipt.`,
       });
       const foot = document.querySelector('.modal-foot');
       if (foot && SR.print.printRelease) {
@@ -2115,10 +2190,16 @@
     async function completeSale() {
       const t = computedTotals();
       const creditReasonInput = document.getElementById('pos-credit-reason');
+      ensureSettlement();
+      if (cart.settlement === 'CREDIT' && !cart.customerId) {
+        ui.warn('A credit supply needs a customer. The invoice has to belong to somebody who can pay it later.');
+        return null;
+      }
       const payload = {
         branch_id: SR.state.activeBranchId,
         business_id: SR.state.activeBusinessId,
         sale_type: cart.saleType,
+        settlement: cart.settlement,
         customer_id: cart.customerId,
         customer_name: cart.customerName || null,
         customer_phone: cart.customerPhone || null,
@@ -2146,6 +2227,14 @@
         walk_in_name: cart.changeHolderName || cart.customerName || null,
         walk_in_phone: cart.changeHolderPhone || cart.customerPhone || null,
       };
+      const paidNow = payload.payments.reduce((a, p) => a + (p.method === 'CREDIT' ? 0 : Number(p.amount) || 0), 0);
+      const short = U.round2(t.total - paidNow);
+      if (cart.settlement === 'CREDIT' && short > 0.009) {
+        payload.payments.push({ method: 'CREDIT', amount: short, reference: null, cash_tendered: 0 });
+      } else if (cart.settlement !== 'CREDIT' && short > 0.009 && !['INSTALMENT', 'LAYAWAY'].includes(cart.saleType)) {
+        ui.warn('This sale is paid on the spot. Take the rest of the money, or choose On credit so the paper is an invoice.');
+        return null;
+      }
       const tenderedNow = payload.payments.reduce((a, p) => a + (p.method === 'CREDIT' ? 0 : Number(p.amount) || 0), 0);
       if (U.round2(tenderedNow - t.total - payload.change_owed_amount) > 0.01) {
         ui.warn('The payments are more than the sale, and the difference is not held as change owed. Use Hold it and print a code, or give the change now.');
@@ -2295,8 +2384,10 @@
           customer_name: taken.changeHolderName || taken.customerName,
           customer_phone: taken.changeHolderPhone || taken.customerPhone,
           sale_type: taken.saleType,
+          settlement: payload.settlement || taken.settlement || null,
           subtotal: taken.totals.subtotal,
           total: result.total,
+          amount_paid: (payload.payments || []).reduce((a, p) => a + (p.method === 'CREDIT' ? 0 : Number(p.amount) || 0), 0),
           vat_amount: taken.totals.vat,
           vat_rate_percent: taken.totals.vatRate,
           discount_amount: payload.discount_amount,
@@ -2305,7 +2396,7 @@
           payments: taken.payments,
           change_owed: taken.changeOwedAmount || payload.change_owed_amount || 0,
           claim_code: taken.claimCode || payload.claim_code || null,
-          balance_due: 0,
+          balance_due: (payload.payments || []).reduce((a, p) => a + (p.method === 'CREDIT' ? Number(p.amount) || 0 : 0), 0),
         };
         const lines = (payload.receipt_lines && payload.receipt_lines.length) ? payload.receipt_lines : taken.lines;
         SR.print.previewSale(receiptSale(offlineSale, lines, payload.receipt_licences), {
@@ -2323,6 +2414,9 @@
           customer_name: taken.changeHolderName || taken.customerName,
           customer_phone: taken.changeHolderPhone || taken.customerPhone,
           sale_type: taken.saleType,
+          settlement: result.settlement || payload.settlement || taken.settlement || null,
+          paper: result.paper || null,
+          amount_paid: result.paid != null ? result.paid : null,
           subtotal: taken.totals.subtotal,
           total: result.total != null ? result.total : taken.totals.total,
           vat_amount: result.vatAmount != null ? result.vatAmount : taken.totals.vat,
@@ -2344,12 +2438,14 @@
           saleId: result.saleId,
           receiptNo: result.receiptNo,
         });
-        title = `Sale ${result.receiptNo}`;
+        title = null;
         try {
           const lines = (result.lines && result.lines.length) ? result.lines : ((payload.receipt_lines && payload.receipt_lines.length) ? payload.receipt_lines : taken.lines);
           const shown = SR.print.previewSale(receiptSale(sale, lines, result.licences || payload.receipt_licences), {
             brand, footer, title, autoPrint: true,
-            banner: billsFirst() ? 'Print the release note before the goods leave the store. The receipt is the proof of payment. It is not the gate pass.' : null,
+            banner: (result.paper && result.paper.kind === 'INVOICE')
+              ? result.paper.line
+              : (billsFirst() && (taken.settlement || payload.settlement) !== 'CREDIT' ? 'Print the release note before the goods leave the store. The receipt is the proof of payment. It is not the gate pass.' : null),
           });
           const foot = document.querySelector('.modal-foot');
           if (foot && billsFirst() && SR.print.printRelease) {

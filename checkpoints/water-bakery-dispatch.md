@@ -52,3 +52,7 @@ What this stage does:
 - Either rule can be turned on for another vertical, or off for a plant that only sells cash. They are not pharmacy switches.
 
 Still not in this plan: a fifth stored role, editing migrations 0001–0017, the pharmaceutical Greenbook, a bill of materials, and a production deploy.
+
+## Selling terms
+
+A cashier or a dispatch rider can sell on the spot or on credit, where the vertical allows both. A bakery and a water plant allow both. Other verticals follow whether a customer class is allowed credit, and an owner can turn either way on or off. The choice is stored on the sale and on the drop. Paid on the spot prints a receipt. A credit supply prints an invoice, and that paper stays an invoice even after the balance is later zero. Money taken later prints its own receipt, not a second invoice.

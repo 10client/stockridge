@@ -464,6 +464,22 @@
           value: b.profile && b.profile.manufacturing ? 1 : 0,
           span: true,
           hint: 'Chemicals, film, flour, leather and whatever else this plant uses are stock, not till goods, until you say an input is also sold. Machinery service is its own expense so the cost can be counted. The deliveries board shows the count.',
+        }),
+        ui.field({
+          label: 'Sell on the spot, paid before the goods leave',
+          name: 'sell_on_spot',
+          type: 'checkbox',
+          value: !b.profile || b.profile.sellOnSpot !== false ? 1 : 0,
+          span: true,
+          hint: 'Prints a receipt. A walk-in, a hawker, and a counter sale are this. Turn it off only if this business never takes payment before the goods leave.',
+        }),
+        ui.field({
+          label: 'Sell on credit, payment after the goods leave',
+          name: 'sell_on_credit',
+          type: 'checkbox',
+          value: b.profile && b.profile.sellOnCredit ? 1 : 0,
+          span: true,
+          hint: 'Prints an invoice, not a receipt. On for a bakery and a water plant: the cashier or the dispatch rider can choose credit or upfront for each sale, and that choice is kept from the till to the drop. A depot on credit does not get a receipt until the money is taken. Turn this on for any vertical that supplies on account. It does not make the business a pharmacy.',
         })));
       }
 

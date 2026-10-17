@@ -42,6 +42,7 @@ const {
   PLAN_FIELDS, SUBSCRIPTION_STATUSES, isPlanField, capValue, contactLine,
 } = require('../../domain/planLimits');
 const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
+const { sellingPolicy } = require('../../domain/settlement');
 const { normaliseModes, modesFromOverrides } = require('../../domain/dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const provisioning = require('../services/provisioningService');
@@ -241,7 +242,7 @@ function mount(app, base = '/api') {
     }
     if (body.profile_code !== undefined) { sets.push('profile_code = ?'); params.push(valid(oneOf(body.profile_code, [...PROFILE_CODES], { field: 'Business type' }), 'profile_code')); }
     if (body.profile_overrides !== undefined) { sets.push('profile_overrides_json = ?'); params.push(body.profile_overrides ? JSON.stringify(body.profile_overrides) : null); }
-    if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined || body.credit_until_paid !== undefined || body.manufacturing !== undefined) {
+    if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined || body.credit_until_paid !== undefined || body.manufacturing !== undefined || body.sell_on_spot !== undefined || body.sell_on_credit !== undefined) {
       let overrides = {};
       if (business.profile_overrides_json) {
         try { overrides = JSON.parse(business.profile_overrides_json) || {}; } catch (e) { overrides = {}; }
@@ -252,6 +253,16 @@ function mount(app, base = '/api') {
       }
       if (body.credit_until_paid !== undefined) overrides.creditUntilPaid = Boolean(boolField(body.credit_until_paid));
       if (body.manufacturing !== undefined) overrides.manufacturing = Boolean(boolField(body.manufacturing));
+      if (body.sell_on_spot !== undefined || body.sell_on_credit !== undefined) {
+        const current = sellingPolicy(resolveProfile(business.profile_code, overrides));
+        const spot = body.sell_on_spot !== undefined ? Boolean(boolField(body.sell_on_spot)) : current.spot;
+        const credit = body.sell_on_credit !== undefined ? Boolean(boolField(body.sell_on_credit)) : current.credit;
+        if (!spot && !credit) {
+          throw new HttpError('A business has to sell on the spot, on credit, or both. Turning both off leaves nothing to record and nothing to print.', { status: 400, code: 'SELLING_TERMS_REQUIRED' });
+        }
+        overrides.sellOnSpot = spot;
+        overrides.sellOnCredit = credit;
+      }
       if (body.dispatch_modes !== undefined) {
         const nextCode = body.profile_code ? String(body.profile_code).toUpperCase() : business.profile_code;
         const profile = getProfile(nextCode);
@@ -1771,6 +1782,8 @@ function profileSummary(row) {
       dispatchConfirmed: dispatch.confirmed,
       creditUntilPaid: Boolean(profile.creditUntilPaid),
       manufacturing: Boolean(profile.manufacturing),
+      sellOnSpot: sellingPolicy(profile).spot,
+      sellOnCredit: sellingPolicy(profile).credit,
     } : null,
     is_active: row.is_active,
   };

@@ -61,6 +61,7 @@ const { extractVatFromInclusive } = require('../../domain/nigerianTax');
 const { creditDecision, nextBatchHold } = require('../../domain/credit');
 const { resolveProfile } = require('../../domain/verticals');
 const { supplyTermsOf } = require('../../domain/dispatch');
+const { resolveSaleTerm, paperOf } = require('../../domain/settlement');
 const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = require('../../domain/planLimits');
 const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp, claimedWatToUtcSql, utcNow } = require('../../domain/time');
 const trade = require('../../domain/trade');
@@ -293,6 +294,7 @@ async function prepare(db, {
   tradeModes = null, releaseAgreementId = null,
   walkInName = null, walkInPhone = null,
   stockHolds = null, allowReservedSerials = null,
+  settlement = null,
 }) {
   if (!branch) throw err('Choose which branch this sale belongs to.', 'BRANCH_REQUIRED');
   if (!Array.isArray(lines) || !lines.length) throw err('A sale needs at least one item.', 'EMPTY_SALE');
@@ -758,7 +760,10 @@ async function prepare(db, {
   // Payment validation happens in complete(), not here: prepare() is a pure
   // read used to render live totals and warnings as the cart changes, and
   // the payment legs do not exist yet at that point.
-  const isCredit = ['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(String(saleType).toUpperCase());
+  // Credit is the choice recorded at the start, not only the sale-type word.
+  // A wholesale depot can stay WHOLESALE for the price and the ledger
+  // account, and still be supplied on credit.
+  const isCredit = settlement === 'CREDIT' || ['CREDIT', 'INSTALMENT', 'LAYAWAY'].includes(String(saleType).toUpperCase());
   const depositDue = round2(resolvedLines.reduce((a, l) => a + Number(l.deposit || 0), 0));
   if (resolvedLines.some((l) => l.channel === 'HIRE' && !l.continuation)) {
     const named = (customer && customer.name) || walkInName;
@@ -783,6 +788,7 @@ async function prepare(db, {
     warnings,
     vatEnabled, vatRatePercent,
     isCredit,
+    settlement: settlement || (isCredit ? 'CREDIT' : 'SPOT'),
     discountAmount: round2(Number(discountAmount) || 0),
     discountReason,
     deliveryFee: round2(Number(deliveryFee) || 0),
@@ -1101,6 +1107,7 @@ async function complete(db, params) {
     deviceId = null, soldAt = null,
     tradeModes = null, releaseAgreementId = null,
     walkInName = null, walkInPhone = null,
+    settlement: requestedSettlement = null,
     claimCode: suppliedClaimCode = null,
     claimAlreadyRedeemed = false,
     offlineReplay = false,
@@ -1111,10 +1118,16 @@ async function complete(db, params) {
   // Resolved before anything else: which till this sale belongs to depends on
   // WHEN it happened, not on when it is being typed in.
   const sold = resolveSoldAt(soldAt, { user });
+  const terms = resolveSaleTerm({
+    business, requested: requestedSettlement, saleType, payments,
+  });
+  if (!terms.ok) throw err(terms.error, terms.code, 400);
+  const recordedType = terms.saleType;
+  const settlement = terms.term;
 
   const prepared = await prepare(db, {
     branch, business, customer, customerClass, priceLists, lines, user, settings,
-    saleType, tillSessionId, discountAmount, discountReason, deliveryFee,
+    saleType: recordedType, settlement, tillSessionId, discountAmount, discountReason, deliveryFee,
     deliveryRequired, deliveryAddress, notes, manualPriceOverrides,
     tradeModes, releaseAgreementId, walkInName, walkInPhone,
     stockHolds, allowReservedSerials,
@@ -1337,16 +1350,16 @@ async function complete(db, params) {
     // ---- sales header
     tx.queue(`INSERT INTO sales (
         id, business_id, branch_id, till_session_id, receipt_no, customer_id, customer_name, customer_phone,
-        sale_type, salesperson_id, status, subtotal, discount_amount, order_discount_amount, discount_reason,
+        sale_type, settlement, salesperson_id, status, subtotal, discount_amount, order_discount_amount, discount_reason,
         vat_enabled, vat_rate_percent, vat_amount, total, amount_paid, balance_due,
         cash_tendered, change_given, payment_method, currency_code, due_date,
         delivery_required, delivery_address, delivery_fee, notes, trade_mix, sold_at, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
       saleId, String(business.id), String(branch.id), till ? String(till.id) : null, receiptNo,
       customer ? String(customer.id) : null,
       customer ? customer.name : (params.walkInName || null),
       customer ? customer.phone : (params.walkInPhone || null),
-      prepared.saleType, String(user.id),
+      prepared.saleType, settlement, String(user.id),
       // Status is always COMPLETED at insert time. A sale awaiting delivery is
       // flipped to PENDING_DELIVERY by the delivery block below, once its job
       // row exists — setting it here would leave a status pointing at a job
@@ -1732,9 +1745,9 @@ async function complete(db, params) {
           id, job_no, branch_id, business_id, sale_id, customer_id, delivery_address, delivery_city,
           delivery_state, status, fee, fee_collected, created_by,
           supply_terms, goods_value, amount_paid, balance_due, txn_customer_name, txn_customer_phone,
-          latitude, longitude,
+          latitude, longitude, settlement,
           created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?,?,?,?,?,?, ?,?, datetime('now'), datetime('now'))`, [
+        VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?,?,?,?,?,?, ?,?,?, datetime('now'), datetime('now'))`, [
         jobId, jobNo, String(branch.id), String(business.id), saleId,
         customer ? String(customer.id) : null,
         deliveryAddress || (customer && customer.address) || 'Address to be confirmed',
@@ -1748,6 +1761,7 @@ async function complete(db, params) {
         customer ? customer.phone : (params.walkInPhone || null),
         Number.isFinite(dropLat) ? dropLat : null,
         Number.isFinite(dropLng) ? dropLng : null,
+        settlement,
       ]);
       for (const line of prepared.lines.filter((l) => Number(l.product.is_bulky) || l.quantityInBase > 0)) {
         tx.queue(`INSERT INTO delivery_job_items (
@@ -1791,6 +1805,13 @@ async function complete(db, params) {
       tradeMix: prepared.tradeMix || null,
       lines: receiptLines(prepared.lines),
       licences: branchLicences,
+      settlement,
+      paper: paperOf({
+        settlement,
+        saleType: prepared.saleType,
+        balanceDue: paymentResult.balanceDue,
+        amountPaid: paymentResult.paid,
+      }),
     };
   });
 }

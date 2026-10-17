@@ -32,6 +32,7 @@ const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
 const { normaliseModes, modeMatches, payForDrop, goodsValueOf, supplyTermsOf } = require('../../domain/dispatch');
+const { resolveSaleTerm, paperOf, policyForBusiness, normaliseTerm } = require('../../domain/settlement');
 const salesService = require('../services/salesService');
 const saleIssues = require('../services/saleIssues');
 const selling = require('../../domain/selling');
@@ -258,10 +259,18 @@ async function buildEngineParams(db, ctx, body, { forComplete }) {
   const lines = rawLines.map(normaliseLine).filter(Boolean);
   if (!lines.length) throw new HttpError('None of the lines had a product id.', { status: 400, code: 'EMPTY_SALE' });
 
-  const saleType = String(body.sale_type || body.saleType || 'RETAIL').toUpperCase();
-  if (!salesService.SALE_TYPES.includes(saleType)) {
-    throw new HttpError(`“${saleType}” is not a sale type. Use one of ${salesService.SALE_TYPES.join(', ')}.`, { status: 400, code: 'UNKNOWN_SALE_TYPE' });
+  const requestedType = String(body.sale_type || body.saleType || 'RETAIL').toUpperCase();
+  if (!salesService.SALE_TYPES.includes(requestedType)) {
+    throw new HttpError(`“${requestedType}” is not a sale type. Use one of ${salesService.SALE_TYPES.join(', ')}.`, { status: 400, code: 'UNKNOWN_SALE_TYPE' });
   }
+  const terms = resolveSaleTerm({
+    business,
+    requested: body.settlement || body.selling_terms,
+    saleType: requestedType,
+    payments: body.payments,
+  });
+  if (!terms.ok) throw new HttpError(terms.error, { status: 400, code: terms.code });
+  const saleType = terms.saleType;
   if (saleType === 'WHOLESALE' && !atLeast(user.role, 'STAFF')) {
     throw new HttpError('Only staff or above can ring a wholesale sale.', { status: 403, code: 'ROLE_REQUIRED' });
   }
@@ -294,7 +303,7 @@ async function buildEngineParams(db, ctx, body, { forComplete }) {
   const params = {
     branch, business, user, settings, scope: ctx.get('scope'),
     customer, customerClass, priceLists,
-    lines, saleType,
+    lines, saleType, settlement: terms.term,
     discountAmount, discountReason,
     deliveryFee, deliveryRequired,
     deliveryAddress: strField(body.delivery_address || body.deliveryAddress, { field: 'Delivery address', maxLength: 300 }),
@@ -469,8 +478,10 @@ function mount(app, base = '/api') {
       // it, and the next person counting the drawer needs to know too.
       latePosting: result.latePosting,
       backdated: result.backdated,
+      settlement: result.settlement || null,
+      paper: result.paper || null,
       replayed: Boolean(ctx.get('idempotencyReplayed')),
-      message: `Sale ${result.receiptNo} recorded — ₦${Number(result.totals.total).toLocaleString('en-NG')}.${result.balanceDue > 0 ? ` ₦${Number(result.balanceDue).toLocaleString('en-NG')} still owed.` : ''}${result.latePosting ? ' Posted after the till was counted.' : ''}`,
+      message: `Sale ${result.receiptNo} recorded — ₦${Number(result.totals.total).toLocaleString('en-NG')}.${result.paper && result.paper.kind === 'INVOICE' ? ' Invoice issued. This is not a receipt.' : ''}${result.balanceDue > 0 ? ` ₦${Number(result.balanceDue).toLocaleString('en-NG')} still owed.` : ''}${result.latePosting ? ' Posted after the till was counted.' : ''}`,
     }, 201);
   }));
 
@@ -524,7 +535,7 @@ function mount(app, base = '/api') {
     // derived from `sale_items` and a void is `status = 'VOIDED'`. Reading a
     // column that does not exist fails the whole query, so these are computed
     // rather than selected.
-    const rows = await db.all(`SELECT s.id, s.receipt_no, s.sold_at, s.sale_type, s.status, s.payment_method,
+    const rows = await db.all(`SELECT s.id, s.receipt_no, s.sold_at, s.sale_type, s.settlement, s.status, s.payment_method,
           s.subtotal, s.discount_amount, s.order_discount_amount, s.vat_amount, s.delivery_fee, s.total,
           s.amount_paid, s.balance_due, s.change_given, s.cash_tendered, s.branch_id, s.business_id,
           s.salesperson_id, s.customer_id, s.customer_name, s.notes,
@@ -1116,7 +1127,7 @@ function mount(app, base = '/api') {
     else where.push("d.status NOT IN ('DELIVERED','CANCELLED','RETURNED')"); // the board shows work, not history
     const rows = await db.all(`SELECT d.*, s.receipt_no, s.total AS sale_total, b.name AS branch_name,
           c.name AS customer_name, c.phone AS customer_phone,
-          s.sale_type, s.amount_paid AS sale_paid, s.balance_due AS sale_balance,
+          s.sale_type, s.settlement AS sale_settlement, s.amount_paid AS sale_paid, s.balance_due AS sale_balance,
           (SELECT COUNT(*) FROM delivery_job_items i WHERE i.delivery_job_id = d.id AND i.is_deleted = 0) AS item_count
         FROM delivery_jobs d
         LEFT JOIN sales s ON s.id = d.sale_id
@@ -1132,7 +1143,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const id = String(ctx.req.param('id'));
     const job = await db.first(`SELECT d.*, b.name AS branch_name, c.name AS customer_name, c.phone AS customer_phone,
-          s.receipt_no, s.total AS sale_total, s.status AS sale_status, s.sale_type,
+          s.receipt_no, s.total AS sale_total, s.status AS sale_status, s.sale_type, s.settlement AS sale_settlement,
           s.amount_paid AS sale_paid, s.balance_due AS sale_balance
         FROM delivery_jobs d
         LEFT JOIN branches b ON b.id = d.branch_id
@@ -1171,7 +1182,10 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const id = String(ctx.req.param('id'));
     const body = await ctx.req.json();
-    const job = await db.first('SELECT * FROM delivery_jobs WHERE id = ? AND is_deleted = 0', [id]);
+    const job = await db.first(`SELECT d.*, s.settlement AS sale_settlement, s.sale_type
+      FROM delivery_jobs d
+      LEFT JOIN sales s ON s.id = d.sale_id
+      WHERE d.id = ? AND d.is_deleted = 0`, [id]);
     if (!job) throw new HttpError('That delivery job does not exist.', { status: 404, code: 'DELIVERY_NOT_FOUND' });
 
     const rawStatus = body.status || body.new_status;
@@ -1200,6 +1214,25 @@ function mount(app, base = '/api') {
     const assignedDriver = strField(body.driver_name, { field: 'Driver', maxLength: 120 });
     const driverPhone = strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 });
 
+    const policy = policyForBusiness(await db.first('SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ?', [String(job.business_id)]));
+    const askedTerm = normaliseTerm(body.settlement || body.selling_terms);
+    const recordedTerm = normaliseTerm(job.settlement) || normaliseTerm(job.sale_settlement);
+    if (askedTerm && recordedTerm && askedTerm !== recordedTerm) {
+      throw new HttpError('That drop already has its selling terms. They were recorded when the sale started, and a later change would make the paper disagree with the books.', { status: 409, code: 'SETTLEMENT_ALREADY_RECORDED' });
+    }
+    let dropTerm = recordedTerm || askedTerm;
+    if (!dropTerm && status === 'DELIVERED') {
+      dropTerm = policy.both ? null : (policy.credit && !policy.spot ? 'CREDIT' : 'SPOT');
+    }
+    if (status === 'DELIVERED' && !dropTerm && policy.both && policy.dispatch) {
+      throw new HttpError('Say whether this drop was paid on the spot or supplied on credit. The paper the customer is given depends on it.', { status: 400, code: 'SETTLEMENT_REQUIRED' });
+    }
+    if (dropTerm === 'CREDIT' && !policy.credit) {
+      throw new HttpError('This business sells on the spot. A credit drop is turned off.', { status: 400, code: 'CREDIT_NOT_OFFERED' });
+    }
+    if (dropTerm === 'SPOT' && !policy.spot) {
+      throw new HttpError('This business sells on credit. An upfront drop is turned off.', { status: 400, code: 'SPOT_NOT_OFFERED' });
+    }
     const assignment = await dispatchAssignment(db, job, body, status);
     const gps = optionalCoordinates(body);
     if (!gps.ok) throw new HttpError(gps.error, { status: 400, code: 'GPS_INVALID' });
@@ -1238,8 +1271,11 @@ function mount(app, base = '/api') {
       sets.push('longitude = ?'); params.push(gps.longitude);
     }
     if (transactionNote) { sets.push('transaction_note = ?'); params.push(transactionNote); }
+    if (dropTerm && !normaliseTerm(job.settlement)) {
+      sets.push('settlement = ?'); params.push(dropTerm);
+    }
     if (status === 'DELIVERED' && job.sale_id) {
-      const sale = await db.first('SELECT sale_type, total, delivery_fee, amount_paid, balance_due, customer_name, customer_phone FROM sales WHERE id = ?', [String(job.sale_id)]);
+      const sale = await db.first('SELECT sale_type, settlement, total, delivery_fee, amount_paid, balance_due, customer_name, customer_phone FROM sales WHERE id = ?', [String(job.sale_id)]);
       const customer = job.customer_id
         ? await db.first('SELECT name, phone, latitude, longitude FROM customers WHERE id = ?', [String(job.customer_id)])
         : null;
@@ -1302,6 +1338,9 @@ function mount(app, base = '/api') {
       // tapping "delivered" on a job that was cancelled at the counter.
       if (job.sale_id) {
         tx.queue("UPDATE sales SET status = ?, updated_at = datetime('now') WHERE id = ? AND status <> 'VOIDED' AND is_deleted = 0", [saleStatus, String(job.sale_id)]);
+        if (dropTerm && !normaliseTerm(job.sale_settlement)) {
+          tx.queue("UPDATE sales SET settlement = ?, updated_at = datetime('now') WHERE id = ? AND settlement IS NULL AND is_deleted = 0", [dropTerm, String(job.sale_id)]);
+        }
       }
     });
 
@@ -1312,9 +1351,17 @@ function mount(app, base = '/api') {
       after: { status, note, deliveredTo, proof, driver: assignedDriver, stockReturned: ['RETURNED', 'CANCELLED'].includes(status) },
     });
 
+    const paper = dropTerm ? paperOf({
+      settlement: dropTerm,
+      saleType: job.sale_type,
+      balanceDue: job.balance_due != null ? job.balance_due : job.sale_balance,
+      amountPaid: job.amount_paid != null ? job.amount_paid : job.sale_paid,
+    }) : null;
     ctx.json({
       ok: true,
-      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${assignment.driver_pay > 0 ? ` Partner share on the goods: ₦${Number(assignment.driver_pay).toLocaleString('en-NG')}. Record the payout when you pay them — a wage driver is not paid from this drop.` : ''}${note ? ` Note: ${note}` : ''}`,
+      settlement: dropTerm || null,
+      paper,
+      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${paper ? ` ${paper.line}` : ''}${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${assignment.driver_pay > 0 ? ` Partner share on the goods: ₦${Number(assignment.driver_pay).toLocaleString('en-NG')}. Record the payout when you pay them — a wage driver is not paid from this drop.` : ''}${note ? ` Note: ${note}` : ''}`,
       previousStatus, status,
     });
   }));

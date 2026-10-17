@@ -7,6 +7,7 @@
 // so a furniture showroom cannot open a dispensary catalogue by knowing the URL.
 
 const { billsFirst } = require('./billing');
+const { sellingPolicy } = require('./settlement');
 
 function modulesFor(profile) {
   const features = (profile && profile.features) || {};
@@ -37,6 +38,11 @@ function modulesFor(profile) {
     // shop must not hold the next sale or grow a chemical store.
     creditUntilPaid: Boolean(profile && profile.creditUntilPaid),
     manufacturing: Boolean(profile && profile.manufacturing),
+    // Paid on the spot prints a receipt. Credit prints an invoice. A
+    // route lets dispatch make the same choice the cashier makes.
+    sellOnSpot: sellingPolicy(profile).spot,
+    sellOnCredit: sellingPolicy(profile).credit,
+    dispatchChoosesTerms: sellingPolicy(profile).dispatch,
     installation: Boolean(features.installation),
     // Bill, then cashier, then receipt, then the store releases the goods.
     // Not a FEATURE_FLAGS entry: general retail turns every flag on, and a

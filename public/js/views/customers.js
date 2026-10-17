@@ -288,12 +288,20 @@
               ev.currentTarget.disabled = true;
               try {
                 const cid = customer.id || customer.customer_id;
-                await SR.api.post(`/api/customers/${encodeURIComponent(cid)}/payments`, {
+                const res = await SR.api.post(`/api/customers/${encodeURIComponent(cid)}/payments`, {
                   amount, method: v.method, reference: v.reference || null, notes: v.notes || null,
                   branch_id: SR.state.activeBranchId,
                 }, { queue: 'auto' });
-                ui.ok(`Payment recorded. ${U.money(amount)} taken off the balance.`);
+                ui.ok((res && res.message) || `Payment recorded. ${U.money(amount)} taken off the balance.`);
                 m.close();
+                if (SR.print.previewPayment) {
+                  SR.print.previewPayment({
+                    amount, method: v.method, reference: v.reference || null,
+                    customer_name: customer.name, customer_phone: customer.phone,
+                    balance_after: res && res.balance != null ? res.balance : null,
+                    applied_to: res && res.receipt_no ? res.receipt_no : null,
+                  });
+                }
                 load();
               } catch (err) {
                 ui.apiError(err);
@@ -522,12 +530,23 @@
             const amount = Number(v.amount);
             if (!(amount > 0)) { ui.warn('Enter the amount received.'); return; }
             try {
-              await SR.api.post(`/api/customers/${encodeURIComponent(customer.id)}/payments`, {
+              const res = await SR.api.post(`/api/customers/${encodeURIComponent(customer.id)}/payments`, {
                 amount, method: v.method, reference: v.reference || null, notes: v.notes || null,
                 branch_id: SR.state.activeBranchId,
               }, { queue: 'auto' });
-              ui.ok('Payment recorded against the ledger.');
+              ui.ok((res && res.message) || 'Payment recorded against the ledger.');
               m.close();
+              if (SR.print.previewPayment) {
+                SR.print.previewPayment({
+                  amount,
+                  method: v.method,
+                  reference: v.reference || null,
+                  customer_name: customer.name,
+                  customer_phone: customer.phone,
+                  balance_after: res && res.balance != null ? res.balance : null,
+                  applied_to: res && res.receipt_no ? res.receipt_no : null,
+                });
+              }
               if (onDone) onDone();
             } catch (err) { ui.apiError(err); }
           },

@@ -122,6 +122,34 @@
     return lines.length ? lines : [centre('', width)];
   }
 
+  /**
+   * The paper handed over with the goods. Kept in step with
+   * domain/settlement.js paperOf. A balance is an invoice. Money taken
+   * in full is a receipt. A later payment is its own receipt.
+   */
+  function documentOf(sale) {
+    if (sale && sale.for_payment) {
+      return { kind: 'RECEIPT', title: 'Receipt', settlement: 'SPOT', line: 'Payment received. This receipt is for the money taken. It is not a new supply.' };
+    }
+    if (sale && sale.paper && sale.paper.title) return sale.paper;
+    const raw = String((sale && (sale.settlement || sale.sale_type)) || '').toUpperCase();
+    const credit = raw === 'CREDIT' || raw === 'INVOICE' || raw === 'INSTALMENT' || raw === 'LAYAWAY'
+      || String(sale && sale.sale_type || '').toUpperCase() === 'CREDIT';
+    const due = Number(sale && sale.balance_due) || 0;
+    const paid = Number(sale && sale.amount_paid) || 0;
+    if (credit || due > 0.009) {
+      return {
+        kind: 'INVOICE', title: 'Invoice', settlement: 'CREDIT',
+        line: due <= 0.009
+          ? 'This supply was on credit. This paper stays the invoice. A later payment has its own receipt.'
+          : (paid > 0.009
+            ? 'Part paid. This is not a receipt for the goods. The balance is still owed.'
+            : 'Supplied on credit. This is not a receipt. Payment is still owed.'),
+      };
+    }
+    return { kind: 'RECEIPT', title: 'Receipt', settlement: 'SPOT', line: 'Paid on the spot. This receipt is proof of payment.' };
+  }
+
   // -------------------------------------------------------------------
   // SALE RECEIPT
   // -------------------------------------------------------------------
@@ -137,12 +165,15 @@
     if (sale.branch_phone) L.push(centre(sale.branch_phone, width));
     if (sale.pcn_license_no) L.push(centre(`PCN ${sale.pcn_license_no}`, width));
     if (sale.nafdac_premises_no) L.push(centre(`NAFDAC premises ${sale.nafdac_premises_no}`, width));
+    const doc = documentOf(sale);
     L.push(rule(width, '='));
-    L.push(cols('Receipt', sale.receipt_no || '—', width));
+    L.push(centre(doc.title.toUpperCase(), width));
+    L.push(cols(doc.title, sale.receipt_no || '—', width));
     L.push(cols('Date', U.soldAt(sale.sold_at), width));
     if (sale.branch_code) L.push(cols('Branch', String(sale.branch_code), width));
     L.push(cols('Cashier', sale.cashier_name || sale.sold_by_name || '—', width));
     L.push(cols('Type', U.humanise(sale.sale_type || 'RETAIL'), width));
+    L.push(cols('Terms', doc.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot', width));
     L.push(cols('Customer', sale.customer_name || 'Walk-in', width));
     if (sale.customer_phone) L.push(cols('Phone', sale.customer_phone, width));
     L.push(rule(width));
@@ -245,6 +276,7 @@
       }
     }
     L.push(rule(width));
+    L.push(...wrapCentre(doc.line, width));
     L.push(centre(footer || 'Thank you for your custom.', width));
     L.push(centre('Powered by StockRidge', width));
     L.push('');
@@ -557,11 +589,13 @@
       sale.branch_phone ? h('div', { class: 'slip-sub' }, sale.branch_phone) : null,
       sale.pcn_license_no ? h('div', { class: 'slip-sub' }, `PCN ${sale.pcn_license_no}`) : null,
       sale.nafdac_premises_no ? h('div', { class: 'slip-sub' }, `NAFDAC premises ${sale.nafdac_premises_no}`) : null);
+    const paper = documentOf(sale);
     const meta = h('div', { class: 'slip-meta' },
-      row('Receipt', sale.receipt_no || '—'),
+      row(paper.title, sale.receipt_no || '—'),
       row('Date', U.soldAt(sale.sold_at)),
       row('Cashier', sale.cashier_name || sale.sold_by_name || '—'),
       row('Type', U.humanise(sale.sale_type || 'RETAIL')),
+      row('Terms', paper.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot'),
       row('Customer', sale.customer_name || 'Walk-in'),
       sale.customer_phone ? row('Phone', sale.customer_phone) : null);
     const items = h('div', { class: 'slip-items' });
@@ -623,6 +657,7 @@
     if (Number(sale.balance_due)) pay.appendChild(row('Balance due', U.money(sale.balance_due), 'slip-due'));
     const foot = h('div', { class: 'slip-foot' },
       h('div', { class: 'slip-words' }, U.amountInWords(sale.total)),
+      h('div', { class: paper.kind === 'INVOICE' ? 'slip-due' : '' }, paper.line),
       h('div', {}, footer || 'Thank you for your custom.'));
     return h('div', { class: 'slip' }, head, h('hr', { class: 'slip-rule' }), meta, h('hr', { class: 'slip-rule' }), items, h('hr', { class: 'slip-rule' }), totals, h('hr', { class: 'slip-rule' }), pay, h('hr', { class: 'slip-rule' }), foot);
   }
@@ -633,7 +668,8 @@
    */
   function previewSale(sale, { brand = 'StockRidge', footer = null, title = null, autoPrint = false, banner = null } = {}) {
     const text = saleReceipt(sale, { brand, footer });
-    const heading = title || `Receipt ${sale.receipt_no || ''}`.trim();
+    const paper = documentOf(sale);
+    const heading = title || `${paper.title} ${sale.receipt_no || ''}`.trim();
     const body = SR.ui.h('div', { class: 'stack' });
     if (banner) body.appendChild(SR.ui.h('div', { class: 'alert alert-warn' }, banner));
     body.appendChild(slipNode(sale, { brand, footer }));
@@ -847,6 +883,33 @@
     return { modal, text };
   }
 
+  /** A receipt for money taken later, against an invoice that already left with the goods. */
+  function previewPayment(payment, opts) {
+    const sale = {
+      for_payment: true,
+      receipt_no: payment.receipt_no || payment.reference || '—',
+      sold_at: payment.paid_at || new Date().toISOString(),
+      customer_name: payment.customer_name || 'Customer',
+      customer_phone: payment.customer_phone || null,
+      cashier_name: (SR.state && SR.state.user && SR.state.user.fullName) || '—',
+      branch_name: payment.branch_name || (SR.state && SR.state.activeBranchName && SR.state.activeBranchName()) || null,
+      sale_type: 'RETAIL',
+      settlement: 'SPOT',
+      subtotal: payment.amount,
+      total: payment.amount,
+      amount_paid: payment.amount,
+      balance_due: payment.balance_after,
+      items: [{
+        product_name: payment.applied_to ? `Payment on ${payment.applied_to}` : 'Payment on account',
+        quantity: 1,
+        unit_price: payment.amount,
+        line_total: payment.amount,
+      }],
+      payments: [{ method: payment.method || 'CASH', amount: payment.amount, reference: payment.reference || null }],
+    };
+    return previewSale(sale, Object.assign({ autoPrint: true }, opts || {}));
+  }
+
   function previewBill(bill, opts) {
     return previewDocument(bill, Object.assign({ kind: 'BILL', autoPrint: true }, opts || {}));
   }
@@ -857,7 +920,7 @@
 
   SR.print = {
     WIDTHS, loadPrefs, savePrefs, prefs,
-    saleReceipt, pendingReceipt, tillSheet, countSheet,
+    saleReceipt, pendingReceipt, tillSheet, countSheet, documentOf, previewPayment,
     printText, preview, previewSale, slipNode, printReport, testPage,
     previewBill, printRelease,
     centre, cols, rule, serialsForItem,
