@@ -36,20 +36,19 @@
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.app.navigate('/pos') }, 'New sale'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales/issues') }, 'Flagged sales'),
-        ui.h('button', {
-          class: 'btn btn-sm',
-          onClick: () => SR.exporter.list({
-            filename: 'sales', path: '/api/sales', query: filterQuery(), mirrorTable: null,
-            columns: [
-              { key: 'receipt_no', label: 'Receipt' }, { key: 'sold_at', label: 'Date (WAT)' },
-              { key: 'branch_name', label: 'Branch' }, { key: 'cashier_name', label: 'Cashier' },
-              { key: 'customer_name', label: 'Customer' }, { key: 'sale_type', label: 'Type' },
-              { key: 'payment_method', label: 'Payment' }, { key: 'total', label: 'Total' },
-              { key: 'amount_paid', label: 'Paid' }, { key: 'balance_due', label: 'Balance' },
-              { key: 'status', label: 'Status' },
-            ],
-          }),
-        }, 'Export CSV'),
+        SR.exporter.buttons((format) => SR.exporter.list({
+          format,
+          title: 'Sales',
+          filename: 'sales', path: '/api/sales', query: filterQuery(), mirrorTable: null,
+          columns: [
+            { key: 'receipt_no', label: 'Receipt' }, { key: 'sold_at', label: 'Date (WAT)' },
+            { key: 'branch_name', label: 'Branch' }, { key: 'cashier_name', label: 'Cashier' },
+            { key: 'customer_name', label: 'Customer' }, { key: 'sale_type', label: 'Type' },
+            { key: 'payment_method', label: 'Payment' }, { key: 'total', label: 'Total' },
+            { key: 'amount_paid', label: 'Paid' }, { key: 'balance_due', label: 'Balance' },
+            { key: 'status', label: 'Status' },
+          ],
+        })),
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.exporter.reportDialog() }, 'Server reports')));
     wrap.appendChild(head);
 
@@ -132,6 +131,7 @@
         { key: 'status', label: '', render: (r) => ui.statusBadge(r.status) },
       ];
       const table = ui.renderTable({
+        exportable: false,
         columns,
         rows,
         onRowClick: (r) => SR.app.navigate(`/sales/${r.id}`),

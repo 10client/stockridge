@@ -42,7 +42,7 @@
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => startReturn() }, 'Start a return'),
         SR.state.moduleOn('deliveries') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/deliveries') }, 'Deliveries') : null,
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     const tabList = [['returns', 'Returns'], ['board', 'Cost of after-sales']];
@@ -62,9 +62,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'returns',
           path: '/api/returns',
           query: SR.state.query({ days: 90, status: state.status || undefined }),
@@ -126,6 +127,7 @@
         title: 'Returns',
         toolbar: filterRow,
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'return_no', label: 'Return', render: (r) => ui.h('span', { class: 'mono' }, r.return_no || String(r.id).slice(0, 8)) },
             { key: 'created_at', label: 'When', render: (r) => U.watClock(r.created_at) },

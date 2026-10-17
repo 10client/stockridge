@@ -45,7 +45,7 @@
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openPlan() }, 'Open a plan') : null,
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openDeposit() }, 'Take a deposit'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of [['plans', 'Instalment plans'], ['deposits', 'Layaway & holds']]) {
@@ -62,9 +62,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: state.tab === 'plans' ? 'instalment-plans' : 'layaway-deposits',
           path: state.tab === 'plans' ? '/api/instalments' : '/api/deposits',
           query: SR.state.query({ status: state.status || undefined }),
@@ -125,6 +126,7 @@
         title: 'Instalment plans',
         toolbar: filterRow,
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'plan_no', label: 'Plan', render: (p) => ui.h('span', { class: 'mono' }, p.plan_no || String(p.id).slice(0, 8)) },
             { key: 'customer_name', label: 'Customer', className: 'wrap', render: (p) => ui.h('div', {},
@@ -195,6 +197,7 @@
       host.appendChild(ui.dataCard({
         title: 'Layaway and holds',
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'product_name', label: 'Held item', className: 'wrap', render: (d) => ui.h('div', {},
               ui.h('div', { style: { fontWeight: '600' } }, d.product_name || '—'),

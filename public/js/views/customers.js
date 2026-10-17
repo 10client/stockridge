@@ -34,7 +34,7 @@
         ui.h('p', { class: 'sub' }, 'Contact records, credit limits and what is owed.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a customer'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of [['all', 'All customers'], ['debtors', 'Debtor book'], ['credit', 'Credit limits']]) {
@@ -54,9 +54,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: state.tab === 'debtors' ? 'debtors' : 'customers',
           path: state.tab === 'debtors' ? '/api/customers/debtors' : '/api/customers',
           query: SR.state.query({ q: state.q || undefined }),
@@ -104,6 +105,7 @@
         title: 'Customers',
         toolbar: qInput,
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'name', label: 'Customer', className: 'wrap', render: (c) => {
               const cell = ui.h('div', {});
@@ -171,6 +173,7 @@
           onClick: () => statementAll(rows),
         }, 'Print statements')],
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'name', label: 'Customer', className: 'wrap', render: (c) => {
               const cell = ui.h('div', {});

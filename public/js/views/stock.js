@@ -46,7 +46,7 @@
         SR.state.atLeast('STAFF') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openReceive() }, 'Receive stock') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => openAdjust() }, 'Adjust'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/transfers') }, 'Transfer'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => UI_export() }, 'Export')));
+        SR.exporter.buttons((format) => UI_export(format))));
     wrap.appendChild(head);
 
     const tabs = ui.h('div', { class: 'tabs' });
@@ -70,8 +70,9 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    function UI_export() {
+    function UI_export(format) {
       SR.exporter.list({
+        format,
         filename: 'stock',
         path: '/api/stock',
         query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined }),
@@ -135,6 +136,7 @@
       const paging = data.paging || {};
 
       const table = ui.renderTable({
+        exportable: false,
         columns: [
           { key: 'name', label: 'Product', className: 'wrap', render: (r) => {
             const cell = ui.h('div', {});

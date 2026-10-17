@@ -151,12 +151,16 @@
    * whether or not the row carries a branch_id — and a business is provisioned with its proprietor
    * unpinned. Requiring a branch of an owner made the form say "add a branch" on a deployment that
    * had none, and on one that had them it pinned a person whose scope does not come from a pin.
-   * Only a cashier or a manager is scoped by the branch they belong to. The deployment
+   * A cashier is scoped by the branch they belong to. A manager is too, unless they
+   * are being appointed as a general manager — MANAGER with no branch, which reaches
+   * every branch of their business and not the whole deployment. The deployment
    * administrator is not pinned either.
    */
-  function roleNeedsBranch(role) {
+  function roleNeedsBranch(role, opts) {
     const r = String(role || '').toUpperCase();
-    return r !== 'ADMIN' && r !== 'OWNER';
+    if (r === 'ADMIN' || r === 'OWNER') return false;
+    if (r === 'MANAGER' && opts && opts.generalManager) return false;
+    return true;
   }
 
   // -------------------------------------------------------------------

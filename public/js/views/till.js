@@ -218,8 +218,9 @@
       const total = (data.paging && data.paging.total != null) ? data.paging.total : rows.length;
       host.replaceChildren(ui.dataCard({
         title: 'Till sessions',
-        actions: [ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export')],
+        actions: SR.exporter.buttons((format) => exportList(format)),
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'opened_at', label: 'Opened', render: (t) => U.watClock(t.opened_at) },
             { key: 'cashier_name', label: 'Cashier', render: (t) => t.cashier_name || '—' },
@@ -260,9 +261,10 @@
       return b ? b.name : '—';
     }
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'till-sessions',
           path: '/api/tills',
           query: SR.state.query({ from: U.addDays(U.todayWat(), -state.days), status: state.status || undefined }),

@@ -47,6 +47,7 @@ const compliance = require('./compliance');
 const sync = require('./sync');
 const dataManagement = require('./dataManagement');
 const changeOwed = require('./changeOwed');
+const bills = require('./bills');
 const agreements = require('./agreements');
 const userTransfers = require('./userTransfers');
 
@@ -149,6 +150,10 @@ const SUSPENDED_EXEMPT = [
   {
     match: (m, p) => p === '/api/sales/preview',
     why: 'a preview creates nothing: reads continue, and a cashier should read the refusal when they try to complete the sale rather than at the first scan of a customer’s basket',
+  },
+  {
+    match: (m, p) => m === 'POST' && p.startsWith('/api/bills/') && p.endsWith('/cancel'),
+    why: 'cancelling an unpaid bill releases stock that was held. It does not take money and it does not complete a sale. A suspended shop must still be able to free goods that were promised and not paid for',
   },
   {
     match: (m, p) => p === '/api/data-management/purge/preview',
@@ -293,6 +298,7 @@ function buildRoutes(app, env = {}) {
   catalog.mount(app, '/api');
   stock.mount(app, '/api');
   sales.mount(app, '/api');
+  bills.mount(app, '/api');
   saleIssues.mount(app, '/api');
   agreements.mount(app, '/api');
   till.mount(app, '/api');

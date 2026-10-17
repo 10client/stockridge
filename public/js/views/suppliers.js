@@ -37,7 +37,7 @@
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openCreate() }, 'Add a supplier') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/purchase-orders') }, 'Purchase orders'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of [['suppliers', 'Suppliers'], ['creditors', 'What we owe']]) {
@@ -54,9 +54,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'suppliers',
           path: '/api/suppliers',
           query: SR.state.query({ q: state.q || undefined }),
@@ -104,6 +105,7 @@
         title: 'Suppliers',
         toolbar: qInput,
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'name', label: 'Supplier', className: 'wrap', render: (s) => {
               const cell = ui.h('div', {});

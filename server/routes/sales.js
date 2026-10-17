@@ -1420,4 +1420,4 @@ function mount(app, base = '/api') {
   }));
 }
 
-module.exports = { mount, normaliseLine, normalisePayments };
+module.exports = { mount, normaliseLine, normalisePayments, buildEngineParams };

@@ -120,6 +120,8 @@
       ui.h('span', { class: 'spacer' }));
     const lineCount = ui.h('span', { class: 'badge badge-mute' }, '0 lines');
     cartHead.appendChild(lineCount);
+    const openBillsBtn = ui.h('button', { class: 'btn btn-sm', id: 'pos-open-bills', hidden: true, onClick: () => openBills() }, 'Open bills');
+    cartHead.appendChild(openBillsBtn);
     cartHead.appendChild(ui.h('button', { class: 'btn btn-sm btn-ghost', onClick: clearCart }, 'Clear'));
     cartCard.appendChild(cartHead);
     const cartBody = ui.h('div', { class: 'card-body tight' });
@@ -132,7 +134,8 @@
     const totalsEl = ui.h('div', { class: 'totals' });
     totalsBody.appendChild(totalsEl);
     totalsBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '14px' } },
-      ui.h('button', { class: 'btn btn-primary btn-lg grow', id: 'pos-complete', onClick: () => openTender() }, 'Take payment'),
+      ui.h('button', { class: 'btn btn-primary btn-lg grow', id: 'pos-complete', onClick: () => primaryAction() }, 'Take payment'),
+      ui.h('button', { class: 'btn btn-lg', id: 'pos-pay-desk', hidden: true, onClick: () => openTender() }, 'Pay at this desk'),
       ui.h('button', { class: 'btn btn-lg', onClick: () => openMeta() }, 'Details')));
     totalsCard.appendChild(totalsBody);
     right.appendChild(totalsCard);
@@ -1386,7 +1389,15 @@
       const method = dominantMethod();
       if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
       const pay = document.getElementById('pos-complete');
-      if (pay) pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Take payment';
+      const desk = document.getElementById('pos-pay-desk');
+      const billsBtn = document.getElementById('pos-open-bills');
+      const billMode = billsFirst() && !cartIsBooking();
+      if (billsBtn) billsBtn.hidden = !billsFirst();
+      if (desk) desk.hidden = !billMode || !cart.lines.length;
+      if (pay) {
+        if (billMode) pay.textContent = cart.lines.length ? `Print bill · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Print bill';
+        else pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Take payment';
+      }
     }
 
     function paintInfo() {
@@ -1397,6 +1408,9 @@
           SR.api.isOnline()
             ? 'Syncing in the background. Sales are safe on this device regardless.'
             : 'Offline. Sales completed here are stored on this device and sent automatically.'));
+      }
+      if (billsFirst() && !cartIsBooking()) {
+        infoBody.appendChild(ui.h('div', { class: 'hint' }, 'Print a bill first. The goods are held, not sold. The customer pays, the receipt prints, then print the release note before the store hands the goods over.'));
       }
       if (cart.deliveryRequired) infoBody.appendChild(ui.h('div', { class: 'hint' }, `Delivery to: ${cart.deliveryAddress || cart.customerName || '—'}`));
       infoCard.hidden = infoBody.childElementCount === 0;
@@ -1845,6 +1859,256 @@
       setTimeout(() => amountInput.focus(), 60);
     }
 
+    function billsFirst() {
+      return Boolean(SR.state.moduleOn && SR.state.moduleOn('billBeforeReceipt'));
+    }
+    function cartIsBooking() {
+      return cart.lines.some((l) => l.channel === 'HIRE' || l.channel === 'LEASE');
+    }
+    function primaryIsBill() {
+      return billsFirst() && !cartIsBooking() && cart.lines.length > 0;
+    }
+    function primaryAction() {
+      if (billsFirst() && !cartIsBooking()) return raiseBill();
+      return openTender();
+    }
+
+    async function ensureBillName() {
+      const existing = String(cart.customerName || cart.changeHolderName || '').trim();
+      if (existing.length >= 2) return existing;
+      const typed = await ui.promptDialog({
+        title: 'Who is the bill for?',
+        label: 'Customer name',
+        required: true,
+      });
+      if (!typed || String(typed).trim().length < 2) return null;
+      cart.customerName = String(typed).trim();
+      save();
+      paint();
+      return cart.customerName;
+    }
+
+    async function raiseBill() {
+      if (!cart.lines.length) { ui.warn('Add something to the bill first.'); return; }
+      if (cartIsBooking()) {
+        ui.warn('A hire or a lease is booked, not billed. Take payment for that line on its own.');
+        return;
+      }
+      if (!SR.state.activeBranchId) {
+        ui.warn('Pick the shop this bill belongs to. The hold has to sit on one store.');
+        return;
+      }
+      if (!SR.api.isOnline()) {
+        ui.warn('A bill that holds stock has to reach the server, or two desks could promise the same goods. Connect, then print the bill. If the customer is paying at this desk now, use Pay at this desk.');
+        return;
+      }
+      const name = await ensureBillName();
+      if (!name) return;
+      const t = computedTotals();
+      const payload = {
+        branch_id: SR.state.activeBranchId,
+        business_id: SR.state.activeBusinessId,
+        sale_type: cart.saleType,
+        customer_id: cart.customerId,
+        customer_name: name,
+        customer_phone: cart.customerPhone || null,
+        walk_in_name: name,
+        discount_amount: t.discount,
+        discount_reason: cart.discountReason || null,
+        delivery_fee: t.delivery,
+        delivery_required: Boolean(cart.deliveryRequired),
+        delivery_address: cart.deliveryAddress || null,
+        notes: cart.notes || null,
+        manual_price_overrides: cart.manualPriceOverrides,
+        lines: cart.lines.map((l) => linePayload(l)),
+      };
+      const btn = document.getElementById('pos-complete');
+      if (btn) { btn.disabled = true; btn.textContent = 'Holding the goods…'; }
+      try {
+        const res = await SR.api.post('/api/bills', payload, { timeoutMs: 25000 });
+        const bill = res.bill || res;
+        bill.brand = (SR.state.settings || {}).business_name || 'StockRidge';
+        bill.branch_name = bill.branch_name || SR.state.activeBranchName();
+        resetTill();
+        paint();
+        ui.ok(res.message || `Bill ${bill.bill_no} printed. This is not a receipt.`);
+        if (SR.print.previewBill) SR.print.previewBill(bill, { autoPrint: true });
+      } catch (err) {
+        ui.apiError(err);
+        paint();
+      }
+    }
+
+    async function openBills() {
+      if (!SR.api.isOnline()) {
+        ui.warn('Open bills live on the server, because that is where the stock is held. Connect, then open the list.');
+        return;
+      }
+      const body = ui.h('div', { class: 'stack' });
+      body.appendChild(ui.h('div', { class: 'hint' }, 'An open bill is not a sale. Take payment, print the receipt, then print the release note before the goods leave.'));
+      const list = ui.h('div', { class: 'stack' });
+      body.appendChild(list);
+      const m = ui.openModal({
+        title: 'Open bills',
+        body,
+        size: 'wide',
+        footer: [ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close')],
+      });
+      async function loadBills() {
+        list.replaceChildren(ui.h('div', { class: 'hint' }, 'Loading…'));
+        try {
+          const res = await SR.api.get('/api/bills', { query: { status: 'OPEN', branch_id: SR.state.activeBranchId || undefined } });
+          const rows = (res && res.data) || [];
+          list.replaceChildren();
+          if (!rows.length) {
+            list.appendChild(ui.h('div', { class: 'hint' }, 'No bill is waiting at this shop.'));
+            return;
+          }
+          for (const bill of rows) {
+            const row = ui.h('div', { class: 'card' });
+            const inner = ui.h('div', { class: 'card-body stack' });
+            inner.appendChild(ui.h('div', {}, ui.h('strong', {}, bill.bill_no || 'Bill'), ` · ${bill.customer_name || '—'}`));
+            inner.appendChild(ui.h('div', { class: 'hint' }, `${U.money(bill.total)} · hold until ${bill.valid_until || '—'} · ${bill.branch_name || ''}`));
+            inner.appendChild(ui.h('div', { class: 'btn-row' },
+              ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => payBill(bill, m) }, 'Take payment'),
+              ui.h('button', { class: 'btn btn-sm', onClick: () => {
+                const copy = Object.assign({ brand: (SR.state.settings || {}).business_name || 'StockRidge' }, bill);
+                if (SR.print.previewBill) SR.print.previewBill(copy, { autoPrint: false });
+              } }, 'Print bill'),
+              ui.h('button', { class: 'btn btn-sm', onClick: () => cancelBill(bill, loadBills) }, 'Cancel')));
+            row.appendChild(inner);
+            list.appendChild(row);
+          }
+        } catch (err) {
+          list.replaceChildren();
+          ui.apiError(err);
+        }
+      }
+      loadBills();
+    }
+
+    async function cancelBill(bill, reload) {
+      const confirmed = await ui.confirmDialog({
+        title: `Cancel ${bill.bill_no}?`,
+        message: 'The goods go back on the shelf. Nothing has been paid, so there is no receipt to void.',
+        confirmLabel: 'Cancel the bill',
+      });
+      if (!confirmed) return;
+      try {
+        const res = await SR.api.post(`/api/bills/${encodeURIComponent(bill.id)}/cancel`, { reason: 'Cancelled at the desk before payment.' });
+        ui.ok(res.message || 'Bill cancelled.');
+        if (reload) reload();
+      } catch (err) { ui.apiError(err); }
+    }
+
+    async function payBill(bill, listModal) {
+      if (SR.state.activeBranchId && String(SR.state.activeBranchId) !== String(bill.branch_id)) {
+        ui.warn(`Bill ${bill.bill_no} belongs to ${bill.branch_name || 'another shop'}. Switch to that shop before taking the money.`);
+        return;
+      }
+      const wrapEl = ui.h('div', { class: 'stack' });
+      wrapEl.appendChild(ui.h('div', {}, `${bill.customer_name} · ${U.money(bill.total)}`));
+      wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'This payment prints the receipt. The goods are not released until you print the release note as well.'));
+      const method = ui.h('select', {},
+        ...['CASH', 'POS_TERMINAL', 'BANK_TRANSFER', 'MOBILE_MONEY'].map((code) => ui.h('option', { value: code }, METHOD_LABEL[code] || code)));
+      const amount = ui.h('input', { type: 'number', step: '0.01', min: '0', value: String(bill.total) });
+      const received = ui.h('input', { type: 'number', step: '0.01', min: '0', value: String(bill.total) });
+      const reference = ui.h('input', { type: 'text', placeholder: 'Transfer or POS reference' });
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Method'), method),
+        ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Applied to the bill'), amount),
+        ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Cash received'), received),
+        ui.h('label', { class: 'field' }, ui.h('span', { class: 'field-label' }, 'Reference'), reference)));
+      const go = ui.h('button', { class: 'btn btn-primary' }, 'Take payment and print receipt');
+      const payModal = ui.openModal({
+        title: `Pay ${bill.bill_no}`,
+        body: wrapEl,
+        size: 'wide',
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => payModal.close() }, 'Back'),
+          go,
+        ],
+      });
+      go.addEventListener('click', async () => {
+        const applied = Number(amount.value);
+        const tendered = method.value === 'CASH' ? Number(received.value || applied) : applied;
+        if (!(applied > 0)) { ui.warn('Enter the amount being paid.'); return; }
+        if (applied - Number(bill.total) > 0.01) { ui.warn('Do not apply more than the bill. Put the extra in Cash received so the change is recorded.'); return; }
+        const payments = [{
+          method: method.value,
+          amount: applied,
+          reference: reference.value || null,
+          cash_tendered: method.value === 'CASH' ? tendered : applied,
+        }];
+        const short = U.round2(Number(bill.total) - applied);
+        if (short > 0.01) {
+          if (!bill.customer_id) {
+            ui.warn('The amount is short, and this bill has no customer account to put the rest on. Take the full amount, or cancel and raise the bill against a customer.');
+            return;
+          }
+          payments.push({ method: 'CREDIT', amount: short });
+        }
+        go.disabled = true;
+        go.textContent = 'Recording…';
+        try {
+          const result = await SR.api.post(`/api/bills/${encodeURIComponent(bill.id)}/pay`, {
+            branch_id: bill.branch_id,
+            payments,
+            walk_in_name: bill.customer_name,
+            customer_name: bill.customer_name,
+          }, { timeoutMs: 25000 });
+          payModal.close();
+          if (listModal) listModal.close();
+          showPaidDocument(result, bill);
+        } catch (err) {
+          ui.apiError(err);
+          go.disabled = false;
+          go.textContent = 'Take payment and print receipt';
+        }
+      });
+    }
+
+    function showPaidDocument(result, bill) {
+      const brand = (SR.state.settings || {}).business_name || 'StockRidge';
+      const footer = (SR.state.settings || {}).receipt_footer_text || 'Thank you for your custom.';
+      const sale = {
+        receipt_no: result.receiptNo,
+        sold_at: result.soldAt,
+        branch_name: bill.branch_name || SR.state.activeBranchName(),
+        cashier_name: (SR.state.user || {}).fullName,
+        customer_name: bill.customer_name,
+        customer_phone: bill.customer_phone,
+        sale_type: bill.sale_type,
+        subtotal: bill.subtotal,
+        total: result.total != null ? result.total : bill.total,
+        vat_amount: result.vat && result.vat.vatAmount,
+        items: result.lines || bill.lines || [],
+        payments: [],
+        balance_due: result.balanceDue || 0,
+        change_given: result.changeGiven || 0,
+        change_owed: result.changeOwed || 0,
+        claim_code: result.claimCode || null,
+      };
+      SR.print.previewSale(sale, {
+        brand, footer, title: `Receipt ${result.receiptNo || ''}`, autoPrint: true,
+        banner: `Paid against bill ${bill.bill_no}. Print the release note before the goods leave. The bill is not a receipt.`,
+      });
+      const foot = document.querySelector('.modal-foot');
+      if (foot && SR.print.printRelease) {
+        foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => SR.print.printRelease({
+          brand,
+          branch_name: sale.branch_name,
+          bill_no: bill.bill_no,
+          receipt_no: result.receiptNo,
+          customer_name: bill.customer_name,
+          customer_phone: bill.customer_phone,
+          sold_at: result.soldAt,
+          total: sale.total,
+          lines: result.lines || bill.lines || [],
+        }, { autoPrint: true }) }, 'Print release note'), foot.firstElementChild);
+      }
+    }
+
     // ---------------- complete ----------------
     async function completeSale() {
       const t = computedTotals();
@@ -2081,10 +2345,25 @@
         title = `Sale ${result.receiptNo}`;
         try {
           const lines = (result.lines && result.lines.length) ? result.lines : ((payload.receipt_lines && payload.receipt_lines.length) ? payload.receipt_lines : taken.lines);
-          const shown = SR.print.previewSale(receiptSale(sale, lines, result.licences || payload.receipt_licences), { brand, footer, title, autoPrint: true });
-          if (saleId) {
-            const foot = document.querySelector('.modal-foot');
-            if (foot) foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => { SR.app.navigate(`/sales/${saleId}`); } }, 'Open the sale'), foot.firstElementChild);
+          const shown = SR.print.previewSale(receiptSale(sale, lines, result.licences || payload.receipt_licences), {
+            brand, footer, title, autoPrint: true,
+            banner: billsFirst() ? 'Print the release note before the goods leave the store. The receipt is the proof of payment. It is not the gate pass.' : null,
+          });
+          const foot = document.querySelector('.modal-foot');
+          if (foot && billsFirst() && SR.print.printRelease) {
+            foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => SR.print.printRelease({
+              brand,
+              branch_name: sale.branch_name,
+              bill_no: result.billNo || null,
+              receipt_no: result.receiptNo,
+              customer_name: sale.customer_name,
+              sold_at: sale.sold_at,
+              total: sale.total,
+              lines,
+            }, { autoPrint: true }) }, 'Print release note'), foot.firstElementChild);
+          }
+          if (saleId && foot) {
+            foot.insertBefore(ui.h('button', { class: 'btn', onClick: () => { SR.app.navigate(`/sales/${saleId}`); } }, 'Open the sale'), foot.firstElementChild);
           }
           void shown;
           return;

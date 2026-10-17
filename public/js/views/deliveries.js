@@ -42,7 +42,7 @@
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · what is going out, who is carrying it, and what still needs fitting`)),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm', onClick: () => load() }, 'Refresh'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     const TABS = [['', 'Out for delivery'], ['DELIVERED', 'Delivered'], ['FAILED', 'Failed'], ['RETURNED', 'Returned'], ['CANCELLED', 'Cancelled']];
@@ -62,9 +62,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'deliveries',
           path: '/api/deliveries',
           query: SR.state.query({ status: state.status || undefined }),
@@ -124,6 +125,7 @@
       host.appendChild(ui.dataCard({
         title: state.status ? `${U.humanise(state.status)} jobs` : 'Out for delivery',
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'job_no', label: 'Job', render: (d) => ui.h('span', { class: 'mono' }, d.job_no || String(d.id).slice(0, 8)) },
             { key: 'customer_name', label: 'Customer', className: 'wrap', render: (d) => {

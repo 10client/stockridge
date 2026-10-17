@@ -54,7 +54,7 @@
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · what the business spent, with the VAT and withholding already extracted`)),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Record an expense'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export')));
+        SR.exporter.buttons((format) => exportList(format))));
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
@@ -84,9 +84,10 @@
       ],
     }));
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'expenses',
           path: '/api/expenses',
           query: SR.state.query({ days: state.days, status: state.status || undefined, category: state.category || undefined }),
@@ -159,6 +160,7 @@
       host.appendChild(ui.dataCard({
         title: 'Expenses',
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'expense_date', label: 'Date', render: (e) => U.date(e.expense_date) },
             { key: 'category', label: 'Category', render: (e) => ui.badge(e.category, 'badge-info') },

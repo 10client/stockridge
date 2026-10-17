@@ -82,7 +82,7 @@
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
         SR.state.moduleOn('dispensing') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openRegister() }, 'Controlled register') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'),
+        SR.exporter.buttons((format) => exportList(format)),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
@@ -209,6 +209,7 @@
       const paging = data.paging || {};
 
       const table = ui.renderTable({
+        exportable: false,
         columns: [
           { key: 'name', label: 'Product', className: 'wrap', render: (p) => {
             const cell = ui.h('div', {});
@@ -302,9 +303,10 @@
       } catch (err) { ui.apiError(err); }
     }
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'catalogue',
           path: '/api/products',
           query: SR.state.query({

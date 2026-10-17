@@ -433,6 +433,18 @@
         ui.field({ label: 'Contact phone', name: 'contact_phone', value: b.contact_phone || '' }),
         ui.field({ label: 'Contact email', name: 'contact_email', value: b.contact_email || '' }),
         ui.field({ label: 'Address', name: 'address', span: true, value: b.address || '' })));
+      if (!isNew) {
+        const billed = Boolean(b.profile && b.profile.features && b.profile.features.billBeforeReceipt);
+        form.appendChild(ui.h('h2', {}, 'How goods leave'));
+        form.appendChild(ui.h('div', { class: 'form-grid' }, ui.field({
+          label: 'Bill, then receipt, then release',
+          name: 'bill_before_receipt',
+          type: 'checkbox',
+          value: billed ? 1 : 0,
+          span: true,
+          hint: 'On for a warehouse, a wholesale desk, a building-materials yard, a furniture showroom and an electronics plaza. The desk prints a bill and holds the goods. The customer pays. The receipt prints, then a release note, and only then do the goods leave. A pharmacy counter, a supermarket and a general shop stay pay-and-receipt unless you turn this on.',
+        })));
+      }
 
       if (isNew) {
         form.appendChild(ui.h('h2', {}, 'Vertical'));

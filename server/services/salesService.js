@@ -290,6 +290,7 @@ async function prepare(db, {
   deliveryAddress = null, notes = null, manualPriceOverrides = {},
   tradeModes = null, releaseAgreementId = null,
   walkInName = null, walkInPhone = null,
+  stockHolds = null, allowReservedSerials = null,
 }) {
   if (!branch) throw err('Choose which branch this sale belongs to.', 'BRANCH_REQUIRED');
   if (!Array.isArray(lines) || !lines.length) throw err('A sale needs at least one item.', 'EMPTY_SALE');
@@ -349,6 +350,18 @@ async function prepare(db, {
   const warnings = [];
   const batchConsumption = new Map(); // batchId -> qty already promised to an earlier line
   const cartHolds = []; // promises this cart has already made, so a second line sees them
+  // Units this sale is allowed to take back from quantity_reserved. A bill
+  // payment passes the batches it held. A normal sale passes nothing, and
+  // reserved stock stays unsellable.
+  const holdMap = new Map();
+  for (const h of stockHolds || []) {
+    const id = String((h && (h.batchId || h.batch_id)) || '');
+    const qty = Number(h && (h.quantityBase != null ? h.quantityBase : h.quantity_base));
+    if (!id || !(qty > 0)) continue;
+    holdMap.set(id, roundTo((holdMap.get(id) || 0) + qty, 4));
+  }
+  const holdIds = new Set(holdMap.keys());
+  const reservedSerials = new Set((allowReservedSerials || []).map((sn) => String(sn)));
 
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i];
@@ -431,7 +444,11 @@ async function prepare(db, {
     const sameAsset = (row) => row.productId === String(product.id) && String(row.variantId || '') === variantKey;
     const intervals = openCommitments.filter(sameAsset).concat(cartHolds.filter(sameAsset));
     const originalOnHand = originalBatches.reduce((a, b) => a + Number(b.quantity || 0), 0);
-    const reservedNow = originalBatches.reduce((a, b) => a + Number(b.quantity_reserved || 0), 0);
+    const heldBack = originalBatches.reduce((sum, b) => {
+      const asked = holdMap.get(String(b.id)) || 0;
+      return sum + Math.min(Math.max(0, Number(b.quantity_reserved) || 0), asked);
+    }, 0);
+    const reservedNow = originalBatches.reduce((a, b) => a + Number(b.quantity_reserved || 0), 0) - heldBack;
     const holding = trade.holdsStock(channel) && !line.continuation && !line.buyout;
     let span = null;
     let selection = { ok: true, picks: [] };
@@ -458,9 +475,15 @@ async function prepare(db, {
       const free = trade.fleetFree({ onHand: originalOnHand, reserved: reservedNow, intervals, start: today, end: trade.FOREVER });
       const pool = originalBatches.map((b) => {
         const promised = batchConsumption.get(String(b.id)) || 0;
-        return { ...b, quantity: roundTo(Number(b.quantity) - promised, 4) };
+        const asked = holdMap.get(String(b.id)) || 0;
+        const giveBack = Math.min(Math.max(0, Number(b.quantity_reserved) || 0), asked);
+        return {
+          ...b,
+          quantity: roundTo(Number(b.quantity) - promised, 4),
+          quantity_reserved: roundTo(Math.max(0, Number(b.quantity_reserved || 0) - giveBack), 4),
+        };
       });
-      selection = selectBatchesFifo(pool, conversion.baseQuantity, { asOf: today });
+      selection = selectBatchesFifo(pool, conversion.baseQuantity, { asOf: today, preferIds: holdIds });
       const name = variant ? `${product.name} (${variant.name})` : product.name;
       if (free + 1e-9 < conversion.baseQuantity) {
         const booked = trade.peakInWindow(intervals, today, trade.FOREVER);
@@ -496,6 +519,9 @@ async function prepare(db, {
       }
       for (const pick of selection.picks) {
         batchConsumption.set(String(pick.batch.id), roundTo((batchConsumption.get(String(pick.batch.id)) || 0) + pick.quantityBase, 4));
+        const id = String(pick.batch.id);
+        const used = Math.min(holdMap.get(id) || 0, pick.quantityBase);
+        if (used > 0) holdMap.set(id, roundTo((holdMap.get(id) || 0) - used, 4));
       }
       cartHolds.push({ productId: String(product.id), variantId: variantKey, start: today, end: trade.FOREVER, quantity: conversion.baseQuantity });
     }
@@ -625,6 +651,10 @@ async function prepare(db, {
         }
         if (String(found.product_id) !== String(product.id)) {
           serialProblem = `Serial "${sn}" belongs to a different product (${found.product_id}), not "${product.name}".`;
+          break;
+        }
+        if (found.status === 'RESERVED' && !reservedSerials.has(String(sn))) {
+          serialProblem = `Serial "${sn}" is held on an unpaid bill. Take payment on that bill, or cancel it, before this unit can be sold.`;
           break;
         }
         if (found.status !== 'IN_STOCK' && found.status !== 'RESERVED') {
@@ -1072,6 +1102,8 @@ async function complete(db, params) {
     claimCode: suppliedClaimCode = null,
     claimAlreadyRedeemed = false,
     offlineReplay = false,
+    stockHolds = null,
+    allowReservedSerials = null,
   } = params;
 
   // Resolved before anything else: which till this sale belongs to depends on
@@ -1083,6 +1115,7 @@ async function complete(db, params) {
     saleType, tillSessionId, discountAmount, discountReason, deliveryFee,
     deliveryRequired, deliveryAddress, notes, manualPriceOverrides,
     tradeModes, releaseAgreementId, walkInName, walkInPhone,
+    stockHolds, allowReservedSerials,
   });
 
   const totals = prepared.totals;
@@ -1253,6 +1286,15 @@ async function complete(db, params) {
   for (const row of licenceRows || []) {
     if (row.record_number) branchLicences[String(row.record_type)] = String(row.record_number);
   }
+  // A copy, not the map prepare() mutates. Paying a bill sells the units it
+  // held and drops that reservation in the same statement.
+  const consumeHold = new Map();
+  for (const h of stockHolds || []) {
+    const id = String((h && (h.batchId || h.batch_id)) || '');
+    const qty = Number(h && (h.quantityBase != null ? h.quantityBase : h.quantity_base));
+    if (!id || !(qty > 0)) continue;
+    consumeHold.set(id, roundTo((consumeHold.get(id) || 0) + qty, 4));
+  }
 
   return db.transaction(async (tx) => {
     const saleId = tx.idFor('sale');
@@ -1343,14 +1385,34 @@ async function complete(db, params) {
       // is what says it is promised. A sale, including a buyout, does.
       if (!trade.holdsStock(line.channel) || line.buyout) {
         for (const pick of line.picks) {
-          tx.queue(
-            `UPDATE stock_batches
-                SET quantity = quantity - ?,
-                    status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END,
-                    updated_at = datetime('now')
-              WHERE id = ? AND is_deleted = 0 AND quantity - quantity_reserved >= ?`,
-            [pick.quantityBase, pick.quantityBase, pick.batchId, pick.quantityBase],
-          );
+          const held = Math.min(consumeHold.get(String(pick.batchId)) || 0, Number(pick.quantityBase) || 0);
+          if (held > 0.0001) {
+            consumeHold.set(String(pick.batchId), roundTo((consumeHold.get(String(pick.batchId)) || 0) - held, 4));
+            // Sell the units this bill already held, and release that hold in
+            // the same statement. A separate release would let another sale
+            // take them between the two writes.
+            tx.queue(
+              `UPDATE stock_batches
+                  SET quantity = quantity - ?,
+                      quantity_reserved = quantity_reserved - ?,
+                      status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END,
+                      updated_at = datetime('now')
+                WHERE id = ? AND is_deleted = 0
+                  AND quantity_reserved >= ?
+                  AND quantity >= ?
+                  AND quantity - quantity_reserved + ? >= ?`,
+              [pick.quantityBase, held, pick.quantityBase, pick.batchId, held, pick.quantityBase, held, pick.quantityBase],
+            );
+          } else {
+            tx.queue(
+              `UPDATE stock_batches
+                  SET quantity = quantity - ?,
+                      status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END,
+                      updated_at = datetime('now')
+                WHERE id = ? AND is_deleted = 0 AND quantity - quantity_reserved >= ?`,
+              [pick.quantityBase, pick.quantityBase, pick.batchId, pick.quantityBase],
+            );
+          }
         }
       }
 
@@ -1384,6 +1446,20 @@ async function complete(db, params) {
           'SALE', saleId, String(user.id), customer ? String(customer.id) : null,
           chain.note, chain.prevHash, chain.rowHash,
         ]);
+      }
+    }
+
+    // Any hold this sale was allowed to consume, and did not, goes back.
+    // Doing it here — and only for the quantity this bill held — does not
+    // touch a layaway or another bill on the same batch.
+    for (const [batchId, qty] of consumeHold) {
+      if (qty > 0.0001) {
+        tx.queue(
+          `UPDATE stock_batches
+              SET quantity_reserved = quantity_reserved - ?, updated_at = datetime('now')
+            WHERE id = ? AND is_deleted = 0 AND quantity_reserved >= ?`,
+          [qty, batchId, qty],
+        );
       }
     }
 

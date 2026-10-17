@@ -517,7 +517,7 @@
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Raise an order') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/suppliers') }, 'Suppliers'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of STATUS_TABS) {
@@ -536,9 +536,10 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'purchase-orders',
           path: '/api/purchase-orders',
           query: SR.state.query({ status: state.status || undefined, days: 180 }),
@@ -586,6 +587,7 @@
         ui.kpi({ label: 'Units on order', value: U.qty(U.sum(open, (r) => r.outstanding_units)), foot: 'in each product’s base unit', small: true })));
 
       const table = ui.renderTable({
+        exportable: false,
         columns: [
           { key: 'po_number', label: 'PO', render: (r) => ui.h('span', { class: 'mono' }, r.po_number) },
           { key: 'supplier_name', label: 'Supplier', className: 'wrap', render: (r) => {

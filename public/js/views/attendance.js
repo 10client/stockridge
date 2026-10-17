@@ -35,7 +35,7 @@
       ui.h('div', { class: 'actions' },
         clockSlot,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openGeofence() }, 'Geofence') : null,
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of [['today', 'Today'], ['history', 'History'], ['devices', 'Devices'], ['team', 'Team summary']]) {
@@ -90,9 +90,10 @@
       return clockedIn;
     }
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'attendance',
           path: '/api/attendance',
           query: SR.state.query({ from: state.from, to: state.to, user_id: state.userId || undefined }),
@@ -253,6 +254,7 @@
       host.appendChild(ui.dataCard({
         title: 'Attendance',
         table: ui.renderTable({
+          exportable: false,
           columns: [
             { key: 'work_date', label: 'Date', render: (r) => U.date(r.work_date) },
             { key: 'full_name', label: 'Staff', render: (r) => r.full_name || r.username },

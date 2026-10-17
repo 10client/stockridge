@@ -229,6 +229,16 @@ function mount(app, base = '/api') {
     }
     if (body.profile_code !== undefined) { sets.push('profile_code = ?'); params.push(valid(oneOf(body.profile_code, [...PROFILE_CODES], { field: 'Business type' }), 'profile_code')); }
     if (body.profile_overrides !== undefined) { sets.push('profile_overrides_json = ?'); params.push(body.profile_overrides ? JSON.stringify(body.profile_overrides) : null); }
+    if (body.bill_before_receipt !== undefined) {
+      let overrides = {};
+      if (business.profile_overrides_json) {
+        try { overrides = JSON.parse(business.profile_overrides_json) || {}; } catch (e) { overrides = {}; }
+      }
+      if (!overrides.features || typeof overrides.features !== 'object') overrides.features = {};
+      overrides.features.billBeforeReceipt = Boolean(boolField(body.bill_before_receipt));
+      sets.push('profile_overrides_json = ?');
+      params.push(JSON.stringify(overrides));
+    }
     if (body.vat_registered !== undefined) {
       const reg = boolField(body.vat_registered);
       sets.push('vat_registered = ?'); params.push(reg);
@@ -466,7 +476,7 @@ function mount(app, base = '/api') {
         // needs to know whether a PIN is set should ask for that fact, not the
         // hash.
         revenue_30d: round2(Number(r.revenue_30d)),
-        roleLabel: roleLabel(r.role),
+        roleLabel: roleLabel(r.role, r),
         navigation: navigationFor(r.role),
       })), { limit, offset }, total),
     });
@@ -523,23 +533,28 @@ function mount(app, base = '/api') {
     // WHO NEEDS A BRANCH. The deployment administrator is not pinned to one, and neither is an
     // owner: an owner reaches every branch by role (domain/access.js sets allBranches for OWNER
     // whether or not the row carries a branch_id), and provisioning creates the proprietor with
-    // branch_id null. Requiring one of an owner made the screen say "add a branch" on a
-    // deployment that had none, and on one that had them it pinned a person whose scope does
-    // not come from a pin. A cashier or a manager with no branch really would see nothing, so
-    // those two still cannot be created without one.
+    // branch_id null. A cashier with no branch would see nothing. A manager is the exception
+    // the role file already describes: MANAGER with a branch is a branch manager; MANAGER with
+    // branch_id null is a general manager of that business, not of the whole deployment. Only
+    // an owner may appoint one. A branch manager must not be able to create a peer who can
+    // see every shop.
     //
     // A chosen branch is still honoured for an owner — a shop that wants the proprietor recorded
     // against the main branch may say so — it just is not demanded. A manager creating staff is
     // pinned to their own branch: the branch_id in the request is ignored rather than trusted,
     // because that field is the sole scoping truth and letting it be set from a request would
     // let a manager create staff they can then see the sales of, anywhere.
-    const branchOptional = role === 'ADMIN' || role === 'OWNER';
-    const effectiveBranch = role === 'ADMIN'
+    const wantsGeneral = role === 'MANAGER' && Boolean(boolField(body.general_manager));
+    if (wantsGeneral && !atLeast(user.role, 'OWNER')) {
+      throw new HttpError('Only an owner can appoint a general manager. A general manager sees every branch of the business, and a branch manager must not be able to grant that.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const branchOptional = role === 'ADMIN' || role === 'OWNER' || wantsGeneral;
+    const effectiveBranch = (role === 'ADMIN' || wantsGeneral)
       ? null
       : (atLeast(user.role, 'OWNER') ? (branch || null) : await resolveBranch(db, ctx));
     if (!branchOptional && !effectiveBranch) {
       const said = role === 'MANAGER'
-        ? 'A manager must be pinned to one branch — that pin is what makes them a manager of somewhere.'
+        ? 'Choose a branch for a branch manager, or appoint them as a general manager so they cover every branch of this business. A manager with neither has no scope.'
         : 'Choose which branch this person works at. A cashier with no branch has no scope, so they would see nothing. An owner does not need one — an owner reaches every branch.';
       throw new HttpError(said, { status: 400, code: 'BRANCH_REQUIRED' });
     }
@@ -588,7 +603,7 @@ function mount(app, base = '/api') {
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
       id, String(business.id), effectiveBranch ? String(effectiveBranch.id) : null,
       fullName, username, hashed.stored, role,
-      strField(body.job_title, { field: 'Job title', maxLength: 120 }) || roleLabel(role),
+      strField(body.job_title, { field: 'Job title', maxLength: 120 }) || (wantsGeneral ? 'General Manager' : (role === 'MANAGER' ? 'Branch Manager' : roleLabel(role))),
       emailCheck ? emailCheck.value : null, phone ? phone.value : null,
       strField(body.nin, { field: 'NIN', maxLength: 40 }),
       strField(body.bvn_last4, { field: 'BVN last 4', maxLength: 4 }),
@@ -607,7 +622,7 @@ function mount(app, base = '/api') {
       toBranchId: effectiveBranch ? effectiveBranch.id : null,
       fromBusinessId: null,
       toBusinessId: business.id,
-      reason: `Created as ${roleLabel(role)}`,
+      reason: wantsGeneral ? 'Created as General Manager' : `Created as ${roleLabel(role)}`,
       changedBy: user.id,
     });
 
@@ -618,7 +633,9 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true, id, username,
-      message: `${fullName} created as ${roleLabel(role)}${effectiveBranch ? ` at ${effectiveBranch.name}` : ' with access to every branch'}. Their PIN is set and they can sign in now.`,
+      message: wantsGeneral
+        ? `${fullName} is a general manager of ${business.name}. They can sign in and work at every branch of that business. Their PIN is set.`
+        : `${fullName} created as ${roleLabel(role)}${effectiveBranch ? ` at ${effectiveBranch.name}` : ' with access to every branch'}. Their PIN is set and they can sign in now.`,
       advisories,
     }, 201);
   });
@@ -673,7 +690,15 @@ function mount(app, base = '/api') {
       if (nb && String(nb.business_id) !== String(target.business_id) && !atLeast(user.role, 'ADMIN')) {
         throw new HttpError(`${nb.name} belongs to another business. Moving somebody between businesses is an administrator action, because it moves them between two sets of books.`, { status: 403, code: 'CROSS_BUSINESS_MOVE' });
       }
-      if (target.role === 'MANAGER' && !nb) throw new HttpError('A manager must be pinned to a branch.', { status: 400, code: 'BRANCH_REQUIRED' });
+      const resultingRole = body.role ? String(body.role).toUpperCase() : target.role;
+      if (!nb && resultingRole === 'MANAGER') {
+        if (!atLeast(user.role, 'OWNER')) {
+          throw new HttpError('Only an owner can make somebody a general manager. Clearing the branch is what gives them every shop of the business.', { status: 403, code: 'ROLE_REQUIRED' });
+        }
+        if (!target.business_id) {
+          throw new HttpError('A general manager has to belong to a business. Without one they would see every business on the deployment.', { status: 400, code: 'BUSINESS_REQUIRED' });
+        }
+      }
 
       const immediate = !nb || atLeast(user.role, 'ADMIN');
       if (immediate) {
@@ -713,7 +738,13 @@ function mount(app, base = '/api') {
       // here is what kept saying "add a branch" even for the owner. A cashier or a manager still
       // needs one, including one assigned in this same save.
       if (newRole !== 'ADMIN' && newRole !== 'OWNER' && !target.branch_id && !body.branch_id) {
-        throw new HttpError(`${target.full_name} has no branch, so they cannot become a ${roleLabel(newRole)} yet. Give them a branch first — a cashier or a manager with no branch would see nothing. An owner does not need one.`, { status: 400, code: 'BRANCH_REQUIRED' });
+        const appointingGeneral = newRole === 'MANAGER' && Boolean(boolField(body.general_manager));
+        if (!appointingGeneral) {
+          throw new HttpError(`${target.full_name} has no branch, so they cannot become a ${roleLabel(newRole)} yet. Give them a branch first — a cashier with no branch would see nothing. A manager can be left unpinned only as a general manager of their business.`, { status: 400, code: 'BRANCH_REQUIRED' });
+        }
+        if (!atLeast(user.role, 'OWNER')) {
+          throw new HttpError('Only an owner can appoint a general manager.', { status: 403, code: 'ROLE_REQUIRED' });
+        }
       }
       sets.push('role = ?'); params.push(newRole);
     }

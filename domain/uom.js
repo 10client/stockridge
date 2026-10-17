@@ -320,6 +320,15 @@ function selectBatchesFifo(batches, requiredBaseQty, options = {}) {
     // not also a test of the calendar.
     .filter((b) => !asOf || !b.expiry_date || String(b.expiry_date).slice(0, 10) >= asOf)
     .sort((a, b) => {
+      // A bill payment must consume the batches it held, not a newer delivery
+      // that arrived while the customer was at the cashier. Callers that do
+      // not pass preferIds keep the ordinary expiry-then-FIFO order.
+      const prefer = options && options.preferIds;
+      if (prefer && typeof prefer.has === 'function') {
+        const pa = prefer.has(String(a.id)) ? 0 : 1;
+        const pb = prefer.has(String(b.id)) ? 0 : 1;
+        if (pa !== pb) return pa - pb;
+      }
       // Expiry first when both carry one: sell the stock that will go off.
       const ea = a.expiry_date ? Date.parse(a.expiry_date) : Number.POSITIVE_INFINITY;
       const eb = b.expiry_date ? Date.parse(b.expiry_date) : Number.POSITIVE_INFINITY;

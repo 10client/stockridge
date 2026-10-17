@@ -55,7 +55,7 @@
         (SR.state.isOwner() || SR.state.isAdmin()) ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.openMessageComposer() }, 'Send a message') : null,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add someone') : null,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openCoverage() }, 'Who was here on…') : null,
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
     for (const [key, label] of [['team', 'The team'], ['transfers', 'Transfers'], ['sessions', 'Signed in now']]) {
@@ -136,6 +136,7 @@
       stack.appendChild(ui.dataCard({
         title: 'The team',
         table: ui.renderTable({
+          exportable: false,
           columns: [
             {
               key: 'full_name',
@@ -146,7 +147,12 @@
             },
             { key: 'role', label: 'Role', render: (u) => ui.badge(u.roleLabel ? U.titleCase(u.roleLabel) : U.titleCase(u.role), u.role === 'STAFF' ? 'badge-mute' : 'badge-info') },
             { key: 'job_title', label: 'Job', render: (u) => u.job_title || '—' },
-            { key: 'branch_name', label: 'Branch', render: (u) => u.branch_name || (u.role === 'OWNER' || u.role === 'ADMIN' ? ui.badge('all branches', 'badge-violet') : '—') },
+            { key: 'branch_name', label: 'Branch', render: (u) => {
+              if (u.branch_name) return u.branch_name;
+              if (u.role === 'MANAGER') return ui.badge('General Manager', 'badge-violet');
+              if (u.role === 'OWNER' || u.role === 'ADMIN') return ui.badge('all branches', 'badge-violet');
+              return '—';
+            } },
             { key: 'revenue_30d', label: 'Sold (30d)', align: 'right', render: (u) => (Number(u.revenue_30d) ? U.money(u.revenue_30d) : '—') },
             { key: 'commission_rate_pct', label: 'Commission', align: 'right', render: (u) => (Number(u.commission_rate_pct) ? `${u.commission_rate_pct}%` : '—') },
             { key: 'last_login_at', label: 'Last seen', render: (u) => (u.last_login_at ? U.relTime(u.last_login_at) : 'never') },
@@ -585,8 +591,18 @@
       const branchField = ui.field({
         label: 'Branch', name: 'branch_id', required: true,
         options: [{ value: '', label: 'Loading branches…' }],
-        hint: 'A cashier or a manager only sees the branch they belong to. An owner reaches every branch, so a branch is optional for them.',
+        hint: 'A cashier or a branch manager only sees the branch they belong to. A general manager is not pinned to one.',
       });
+      const reachField = ui.field({
+        label: 'Where they work',
+        name: 'reach',
+        options: [
+          { value: 'branch', label: 'One branch — Branch Manager' },
+          { value: 'all', label: 'Every branch of this business — General Manager' },
+        ],
+        hint: 'A general manager can sell, raise a bill and see stock at every branch of this business. They are not a fifth role, and they do not see another business.',
+      });
+      reachField.hidden = true;
       const businessField = ui.field({
         label: 'Business', name: 'business_id',
         options: [{ value: '', label: 'Choose the business' }],
@@ -599,6 +615,7 @@
         ui.field({ label: 'Full name', name: 'full_name', required: true, placeholder: 'Chidinma Okafor' }),
         ui.field({ label: 'Username', name: 'username', required: true, hint: 'Lower case, no spaces. This is what they type on the sign-in screen.' }),
         ui.field({ label: 'Role', name: 'role', required: true, options: creatableRoles() }),
+        reachField,
         branchField,
         businessField,
         ui.field({ label: 'Job title', name: 'job_title', placeholder: 'Sales assistant' }),
@@ -617,6 +634,7 @@
       const m = ui.openModal({ title: 'Add someone to the team', body: form, footer: [cancel, go], size: 'wide' });
 
       const roleSel = form.querySelector('[name="role"]');
+      const reachSel = form.querySelector('[name="reach"]');
       const branchSel = branchField.querySelector('select');
       const businessSel = businessField.querySelector('select');
 
@@ -625,13 +643,17 @@
       }
       function paintChoices() {
         const role = roleSel ? String(roleSel.value || '') : '';
-        const needs = SR.state.roleNeedsBranch(role);
+        const general = role === 'MANAGER' && reachSel && reachSel.value === 'all' && SR.state.atLeast('OWNER');
+        reachField.hidden = role !== 'MANAGER' || !SR.state.atLeast('OWNER');
+        const needs = SR.state.roleNeedsBranch(role, { generalManager: general });
         const kept = branchSel.value;
         branchSel.replaceChildren();
         if (!needs) {
-          const blank = role === 'OWNER'
-            ? 'No branch — an owner reaches every branch'
-            : 'No branch — administrators are not pinned to one';
+          const blank = general
+            ? 'No branch — a general manager covers every branch of this business'
+            : (role === 'OWNER'
+              ? 'No branch — an owner reaches every branch'
+              : 'No branch — administrators are not pinned to one');
           branchSel.appendChild(ui.h('option', { value: '' }, blank));
         }
         const mineId = String(SR.state.activeBranchId || '');
@@ -660,6 +682,7 @@
         // The business is asked only when it cannot be read off a branch: an owner or an
         // administrator with no branch, and more than one business to sit under.
         businessField.hidden = needs || businessRows.length <= 1;
+        branchField.hidden = general;
 
         emptyNote.replaceChildren();
         if (!businessRows.length) {
@@ -668,7 +691,7 @@
           emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/businesses'); } }, 'Create a business'));
         } else if (needs && !branchRows.length) {
           emptyNote.hidden = false;
-          emptyNote.appendChild(ui.h('div', {}, 'There is no branch to choose. A cashier or a manager has to belong to one — open a branch first. An owner does not: choose Owner and they reach every branch.'));
+          emptyNote.appendChild(ui.h('div', {}, 'There is no branch to choose. A cashier or a branch manager has to belong to one — open a branch first. An owner does not, and a general manager covers every branch of the business once a branch exists to cover.'));
           emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/branches'); } }, 'Open a branch'));
         } else {
           emptyNote.hidden = true;
@@ -697,18 +720,25 @@
           ui.warn('Create a business first. An owner belongs to a business, even though they are not pinned to a branch.');
           return;
         }
-        if (SR.state.roleNeedsBranch(v.role) && !v.branch_id) {
+        const general = v.role === 'MANAGER' && v.reach === 'all';
+        if (general && !SR.state.atLeast('OWNER')) {
+          ui.warn('Only an owner can appoint a general manager.');
+          return;
+        }
+        if (SR.state.roleNeedsBranch(v.role, { generalManager: general }) && !v.branch_id) {
           ui.warn(branchRows.length
-            ? 'Choose the branch they work at. A cashier or a manager with no branch has no scope, so they would see nothing. An owner does not need one.'
+            ? 'Choose the branch they work at. A cashier or a branch manager with no branch has no scope. An owner does not need one, and a general manager covers every branch of the business.'
             : 'There is no branch yet. Open a branch first — or add them as an owner, who reaches every branch.');
           return;
         }
-        const chosenBranch = branchRows.find((b) => String(b.id) === String(v.branch_id));
+        const chosenBranch = general ? null : branchRows.find((b) => String(b.id) === String(v.branch_id));
         const businessId = (chosenBranch && chosenBranch.business_id)
           || v.business_id
           || (businessRows.length === 1 ? businessRows[0].id : null);
         if (!v.branch_id && !businessId) {
-          ui.warn('Choose which business this owner belongs to. They reach every branch, but the record has to sit under one set of books.');
+          ui.warn(general
+            ? 'Choose which business this general manager belongs to. They cover every branch of that business, not every business on the deployment.'
+            : 'Choose which business this owner belongs to. They reach every branch, but the record has to sit under one set of books.');
           return;
         }
         await ui.withBusy(form, async () => {
@@ -717,7 +747,8 @@
               full_name: v.full_name,
               username: v.username,
               role: v.role,
-              branch_id: v.branch_id || null,
+              general_manager: general || undefined,
+              branch_id: general ? null : (v.branch_id || null),
               business_id: businessId || undefined,
               job_title: v.job_title || undefined,
               phone: v.phone || undefined,
@@ -861,10 +892,10 @@
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Branch',
           name: 'branch_id',
-          options: [{ value: '', label: 'No branch — an owner reaches every branch' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.business_name ? `${b.name} · ${b.business_name}` : b.name }))),
+          options: [{ value: '', label: 'No branch — owner, administrator, or general manager' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.business_name ? `${b.name} · ${b.business_name}` : b.name }))),
           value: u.branch_id || '',
           disabled: self,
-          hint: 'A cashier or a manager only sees this branch. An owner reaches every branch whether or not one is chosen here.',
+          hint: 'Leave this empty on a manager to make them a general manager of every branch of their business. A cashier still needs one branch. An owner reaches every branch either way.',
         }) : null,
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Active',
@@ -917,7 +948,7 @@
           const current = sel.value;
           const blank = [...sel.options].find((o) => o.value === '');
           sel.replaceChildren();
-          sel.appendChild(blank || ui.h('option', { value: '' }, 'No branch — an owner reaches every branch'));
+          sel.appendChild(blank || ui.h('option', { value: '' }, 'No branch — owner, administrator, or general manager'));
           for (const b of rows) sel.appendChild(ui.h('option', { value: b.id }, b.business_name ? `${b.name} · ${b.business_name}` : b.name));
           if ([...sel.options].some((o) => o.value === current)) sel.value = current;
         }).catch(() => {});
@@ -955,8 +986,14 @@
             };
             if (SR.state.atLeast('OWNER') && !self) {
               if (v.role) body.role = v.role;
-              body.branch_id = v.branch_id === null ? null : v.branch_id;
+              body.branch_id = v.branch_id ? v.branch_id : null;
               body.is_active = Number(v.is_active) ? true : false;
+              const roleNow = v.role || u.role;
+              if (roleNow === 'STAFF' && !body.branch_id) {
+                ui.warn('A cashier has to belong to one branch.');
+                return;
+              }
+              if (roleNow === 'MANAGER' && !body.branch_id) body.general_manager = true;
             }
             // THE PAYLOAD IS THE SECOND ARGUMENT, not an object holding it. `{ body }`
             // sent the JSON `{"body":{...}}`, so editing a user saved nothing: the
@@ -984,9 +1021,10 @@
       const m = ui.openModal({ title: `New PIN for ${u.full_name || u.username}`, body, footer: [done], size: 'narrow' });
     }
 
-    async function exportList() {
+    async function exportList(format) {
       try {
         await SR.exporter.list({
+          format,
           filename: 'staff',
           path: '/api/users',
           query: SR.state.query({ role: state.role || undefined, branch_id: state.branch || undefined, active: state.active === '' ? undefined : state.active }),

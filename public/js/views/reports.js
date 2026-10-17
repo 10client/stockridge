@@ -53,7 +53,7 @@
         ui.h('h1', {}, 'Reports'),
         ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · figures derived from the ledger and the stock ledger, never typed in`)),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportCurrent() }, 'Download CSV'),
+        SR.exporter.buttons((format) => exportCurrent(format), { csvLabel: 'Download CSV' }),
         ui.h('button', { class: 'btn btn-sm', onClick: () => printCurrent() }, 'Print'))));
 
     // ------------------------------------------------------------- picker
@@ -188,7 +188,7 @@
         ui.dataCard({
           title: 'Sales by ' + state.groupBy,
           toolbar: groupSel,
-          table: ui.renderTable({ columns, rows, emptyTitle: 'Nothing sold in this period', emptyMessage: 'Pick a wider period, or check that sales are being recorded at this branch.' }),
+          table: ui.renderTable({ exportable: false, columns, rows, emptyTitle: 'Nothing sold in this period', emptyMessage: 'Pick a wider period, or check that sales are being recorded at this branch.' }),
         })));
     }
 
@@ -211,6 +211,7 @@
           title: 'Product by product',
           toolbar: sortSel,
           table: ui.renderTable({
+            exportable: false,
             columns: [
               { key: 'name', label: 'Product', render: (r) => ui.h('div', {}, ui.h('div', {}, r.name), ui.h('div', { class: 'hint' }, r.sku || '')) },
               { key: 'on_hand', label: 'On hand', align: 'right', render: (r) => `${U.qty(r.on_hand)} ${r.base_unit_name || ''}` },
@@ -253,6 +254,7 @@
         ui.dataCard({
           title: isDead ? `No sales in ${state.days} days` : (state.kind === 'FAST' ? 'Selling fastest' : 'Selling slowest'),
           table: ui.renderTable({
+            exportable: false,
             columns: [
               { key: 'name', label: 'Product', render: (r) => ui.h('div', {}, ui.h('div', {}, r.name), ui.h('div', { class: 'hint' }, r.sku || '')) },
               { key: 'units_sold', label: 'Units sold', align: 'right', render: (r) => U.qty(r.units_sold) },
@@ -291,6 +293,7 @@
         ui.dataCard({
           title: 'Who buys',
           table: ui.renderTable({
+            exportable: false,
             columns: [
               { key: 'name', label: 'Customer', render: (r) => ui.h('div', {}, ui.h('div', {}, r.name || 'Walk-in'), ui.h('div', { class: 'hint' }, r.phone || '')) },
               { key: 'purchases', label: 'Purchases', align: 'right', render: (r) => U.qty(r.purchases) },
@@ -317,6 +320,7 @@
         ui.dataCard({
           title: 'By salesperson',
           table: ui.renderTable({
+            exportable: false,
             columns: [
               { key: 'full_name', label: 'Salesperson', render: (r) => r.full_name || r.username || '—' },
               { key: 'sales', label: 'Sales', align: 'right', render: (r) => U.qty(r.sales) },
@@ -417,10 +421,15 @@
     }
 
     // ------------------------------------------------------- export/print
-    async function exportCurrent() {
+    async function exportCurrent(format) {
+      const reportTitle = (REPORTS.find((r) => r[0] === state.report) || ['', 'Report'])[1];
+      const reportSubtitle = `${state.branchScope ? SR.state.activeBranchName() + ' · ' : ''}${state.from} to ${state.to}`;
       try {
         if (state.report === 'sales') {
           await SR.exporter.list({
+            format,
+            title: reportTitle,
+            subtitle: reportSubtitle,
             filename: 'sales-report', path: '/api/reports/sales',
             query: scoped({ group_by: state.groupBy }),
             columns: [
@@ -433,6 +442,9 @@
           });
         } else if (state.report === 'inventory-movement') {
           await SR.exporter.list({
+            format,
+            title: reportTitle,
+            subtitle: reportSubtitle,
             filename: 'inventory-movement', path: '/api/reports/inventory-movement',
             query: scoped({ sort: state.sort }),
             columns: [
@@ -444,17 +456,26 @@
           });
         } else if (state.report === 'movers') {
           await SR.exporter.list({
+            format,
+            title: reportTitle,
+            subtitle: reportSubtitle,
             filename: `movers-${state.kind.toLowerCase()}`, path: '/api/reports/movers',
             query: scoped({ kind: state.kind, days: state.days }),
             columns: [{ key: 'name', label: 'Product' }, { key: 'units_sold', label: 'Units sold' }, { key: 'revenue', label: 'Revenue' }, { key: 'on_hand', label: 'On hand' }, { key: 'last_sold', label: 'Last sold' }],
           });
         } else if (state.report === 'top-customers') {
           await SR.exporter.list({
+            format,
+            title: reportTitle,
+            subtitle: reportSubtitle,
             filename: 'top-customers', path: '/api/reports/top-customers', query: scoped({}),
             columns: [{ key: 'name', label: 'Customer' }, { key: 'phone', label: 'Phone' }, { key: 'purchases', label: 'Purchases' }, { key: 'revenue', label: 'Revenue' }, { key: 'outstanding', label: 'Owing' }],
           });
         } else if (state.report === 'commission') {
           await SR.exporter.list({
+            format,
+            title: reportTitle,
+            subtitle: reportSubtitle,
             filename: 'commission', path: '/api/reports/commission', query: scoped({}),
             columns: [{ key: 'full_name', label: 'Salesperson' }, { key: 'sales', label: 'Sales' }, { key: 'net_revenue', label: 'Net revenue' }, { key: 'commission_rate_pct', label: 'Rate %' }, { key: 'commission', label: 'Commission' }, { key: 'void_rate_pct', label: 'Void %' }],
           });

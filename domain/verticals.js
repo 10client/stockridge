@@ -70,6 +70,9 @@ const FEATURE_FLAGS = Object.freeze([
   'batchTracking', 'quarantine', 'recalls', 'commissionTracking', 'fragileHandling',
   // Prescription and controlled-medicine gates. Off unless the profile sells drugs.
   'dispensing',
+  // billBeforeReceipt is intentionally absent. GENERAL_RETAIL spreads every
+  // flag in this list on. A bill that holds stock is set on the warehouse,
+  // yard, showroom and plaza profiles, and an owner can override it.
 ]);
 
 const ALL_FEATURES_ON = Object.freeze(FEATURE_FLAGS.reduce((acc, f) => { acc[f] = true; return acc; }, {}));
@@ -354,6 +357,8 @@ const PROFILES = Object.freeze({
       installation: true, wholesalePricing: true, instalments: true, layaway: true,
       batchTracking: true, quarantine: true, recalls: true, commissionTracking: true,
       fragileHandling: true,
+      // Computer Village / Banex pattern: bill at the desk, pay at the cashier, collect from the store.
+      billBeforeReceipt: true,
     }),
     complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'SONCAP_DEALER', 'TRADING_PERMIT', 'FIRE_CERT', 'SCUML', 'NCC_TYPE_APPROVAL']),
     registrationAuthorities: Object.freeze(['SON', 'NCC', 'MAN']),
@@ -427,6 +432,8 @@ const PROFILES = Object.freeze({
       variants: true, bulkyDelivery: true, installation: true, wholesalePricing: true,
       instalments: true, layaway: true, batchTracking: true, quarantine: true,
       commissionTracking: true, fragileHandling: true,
+      // Showroom writes the bill. The warehouse releases the piece only against the receipt.
+      billBeforeReceipt: true,
     }),
     complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'TRADING_PERMIT', 'FORESTRY_PERMIT', 'CITES', 'FIRE_CERT', 'SIGNAGE_PERMIT']),
     registrationAuthorities: Object.freeze(['CITES', 'MAN']),
@@ -496,6 +503,8 @@ const PROFILES = Object.freeze({
       variants: true, expiryTracking: true, wholesalePricing: true, instalments: true,
       layaway: true, batchTracking: true, quarantine: true, recalls: true,
       bulkyDelivery: true, commissionTracking: true, measuredSales: true,
+      // Cash-and-carry: the bill holds the cartons, the cashier takes the money, then the store releases them.
+      billBeforeReceipt: true,
     }),
     complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'NAFDAC_PREMISES', 'TRADING_PERMIT', 'FIRE_CERT', 'SIGNAGE_PERMIT']),
     registrationAuthorities: Object.freeze(['NAFDAC', 'SON', 'MAN']),
@@ -566,6 +575,8 @@ const PROFILES = Object.freeze({
       variants: true, measuredSales: true, wholesalePricing: true, instalments: true,
       batchTracking: true, quarantine: true, recalls: true, bulkyDelivery: true,
       commissionTracking: true, expiryTracking: true,
+      // Yard desk writes the bill. The gate loads the truck only against the receipt.
+      billBeforeReceipt: true,
     }),
     complianceFields: Object.freeze(['CAC', 'TIN', 'VAT_REG', 'SONCAP_DEALER', 'TRADING_PERMIT', 'QUARRY_PERMIT', 'FIRE_CERT', 'SCUML']),
     registrationAuthorities: Object.freeze(['SON', 'MAN']),

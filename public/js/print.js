@@ -712,6 +712,8 @@
     .slip-claim-code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: ${spec.code}; font-weight: 800; letter-spacing: 0.08em; }
     .slip-foot { font-size: 0.92em; }
     .slip-words { margin-bottom: 4px; }
+    .slip-banner { text-align: center; font-weight: 750; letter-spacing: 0.04em; text-transform: uppercase; font-size: 0.78em; margin: 6px 0 2px; padding: 4px 6px; border: 1px solid #b91c1c; color: #991b1b; }
+    .slip-banner.is-release { border-color: #047857; color: #065f46; }
   `;
   }
 
@@ -745,10 +747,119 @@
     });
   }
 
+  function documentNode(doc, kind) {
+    const h = SR.ui.h;
+    const release = kind === 'RELEASE';
+    const head = h('div', { class: 'slip-head' },
+      h('img', { class: 'slip-logo', src: receiptLogoSrc(), alt: '', width: '56', height: '56' }),
+      h('div', { class: 'slip-brand' }, doc.brand || 'StockRidge'),
+      doc.branch_name ? h('div', { class: 'slip-sub' }, doc.branch_name) : null,
+      h('div', { class: release ? 'slip-banner is-release' : 'slip-banner' }, release
+        ? 'Release note — not a receipt'
+        : 'Bill — not a receipt — goods not released'));
+    const meta = h('div', { class: 'slip-meta' },
+      row(release ? 'Release' : 'Bill', doc.bill_no || doc.receipt_no || '—'),
+      release && doc.receipt_no ? row('Receipt', doc.receipt_no) : null,
+      row('Date', doc.raised_at || doc.sold_at ? U.soldAt(doc.raised_at || doc.sold_at) : '—'),
+      row('Customer', doc.customer_name || '—'),
+      doc.customer_phone ? row('Phone', doc.customer_phone) : null,
+      !release && doc.valid_until ? row('Hold until', U.soldAt(doc.valid_until)) : null);
+    const items = h('div', { class: 'slip-items' });
+    for (const item of doc.lines || doc.items || []) {
+      const block = h('div', { class: 'slip-item' });
+      block.appendChild(h('div', { class: 'slip-item-name' }, item.product_name || item.name || 'Item'));
+      if (item.variant_name) block.appendChild(h('div', { class: 'slip-sub' }, item.variant_name));
+      const qtyText = `${U.qty(item.quantity)} ${item.unit_code || ''}`.trim();
+      const unitPrice = item.unit_price != null ? item.unit_price : item.unitPrice;
+      const lineTotal = item.line_total != null ? item.line_total : item.lineTotal;
+      block.appendChild(row(`${qtyText} × ${U.money(unitPrice)}`, U.money(lineTotal)));
+      if (item.serial_no) block.appendChild(h('div', { class: 'slip-serial' }, `S/N ${item.serial_no}`));
+      items.appendChild(block);
+    }
+    const totals = h('div', { class: 'slip-totals' },
+      row('Total', U.money(doc.total), 'slip-total'));
+    const foot = h('div', { class: 'slip-foot' },
+      h('div', {}, release
+        ? 'The store may hand these goods over. This note is not proof of payment. Keep the receipt.'
+        : 'Pay this bill at the cashier. The goods stay held until a receipt is printed. Do not release them against this paper.'));
+    return h('div', { class: 'slip' }, head, h('hr', { class: 'slip-rule' }), meta, h('hr', { class: 'slip-rule' }), items, h('hr', { class: 'slip-rule' }), totals, h('hr', { class: 'slip-rule' }), foot);
+  }
+
+  function documentText(doc, kind) {
+    const release = kind === 'RELEASE';
+    const lines = [
+      doc.brand || 'StockRidge',
+      doc.branch_name || '',
+      release ? 'RELEASE NOTE — NOT A RECEIPT' : 'BILL — NOT A RECEIPT — GOODS NOT RELEASED',
+      `${release ? 'Release' : 'Bill'}  ${doc.bill_no || ''}`,
+      release && doc.receipt_no ? `Receipt ${doc.receipt_no}` : '',
+      `Customer ${doc.customer_name || ''}`,
+      !release && doc.valid_until ? `Hold until ${doc.valid_until}` : '',
+      '',
+    ];
+    for (const item of doc.lines || doc.items || []) {
+      lines.push(`${item.product_name || item.name}  ${U.qty(item.quantity)} ${item.unit_code || ''}  ${U.money(item.line_total != null ? item.line_total : item.lineTotal)}`);
+    }
+    lines.push('');
+    lines.push(`Total ${U.money(doc.total)}`);
+    lines.push('');
+    lines.push(release
+      ? 'The store may hand these goods over. This note is not proof of payment.'
+      : 'Pay at the cashier. Do not release the goods against this bill.');
+    return lines.filter((line) => line !== '').join('\n');
+  }
+
+  function previewDocument(doc, { kind = 'BILL', title = null, autoPrint = false } = {}) {
+    const text = documentText(doc, kind);
+    const heading = title || (kind === 'RELEASE' ? `Release ${doc.bill_no || doc.receipt_no || ''}`.trim() : `Bill ${doc.bill_no || ''}`.trim());
+    const body = SR.ui.h('div', { class: 'stack' });
+    body.appendChild(SR.ui.h('div', { class: 'alert alert-warn' }, kind === 'RELEASE'
+      ? 'This is the note the store keeps. It is not a receipt. The customer keeps the receipt.'
+      : 'This is not a receipt. The goods are held, not sold. They leave only after the receipt is printed.'));
+    body.appendChild(documentNode(doc, kind));
+    let modal;
+    const actions = [
+      SR.ui.h('button', { class: 'btn', onClick: () => SR.ui.copyToClipboard(text, 'Copied.') }, 'Copy'),
+      cancelBesidePrint(() => { if (modal) modal.close(); }, () => {
+        const holder = document.createElement('div');
+        holder.appendChild(documentNode(doc, kind));
+        writeFrame(holder.innerHTML, heading, slipPrintCss(printerPrefs.paper || '80'), printerPrefs.paper || '80');
+      }),
+    ];
+    modal = SR.ui.openModal({
+      title: heading,
+      body,
+      footer: actions,
+      size: 'narrow',
+      onClose: () => {
+        const root = document.getElementById('modal-root');
+        if (root) root.classList.remove('is-receipt');
+      },
+    });
+    markReceipt(modal);
+    if (autoPrint && prefs().autoPrint !== false) {
+      setTimeout(() => {
+        const holder = document.createElement('div');
+        holder.appendChild(documentNode(doc, kind));
+        writeFrame(holder.innerHTML, heading, slipPrintCss(printerPrefs.paper || '80'), printerPrefs.paper || '80');
+      }, 350);
+    }
+    return { modal, text };
+  }
+
+  function previewBill(bill, opts) {
+    return previewDocument(bill, Object.assign({ kind: 'BILL', autoPrint: true }, opts || {}));
+  }
+
+  function printRelease(doc, opts) {
+    return previewDocument(doc, Object.assign({ kind: 'RELEASE', autoPrint: true }, opts || {}));
+  }
+
   SR.print = {
     WIDTHS, loadPrefs, savePrefs, prefs,
     saleReceipt, pendingReceipt, tillSheet, countSheet,
     printText, preview, previewSale, slipNode, printReport, testPage,
+    previewBill, printRelease,
     centre, cols, rule, serialsForItem,
   };
 }(window));

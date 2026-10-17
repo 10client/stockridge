@@ -770,7 +770,7 @@
    * `render` returns a Node or a string, and strings are escaped here — so a
    * column that forgets `esc()` cannot become an injection.
    */
-  function renderTable({ columns, rows, rowKey = (r, i) => i, onRowClick = null, emptyMessage = 'No rows.', emptyTitle = undefined, emptyAction = null, foot = null, rowClass = null }) {
+  function renderTable({ columns, rows, rowKey = (r, i) => i, onRowClick = null, emptyMessage = 'No rows.', emptyTitle = undefined, emptyAction = null, foot = null, rowClass = null, exportable = true }) {
     if (!rows || !rows.length) {
       return empty({ title: emptyTitle || 'Nothing to show', message: emptyMessage, action: emptyAction });
     }
@@ -824,7 +824,26 @@
     }
 
     wrap.appendChild(table);
-    return wrap;
+    // A list that already exports the full filtered set passes exportable:false,
+    // so the page-head pair is the one that saves every row, not just this page.
+    // Every other table gets Export CSV and Save as PDF of the cells on screen.
+    if (!exportable) return wrap;
+    return withTableExport(wrap);
+  }
+
+  function withTableExport(wrap) {
+    const table = wrap.querySelector('table');
+    if (!table) return wrap;
+    const bar = h('div', { class: 'table-export' },
+      h('button', { class: 'btn btn-sm', type: 'button', onClick: () => saveRenderedTable(table, 'csv') }, 'Export CSV'),
+      h('button', { class: 'btn btn-sm', type: 'button', onClick: () => saveRenderedTable(table, 'pdf') }, 'Save as PDF'));
+    return h('div', { class: 'table-block' }, bar, wrap);
+  }
+
+  function saveRenderedTable(table, format) {
+    if (SR.exporter && SR.exporter.saveTable) return SR.exporter.saveTable(table, format);
+    info('Export is not available on this screen yet.');
+    return null;
   }
 
   /** A card that holds a table and its pager. */
