@@ -26,12 +26,12 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, searchTerm } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, searchTerm, optionalCoordinates } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
-const { normaliseModes, modeMatches, payForDrop, goodsValueOf } = require('../../domain/dispatch');
+const { normaliseModes, modeMatches, payForDrop, goodsValueOf, supplyTermsOf } = require('../../domain/dispatch');
 const salesService = require('../services/salesService');
 const saleIssues = require('../services/saleIssues');
 const selling = require('../../domain/selling');
@@ -1116,6 +1116,7 @@ function mount(app, base = '/api') {
     else where.push("d.status NOT IN ('DELIVERED','CANCELLED','RETURNED')"); // the board shows work, not history
     const rows = await db.all(`SELECT d.*, s.receipt_no, s.total AS sale_total, b.name AS branch_name,
           c.name AS customer_name, c.phone AS customer_phone,
+          s.sale_type, s.amount_paid AS sale_paid, s.balance_due AS sale_balance,
           (SELECT COUNT(*) FROM delivery_job_items i WHERE i.delivery_job_id = d.id AND i.is_deleted = 0) AS item_count
         FROM delivery_jobs d
         LEFT JOIN sales s ON s.id = d.sale_id
@@ -1131,7 +1132,8 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const id = String(ctx.req.param('id'));
     const job = await db.first(`SELECT d.*, b.name AS branch_name, c.name AS customer_name, c.phone AS customer_phone,
-          s.receipt_no, s.total AS sale_total, s.status AS sale_status
+          s.receipt_no, s.total AS sale_total, s.status AS sale_status, s.sale_type,
+          s.amount_paid AS sale_paid, s.balance_due AS sale_balance
         FROM delivery_jobs d
         LEFT JOIN branches b ON b.id = d.branch_id
         LEFT JOIN customers c ON c.id = d.customer_id
@@ -1198,6 +1200,10 @@ function mount(app, base = '/api') {
     const assignedDriver = strField(body.driver_name, { field: 'Driver', maxLength: 120 });
     const driverPhone = strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 });
 
+    const assignment = await dispatchAssignment(db, job, body, status);
+    const gps = optionalCoordinates(body);
+    if (!gps.ok) throw new HttpError(gps.error, { status: 400, code: 'GPS_INVALID' });
+    const transactionNote = strField(body.transaction_note, { field: 'Transaction note', maxLength: 500 });
     const previousStatus = String(job.status);
     // A returned or cancelled delivery puts goods back on the shelf, which needs
     // the job's items and a batch to return them to. Both are READS, so both
@@ -1227,6 +1233,31 @@ function mount(app, base = '/api') {
     if (assignment.sales_share_pct != null) { sets.push('sales_share_pct = ?'); params.push(assignment.sales_share_pct); }
     if (assignment.vehicle_no) { sets.push('vehicle_no = ?'); params.push(assignment.vehicle_no); }
     if (assignment.driver_pay != null) { sets.push('driver_pay = ?'); params.push(assignment.driver_pay); }
+    if (gps.present) {
+      sets.push('latitude = ?'); params.push(gps.latitude);
+      sets.push('longitude = ?'); params.push(gps.longitude);
+    }
+    if (transactionNote) { sets.push('transaction_note = ?'); params.push(transactionNote); }
+    if (status === 'DELIVERED' && job.sale_id) {
+      const sale = await db.first('SELECT sale_type, total, delivery_fee, amount_paid, balance_due, customer_name, customer_phone FROM sales WHERE id = ?', [String(job.sale_id)]);
+      const customer = job.customer_id
+        ? await db.first('SELECT name, phone, latitude, longitude FROM customers WHERE id = ?', [String(job.customer_id)])
+        : null;
+      if (sale) {
+        sets.push('supply_terms = ?'); params.push(supplyTermsOf({
+          saleType: sale.sale_type, balanceDue: sale.balance_due, amountPaid: sale.amount_paid,
+        }));
+        sets.push('goods_value = ?'); params.push(goodsValueOf(sale));
+        sets.push('amount_paid = ?'); params.push(round2(Number(sale.amount_paid) || 0));
+        sets.push('balance_due = ?'); params.push(round2(Number(sale.balance_due) || 0));
+        sets.push('txn_customer_name = ?'); params.push((customer && customer.name) || sale.customer_name || null);
+        sets.push('txn_customer_phone = ?'); params.push((customer && customer.phone) || sale.customer_phone || null);
+      }
+      if (!gps.present && customer && customer.latitude != null && customer.longitude != null && job.latitude == null) {
+        sets.push('latitude = ?'); params.push(Number(customer.latitude));
+        sets.push('longitude = ?'); params.push(Number(customer.longitude));
+      }
+    }
     if (status === 'FAILED') { sets.push('attempts = COALESCE(attempts, 0) + 1'); }
     if (note) { sets.push("notes = COALESCE(notes,'') || ?"); params.push(`\n[${watNow()}] ${status} by ${user.full_name || user.username}${note ? ` — ${note}` : ''}`); }
     params.push(id);

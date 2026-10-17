@@ -874,6 +874,7 @@
   function bellMetaFor(n) {
     const bits = [];
     if (String(n.type || '').toUpperCase() === 'MESSAGE') bits.push('Message');
+    if (n.business_name) bits.push(n.business_name);
     if (n.branch_name) bits.push(n.branch_name);
     else if (n.user_id) bits.push('For you');
     else bits.push('Whole business');
@@ -1044,8 +1045,12 @@
     cancel.addEventListener('click', () => modal.close());
 
     try {
-      const q = SR.state.query({ limit: 500, active: '1' });
-      if (isAdmin) q.role = 'OWNER';
+      // An owner reaches every business. Passing the focused business_id
+      // hides the proprietor of a second plant, which is why the administrator
+      // saw "no owner" and the send found nobody.
+      const q = isAdmin
+        ? { limit: 500, active: '1', role: 'OWNER' }
+        : SR.state.query({ limit: 500, active: '1' });
       const res = await SR.api.get('/api/users', { query: q });
       const rows = ((res && (res.data || res.rows)) || []).filter((u) => {
         if (!u || String(u.id) === String(SR.state.user && SR.state.user.id)) return false;
@@ -1054,7 +1059,7 @@
       });
       person.replaceChildren();
       if (!rows.length) {
-        person.appendChild(ui.h('option', { value: '' }, isAdmin ? 'No owner on this business' : 'No staff or managers'));
+        person.appendChild(ui.h('option', { value: '' }, isAdmin ? 'No owner account yet' : 'No staff or managers'));
       } else {
         person.appendChild(ui.h('option', { value: '' }, 'Choose someone'));
         for (const u of rows) {

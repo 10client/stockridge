@@ -29,7 +29,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, readBusinessId, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, searchTerm } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, readBusinessId, inScope, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, searchTerm, optionalCoordinates } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
@@ -261,14 +261,16 @@ function mount(app, base = '/api') {
     const paymentTermsDays = numField(body.payment_terms_days ?? (customerClass ? customerClass.payment_terms_days : 0), { field: 'Payment terms', min: 0, max: 365, whole: true });
 
     const tin = strField(body.tin, { field: 'TIN', maxLength: 40 });
+    const gps = optionalCoordinates(body);
+    if (!gps.ok) throw new HttpError(gps.error, { status: 400, code: 'GPS_INVALID' });
     const id = newId();
 
     await db.transaction(async (tx) => {
       tx.queue(`INSERT INTO customers (
           id, business_id, branch_id, customer_class_id, customer_type, name, company_name, phone, alt_phone,
-          email, address, city, state, tin, cac_reg_no, credit_limit, credit_balance, payment_terms_days,
+          email, address, city, state, latitude, longitude, gps_label, tin, cac_reg_no, credit_limit, credit_balance, payment_terms_days,
           price_list_id, loyalty_points, notes, is_active, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 0,?,?, 0,?, 1, datetime('now'), datetime('now'))`, [
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 0,?,?, 0,?, 1, datetime('now'), datetime('now'))`, [
         id, String(business.id), String(branch.id), classId, customerType, name,
         strField(body.company_name, { field: 'Company name', maxLength: 200 }),
         phone,
@@ -277,6 +279,8 @@ function mount(app, base = '/api') {
         strField(body.address, { field: 'Address', maxLength: 300 }),
         strField(body.city, { field: 'City', maxLength: 80 }),
         strField(body.state, { field: 'State', maxLength: 80 }),
+        gps.latitude, gps.longitude,
+        strField(body.gps_label, { field: 'Location label', maxLength: 80 }),
         tin,
         strField(body.cac_reg_no, { field: 'CAC number', maxLength: 40 }),
         creditLimit, paymentTermsDays,
@@ -378,6 +382,7 @@ function mount(app, base = '/api') {
       city: { field: 'City', maxLength: 80 }, state: { field: 'State', maxLength: 80 },
       tin: { field: 'TIN', maxLength: 40 }, cac_reg_no: { field: 'CAC number', maxLength: 40 },
       notes: { field: 'Notes', maxLength: 1000 },
+      gps_label: { field: 'Location label', maxLength: 80 },
     };
     for (const [col, opts] of Object.entries(strings)) {
       if (body[col] !== undefined) { sets.push(`${col} = ?`); params.push(strField(body[col], opts)); }
@@ -421,6 +426,12 @@ function mount(app, base = '/api') {
     }
     if (body.is_active !== undefined) { sets.push('is_active = ?'); params.push(boolField(body.is_active, 1)); }
     if (body.price_list_id !== undefined) { sets.push('price_list_id = ?'); params.push(body.price_list_id ? String(body.price_list_id) : null); }
+    if (body.latitude !== undefined || body.longitude !== undefined) {
+      const gps = optionalCoordinates(body);
+      if (!gps.ok) throw new HttpError(gps.error, { status: 400, code: 'GPS_INVALID' });
+      sets.push('latitude = ?'); params.push(gps.latitude);
+      sets.push('longitude = ?'); params.push(gps.longitude);
+    }
 
     // credit_balance is NEVER settable from a request. It is a cache of the
     // ledger, and a route that let a caller write it would let anybody erase a

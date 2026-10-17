@@ -58,7 +58,7 @@ const LWW_TABLES = {
     // Contact and descriptive fields only. `credit_balance` is a cache of the
     // debtor ledger and `credit_limit` is an authority decision — neither may be
     // written by a device, or an offline edit could erase a debt.
-    columns: ['name', 'company_name', 'phone', 'alt_phone', 'email', 'address', 'city', 'state', 'tin', 'cac_reg_no', 'notes', 'customer_type'],
+    columns: ['name', 'company_name', 'phone', 'alt_phone', 'email', 'address', 'city', 'state', 'latitude', 'longitude', 'gps_label', 'tin', 'cac_reg_no', 'notes', 'customer_type'],
     scopeColumn: 'branch_id',
   },
   notifications: {
@@ -67,7 +67,7 @@ const LWW_TABLES = {
   delivery_jobs: {
     // A driver in the field updating a drop status is the canonical offline
     // write. Money columns are excluded: the fee is set when the job is created.
-    pk: 'id', columns: ['status', 'driver_name', 'driver_phone', 'delivered_at', 'delivered_to', 'proof_of_delivery', 'notes', 'attempts'],
+    pk: 'id', columns: ['status', 'driver_name', 'driver_phone', 'delivered_at', 'delivered_to', 'proof_of_delivery', 'notes', 'attempts', 'latitude', 'longitude', 'transaction_note'],
     scopeColumn: 'branch_id',
   },
   stocktake_lines: {

@@ -732,6 +732,29 @@ function strField(value, { field = 'This text', maxLength = 500, required = fals
 }
 
 /** A 0/1 flag from any of the shapes a client might send. */
+/**
+ * Optional GPS. Both blank is "not set". One without the other is a
+ * mistake. A pin is never required.
+ */
+function optionalCoordinates(body, { latitude = 'latitude', longitude = 'longitude' } = {}) {
+  const latRaw = body ? body[latitude] : undefined;
+  const lngRaw = body ? body[longitude] : undefined;
+  const blank = (value) => value == null || String(value).trim() === '';
+  if (blank(latRaw) && blank(lngRaw)) return { ok: true, latitude: null, longitude: null, present: false };
+  if (blank(latRaw) || blank(lngRaw)) {
+    return { ok: false, error: 'A location needs both a latitude and a longitude, or neither. Leave both blank if you do not have GPS.' };
+  }
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+    return { ok: false, error: 'Latitude must be a number between -90 and 90.' };
+  }
+  if (!Number.isFinite(lng) || lng < -180 || lng > 180) {
+    return { ok: false, error: 'Longitude must be a number between -180 and 180.' };
+  }
+  return { ok: true, latitude: lat, longitude: lng, present: true };
+}
+
 function boolField(value, fallback = 0) {
   if (value === undefined || value === null) return fallback;
   if (typeof value === 'boolean') return value ? 1 : 0;
@@ -743,7 +766,7 @@ function boolField(value, fallback = 0) {
 
 module.exports = {
   DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
-  valid, numField, strField, boolField,
+  valid, numField, strField, boolField, optionalCoordinates,
   resolveBranch, resolveBusiness, readBusinessFilter, readBusinessId, inScope, inBranchScope, assertRowAccess,
   scopeFilter, branchFilter, pushScope, pagination, listResponse, dateRange, requireField, flag,
   searchTerm, MAX_SEARCH_BYTES,

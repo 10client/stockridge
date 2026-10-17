@@ -58,7 +58,9 @@ const { round2, roundTo } = require('../../domain/money');
 const { toBaseUnits, selectBatchesFifo, buildLadder } = require('../../domain/uom');
 const { computeSaleLine, computeSaleTotals, resolveUnitPrice, marginWarnings } = require('../../domain/pricing');
 const { extractVatFromInclusive } = require('../../domain/nigerianTax');
-const { creditDecision } = require('../../domain/credit');
+const { creditDecision, nextBatchHold } = require('../../domain/credit');
+const { resolveProfile } = require('../../domain/verticals');
+const { supplyTermsOf } = require('../../domain/dispatch');
 const { canVoidSale, canDiscount, canSellOnCredit, canOverrideCreditLimit } = require('../../domain/planLimits');
 const { minutesBetween, addMonths, watNow, watToday, utcToWat, watToUtc, parseTimestamp, claimedWatToUtcSql, utcNow } = require('../../domain/time');
 const trade = require('../../domain/trade');
@@ -1123,6 +1125,7 @@ async function complete(db, params) {
 
   // ---- credit authority, evaluated BEFORE any write
   let creditInfo = null;
+  let nextBatch = null;
   if (isCredit) {
     if (!customer) throw err('A credit sale needs a customer — the debt has to belong to somebody the system can find later.', 'CUSTOMER_REQUIRED_FOR_CREDIT');
     const currentBalance = Number(customer.credit_balance) || 0;
@@ -1143,6 +1146,30 @@ async function complete(db, params) {
       // auditable judgement call and an unexplained hole — so the reason is
       // required, not optional.
       const e = err(`${creditInfo.message} Record why this was approved so the owner can review it.`, 'CREDIT_OVERRIDE_REASON_REQUIRED', 400);
+      e.creditInfo = creditInfo;
+      throw e;
+    }
+
+    // THE NEXT BATCH, not a second ledger. The open figure is the balance
+    // already on this customer. A cash sale never reaches this block.
+    let plantOverrides = null;
+    if (business && business.profile_overrides_json) {
+      try { plantOverrides = JSON.parse(business.profile_overrides_json); } catch (e) { plantOverrides = null; }
+    }
+    const plantProfile = resolveProfile(business && business.profile_code, plantOverrides);
+    nextBatch = nextBatchHold({
+      enabled: Boolean(plantProfile && plantProfile.creditUntilPaid),
+      openBalance: currentBalance,
+      isCredit: true,
+      canOverride,
+      overrideReason: creditOverrideReason,
+      customerName: customer.name,
+    });
+    if (nextBatch.held && nextBatch.decision === 'REQUIRE_OVERRIDE') {
+      throw err(nextBatch.message, 'NEXT_BATCH_HELD', 403);
+    }
+    if (nextBatch.held) {
+      const e = err(nextBatch.message, 'NEXT_BATCH_HELD', 400);
       e.creditInfo = creditInfo;
       throw e;
     }
@@ -1296,6 +1323,12 @@ async function complete(db, params) {
     consumeHold.set(id, roundTo((consumeHold.get(id) || 0) + qty, 4));
   }
 
+  let saleNotes = notes || null;
+  if (nextBatch && nextBatch.released && creditOverrideReason) {
+    const line = `Next batch released while ₦${Number(nextBatch.openBalance).toLocaleString('en-NG')} was still unpaid: ${creditOverrideReason}`;
+    saleNotes = saleNotes ? `${saleNotes}\n${line}` : line;
+  }
+
   return db.transaction(async (tx) => {
     const saleId = tx.idFor('sale');
     let controlledPrev = controlledHead;
@@ -1333,8 +1366,8 @@ async function complete(db, params) {
       isCredit && paymentResult.balanceDue > 0 ? creditDueDate(customer, customerClass, settings) : null,
       deliveryRequired ? 1 : 0, deliveryAddress || null, totals.deliveryFee,
       latePosting
-        ? `${notes ? notes + ' | ' : ''}Late posting: recorded ${sold.minutesBack >= 1440 ? Math.floor(sold.minutesBack / 1440) + ' day(s)' : sold.minutesBack + ' minute(s)'} after the sale, against a till that was already counted.`
-        : (notes || null),
+        ? `${saleNotes ? saleNotes + ' | ' : ''}Late posting: recorded ${sold.minutesBack >= 1440 ? Math.floor(sold.minutesBack / 1440) + ' day(s)' : sold.minutesBack + ' minute(s)'} after the sale, against a till that was already counted.`
+        : (saleNotes || null),
       prepared.tradeMix || null,
       sold.sql,
     ]);
@@ -1691,16 +1724,30 @@ async function complete(db, params) {
       // question anybody asks.
       const branchTag = String(branch.code || branch.id.slice(0, 4)).replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase();
       const jobNo = `DLV-${branchTag}-${receiptNo}`;
+      const dropDue = round2(Math.max(0, paymentResult.balanceDue || 0));
+      const dropPaid = round2(paymentResult.paid || 0);
+      const dropLat = customer && customer.latitude != null && customer.latitude !== '' ? Number(customer.latitude) : null;
+      const dropLng = customer && customer.longitude != null && customer.longitude !== '' ? Number(customer.longitude) : null;
       tx.queue(`INSERT INTO delivery_jobs (
           id, job_no, branch_id, business_id, sale_id, customer_id, delivery_address, delivery_city,
-          delivery_state, status, fee, fee_collected, created_by, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?, ?, datetime('now'), datetime('now'))`, [
+          delivery_state, status, fee, fee_collected, created_by,
+          supply_terms, goods_value, amount_paid, balance_due, txn_customer_name, txn_customer_phone,
+          latitude, longitude,
+          created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?,?,?,?,?,?, ?,?, datetime('now'), datetime('now'))`, [
         jobId, jobNo, String(branch.id), String(business.id), saleId,
         customer ? String(customer.id) : null,
         deliveryAddress || (customer && customer.address) || 'Address to be confirmed',
         (customer && customer.city) || branch.city || null,
         (customer && customer.state) || branch.state || null,
         totals.deliveryFee, round2(totals.deliveryFee), String(user.id),
+        supplyTermsOf({ saleType: prepared.saleType, balanceDue: dropDue, amountPaid: dropPaid }),
+        round2(Math.max(0, (Number(totals.total) || 0) - (Number(totals.deliveryFee) || 0))),
+        dropPaid, dropDue,
+        customer ? customer.name : (params.walkInName || null),
+        customer ? customer.phone : (params.walkInPhone || null),
+        Number.isFinite(dropLat) ? dropLat : null,
+        Number.isFinite(dropLng) ? dropLng : null,
       ]);
       for (const line of prepared.lines.filter((l) => Number(l.product.is_bulky) || l.quantityInBase > 0)) {
         tx.queue(`INSERT INTO delivery_job_items (

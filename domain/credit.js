@@ -224,7 +224,51 @@ function ledgerEntry({ branchId, businessId, customerId, entryType, referenceId 
   };
 }
 
+/**
+ * Whether the next credit batch should stay at the plant.
+ *
+ * This is not a second ledger and it is not consignment. The open figure
+ * is the customer's existing credit balance. A cash sale is never held:
+ * a hawker who pays today is not a shop waiting to sell the last supply.
+ * An owner can still release the batch. The reason is kept on the sale,
+ * which is the same judgement the limit already records.
+ */
+function nextBatchHold({
+  enabled = false,
+  openBalance = 0,
+  isCredit = false,
+  canOverride = false,
+  overrideReason = null,
+  customerName = 'This customer',
+} = {}) {
+  const open = round2(Number(openBalance) || 0);
+  if (!enabled || !isCredit || open <= 0.009) return { held: false, openBalance: open };
+  const reason = overrideReason ? String(overrideReason).trim() : '';
+  const who = customerName || 'This customer';
+  const message = `${who} still owes ₦${open.toLocaleString('en-NG')} on a supply that has not been paid. The next batch stays at the plant until that is paid. A cash sale is not held.`;
+  if (reason.length >= 4 && canOverride) {
+    return { held: false, released: true, openBalance: open, message: `${message} Released: ${reason}` };
+  }
+  if (!canOverride) {
+    return {
+      held: true,
+      decision: 'REQUIRE_OVERRIDE',
+      code: 'NEXT_BATCH_HELD',
+      openBalance: open,
+      message: `${message} An owner can release this batch, and the reason is kept on the sale.`,
+    };
+  }
+  return {
+    held: true,
+    decision: 'WARN',
+    code: 'NEXT_BATCH_HELD',
+    openBalance: open,
+    overrideRequired: true,
+    message: `${message} Record why this batch is going out anyway.`,
+  };
+}
+
 module.exports = {
   AGEING_BUCKETS,
-  ageBalance, creditDecision, creditTerms, daysOverdue, overdueWarning, ledgerEntry,
+  ageBalance, creditDecision, creditTerms, daysOverdue, overdueWarning, ledgerEntry, nextBatchHold,
 };

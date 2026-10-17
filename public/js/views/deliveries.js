@@ -77,6 +77,8 @@
     wrap.appendChild(tabs);
     const dispatchHost = ui.h('div', {});
     wrap.appendChild(dispatchHost);
+    const plantHost = ui.h('div', {});
+    wrap.appendChild(plantHost);
     const summaryHost = ui.h('div', {});
     wrap.appendChild(summaryHost);
     const host = ui.h('div', {});
@@ -160,6 +162,16 @@
               if (d.landmark) cell.appendChild(ui.h('div', { class: 'hint' }, `near ${d.landmark}`));
               return cell;
             } },
+            { key: 'supply_terms', label: 'This drop', render: (d) => {
+              const due = d.balance_due != null ? Number(d.balance_due) : Number(d.sale_balance);
+              const terms = d.supply_terms || (due > 0.009 ? 'CREDIT' : (d.sale_type === 'CREDIT' ? 'CREDIT' : (d.sale_total != null ? 'CASH' : '')));
+              if (!terms) return '—';
+              const goods = d.goods_value != null ? d.goods_value : null;
+              const bits = [U.humanise(String(terms).toLowerCase())];
+              if (goods != null) bits.push(U.money(goods));
+              if (due > 0.009) bits.push(`${U.money(due)} still owed`);
+              return bits.join(' · ');
+            } },
             { key: 'item_count', label: 'Items', align: 'right' },
             { key: 'scheduled_for', label: 'Scheduled', render: (d) => {
               if (!d.scheduled_for) return ui.badge('not scheduled', 'badge-warn');
@@ -191,8 +203,12 @@
     function refreshFleet() {
       paintFleet(dispatchHost, loadDispatch(), refreshFleet);
     }
+    function refreshPlant() {
+      paintPlant(plantHost, refreshPlant);
+    }
     await load();
     refreshFleet();
+    refreshPlant();
     return wrap;
   }
 
@@ -297,6 +313,171 @@
 
   // -------------------------------------------------------------------
   // ONE JOB
+  function paintPlant(host, after) {
+    if (!SR.state.moduleOn('manufacturing') && !SR.state.moduleOn('creditUntilPaid')) {
+      host.replaceChildren();
+      return;
+    }
+    host.replaceChildren(ui.loading('Reading the plant…'));
+    SR.api.get('/api/plant', { query: SR.state.query({}) }).then((plant) => {
+      const card = ui.h('div', { class: 'card' });
+      card.appendChild(ui.h('div', { class: 'card-head' },
+        ui.h('h2', {}, 'The plant'),
+        ui.h('div', { class: 'actions' },
+          SR.state.atLeast('MANAGER') && plant.missing && plant.missing.length
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => ensureInputs(after) }, 'Add the usual inputs')
+            : null,
+          SR.state.atLeast('MANAGER') && plant.manufacturing
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => addInput(after) }, 'Add an input')
+            : null,
+          SR.state.atLeast('MANAGER')
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => recordService(after) }, 'Machinery service')
+            : null)));
+      const body = ui.h('div', { class: 'card-body stack' });
+      body.appendChild(ui.h('div', { class: 'grid grid-3' },
+        ui.kpi({
+          label: 'Unpaid supplies',
+          value: String((plant.openCredit || []).length),
+          foot: plant.creditUntilPaid ? 'Next batch held until paid' : 'Credit hold is off',
+          tone: (plant.openCredit || []).length ? 'warn' : 'good',
+          small: true,
+        }),
+        ui.kpi({
+          label: 'Manufacturing stock',
+          value: U.money(plant.inputValue || 0),
+          foot: `${(plant.inputs || []).length} input${(plant.inputs || []).length === 1 ? '' : 's'}`,
+          small: true,
+        }),
+        ui.kpi({
+          label: 'Machinery service, 30 days',
+          value: U.money(plant.machinery && plant.machinery.days30),
+          foot: plant.machinery && plant.machinery.allTime ? `${U.money(plant.machinery.allTime)} in all` : 'Record a service when a machine is worked on',
+          small: true,
+        })));
+      if (plant.creditUntilPaid) {
+        body.appendChild(ui.h('p', { class: 'hint' }, 'A shop supplied on credit does not collect the next batch until that supply is paid. A cash sale is not held. An owner can release one batch, and the reason stays on the sale.'));
+      }
+      if ((plant.openCredit || []).length) {
+        body.appendChild(ui.h('div', { class: 'stack' }, (plant.openCredit || []).slice(0, 8).map((row) => ui.h('div', {},
+          ui.h('strong', {}, row.name),
+          ` · ${U.money(row.balance)} unpaid`,
+          row.phone ? ` · ${row.phone}` : ''))));
+      }
+      if ((plant.inputs || []).length) {
+        body.appendChild(ui.h('div', { class: 'stack' }, (plant.inputs || []).map((row) => {
+          const line = ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px' } });
+          line.appendChild(ui.h('div', {},
+            ui.h('strong', {}, row.name),
+            ui.h('div', { class: 'hint' }, `${U.qty(row.onHand)} ${row.unit || ''} · ${U.money(row.value)}${row.offersSale ? ' · also sold at the till' : ' · not sold at the till'}`)));
+          if (SR.state.atLeast('MANAGER')) {
+            line.appendChild(ui.h('button', {
+              class: 'btn btn-sm',
+              onClick: () => toggleSale(row, after),
+            }, row.offersSale ? 'Stop selling' : 'Also sell'));
+          }
+          return line;
+        })));
+      } else if (plant.manufacturing) {
+        body.appendChild(ui.h('p', { class: 'hint' }, 'No manufacturing inputs yet. Add treatment chemical, film, flour, leather or whatever this plant uses. They are counted as stock and stay off the till unless you also sell them.'));
+      }
+      card.appendChild(body);
+      host.replaceChildren(card);
+    }).catch((err) => {
+      host.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'The plant count could not be read.'));
+    });
+  }
+
+  function ensureInputs(after) {
+    SR.api.post('/api/plant/inputs/ensure', {}, { query: SR.state.query({}) }).then((res) => {
+      ui.ok(res.message || 'Inputs added.');
+      if (after) after();
+    }).catch((err) => ui.apiError(err));
+  }
+
+  function addInput(after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Name what this plant actually uses. Chemicals, film, flour, yeast, leather — the name is yours. It is counted as stock and is not sold at the till unless you tick that.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Name', name: 'name', required: true, placeholder: 'Alum, nylon, leather, yeast' }),
+      ui.field({ label: 'Category', name: 'category_name', placeholder: 'Treatment chemicals' }),
+      ui.field({ label: 'Unit', name: 'unit', placeholder: 'bag' }),
+      ui.field({ label: 'Cost (₦)', name: 'cost', type: 'number', step: '0.01', min: '0', hint: 'What you last paid. Leave 0 and set it when the goods are received.' }),
+      ui.field({ label: 'Also sell this at the till', name: 'offers_sale', type: 'checkbox', value: 0, span: true })));
+    const m = ui.openModal({
+      title: 'Add a manufacturing input',
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readForm(wrapEl);
+            if (!v.name || String(v.name).trim().length < 2) { ui.warn('Name the input.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post('/api/plant/inputs', {
+                name: v.name,
+                category_name: v.category_name || null,
+                unit: v.unit || null,
+                cost: v.cost === '' ? 0 : Number(v.cost),
+                offers_sale: Number(v.offers_sale) ? 1 : 0,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Added.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Add it'),
+      ],
+    });
+  }
+
+  function recordService(after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A filling line, an oven, a generator, a sealing machine. This is the cost of the service, not the stock of spare parts.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'What was serviced', name: 'description', required: true, span: true, placeholder: 'Sachet filling machine service' }),
+      ui.field({ label: 'Amount (₦)', name: 'amount', type: 'number', step: '0.01', min: '0', required: true }),
+      ui.field({ label: 'Paid by', name: 'payment_method', value: 'BANK_TRANSFER', options: ['CASH', 'BANK_TRANSFER', 'POS_TERMINAL', 'MOBILE_MONEY'] })));
+    const m = ui.openModal({
+      title: 'Machinery service',
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.description || String(v.description).trim().length < 4) { ui.warn('Say which machine was serviced.'); return; }
+            if (!(Number(v.amount) > 0)) { ui.warn('Enter the amount.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post('/api/expenses', {
+                branch_id: SR.state.activeBranchId,
+                business_id: SR.state.activeBusinessId,
+                category: 'MACHINERY_SERVICE',
+                description: v.description,
+                amount: Number(v.amount),
+                payment_method: v.payment_method || 'BANK_TRANSFER',
+                expense_date: U.todayWat(),
+              }, { query: SR.state.query({}) });
+              ui.ok((res && res.message) || 'Service cost recorded.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Record it'),
+      ],
+    });
+  }
+
+  function toggleSale(row, after) {
+    SR.api.put(`/api/products/${encodeURIComponent(row.id)}`, { offers_sale: row.offersSale ? 0 : 1 }).then(() => {
+      ui.ok(row.offersSale ? `${row.name} stays on the plant stock and is off the till.` : `${row.name} is still counted as an input, and the till can sell it.`);
+      if (after) after();
+    }).catch((err) => ui.apiError(err));
+  }
+
   // -------------------------------------------------------------------
   async function renderJob(ctx) {
     ctx.setTitle('Delivery');
@@ -357,6 +538,11 @@
           ['City', job.city], ['State', job.state],
           ['Scheduled for', job.scheduled_for ? U.dateTime(job.scheduled_for) : null],
           ['Delivered at', job.delivered_at ? U.watClock(job.delivered_at) : null],
+          ['This drop', [job.supply_terms ? U.humanise(String(job.supply_terms).toLowerCase()) : (job.sale_type ? U.humanise(String(job.sale_type).toLowerCase()) : null), job.goods_value != null ? U.money(job.goods_value) : (job.sale_total != null ? U.money(job.sale_total) : null)].filter(Boolean).join(' · ') || null],
+          ['Paid', job.amount_paid != null ? U.money(job.amount_paid) : (job.sale_paid != null ? U.money(job.sale_paid) : null)],
+          ['Still owed', job.balance_due != null ? U.money(job.balance_due) : (job.sale_balance != null ? U.money(job.sale_balance) : null)],
+          ['Drop note', job.transaction_note],
+          ['GPS', job.latitude != null && job.longitude != null ? `${job.latitude}, ${job.longitude}` : null],
           ['Received by', job.delivered_to],
           ['Proof', job.proof_of_delivery],
           ['Notes', job.notes],
@@ -483,7 +669,10 @@
         ui.field({ label: 'Vehicle', name: 'vehicle_no', value: job.vehicle_no || '', placeholder: 'Plate, or the name on the fleet' }),
         ui.field({ label: 'Received by', name: 'delivered_to', placeholder: 'Name of the person who took delivery', hint: 'For a delivered job, this is the name a dispute is settled against.' }),
         ui.field({ label: 'Proof of delivery', name: 'proof_of_delivery', placeholder: 'Waybill number, or a note of the photo taken' }),
-        ui.field({ label: 'Note', name: 'note', type: 'textarea', span: true, hint: 'Required for FAILED, RETURNED and CANCELLED. A failed drop with no reason cannot be chased up or charged back to the transporter.' })));
+        ui.field({ label: 'Note', name: 'note', type: 'textarea', span: true, hint: 'Required for FAILED, RETURNED and CANCELLED. A failed drop with no reason cannot be chased up or charged back to the transporter.' }),
+        ui.field({ label: 'Latitude (optional)', name: 'latitude', value: job.latitude != null ? String(job.latitude) : '', placeholder: 'Shop pin, if you have one' }),
+        ui.field({ label: 'Longitude (optional)', name: 'longitude', value: job.longitude != null ? String(job.longitude) : '' }),
+        ui.field({ label: 'What happened on this drop', name: 'transaction_note', type: 'textarea', span: true, value: job.transaction_note || '', placeholder: 'Paid cash at the shop, or still owing for this batch' })));
       const m = ui.openModal({
         title: 'Update this delivery',
         body: wrapEl,
@@ -505,6 +694,9 @@
                   delivered_to: v.delivered_to || null,
                   proof_of_delivery: v.proof_of_delivery || null,
                   note: v.note || null,
+                  latitude: v.latitude || null,
+                  longitude: v.longitude || null,
+                  transaction_note: v.transaction_note || null,
                 });
                 ui.ok(result.message || `Marked ${U.humanise(v.status).toLowerCase()}.`);
                 m.close();

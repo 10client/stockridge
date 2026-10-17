@@ -1805,7 +1805,9 @@
             const reason = ui.h('input', { type: 'text', placeholder: 'Reason for selling on credit (recorded)', style: { marginTop: '8px' } });
             creditBox.appendChild(reason);
             creditBox.dataset.reason = '1';
-            creditBox.appendChild(ui.h('div', { class: 'hint' }, 'Left blank unless the customer is over their limit.'));
+            creditBox.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('creditUntilPaid')
+              ? 'If this customer still owes for a supply, the next batch stays at the plant until that is paid. A reason here releases it, and the reason is kept on the sale. A cash sale is not held.'
+              : 'Left blank unless the customer is over their limit.'));
             creditBox.querySelector('input').id = 'pos-credit-reason';
           }
         }

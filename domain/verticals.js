@@ -376,7 +376,7 @@ const EXPENSE_CATEGORY_SETS = Object.freeze({
   // A plant. DRIVER_WAGES is the salary of a driver on a vehicle the
   // business owns. A partner rider is not in that line: their pay is a
   // share of the sales they delivered, recorded when the drop is closed.
-  PRODUCTION: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'DRIVER_WAGES', 'TRANSPORT_LOGISTICS', 'PACKAGING_MATERIALS', 'WATER_TREATMENT', 'BAKERY_GAS', 'REPAIRS_MAINTENANCE', 'SHRINKAGE', 'SECURITY', 'CLEANING', 'BANK_CHARGES', 'MISC'],
+  PRODUCTION: ['RENT', 'DIESEL_FUEL', 'ELECTRICITY', 'SALARY_WAGES', 'DRIVER_WAGES', 'PACKER_WAGES', 'TRANSPORT_LOGISTICS', 'PACKAGING_MATERIALS', 'WATER_TREATMENT', 'BAKERY_GAS', 'MACHINERY_SERVICE', 'REPAIRS_MAINTENANCE', 'SHRINKAGE', 'SECURITY', 'CLEANING', 'BANK_CHARGES', 'MISC'],
 });
 
 // =====================================================================
@@ -1001,10 +1001,14 @@ const PROFILES = Object.freeze({
     code: 'WATER_PACKING',
     tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Water packing (sachet and bottle)',
-    blurb: 'Sachet pure water and bottled table water from one plant. Sell a sachet, a bag of 20, a bottle or a pack. The gate bills, takes payment, then releases the load. NAFDAC packaged water — not a pharmacy.',
+    blurb: 'Sachet pure water and bottled table water from one plant. Sell a sachet, a bag of 20, a bottle or a pack. The gate bills, takes payment, then releases the load. A shop on credit does not collect the next batch until that supply is paid. Cash is not held. NAFDAC packaged water — not a pharmacy.',
     baseUnit: 'sachet',
     defaultLadder: LADDERS.WATER_SACHET,
     dispatch: true,
+    // A shop supplied on credit does not collect the next batch until that
+    // supply is paid. Cash is not held. An owner can turn this off.
+    creditUntilPaid: true,
+    manufacturing: true,
     dispatchDefaults: Object.freeze([
       { vehicleClass: 'PICKUP', arrangement: 'OWNED' },
       { vehicleClass: 'TRICYCLE', arrangement: 'PARTNER', salesSharePct: 8 },
@@ -1028,6 +1032,7 @@ const PROFILES = Object.freeze({
       { code: 'BOTTLED_WATER', name: 'Bottled table water' },
       { code: 'DISPENSER_WATER', name: 'Dispenser and jerrycan' },
       { code: 'PACKAGING', name: 'Film, bags and labels' },
+      { code: 'TREATMENT', name: 'Treatment chemicals' },
     ]),
     seedProducts: Object.freeze([
       { name: 'Sachet water 50cl', sku: 'WP-SW-001', category: 'SACHET_WATER', cost: 14, price: 25, reorder: 200, ladder: 'WATER_SACHET', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
@@ -1037,7 +1042,12 @@ const PROFILES = Object.freeze({
       { name: 'Table water 1.5L bottle', sku: 'WP-BW-003', category: 'BOTTLED_WATER', cost: 120, price: 250, reorder: 24, ladder: 'WATER_LARGE', expiry: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
       { name: 'Dispenser refill 19L', sku: 'WP-DW-001', category: 'DISPENSER_WATER', cost: 600, price: 1200, reorder: 20, ladder: 'WATER_JERRY', expiry: true, bulky: true, registration: { authority: 'NAFDAC', type: 'NAFDAC_REG' } },
       { name: 'Dispenser bottle 19L', sku: 'WP-DW-002', category: 'DISPENSER_WATER', cost: 1800, price: 3500, reorder: 8, ladder: 'WATER_JERRY', bulky: true },
-      { name: 'Printed sachet film (roll)', sku: 'WP-PK-001', category: 'PACKAGING', cost: 18000, price: 18000, reorder: 4, ladder: 'EACH_ONLY', sale: false },
+      { name: 'Printed sachet film (roll)', sku: 'WP-PK-001', category: 'PACKAGING', cost: 18000, price: 18000, reorder: 4, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
+      // Cost is left at zero. A chemical price moves, and a starter figure
+      // would be quoted back as if it were the market. The plant sets the
+      // cost when the bag is received. This is not leather, and it is not
+      // a NAFDAC number.
+      { name: 'Water treatment chemical', sku: 'WP-CH-001', category: 'TREATMENT', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
     ]),
   },
 
@@ -1056,10 +1066,12 @@ const PROFILES = Object.freeze({
     code: 'BAKERY',
     tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Bakery (retail and wholesale)',
-    blurb: 'Bake, then sell at the counter and to depots, kiosks, schools and hotels. A loaf, a nylon of 10, a pie or a pack. The shift bills the load, takes payment, then the van or the bike leaves with the bread.',
+    blurb: 'Bake, then sell at the counter and to depots, kiosks, schools and hotels. A loaf, a nylon of 10, a pie or a pack. The shift bills the load, takes payment, then the van or the bike leaves with the bread. A depot on credit does not collect the next batch until that supply is paid. Cash is not held.',
     baseUnit: 'loaf',
     defaultLadder: LADDERS.BAKERY_LOAF,
     dispatch: true,
+    creditUntilPaid: true,
+    manufacturing: true,
     dispatchDefaults: Object.freeze([
       { vehicleClass: 'VAN', arrangement: 'OWNED' },
       { vehicleClass: 'BIKE', arrangement: 'PARTNER', salesSharePct: 10 },
@@ -1094,8 +1106,9 @@ const PROFILES = Object.freeze({
       { name: 'Chin-chin 500g', sku: 'BK-SN-001', category: 'SNACKS', cost: 700, price: 1500, reorder: 16, ladder: 'EACH_ONLY', expiry: true },
       { name: 'Small chops pack', sku: 'BK-SN-002', category: 'SNACKS', cost: 1200, price: 2500, reorder: 12, ladder: 'EACH_ONLY', expiry: true },
       { name: 'Plain cake loaf', sku: 'BK-CK-001', category: 'CAKES', cost: 1500, price: 3000, reorder: 8, ladder: 'EACH_ONLY', expiry: true },
-      { name: 'Flour 50kg', sku: 'BK-IN-001', category: 'INGREDIENTS', cost: 42000, price: 48000, reorder: 6, ladder: 'BAG_ONLY', expiry: true },
-      { name: 'Sugar 50kg', sku: 'BK-IN-002', category: 'INGREDIENTS', cost: 48000, price: 55000, reorder: 4, ladder: 'BAG_ONLY', expiry: true },
+      { name: 'Flour 50kg', sku: 'BK-IN-001', category: 'INGREDIENTS', cost: 42000, price: 0, reorder: 6, ladder: 'BAG_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
+      { name: 'Sugar 50kg', sku: 'BK-IN-002', category: 'INGREDIENTS', cost: 48000, price: 0, reorder: 4, ladder: 'BAG_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
+      { name: 'Yeast', sku: 'BK-IN-003', category: 'INGREDIENTS', cost: 0, price: 0, reorder: 4, ladder: 'EACH_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
     ]),
   },
 
@@ -1206,10 +1219,30 @@ function resolveProfile(code, overrides) {
     const { normaliseModes } = require('./trade');
     out.tradeModes = Object.freeze(normaliseModes(overrides.tradeModes, base.tradeModes));
   }
+  // Plant rules live on the profile, not in FEATURE_FLAGS. An owner can
+  // turn them on for a leather works or off for a water plant that only
+  // sells cash at the gate. A missing key leaves the profile's own answer.
+  if (Object.prototype.hasOwnProperty.call(overrides, 'creditUntilPaid')) {
+    out.creditUntilPaid = Boolean(overrides.creditUntilPaid);
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'manufacturing')) {
+    out.manufacturing = Boolean(overrides.manufacturing);
+  }
   return out;
 }
 
 /** True when a profile switches a given feature on. */
+/**
+ * Starter manufacturing inputs for a profile. Leather is not in this list.
+ * A plant that uses leather, nylon or alum adds it. Cost 0 means the
+ * plant sets the cost when the goods are received.
+ */
+function inputSeeds(code) {
+  const profile = typeof code === 'object' && code ? code : getProfile(code);
+  if (!profile || !Array.isArray(profile.seedProducts)) return [];
+  return profile.seedProducts.filter((seed) => seed && seed.stockRole === 'INPUT');
+}
+
 function featureEnabled(profile, flag) {
   return Boolean(profile && profile.features && profile.features[flag]);
 }
@@ -1246,6 +1279,6 @@ module.exports = {
   FEATURE_FLAGS, ALL_FEATURES_ON, ALL_FEATURES_OFF,
   LADDERS, MEASURE_AXES, MEASURE_LADDERS, COMPLIANCE_FIELDS, REGISTRATION_AUTHORITIES,
   CUSTOMER_CLASS_SETS, RETURN_REASONS, EXPENSE_CATEGORY_SETS,
-  isProfileCode, getProfile, getProfileOrDefault, resolveProfile, featureEnabled, describeProfile,
+  isProfileCode, getProfile, getProfileOrDefault, resolveProfile, featureEnabled, describeProfile, inputSeeds,
   ladderForSeedProduct, baseUnitNameFor,
 };

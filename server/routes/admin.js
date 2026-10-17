@@ -241,7 +241,7 @@ function mount(app, base = '/api') {
     }
     if (body.profile_code !== undefined) { sets.push('profile_code = ?'); params.push(valid(oneOf(body.profile_code, [...PROFILE_CODES], { field: 'Business type' }), 'profile_code')); }
     if (body.profile_overrides !== undefined) { sets.push('profile_overrides_json = ?'); params.push(body.profile_overrides ? JSON.stringify(body.profile_overrides) : null); }
-    if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined) {
+    if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined || body.credit_until_paid !== undefined || body.manufacturing !== undefined) {
       let overrides = {};
       if (business.profile_overrides_json) {
         try { overrides = JSON.parse(business.profile_overrides_json) || {}; } catch (e) { overrides = {}; }
@@ -250,6 +250,8 @@ function mount(app, base = '/api') {
         if (!overrides.features || typeof overrides.features !== 'object') overrides.features = {};
         overrides.features.billBeforeReceipt = Boolean(boolField(body.bill_before_receipt));
       }
+      if (body.credit_until_paid !== undefined) overrides.creditUntilPaid = Boolean(boolField(body.credit_until_paid));
+      if (body.manufacturing !== undefined) overrides.manufacturing = Boolean(boolField(body.manufacturing));
       if (body.dispatch_modes !== undefined) {
         const nextCode = body.profile_code ? String(body.profile_code).toUpperCase() : business.profile_code;
         const profile = getProfile(nextCode);
@@ -1573,11 +1575,10 @@ function mount(app, base = '/api') {
     // grant is what makes them an owner of it.
     const home = `COALESCE(u.business_id, (SELECT b.business_id FROM branches b WHERE b.id = u.branch_id)) = ?`;
     if (audience === 'OWNERS' || (audience === 'USER' && isAdmin)) {
-      where.push(`(${home} OR EXISTS (
-        SELECT 1 FROM user_business_access uba
-        WHERE uba.user_id = u.id AND uba.business_id = ? AND uba.is_deleted = 0 AND uba.revoked_at IS NULL
-      ))`);
-      params.push(String(business.id), String(business.id));
+      // An owner reaches every business. Their home business_id is only the
+      // entity they were created against, and a grant cannot be added for
+      // them, so filtering by that home id found nobody when the administrator
+      // was working in a second plant. The message still names the business.
       where.push("u.role = 'OWNER'");
     } else {
       where.push(home);
@@ -1599,8 +1600,12 @@ function mount(app, base = '/api') {
     if (!people.length) {
       throw new HttpError(
         audience === 'USER'
-          ? 'That person cannot receive this message.'
-          : 'Nobody in that group can receive this message.',
+          ? (isAdmin
+            ? 'That person is not an owner, so an administrator cannot send them this message. Choose an owner, or add one on Staff.'
+            : 'That person cannot receive this message.')
+          : (isAdmin
+            ? 'This deployment has no owner account yet. Add an owner on Staff, then send the message. The administrator is not the owner.'
+            : 'Nobody in that group can receive this message.'),
         { status: 400, code: 'NO_RECIPIENTS' },
       );
     }
@@ -1612,7 +1617,7 @@ function mount(app, base = '/api') {
     }
 
     const from = user.full_name || user.username || 'StockRidge';
-    const storedBody = `From ${from}: ${text}`;
+    const storedBody = `From ${from}, about ${business.name}: ${text}`;
     const ids = [];
     await db.transaction(async (tx) => {
       for (const person of people) {
@@ -1679,8 +1684,9 @@ function mount(app, base = '/api') {
       : '(n.user_id = ? OR n.user_id IS NULL)';
     const audienceParams = [String(user.id), ...broadcast.params];
 
-    const rows = await db.all(`SELECT n.*, b.name AS branch_name FROM notifications n
+    const rows = await db.all(`SELECT n.*, b.name AS branch_name, biz.name AS business_name FROM notifications n
         LEFT JOIN branches b ON b.id = n.branch_id
+        LEFT JOIN businesses biz ON biz.id = n.business_id
         WHERE n.is_deleted = 0
           AND ${audience}
           ${unreadOnly ? 'AND n.is_read = 0' : ''}
@@ -1763,6 +1769,8 @@ function profileSummary(row) {
       dispatch: Boolean(profile.dispatch),
       dispatchModes: dispatch.modes,
       dispatchConfirmed: dispatch.confirmed,
+      creditUntilPaid: Boolean(profile.creditUntilPaid),
+      manufacturing: Boolean(profile.manufacturing),
     } : null,
     is_active: row.is_active,
   };

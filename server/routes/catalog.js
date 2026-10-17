@@ -247,6 +247,13 @@ function scanCandidates(raw) {
 }
 
 async function assertSellable(db, productId, branchId, name) {
+  const row = await db.first('SELECT offers_sale FROM products WHERE id = ? AND is_deleted = 0', [productId]);
+  if (row && Number(row.offers_sale) === 0) {
+    throw new HttpError(
+      `“${name || 'That product'}” is not sold at the till. It is kept as stock — a plant input, or goods that are hired rather than sold.`,
+      { status: 400, code: 'NOT_FOR_SALE' },
+    );
+  }
   const available = await receivedAvailable(db, productId, branchId);
   if (!(available > 0)) {
     throw new HttpError(
@@ -333,6 +340,9 @@ function mount(app, base = '/api') {
       : `(SELECT COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) FROM stock_batches sb
           WHERE sb.product_id = p.id AND sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED'))`;
     if (forSale) {
+      // A plant input is stock, not a till line. Hire-only goods are the
+      // same shape: offers_sale is off, so the counter must not offer them.
+      where.push('COALESCE(p.offers_sale, 1) = 1');
       where.push(`${receivedStockExpr('p')} > 0`);
       params.push(String(branch.id));
     }

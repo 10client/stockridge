@@ -448,6 +448,22 @@
           value: billed ? 1 : 0,
           span: true,
           hint: 'On for a warehouse, a wholesale desk, a building-materials yard, a furniture showroom, an electronics plaza, a water-packing plant and a bakery. The desk prints a bill and holds the goods. The customer pays. The receipt prints, then a release note, and only then do the goods leave. A pharmacy counter, a supermarket and a general shop stay pay-and-receipt unless you turn this on.',
+        }),
+        ui.field({
+          label: 'Hold the next batch until the last credit supply is paid',
+          name: 'credit_until_paid',
+          type: 'checkbox',
+          value: b.profile && b.profile.creditUntilPaid ? 1 : 0,
+          span: true,
+          hint: 'On for a water plant and a bakery. A shop supplied on credit does not collect the next batch until that supply is paid. Cash is not held. An owner can release one batch and the reason is kept on the sale. Turn this on for any vertical that works the same way. It does not make the business a pharmacy.',
+        }),
+        ui.field({
+          label: 'Count manufacturing inputs and machinery service',
+          name: 'manufacturing',
+          type: 'checkbox',
+          value: b.profile && b.profile.manufacturing ? 1 : 0,
+          span: true,
+          hint: 'Chemicals, film, flour, leather and whatever else this plant uses are stock, not till goods, until you say an input is also sold. Machinery service is its own expense so the cost can be counted. The deliveries board shows the count.',
         })));
       }
 
@@ -517,6 +533,7 @@
               const res = await SR.api.put(`/api/businesses/${encodeURIComponent(b.id)}`, payload);
               m.close();
               ui.ok(res.message || 'Saved.');
+              await SR.state.load({ force: true }).catch(() => {});
               load();
             }
           } catch (err) { ui.apiError(err); }

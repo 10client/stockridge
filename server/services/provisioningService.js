@@ -167,11 +167,12 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
             productId,
           ]);
         }
-        if (seed.hire || seed.lease || seed.sale === false) {
+        if (seed.hire || seed.lease || seed.sale === false || seed.stockRole === 'INPUT') {
           tx.queue(`UPDATE products SET
               offers_sale = ?, offers_hire = ?, offers_lease = ?,
               hire_price_per_day = ?, lease_price_per_month = ?,
               hire_deposit = ?, lease_deposit = ?,
+              stock_role = ?,
               updated_at = datetime('now')
             WHERE id = ?`, [
             seed.sale === false ? 0 : 1,
@@ -181,6 +182,7 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
             seed.leaseRate != null ? round2(seed.leaseRate) : null,
             seed.hireDeposit != null ? round2(seed.hireDeposit) : null,
             seed.leaseDeposit != null ? round2(seed.leaseDeposit) : null,
+            seed.stockRole === 'INPUT' ? 'INPUT' : 'FINISHED',
             productId,
           ]);
         }

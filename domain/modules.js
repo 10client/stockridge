@@ -32,6 +32,11 @@ function modulesFor(profile) {
     // Water packing and bakery. Not a FEATURE_FLAGS entry: general retail
     // turns every flag on, and a phone shop must not be asked which keke it owns.
     dispatch: Boolean(profile && profile.dispatch),
+    // Credit until the last supply is paid, and manufacturing inputs.
+    // Not FEATURE_FLAGS: general retail turns every flag on, and a phone
+    // shop must not hold the next sale or grow a chemical store.
+    creditUntilPaid: Boolean(profile && profile.creditUntilPaid),
+    manufacturing: Boolean(profile && profile.manufacturing),
     installation: Boolean(features.installation),
     // Bill, then cashier, then receipt, then the store releases the goods.
     // Not a FEATURE_FLAGS entry: general retail turns every flag on, and a

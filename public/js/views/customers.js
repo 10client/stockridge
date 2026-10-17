@@ -227,7 +227,10 @@
         ui.field({ label: 'City', name: 'city' }),
         ui.field({ label: 'State', name: 'state' }),
         ui.field({ label: 'TIN', name: 'tin' }),
-        ui.field({ label: 'Address', name: 'address', span: true })));
+        ui.field({ label: 'Address', name: 'address', span: true }),
+        ui.field({ label: 'Latitude (optional)', name: 'latitude', placeholder: '9.0765', hint: 'Leave blank if you do not have a pin.' }),
+        ui.field({ label: 'Longitude (optional)', name: 'longitude', placeholder: '7.3986' }),
+        ui.field({ label: 'What this pin is', name: 'gps_label', placeholder: 'Shop front', span: true })));
       const m = ui.openModal({
         title: 'Add a customer',
         body: wrapEl,
@@ -349,6 +352,11 @@
         ui.kpi({ label: 'Lifetime value', value: U.money(c.lifetime_value), small: true }),
         ui.kpi({ label: 'Payment terms', value: Number(c.payment_terms_days) ? `${c.payment_terms_days} days` : 'on demand', small: true, foot: c.class_name || null })));
 
+      if (SR.state.moduleOn('creditUntilPaid') && Number(c.credit_balance) > 0.009) {
+        host.appendChild(ui.h('div', { class: 'alert alert-warn' },
+          ui.h('strong', {}, 'Next batch held. '),
+          `${U.money(c.credit_balance)} is still unpaid. Another supply on credit stays at the plant until this is paid. A cash sale is not held. An owner can release the batch and the reason is kept on the sale.`));
+      }
       if (Number(c.credit_limit) > 0 && Number(c.credit_balance) > Number(c.credit_limit)) {
         host.appendChild(ui.h('div', { class: 'alert alert-danger' },
           ui.h('strong', {}, 'Over the credit limit. '),
@@ -423,7 +431,10 @@
         ui.kv([
           ['Name', c.name], ['Company', c.company_name], ['Phone', c.phone], ['Alt. phone', c.alt_phone],
           ['Email', c.email], ['Address', c.address], ['City', c.city], ['State', c.state],
-          ['TIN', c.tin], ['CAC number', c.cac_reg_no], ['Type', U.humanise(c.customer_type || '')],
+          ['TIN', c.tin], ['CAC number', c.cac_reg_no],
+          ['GPS', c.latitude != null && c.longitude != null ? `${c.latitude}, ${c.longitude}` : null],
+          ['Pin', c.gps_label],
+          ['Type', U.humanise(c.customer_type || '')],
           ['Class', c.class_name], ['Discount', Number(c.class_discount_pct) ? U.pct(c.class_discount_pct) : null],
           ['Credit allowed', Number(c.class_credit_allowed) ? 'yes' : 'no'],
           ['Loyalty points', Number(c.loyalty_points) ? String(c.loyalty_points) : null],
@@ -445,6 +456,9 @@
         ui.field({ label: 'State', name: 'state', value: c.state || '' }),
         ui.field({ label: 'TIN', name: 'tin', value: c.tin || '' }),
         ui.field({ label: 'Address', name: 'address', value: c.address || '', span: true }),
+        ui.field({ label: 'Latitude (optional)', name: 'latitude', value: c.latitude != null ? String(c.latitude) : '', placeholder: '9.0765', hint: 'Leave both blank to clear the pin.' }),
+        ui.field({ label: 'Longitude (optional)', name: 'longitude', value: c.longitude != null ? String(c.longitude) : '', placeholder: '7.3986' }),
+        ui.field({ label: 'What this pin is', name: 'gps_label', value: c.gps_label || '', placeholder: 'Shop front', span: true }),
         ui.field({ label: 'Notes', name: 'notes', value: c.notes || '', type: 'textarea', span: true })));
       const m = ui.openModal({
         title: 'Edit customer',

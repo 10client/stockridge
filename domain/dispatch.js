@@ -189,6 +189,21 @@ function goodsValueOf(sale) {
   return round2(Math.max(0, sub - discount));
 }
 
+/**
+ * How this drop was paid for, in the words a driver sheet uses.
+ * Cash is a sale that does not leave a balance. Credit is the unpaid
+ * supply. Part is a deposit against a balance that is still open.
+ */
+function supplyTermsOf({ saleType = null, balanceDue = 0, amountPaid = 0 } = {}) {
+  const due = round2(Number(balanceDue) || 0);
+  const paid = round2(Number(amountPaid) || 0);
+  const credit = String(saleType || '').toUpperCase() === 'CREDIT' || due > 0.009;
+  if (!credit) return 'CASH';
+  if (due <= 0.009) return 'PAID';
+  if (paid > 0.009) return 'PART';
+  return 'CREDIT';
+}
+
 function modeMatches(modes, vehicleClass, arrangement) {
   if (!Array.isArray(modes)) return false;
   return modes.some((mode) => mode.vehicleClass === vehicleClass && mode.arrangement === arrangement);
@@ -214,6 +229,6 @@ function modesFromOverrides(overrides, profile) {
 module.exports = {
   VEHICLE_CLASSES, ARRANGEMENTS, DEFAULT_SHARE, CLASS_CODES, ARRANGEMENT_CODES,
   classOf, arrangementOf, defaultShare,
-  normaliseModes, suggestedModes, summariseModes, payForDrop, goodsValueOf, modeMatches,
+  normaliseModes, suggestedModes, summariseModes, payForDrop, goodsValueOf, supplyTermsOf, modeMatches,
   modesFromOverrides,
 };
