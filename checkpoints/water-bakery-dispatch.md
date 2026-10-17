@@ -87,3 +87,7 @@ A delivery of production stock is paid now, from the bank, or still owed. Still 
 Using stock in production takes the oldest active batch at that branch first, and continues into the next batch if one delivery is not enough. The write-off is the existing adjustment type OTHER, with the reason starting “Used in production:”. It is not a new type, and it is not a recipe.
 
 A stop has to be confirmed. The date and the reason stay. Putting the machine back in use keeps the earlier stop in the notes. Correcting the register price does not post the purchase a second time. A low-stock line is per input. The warning is what that branch has on hand, not a second stock list. The last services sit on the machine they were spent on.
+
+## The vehicle from setup
+
+AquaRidge on sample had saved an owned pickup and a partner tricycle when the business was created. That mix was stored, but it was not a vehicle the fleet or a load could choose, so the list stayed empty. A confirmed type is now a vehicle on the fleet. Opening Deliveries, saving the mix, or creating the business puts one there if that type is not already listed. It does not invent a plate or a driver, and it does not add a second pickup when one exists. The business screen reads the saved mix from the profile itself, so reopening the business shows the same types.

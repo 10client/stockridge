@@ -93,6 +93,48 @@ function dateField(value, label) {
   return day;
 }
 
+/**
+ * A confirmed mix is a vehicle the board can choose, not only a sentence.
+ * Creating the business saves the type. This puts that type on the fleet
+ * when no active vehicle of that type and arrangement already exists.
+ * It does not invent a plate or a driver, and it does not add a second
+ * pickup when one is already there.
+ */
+async function ensureFleet(db, business, modes, branchId) {
+  if (!business || !Array.isArray(modes) || !modes.length) return [];
+  const existing = await db.all(
+    `SELECT vehicle_class, arrangement FROM delivery_vehicles
+     WHERE business_id = ? AND is_deleted = 0 AND is_active = 1`,
+    [String(business.id)],
+  );
+  const have = new Set(existing.map((row) => `${row.vehicle_class}:${row.arrangement}`));
+  let home = branchId ? String(branchId) : null;
+  if (!home) {
+    const branch = await db.first(
+      'SELECT id FROM branches WHERE business_id = ? AND is_deleted = 0 AND is_active = 1 ORDER BY created_at LIMIT 1',
+      [String(business.id)],
+    );
+    home = branch ? String(branch.id) : null;
+  }
+  const added = [];
+  for (const mode of modes) {
+    const key = `${mode.vehicleClass}:${mode.arrangement}`;
+    if (have.has(key)) continue;
+    const vehicle = classOf(mode.vehicleClass);
+    const id = newId();
+    await db.run(`INSERT INTO delivery_vehicles (
+        id, business_id, branch_id, name, plate_no, vehicle_class, arrangement, pay_basis, sales_share_pct,
+        is_active, created_at, updated_at)
+      VALUES (?,?,?,?,NULL,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
+      id, String(business.id), home, vehicle ? vehicle.label : mode.vehicleClass,
+      mode.vehicleClass, mode.arrangement, mode.payBasis || null, mode.salesSharePct,
+    ]);
+    have.add(key);
+    added.push(id);
+  }
+  return added;
+}
+
 async function loadAsset(db, id, businessId) {
   const asset = await db.first('SELECT * FROM plant_assets WHERE id = ? AND is_deleted = 0', [String(id)]);
   if (!asset || String(asset.business_id) !== String(businessId)) {
@@ -145,6 +187,9 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const business = await loadBusiness(db, ctx);
     const setup = setupOf(business);
+    if (setup.confirmed && setup.modes && setup.modes.length) {
+      await ensureFleet(db, business, setup.modes);
+    }
     const vehicles = await db.all(
       `SELECT * FROM delivery_vehicles WHERE business_id = ? AND is_deleted = 0 ORDER BY vehicle_class, name`,
       [String(business.id)],
@@ -172,6 +217,7 @@ function mount(app, base = '/api') {
       `UPDATE businesses SET profile_overrides_json = ?, updated_at = datetime('now') WHERE id = ?`,
       [JSON.stringify(overrides), String(business.id)],
     );
+    await ensureFleet(db, business, parsed.modes);
     await recordFromCtx(ctx, {
       action: 'DISPATCH_MIX_SAVED', entityType: 'BUSINESS', entityId: business.id, businessId: business.id,
       after: { modes: parsed.modes },
@@ -923,4 +969,4 @@ function mount(app, base = '/api') {
   }));
 }
 
-module.exports = { mount };
+module.exports = { mount, ensureFleet };

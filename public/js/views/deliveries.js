@@ -232,8 +232,9 @@
           : `owned ${name}, driver on a wage`;
       }).join('; ');
       const note = ui.h('p', { class: 'sub' }, setup.confirmed
-        ? `This business releases goods on ${sentence || 'a confirmed mix'}. A driver is Staff. The share is of the goods, not of the delivery fee.`
+        ? `This business releases goods on ${sentence || 'a confirmed mix'}. Those types are on the fleet below. A driver is Staff. The share is of the goods, not of the delivery fee.`
         : 'The mix is only a suggestion until an owner saves it. A drop cannot leave, and a partner cannot be paid, on a suggestion.');
+      const bare = (setup.vehicles || []).some((row) => !row.plate_no);
       const confirm = SR.state.atLeast('OWNER') && !setup.confirmed && modes.length
         ? ui.h('button', {
           class: 'btn btn-sm btn-primary',
@@ -266,7 +267,9 @@
       });
       const card = ui.h('div', { class: 'card' },
         ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Dispatch'), add || confirm),
-        ui.h('div', { class: 'card-body' }, note, confirm && add ? confirm : null, table));
+        ui.h('div', { class: 'card-body' }, note,
+          bare ? ui.h('p', { class: 'hint' }, 'A type saved when the business was created is already listed. Add a plate and a usual driver on it, or add a named vehicle of the same type. Neither replaces the mix.') : null,
+          confirm && add ? confirm : null, table));
       host.replaceChildren(card);
     }).catch(() => host.replaceChildren());
   }

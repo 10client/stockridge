@@ -44,6 +44,7 @@ const {
 const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
 const { sellingPolicy } = require('../../domain/settlement');
 const { normaliseModes, modesFromOverrides } = require('../../domain/dispatch');
+const { ensureFleet } = require('./dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const provisioning = require('../services/provisioningService');
 
@@ -67,7 +68,13 @@ function mount(app, base = '/api') {
         FROM businesses b WHERE ${where.join(' AND ')} ORDER BY b.name`, params);
     ctx.json({
       ok: true,
-      data: rows.map((r) => ({ ...r, lifetime_revenue: round2(Number(r.lifetime_revenue)), profile: profileSummary(r) })),
+      data: rows.map((r) => {
+        const summary = profileSummary(r);
+        // The screen reads label, dispatch and the saved mix on `profile`.
+        // profileSummary wraps that object. Handing the wrapper over made a
+        // saved pickup look like it had never been set.
+        return { ...r, lifetime_revenue: round2(Number(r.lifetime_revenue)), profile: summary.profile };
+      }),
     });
   });
 
@@ -174,6 +181,9 @@ function mount(app, base = '/api') {
       branchId = body.branch_id ? String(body.branch_id) : null;
     }
 
+    if (overrides && overrides.dispatch && overrides.dispatch.modes) {
+      await ensureFleet(db, businessRow, overrides.dispatch.modes, branchId);
+    }
     const result = await provisioning.provisionBusiness(db, businessRow, {
       withCatalogue: seedCatalogue,
       createdBy: String(user.id),
@@ -242,6 +252,7 @@ function mount(app, base = '/api') {
     }
     if (body.profile_code !== undefined) { sets.push('profile_code = ?'); params.push(valid(oneOf(body.profile_code, [...PROFILE_CODES], { field: 'Business type' }), 'profile_code')); }
     if (body.profile_overrides !== undefined) { sets.push('profile_overrides_json = ?'); params.push(body.profile_overrides ? JSON.stringify(body.profile_overrides) : null); }
+    let savedModes = null;
     if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined || body.credit_until_paid !== undefined || body.manufacturing !== undefined || body.sell_on_spot !== undefined || body.sell_on_credit !== undefined) {
       let overrides = {};
       if (business.profile_overrides_json) {
@@ -272,6 +283,7 @@ function mount(app, base = '/api') {
         const parsed = normaliseModes(body.dispatch_modes);
         if (!parsed.ok) throw new HttpError(parsed.error, { status: 400, code: parsed.code });
         overrides.dispatch = { modes: parsed.modes };
+        savedModes = parsed.modes;
       }
       sets.push('profile_overrides_json = ?');
       params.push(JSON.stringify(overrides));
@@ -289,6 +301,7 @@ function mount(app, base = '/api') {
     params.push(id);
     const before = { ...business };
     await db.run(`UPDATE businesses SET ${sets.join(', ')} WHERE id = ? AND is_deleted = 0`, params);
+    if (savedModes) await ensureFleet(db, business, savedModes);
     await recordFromCtx(ctx, { action: 'BUSINESS_UPDATED', entityType: 'BUSINESS', entityId: id, businessId: id, before, after: body });
     ctx.json({ ok: true, message: `${body.name || business.name} updated.` });
   });
