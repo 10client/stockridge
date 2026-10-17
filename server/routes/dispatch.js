@@ -12,7 +12,7 @@ const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
 const { resolveBusiness, resolveBranch, inScope, strField, numField, boolField } = require('../lib/respond');
-const { round2 } = require('../../domain/money');
+const { round2, roundTo } = require('../../domain/money');
 const { weightedAverageCost } = require('../../domain/uom');
 const { newId } = require('../../domain/crypto');
 const { watToday, watNow, watToUtc } = require('../../domain/time');
@@ -311,16 +311,21 @@ function mount(app, base = '/api') {
    */
   app.get(`${base}/plant`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
     const business = await loadBusiness(db, ctx);
     const profile = profileOf(business);
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const branchId = branch ? String(branch.id) : null;
     const inputs = await db.all(`SELECT p.id, p.name, p.sku, p.base_unit_name, p.cost_price, p.offers_sale,
+          p.reorder_level, p.has_expiry,
           COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' THEN b.quantity ELSE 0 END), 0) AS on_hand,
+          COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' AND b.branch_id = ? THEN b.quantity ELSE 0 END), 0) AS branch_on_hand,
           COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' THEN b.quantity * b.cost_price_per_unit ELSE 0 END), 0) AS stock_value
         FROM products p
         LEFT JOIN stock_batches b ON b.product_id = p.id
         WHERE p.business_id = ? AND p.is_deleted = 0 AND p.stock_role = 'INPUT'
         GROUP BY p.id
-        ORDER BY p.name`, [String(business.id)]);
+        ORDER BY p.name`, [branchId || '', String(business.id)]);
     const openCredit = await db.all(`SELECT id, name, phone, credit_balance, credit_limit
         FROM customers
         WHERE business_id = ? AND is_deleted = 0 AND credit_balance > 0.009
@@ -341,11 +346,29 @@ function mount(app, base = '/api') {
         WHERE a.business_id = ? AND a.is_deleted = 0
         ORDER BY CASE a.status WHEN 'WORKING' THEN 0 ELSE 1 END, a.name`, [String(business.id)]);
     const receipts = await db.all(`SELECT b.id, b.product_id, p.name AS product_name, p.base_unit_name,
-          b.initial_quantity, b.quantity, b.cost_price_per_unit, b.received_at
+          b.initial_quantity, b.quantity, b.cost_price_per_unit, b.received_at, b.notes, b.expiry_date
         FROM stock_batches b
         JOIN products p ON p.id = b.product_id
         WHERE b.business_id = ? AND b.is_deleted = 0 AND p.is_deleted = 0 AND p.stock_role = 'INPUT'
-        ORDER BY b.received_at DESC, b.created_at DESC LIMIT 12`, [String(business.id)]);
+        ORDER BY b.received_at DESC, b.created_at DESC LIMIT 24`, [String(business.id)]);
+    const services = await db.all(`SELECT id, plant_asset_id, amount, expense_date, description, payment_method
+        FROM expenses
+        WHERE business_id = ? AND plant_asset_id IS NOT NULL AND is_deleted = 0 AND status <> 'REJECTED'
+        ORDER BY expense_date DESC, created_at DESC LIMIT 80`, [String(business.id)]);
+    const useRows = await db.all(`SELECT id, product_id, quantity, unit_cost, total_value, reason, created_at
+        FROM stock_adjustments
+        WHERE business_id = ? AND is_deleted = 0 AND adjustment_type = 'OTHER'
+          AND reason LIKE 'Used in production:%'
+        ORDER BY created_at DESC LIMIT 24`, [String(business.id)]);
+    const uses = useRows.map((row) => ({
+      id: row.id,
+      productId: row.product_id,
+      quantity: roundTo(Math.abs(Number(row.quantity) || 0), 4),
+      cost: round2(Number(row.unit_cost) || 0),
+      value: round2(Math.abs(Number(row.total_value) || 0)),
+      reason: String(row.reason || '').replace(/^Used in production:\s*/, ''),
+      at: row.created_at,
+    }));
     const have = new Set(inputs.map((row) => row.sku).filter(Boolean));
     const missing = inputSeeds(profile).filter((seed) => seed.sku && !have.has(seed.sku)).map((seed) => ({
       sku: seed.sku, name: seed.name,
@@ -361,15 +384,24 @@ function mount(app, base = '/api') {
         balance: round2(Number(row.credit_balance) || 0),
         limit: round2(Number(row.credit_limit) || 0),
       })),
-      inputs: inputs.map((row) => ({
-        id: row.id,
-        name: row.name,
-        sku: row.sku,
-        unit: row.base_unit_name,
-        onHand: round2(Number(row.on_hand) || 0),
-        value: round2(Number(row.stock_value) || 0),
-        offersSale: Number(row.offers_sale) === 1,
-      })),
+      inputs: inputs.map((row) => {
+        const onHand = round2(Number(row.on_hand) || 0);
+        const reorder = round2(Number(row.reorder_level) || 0);
+        const here = branchId ? round2(Number(row.branch_on_hand) || 0) : onHand;
+        return {
+          id: row.id,
+          name: row.name,
+          sku: row.sku,
+          unit: row.base_unit_name,
+          onHand,
+          branchOnHand: here,
+          value: round2(Number(row.stock_value) || 0),
+          reorder,
+          low: reorder > 0 && here <= reorder,
+          hasExpiry: Number(row.has_expiry) === 1,
+          offersSale: Number(row.offers_sale) === 1,
+        };
+      }),
       inputValue: round2(inputs.reduce((sum, row) => sum + (Number(row.stock_value) || 0), 0)),
       machinery: {
         days30: round2(Number(machinery30 && machinery30.total) || 0),
@@ -391,6 +423,13 @@ function mount(app, base = '/api') {
         notes: row.notes,
         maintenanceTotal: round2(Number(row.maintenance_total) || 0),
         maintenanceCount: Number(row.maintenance_count) || 0,
+        services: services.filter((item) => String(item.plant_asset_id) === String(row.id)).slice(0, 4).map((item) => ({
+          id: item.id,
+          amount: round2(Number(item.amount) || 0),
+          date: item.expense_date,
+          description: item.description,
+          method: item.payment_method,
+        })),
       })),
       receipts: receipts.map((row) => ({
         id: row.id,
@@ -401,8 +440,17 @@ function mount(app, base = '/api') {
         remaining: round2(Number(row.quantity) || 0),
         price: round2(Number(row.cost_price_per_unit) || 0),
         receivedAt: row.received_at,
+        expiry: row.expiry_date,
+        notes: row.notes,
+        stillOwed: String(row.notes || '').includes('Still owed'),
       })),
+      uses,
       missing,
+      viewer: {
+        role: user && user.role,
+        canManage: atLeast(user && user.role, 'MANAGER'),
+        branchName: branch ? branch.name : null,
+      },
     });
   });
 
@@ -634,6 +682,20 @@ function mount(app, base = '/api') {
     const receivedAt = watToUtc(`${receivedOn} 12:00:00`) || `${receivedOn} 11:00:00`;
     const supplierName = strField(body.supplier_name, { field: 'Supplier', maxLength: 160 });
     const note = strField(body.notes, { field: 'Notes', maxLength: 300 });
+    const paidNowFlag = body.paid_now == null ? true : Boolean(boolField(body.paid_now));
+    if (!paidNowFlag && !supplierName) {
+      throw new HttpError('Name the supplier if this delivery is not paid yet. The amount has to sit against somebody.', { status: 400, code: 'SUPPLIER_REQUIRED' });
+    }
+    let expiry = null;
+    if (body.expiry_date) {
+      expiry = strField(body.expiry_date, { field: 'Expiry', maxLength: 10, required: true });
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) {
+        throw new HttpError('Expiry must be YYYY-MM-DD.', { status: 400, code: 'INVALID_DATE' });
+      }
+      if (expiry < receivedOn) {
+        throw new HttpError('The expiry cannot be before the day it was gotten.', { status: 400, code: 'INVALID_DATE' });
+      }
+    }
     const batchId = newId();
     const held = await db.all('SELECT quantity, cost_price_per_unit FROM stock_batches WHERE product_id = ? AND branch_id = ? AND is_deleted = 0', [
       String(product.id), String(branch.id),
@@ -644,15 +706,17 @@ function mount(app, base = '/api') {
     ]);
     const accountIds = await glService.loadAccountCodes(db, business.id);
     const gross = round2(quantity * price);
+    const paidNow = paidNowFlag ? gross : 0;
+    const onCredit = paidNowFlag ? 0 : gross;
     await db.transaction(async (tx) => {
       tx.queue(`INSERT INTO stock_batches (
           id, branch_id, business_id, product_id, batch_no, cost_price_per_unit, selling_price_per_unit,
-          quantity, quantity_reserved, initial_quantity, received_at, received_by, status, notes, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,0, ?,0,?,?,?, 'ACTIVE', ?, datetime('now'), datetime('now'))`, [
+          quantity, quantity_reserved, initial_quantity, expiry_date, received_at, received_by, status, notes, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,0, ?,0,?,?,?,?, 'ACTIVE', ?, datetime('now'), datetime('now'))`, [
         batchId, String(branch.id), String(business.id), String(product.id),
         `IN-${receivedOn.replace(/-/g, '')}-${batchId.slice(0, 4).toUpperCase()}`,
-        price, quantity, quantity, receivedAt, String(user.id),
-        [supplierName ? `From ${supplierName}` : null, note, `Gotten ${receivedOn}`].filter(Boolean).join('. '),
+        price, quantity, quantity, expiry, receivedAt, String(user.id),
+        [supplierName ? `From ${supplierName}` : null, paidNowFlag ? 'Paid on delivery' : 'Still owed', note, `Gotten ${receivedOn}`].filter(Boolean).join('. '),
       ]);
       if (newAvg != null) {
         tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?", [
@@ -663,7 +727,7 @@ function mount(app, base = '/api') {
         businessId: business.id, branchId: branch.id, poId: batchId,
         items: [{ quantity_received: quantity, cost_per_unit: price }],
         supplier: supplierName ? { name: supplierName } : null,
-        paidNow: gross, onCredit: 0, user, accountIds,
+        paidNow, onCredit, user, accountIds,
       })) tx.queue(st.sql, st.params);
     });
     await recordFromCtx(ctx, {
@@ -672,8 +736,190 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true, id: batchId,
-      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} gotten on ${receivedOn} at ₦${price.toLocaleString('en-NG')} each. It is on the plant stock, and the money is on the same books as any other goods received.`.replace(/\s+/g, ' '),
+      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} gotten on ${receivedOn} at ₦${price.toLocaleString('en-NG')} each. ${paidNowFlag ? 'Paid on delivery, on the same books as any other goods receipt.' : `₦${gross.toLocaleString('en-NG')} is still owed to ${supplierName}.`}`.replace(/\s+/g, ' '),
     }, 201);
+  }));
+
+  /**
+   * Flour, film or chemical used to produce. Not a recipe. The oldest
+   * active batch goes first. One stock-adjust call cannot cross batches,
+   * so this walks them. The write-off uses the existing type OTHER.
+   */
+  app.post(`${base}/plant/inputs/:id/use`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager records production stock that has been used. A cashier can see what is left, not take it off the books.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const branch = await resolveBranch(db, ctx);
+    const business = await resolveBusiness(db, ctx, branch);
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [String(ctx.req.param('id'))]);
+    if (!product || String(product.business_id) !== String(business.id) || product.stock_role !== 'INPUT') {
+      throw new HttpError('That is not production stock on this plant.', { status: 404, code: 'INPUT_NOT_FOUND' });
+    }
+    const body = await ctx.req.json();
+    const quantity = numField(body.quantity, { field: 'Amount used', min: 0.0001, places: 4 });
+    const why = strField(body.reason, { field: 'What it was used for', maxLength: 300, required: true });
+    if (!why || why.length < 4) throw new HttpError('Say what it was used for. A morning bake, a sachet run, a filter change.', { status: 400, code: 'REASON_REQUIRED' });
+    const batches = await db.all(`SELECT id, quantity, quantity_reserved, cost_price_per_unit
+        FROM stock_batches
+        WHERE product_id = ? AND branch_id = ? AND is_deleted = 0 AND status = 'ACTIVE' AND quantity - quantity_reserved > 0
+        ORDER BY received_at, id`, [String(product.id), String(branch.id)]);
+    let left = quantity;
+    const takes = [];
+    for (const batch of batches) {
+      const free = Number(batch.quantity) - Number(batch.quantity_reserved);
+      if (!(free > 0) || !(left > 0)) continue;
+      const take = Math.min(free, left);
+      takes.push({ id: String(batch.id), take, cost: Number(batch.cost_price_per_unit) || 0 });
+      left -= take;
+      if (left < 0.00005) left = 0;
+      if (left <= 0) break;
+    }
+    if (left > 0) {
+      const held = roundTo(quantity - left, 4);
+      throw new HttpError(`${branch.name} has ${held.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} that can be used. ${quantity.toLocaleString('en-NG')} is more than that.`, { status: 409, code: 'INSUFFICIENT_STOCK' });
+    }
+    const accountIds = await glService.loadAccountCodes(db, business.id);
+    const reason = `Used in production: ${why}`;
+    const ids = [];
+    await db.transaction(async (tx) => {
+      for (const take of takes) {
+        const id = newId();
+        ids.push(id);
+        const value = round2(take.take * take.cost);
+        tx.queue(`UPDATE stock_batches SET quantity = quantity - ?, updated_at = datetime('now')
+            WHERE id = ? AND is_deleted = 0 AND quantity - quantity_reserved >= ?`, [take.take, take.id, take.take]);
+        tx.queue("UPDATE stock_batches SET status = CASE WHEN quantity <= 0 THEN 'DEPLETED' ELSE status END, updated_at = datetime('now') WHERE id = ?", [take.id]);
+        tx.queue(`INSERT INTO stock_adjustments (
+            id, branch_id, business_id, batch_id, product_id, adjustment_type, quantity, unit_cost, total_value, reason, requires_approval, created_by, created_at, updated_at)
+          VALUES (?,?,?,?,?, 'OTHER', ?,?,?,?, 0, ?, datetime('now'), datetime('now'))`, [
+          id, String(branch.id), String(business.id), take.id, String(product.id),
+          -take.take, take.cost, -value, reason, String(user.id),
+        ]);
+        for (const st of glService.postAdjustmentStatements({
+          adjustment: { id, adjustment_type: 'OTHER', quantity: -take.take, total_value: -value, reason },
+          business: { id: business.id }, branch: { id: branch.id }, accountIds, user,
+        })) tx.queue(st.sql, st.params);
+      }
+    });
+    await recordFromCtx(ctx, {
+      action: 'PLANT_INPUT_USED', entityType: 'PRODUCT', entityId: product.id, businessId: business.id, branchId: branch.id,
+      after: { quantity, reason, adjustments: ids },
+    });
+    ctx.json({
+      ok: true,
+      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} taken for production at ${branch.name}. The oldest stock went first. It is the same stock book, not a recipe.`,
+    });
+  }));
+
+  app.post(`${base}/plant/inputs/:id/reorder`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager sets the low-stock line. A cashier can see it, not move it.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const business = await loadBusiness(db, ctx);
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [String(ctx.req.param('id'))]);
+    if (!product || String(product.business_id) !== String(business.id) || product.stock_role !== 'INPUT') {
+      throw new HttpError('That is not production stock on this plant.', { status: 404, code: 'INPUT_NOT_FOUND' });
+    }
+    const body = await ctx.req.json();
+    const level = numField(body.reorder_level != null ? body.reorder_level : body.reorder, { field: 'Low-stock line', min: 0, places: 4 });
+    await db.run("UPDATE products SET reorder_level = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?", [
+      level, String(product.id), String(business.id),
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_INPUT_REORDER', entityType: 'PRODUCT', entityId: product.id, businessId: business.id,
+      before: { reorder_level: product.reorder_level }, after: { reorder_level: level },
+    });
+    ctx.json({
+      ok: true,
+      message: level > 0
+        ? `${product.name} is low when this branch has ${level.toLocaleString('en-NG')} ${product.base_unit_name || ''} or less.`
+        : `${product.name} no longer has a low-stock line.`,
+    });
+  }));
+
+  app.post(`${base}/plant/assets/:id/correct`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager corrects a machine or tool record. The price and the date are facts, so a cashier cannot rewrite them.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const business = await loadBusiness(db, ctx);
+    const asset = await loadAsset(db, ctx.req.param('id'), business.id);
+    const body = await ctx.req.json();
+    const sets = [];
+    const params = [];
+    if (body.name != null) {
+      const name = strField(body.name, { field: 'Name', maxLength: 160, required: true });
+      if (!name || name.length < 2) throw new HttpError('Name the machine or the tool.', { status: 400, code: 'NAME_REQUIRED' });
+      sets.push('name = ?');
+      params.push(name);
+    }
+    if (body.acquired_at != null || body.acquiredAt != null) {
+      const acquiredAt = dateField(body.acquired_at || body.acquiredAt, 'Date gotten');
+      if (asset.stopped_at && acquiredAt > String(asset.stopped_at)) {
+        throw new HttpError('The day it was gotten cannot be after the day it stopped.', { status: 400, code: 'INVALID_DATE' });
+      }
+      sets.push('acquired_at = ?');
+      params.push(acquiredAt);
+    }
+    if (body.purchase_price != null || body.price != null) {
+      const price = numField(body.purchase_price != null ? body.purchase_price : body.price, { field: 'Price', min: 0 });
+      sets.push('purchase_price = ?');
+      params.push(price);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'supplier_name')) {
+      sets.push('supplier_name = ?');
+      params.push(strField(body.supplier_name, { field: 'Where it was gotten', maxLength: 160 }));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'serial_no')) {
+      sets.push('serial_no = ?');
+      params.push(strField(body.serial_no, { field: 'Serial number', maxLength: 80 }));
+    }
+    if (body.kind != null) {
+      const kind = String(body.kind).toUpperCase();
+      if (!['MACHINE', 'TOOL'].includes(kind)) throw new HttpError('Say whether this is a machine or a tool.', { status: 400, code: 'ASSET_KIND' });
+      sets.push('kind = ?');
+      params.push(kind);
+    }
+    if (!sets.length) throw new HttpError('Nothing to correct.', { status: 400, code: 'NO_CHANGES' });
+    const note = '\n[' + watNow() + '] Record corrected by ' + (user.full_name || user.username) + '. The purchase price is the register fact. It is not posted again.';
+    sets.push("notes = COALESCE(notes, '') || ?");
+    sets.push("updated_at = datetime('now')");
+    params.push(note, String(asset.id));
+    await db.run('UPDATE plant_assets SET ' + sets.join(', ') + ' WHERE id = ?', params);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_CORRECTED', entityType: 'PLANT_ASSET', entityId: asset.id, businessId: business.id,
+      before: { name: asset.name, acquired_at: asset.acquired_at, purchase_price: asset.purchase_price },
+      after: body,
+    });
+    const kept = body.name || asset.name;
+    ctx.json({ ok: true, message: kept + ' is corrected. Changing the price here does not move money a second time.' });
+  }));
+
+  app.post(`${base}/plant/assets/:id/report`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const business = await loadBusiness(db, ctx);
+    const asset = await loadAsset(db, ctx.req.param('id'), business.id);
+    const body = await ctx.req.json();
+    const reason = strField(body.reason, { field: 'What is wrong', maxLength: 300, required: true });
+    if (!reason || reason.length < 4) throw new HttpError('Say what is wrong. A manager then records the stop and any repair.', { status: 400, code: 'REASON_REQUIRED' });
+    const note = '\n[' + watNow() + '] Reported by ' + (user.full_name || user.username) + ' (' + user.role + '): ' + reason;
+    await db.run("UPDATE plant_assets SET notes = COALESCE(notes, '') || ?, updated_at = datetime('now') WHERE id = ?", [note, String(asset.id)]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_REPORTED', entityType: 'PLANT_ASSET', entityId: asset.id, businessId: business.id,
+      after: { reason, by: user.id },
+    });
+    ctx.json({
+      ok: true,
+      message: atLeast(user.role, 'MANAGER')
+        ? 'Noted on ' + asset.name + '. Record Stopped working if it is actually out, and Maintenance if money was spent.'
+        : 'Noted on ' + asset.name + '. A manager records the stop and any money spent. This report does not take it off the register by itself.',
+    });
   }));
 }
 

@@ -75,3 +75,15 @@ A plant that manufactures keeps two records, and they are not the same thing.
 A machine or a tool is gotten once. The register stores the day, the price paid, who it was bought from, and the serial if it has one. Each repair is an expense on the books the plant already uses, pointed at that machine, so the maintenance it has taken is a sum. When it stops working, the date and the reason stay. It is not deleted. Putting it back in use keeps the earlier stop in the notes. The purchase price is the record of what was paid when it was gotten. It is not posted again as if it were bought today.
 
 Production stock is film rolls, flour, sugar, yeast, alum, chlorine, filter cartridges, and whatever else that plant uses. Each delivery records the day, the price, and the amount on the same stock batches as any other goods received. It is not a second inventory, and it is not a recipe. Leather is not invented. A price is not guessed: a new input starts at zero until the plant records what it paid. Other businesses turn manufacturing on and add the machines and inputs they actually have.
+
+## Plant records, by role
+
+Not on sample yet. This section ships with the next sample deploy. Not production.
+
+The plant screen is three sections: supplies owed, machines, and production stock. A cashier can see all three and can report a fault on a machine. That report is a note. It does not stop the machine, and it does not spend money. A manager, an owner, or the administrator receives stock, records what was used, sets the low-stock line, maintains a machine, confirms a stop, puts it back in use, corrects a wrong name, date, price, supplier or serial, and decides whether an input is also sold at the till. There is no fifth stored role.
+
+A delivery of production stock is paid now, from the bank, or still owed. Still owed needs the supplier’s name. The amount uses the same goods-receipt posting the plant already has. It is not a second ledger. The line total is shown before the delivery is saved. The price has to be greater than zero. An expiry date is optional. Receiving the same goods again adds stock. It does not rewrite a delivery already saved.
+
+Using stock in production takes the oldest active batch at that branch first, and continues into the next batch if one delivery is not enough. The write-off is the existing adjustment type OTHER, with the reason starting “Used in production:”. It is not a new type, and it is not a recipe.
+
+A stop has to be confirmed. The date and the reason stay. Putting the machine back in use keeps the earlier stop in the notes. Correcting the register price does not post the purchase a second time. A low-stock line is per input. The warning is what that branch has on hand, not a second stock list. The last services sit on the machine they were spent on.
