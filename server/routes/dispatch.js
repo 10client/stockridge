@@ -104,7 +104,7 @@ async function ensureFleet(db, business, modes, branchId) {
   if (!business || !Array.isArray(modes) || !modes.length) return [];
   const existing = await db.all(
     `SELECT vehicle_class, arrangement FROM delivery_vehicles
-     WHERE business_id = ? AND is_deleted = 0 AND is_active = 1`,
+     WHERE business_id = ? AND is_deleted = 0`,
     [String(business.id)],
   );
   const have = new Set(existing.map((row) => `${row.vehicle_class}:${row.arrangement}`));
@@ -135,12 +135,18 @@ async function ensureFleet(db, business, modes, branchId) {
   return added;
 }
 
-async function loadAsset(db, id, businessId) {
-  const asset = await db.first('SELECT * FROM plant_assets WHERE id = ? AND is_deleted = 0', [String(id)]);
-  if (!asset || String(asset.business_id) !== String(businessId)) {
+async function loadAsset(db, id, businessId, { includeRetired = false } = {}) {
+  const asset = await db.first('SELECT * FROM plant_assets WHERE id = ?', [String(id)]);
+  if (!asset || String(asset.business_id) !== String(businessId) || (!includeRetired && Number(asset.is_deleted) === 1)) {
     throw new HttpError('That machine or tool is not on this plant.', { status: 404, code: 'ASSET_NOT_FOUND' });
   }
   return asset;
+}
+
+function requireOwner(user, what) {
+  if (!atLeast(user && user.role, 'OWNER')) {
+    throw new HttpError(`The owner edits ${what}. A manager still records the day-to-day. A cashier can see it.`, { status: 403, code: 'ROLE_REQUIRED' });
+  }
 }
 
 async function insertInputProduct(db, business, seed, { offersSale = false } = {}) {
@@ -274,6 +280,73 @@ function mount(app, base = '/api') {
     ctx.json({ ok: true, id, message: `${name} is on the fleet.` }, 201);
   }));
 
+  app.put(`${base}/dispatch/vehicles/:id`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    requireOwner(user, 'a vehicle');
+    const business = await loadBusiness(db, ctx);
+    const setup = setupOf(business);
+    if (!setup.enabled) throw new HttpError('This business does not keep a dispatch fleet.', { status: 400, code: 'DISPATCH_NOT_FOR_PROFILE' });
+    const vehicle = await db.first('SELECT * FROM delivery_vehicles WHERE id = ? AND is_deleted = 0', [String(ctx.req.param('id'))]);
+    if (!vehicle || String(vehicle.business_id) !== String(business.id)) {
+      throw new HttpError('That vehicle is not on this fleet.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
+    }
+    const body = await ctx.req.json();
+    const name = strField(body.name, { field: 'Vehicle name', maxLength: 80, required: true });
+    if (!name || name.length < 2) throw new HttpError('Name the vehicle so the board can tell two kekes apart.', { status: 400, code: 'VEHICLE_NAME' });
+    const vehicleClass = String(body.vehicle_class || body.vehicleClass || vehicle.vehicle_class || '').toUpperCase();
+    const arrangement = String(body.arrangement || vehicle.arrangement || '').toUpperCase();
+    if (!classOf(vehicleClass) || !arrangementOf(arrangement)) {
+      throw new HttpError('Name the vehicle type and whether the business owns it or a partner does.', { status: 400, code: 'DISPATCH_VEHICLE' });
+    }
+    const onFleet = body.is_active == null ? Number(vehicle.is_active) !== 0 : Boolean(boolField(body.is_active));
+    if (onFleet && setup.confirmed && !modeMatches(setup.modes, vehicleClass, arrangement)) {
+      throw new HttpError('That combination is not in the mix. Change the mix first, or take this vehicle off the fleet.', { status: 400, code: 'VEHICLE_NOT_IN_MIX' });
+    }
+    const mode = (setup.modes || []).find((item) => item.vehicleClass === vehicleClass && item.arrangement === arrangement);
+    let share = arrangement === 'PARTNER'
+      ? numField(body.sales_share_pct != null ? body.sales_share_pct : (mode && mode.salesSharePct), { field: 'Partner share', min: 1, max: 40 })
+      : null;
+    if (arrangement === 'PARTNER' && (!Number.isFinite(share) || share < 1 || share > 40)) {
+      throw new HttpError('A partner’s share of sales has to be between 1% and 40%.', { status: 400, code: 'DISPATCH_SHARE' });
+    }
+    const how = arrangementOf(arrangement);
+    await db.run(`UPDATE delivery_vehicles SET
+        name = ?, plate_no = ?, driver_name = ?, driver_phone = ?, vehicle_class = ?, arrangement = ?,
+        pay_basis = ?, sales_share_pct = ?, is_active = ?, updated_at = datetime('now')
+      WHERE id = ?`, [
+      name,
+      strField(body.plate_no || body.plate, { field: 'Plate', maxLength: 20 }),
+      strField(body.driver_name, { field: 'Driver', maxLength: 120 }),
+      strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 }),
+      vehicleClass, arrangement, how ? how.payBasis : null, share, onFleet ? 1 : 0, String(vehicle.id),
+    ]);
+    if (arrangement === 'PARTNER' && setup.confirmed && mode) {
+      const overrides = parseOverrides(business.profile_overrides_json);
+      const modes = overrides.dispatch && overrides.dispatch.modes;
+      if (Array.isArray(modes)) {
+        for (const item of modes) {
+          if (String(item.vehicleClass) === vehicleClass && String(item.arrangement) === 'PARTNER') item.salesSharePct = share;
+        }
+        overrides.dispatch.modes = modes;
+        await db.run("UPDATE businesses SET profile_overrides_json = ?, updated_at = datetime('now') WHERE id = ?", [
+          JSON.stringify(overrides), String(business.id),
+        ]);
+      }
+    }
+    await recordFromCtx(ctx, {
+      action: 'DISPATCH_VEHICLE_UPDATED', entityType: 'DELIVERY_VEHICLE', entityId: vehicle.id, businessId: business.id,
+      before: { name: vehicle.name, vehicle_class: vehicle.vehicle_class, arrangement: vehicle.arrangement, is_active: vehicle.is_active },
+      after: { name, vehicleClass, arrangement, onFleet, share },
+    });
+    ctx.json({
+      ok: true,
+      message: onFleet
+        ? `${name} is updated. A drop already sent keeps the vehicle it left on.`
+        : `${name} is off the fleet. It is not deleted, and a past drop still names it.`,
+    });
+  });
+
   app.post(`${base}/deliveries/:id/partner-pay`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
@@ -363,13 +436,14 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx, { required: false });
     const branchId = branch ? String(branch.id) : null;
     const inputs = await db.all(`SELECT p.id, p.name, p.sku, p.base_unit_name, p.cost_price, p.offers_sale,
-          p.reorder_level, p.has_expiry,
+          p.reorder_level, p.has_expiry, p.is_deleted, c.name AS category_name,
           COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' THEN b.quantity ELSE 0 END), 0) AS on_hand,
           COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' AND b.branch_id = ? THEN b.quantity ELSE 0 END), 0) AS branch_on_hand,
           COALESCE(SUM(CASE WHEN b.is_deleted = 0 AND b.status = 'ACTIVE' THEN b.quantity * b.cost_price_per_unit ELSE 0 END), 0) AS stock_value
         FROM products p
+        LEFT JOIN product_categories c ON c.id = p.category_id
         LEFT JOIN stock_batches b ON b.product_id = p.id
-        WHERE p.business_id = ? AND p.is_deleted = 0 AND p.stock_role = 'INPUT'
+        WHERE p.business_id = ? AND p.stock_role = 'INPUT'
         GROUP BY p.id
         ORDER BY p.name`, [branchId || '', String(business.id)]);
     const openCredit = await db.all(`SELECT id, name, phone, credit_balance, credit_limit
@@ -389,8 +463,8 @@ function mount(app, base = '/api') {
           (SELECT COUNT(*) FROM expenses e
             WHERE e.plant_asset_id = a.id AND e.is_deleted = 0 AND e.status <> 'REJECTED') AS maintenance_count
         FROM plant_assets a
-        WHERE a.business_id = ? AND a.is_deleted = 0
-        ORDER BY CASE a.status WHEN 'WORKING' THEN 0 ELSE 1 END, a.name`, [String(business.id)]);
+        WHERE a.business_id = ?
+        ORDER BY a.is_deleted, CASE a.status WHEN 'WORKING' THEN 0 ELSE 1 END, a.name`, [String(business.id)]);
     const receipts = await db.all(`SELECT b.id, b.product_id, p.name AS product_name, p.base_unit_name,
           b.initial_quantity, b.quantity, b.cost_price_per_unit, b.received_at, b.notes, b.expiry_date
         FROM stock_batches b
@@ -446,6 +520,9 @@ function mount(app, base = '/api') {
           low: reorder > 0 && here <= reorder,
           hasExpiry: Number(row.has_expiry) === 1,
           offersSale: Number(row.offers_sale) === 1,
+          cost: round2(Number(row.cost_price) || 0),
+          categoryName: row.category_name,
+          retired: Number(row.is_deleted) === 1,
         };
       }),
       inputValue: round2(inputs.reduce((sum, row) => sum + (Number(row.stock_value) || 0), 0)),
@@ -467,6 +544,7 @@ function mount(app, base = '/api') {
         stoppedAt: row.stopped_at,
         stoppedReason: row.stopped_reason,
         notes: row.notes,
+        retired: Number(row.is_deleted) === 1,
         maintenanceTotal: round2(Number(row.maintenance_total) || 0),
         maintenanceCount: Number(row.maintenance_count) || 0,
         services: services.filter((item) => String(item.plant_asset_id) === String(row.id)).slice(0, 4).map((item) => ({
@@ -495,6 +573,7 @@ function mount(app, base = '/api') {
       viewer: {
         role: user && user.role,
         canManage: atLeast(user && user.role, 'MANAGER'),
+        canOwn: atLeast(user && user.role, 'OWNER'),
         branchName: branch ? branch.name : null,
       },
     });
@@ -944,6 +1023,77 @@ function mount(app, base = '/api') {
     });
     const kept = body.name || asset.name;
     ctx.json({ ok: true, message: kept + ' is corrected. Changing the price here does not move money a second time.' });
+  }));
+
+  app.post(`${base}/plant/assets/:id/register`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    requireOwner(user, 'whether a machine stays on the register');
+    const business = await loadBusiness(db, ctx);
+    const asset = await loadAsset(db, ctx.req.param('id'), business.id, { includeRetired: true });
+    const body = await ctx.req.json();
+    const onRegister = Boolean(boolField(body.on_register));
+    const note = '\n[' + watNow() + '] ' + (onRegister ? 'Put back on the register' : 'Taken off the register') + ' by ' + (user.full_name || user.username) + '. Posted maintenance is not reversed.';
+    await db.run("UPDATE plant_assets SET is_deleted = ?, notes = COALESCE(notes, '') || ?, updated_at = datetime('now') WHERE id = ?", [
+      onRegister ? 0 : 1, note, String(asset.id),
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_REGISTER', entityType: 'PLANT_ASSET', entityId: asset.id, businessId: business.id,
+      before: { is_deleted: asset.is_deleted }, after: { onRegister },
+    });
+    ctx.json({
+      ok: true,
+      message: onRegister
+        ? `${asset.name} is back on the register.`
+        : `${asset.name} is off the register. The price and the maintenance already posted stay on the books.`,
+    });
+  }));
+
+  app.post(`${base}/plant/inputs/:id/correct`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    requireOwner(user, 'a production input');
+    const business = await loadBusiness(db, ctx);
+    const product = await db.first("SELECT * FROM products WHERE id = ? AND stock_role = 'INPUT'", [String(ctx.req.param('id'))]);
+    if (!product || String(product.business_id) !== String(business.id)) {
+      throw new HttpError('That is not production stock on this plant.', { status: 404, code: 'INPUT_NOT_FOUND' });
+    }
+    const body = await ctx.req.json();
+    const name = strField(body.name, { field: 'Name', maxLength: 160, required: true });
+    if (!name || name.length < 2) throw new HttpError('Name the input.', { status: 400, code: 'NAME_REQUIRED' });
+    const unit = strField(body.unit || body.base_unit_name, { field: 'Unit', maxLength: 40 }) || product.base_unit_name || 'unit';
+    const cost = numField(body.cost != null ? body.cost : body.cost_price, { field: 'Catalogue cost', min: 0 });
+    const reorder = numField(body.reorder_level != null ? body.reorder_level : body.reorder, { field: 'Low-stock line', min: 0, places: 4 });
+    const offersSale = body.offers_sale == null ? Number(product.offers_sale) === 1 : Boolean(boolField(body.offers_sale));
+    const onPlant = body.on_plant == null ? Number(product.is_deleted) !== 1 : Boolean(boolField(body.on_plant));
+    if (!onPlant) {
+      const held = await db.first(`SELECT COALESCE(SUM(quantity), 0) AS qty FROM stock_batches
+        WHERE product_id = ? AND is_deleted = 0 AND status = 'ACTIVE'`, [String(product.id)]);
+      if (Number(held && held.qty) > 0.0001) {
+        throw new HttpError(`${name} still has stock counted. Use it, or leave it on the plant. Taking it off would hide goods that are still there.`, { status: 409, code: 'STOCK_REMAINS' });
+      }
+    }
+    let categoryId = product.category_id;
+    if (Object.prototype.hasOwnProperty.call(body, 'category_name')) {
+      const categoryName = strField(body.category_name, { field: 'Category', maxLength: 80 });
+      if (categoryName) categoryId = await ensureCategory(db, business.id, categoryCode(categoryName), categoryName);
+    }
+    await db.run(`UPDATE products SET name = ?, base_unit_name = ?, cost_price = ?, reorder_level = ?, offers_sale = ?,
+        category_id = ?, is_deleted = ?, is_active = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?`, [
+      name, unit, cost, reorder, offersSale ? 1 : 0, categoryId, onPlant ? 0 : 1, onPlant ? 1 : 0,
+      String(product.id), String(business.id),
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_INPUT_CORRECTED', entityType: 'PRODUCT', entityId: product.id, businessId: business.id,
+      before: { name: product.name, unit: product.base_unit_name, cost: product.cost_price, is_deleted: product.is_deleted },
+      after: { name, unit, cost, reorder, offersSale, onPlant },
+    });
+    ctx.json({
+      ok: true,
+      message: onPlant
+        ? `${name} is updated. Changing the name, the unit or the catalogue cost does not rewrite a delivery already saved, and it does not convert the quantity already counted.`
+        : `${name} is off the plant. Nothing was on hand, so no stock was hidden.`,
+    });
   }));
 
   app.post(`${base}/plant/assets/:id/report`, idempotent(async (ctx) => {

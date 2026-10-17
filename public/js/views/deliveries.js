@@ -248,16 +248,25 @@
           },
         }, 'Confirm this mix')
         : null;
+      const owner = SR.state.atLeast('OWNER');
       const add = setup.confirmed && SR.state.atLeast('MANAGER')
         ? ui.h('button', { class: 'btn btn-sm', onClick: () => addVehicle(setup, after) }, 'Add a vehicle')
         : null;
+      const editMixBtn = owner
+        ? ui.h('button', { class: 'btn btn-sm', onClick: () => editMix(setup, after) }, 'Edit the mix')
+        : null;
+      const fleetActions = ui.h('div', { class: 'actions' }, editMixBtn, add || confirm);
       const table = ui.renderTable({
         columns: [
-          { key: 'name', label: 'Vehicle' },
+          { key: 'name', label: 'Vehicle', render: (row) => ui.h('div', {},
+            ui.h('div', {}, row.name),
+            Number(row.is_active) === 0 ? ui.badge('off the fleet', 'badge-mute') : null,
+            setup.confirmed && !vehicleInMix(setup, row) ? ui.badge('not in the mix', 'badge-warn') : null) },
           { key: 'vehicle_class', label: 'Type', render: (row) => U.humanise(String(row.vehicle_class || '').toLowerCase()) },
           { key: 'arrangement', label: 'Pay', render: (row) => (row.arrangement === 'PARTNER' ? `Partner · ${row.sales_share_pct}% of sales` : 'Ours · wage') },
           { key: 'plate_no', label: 'Plate', render: (row) => row.plate_no || '—' },
-          { key: 'driver_name', label: 'Usual driver', render: (row) => row.driver_name || '—' },
+          { key: 'driver_name', label: 'Usual driver', render: (row) => [row.driver_name, row.driver_phone].filter(Boolean).join(' · ') || '—' },
+          { key: 'edit', label: '', render: (row) => (owner ? ui.h('button', { class: 'btn btn-sm', onClick: () => editVehicle(row, setup, after) }, 'Edit') : null) },
         ],
         rows: setup.vehicles || [],
         emptyTitle: 'No vehicles yet',
@@ -266,7 +275,7 @@
           : 'Confirm the mix, then add the vehicles.',
       });
       const card = ui.h('div', { class: 'card' },
-        ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Dispatch'), add || confirm),
+        ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Dispatch'), fleetActions),
         ui.h('div', { class: 'card-body' }, note,
           bare ? ui.h('p', { class: 'hint' }, 'A type saved when the business was created is already listed. Add a plate and a usual driver on it, or add a named vehicle of the same type. Neither replaces the mix.') : null,
           confirm && add ? confirm : null, table));
@@ -322,6 +331,123 @@
     });
   }
 
+  const DISPATCH_VEHICLES = [
+    { value: 'BIKE', label: 'Motorcycle' },
+    { value: 'TRICYCLE', label: 'Tricycle (keke)' },
+    { value: 'CAR', label: 'Car' },
+    { value: 'PICKUP', label: 'Pickup' },
+    { value: 'VAN', label: 'Van' },
+  ];
+  const DISPATCH_HOW = [
+    { value: 'OWNED', label: 'Ours — driver on a wage' },
+    { value: 'PARTNER', label: 'Partner — paid on sales' },
+  ];
+
+  function vehicleInMix(setup, row) {
+    return (setup.modes || []).some((mode) => mode.vehicleClass === row.vehicle_class && mode.arrangement === row.arrangement);
+  }
+
+  function modesFromForm(v) {
+    const modes = [{
+      vehicleClass: v.dispatch_class_1,
+      arrangement: v.dispatch_arrangement_1,
+      salesSharePct: v.dispatch_arrangement_1 === 'PARTNER' ? v.dispatch_share_1 : null,
+    }];
+    if (v.dispatch_class_2) {
+      modes.push({
+        vehicleClass: v.dispatch_class_2,
+        arrangement: v.dispatch_arrangement_2,
+        salesSharePct: v.dispatch_arrangement_2 === 'PARTNER' ? v.dispatch_share_2 : null,
+      });
+    }
+    return modes;
+  }
+
+  function editMix(setup, after) {
+    const modes = setup.modes || [];
+    const first = modes[0] || { vehicleClass: 'PICKUP', arrangement: 'OWNED', salesSharePct: 8 };
+    const second = modes[1] || null;
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'One type, or two. Saving this replaces the mix. A vehicle already on the fleet stays. If its type is no longer in the mix, take it off or edit it onto a type that is. A drop already sent is not rewritten.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'First vehicle', name: 'dispatch_class_1', value: first.vehicleClass, options: DISPATCH_VEHICLES }),
+      ui.field({ label: 'Who owns it', name: 'dispatch_arrangement_1', value: first.arrangement, options: DISPATCH_HOW }),
+      ui.field({ label: 'Partner share %', name: 'dispatch_share_1', type: 'number', min: '1', max: '40', step: '0.5', value: first.salesSharePct || 8 }),
+      ui.field({ label: 'Second vehicle', name: 'dispatch_class_2', value: second ? second.vehicleClass : '', options: [{ value: '', label: 'None — one is enough' }, ...DISPATCH_VEHICLES] }),
+      ui.field({ label: 'Who owns the second', name: 'dispatch_arrangement_2', value: second ? second.arrangement : 'PARTNER', options: DISPATCH_HOW }),
+      ui.field({ label: 'Second share %', name: 'dispatch_share_2', type: 'number', min: '1', max: '40', step: '0.5', value: (second && second.salesSharePct) || 8 })));
+    const m = ui.openModal({
+      title: 'Edit the dispatch mix',
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readForm(wrapEl);
+            if (!v.dispatch_class_1) { ui.warn('Choose the first vehicle.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.put('/api/dispatch', { modes: modesFromForm(v) }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Dispatch mix saved.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Save the mix'),
+      ],
+    });
+  }
+
+  function editVehicle(row, setup, after) {
+    const modes = setup.modes || [];
+    const options = modes.map((mode, i) => ({
+      value: String(i),
+      label: `${U.humanise(String(mode.vehicleClass).toLowerCase())} · ${mode.arrangement === 'PARTNER' ? 'partner' : 'ours'}`,
+    }));
+    const current = modes.findIndex((mode) => mode.vehicleClass === row.vehicle_class && mode.arrangement === row.arrangement);
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Change the name, the plate, the usual driver, or the type. Taking it off the fleet does not delete a drop that already used it. A partner share here is the share on the mix, so every vehicle of that type uses it.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Name', name: 'name', required: true, value: row.name }),
+      ui.field({ label: 'Plate', name: 'plate_no', value: row.plate_no || '' }),
+      ui.field({ label: 'Usual driver', name: 'driver_name', value: row.driver_name || '' }),
+      ui.field({ label: 'Driver phone', name: 'driver_phone', value: row.driver_phone || '' }),
+      options.length ? ui.field({ label: 'Type in the mix', name: 'mode', value: current >= 0 ? String(current) : '0', options }) : null,
+      ui.field({ label: 'On the fleet', name: 'is_active', type: 'checkbox', value: Number(row.is_active) === 0 ? 0 : 1, span: true, hint: 'Off: it cannot be chosen for a new load. It stays on the record.' })));
+    const m = ui.openModal({
+      title: `Edit ${row.name}`,
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readForm(wrapEl);
+            if (!v.name || String(v.name).trim().length < 2) { ui.warn('Name the vehicle.'); return; }
+            const mode = modes[Number(v.mode)] || { vehicleClass: row.vehicle_class, arrangement: row.arrangement, salesSharePct: row.sales_share_pct };
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.put(`/api/dispatch/vehicles/${encodeURIComponent(row.id)}`, {
+                name: v.name,
+                plate_no: v.plate_no || null,
+                driver_name: v.driver_name || null,
+                driver_phone: v.driver_phone || null,
+                vehicle_class: mode.vehicleClass,
+                arrangement: mode.arrangement,
+                sales_share_pct: mode.arrangement === 'PARTNER' ? mode.salesSharePct : null,
+                is_active: Number(v.is_active) ? 1 : 0,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Vehicle updated.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Save'),
+      ],
+    });
+  }
+
   // -------------------------------------------------------------------
   // ONE JOB
   function paintPlant(host, after) {
@@ -331,19 +457,22 @@
     }
     host.replaceChildren(ui.loading('Reading the plant…'));
     SR.api.get('/api/plant', { query: SR.state.query({}) }).then((plant) => {
+      const canOwn = SR.state.atLeast('OWNER');
       const canManage = SR.state.atLeast('MANAGER');
       const head = ui.h('div', {},
         ui.h('h2', {}, 'The plant'),
-        ui.h('p', { class: 'hint' }, canManage
-          ? 'You can receive stock, record what was used, maintain a machine, stop it, and correct a wrong date or price. A cashier can see this and report a fault. They cannot move stock or money.'
-          : 'You can see the plant and report a fault. Receiving stock, using it in production, maintenance, a stop, and a correction are for a manager or above.'));
+        ui.h('p', { class: 'hint' }, canOwn
+          ? 'You can edit the dispatch mix, each vehicle, and every machine and input. Changing a register fact does not rewrite money already posted. A manager still records a delivery, a use, a service and a stop. A cashier can see this and report a fault.'
+          : canManage
+            ? 'You can receive stock, record what was used, maintain a machine, stop it, and correct a wrong date or price. The owner edits the register itself. A cashier can see this and report a fault.'
+            : 'You can see the plant and report a fault. Receiving stock, using it in production, maintenance, a stop, and a correction are for a manager or above. The owner edits the register.'));
       host.replaceChildren(ui.sectionTabs({
         head,
         remember: 'sr.plantTab',
         sections: [
           { id: 'owed', label: 'Supplies owed', nodes: owedNodes(plant) },
-          { id: 'machines', label: 'Machines', nodes: machineNodes(plant, canManage, after) },
-          { id: 'stock', label: 'Production stock', nodes: stockNodes(plant, canManage, after) },
+          { id: 'machines', label: 'Machines', nodes: machineNodes(plant, canManage, canOwn, after) },
+          { id: 'stock', label: 'Production stock', nodes: stockNodes(plant, canManage, canOwn, after) },
         ],
       }));
     }).catch((err) => {
@@ -403,9 +532,10 @@
     return [card];
   }
 
-  function machineNodes(plant, canManage, after) {
-    const assets = plant.assets || [];
-    const working = assets.filter((row) => row.status !== 'STOPPED').length;
+  function machineNodes(plant, canManage, canOwn, after) {
+    const assets = (plant.assets || []).filter((row) => canOwn || !row.retired);
+    const live = assets.filter((row) => !row.retired);
+    const working = live.filter((row) => row.status !== 'STOPPED').length;
     const card = ui.h('div', { class: 'card' });
     const actions = ui.h('div', { class: 'actions' });
     if (canManage && plant.manufacturing) {
@@ -414,7 +544,7 @@
     card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Machines and tools'), actions));
     const body = ui.h('div', { class: 'card-body stack' });
     body.appendChild(ui.h('div', { class: 'grid grid-3' },
-      ui.kpi({ label: 'Working', value: String(working), foot: `${assets.length - working} stopped`, small: true, tone: assets.length - working ? 'warn' : 'good' }),
+      ui.kpi({ label: 'Working', value: String(working), foot: `${live.length - working} stopped${assets.length - live.length ? ` · ${assets.length - live.length} off the register` : ''}`, small: true, tone: live.length - working ? 'warn' : 'good' }),
       ui.kpi({
         label: 'Service, 30 days',
         value: U.money(plant.machinery && plant.machinery.days30),
@@ -436,7 +566,7 @@
     if (!assets.length) {
       body.appendChild(ui.h('p', { class: 'hint' }, 'No machine or tool recorded yet. Add the ones this plant actually has. Do not invent a price.'));
     }
-    for (const asset of assets) body.appendChild(assetBlock(asset, canManage, after));
+    for (const asset of assets) body.appendChild(assetBlock(asset, canManage, canOwn, after));
     card.appendChild(body);
     return [card];
   }
@@ -446,14 +576,15 @@
     return lines.length ? lines[lines.length - 1] : null;
   }
 
-  function assetBlock(asset, canManage, after) {
+  function assetBlock(asset, canManage, canOwn, after) {
     const stopped = asset.status === 'STOPPED';
+    const retired = Boolean(asset.retired);
     const block = ui.h('div', { class: 'stack', style: { paddingTop: '8px', borderTop: '1px solid var(--line, rgba(0,0,0,0.08))' } });
     const line = ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' } });
     line.appendChild(ui.h('div', {},
       ui.h('strong', {}, asset.name),
       ` · ${asset.kind === 'TOOL' ? 'Tool' : 'Machine'}`,
-      stopped ? ui.badge('stopped', 'badge-bad') : ui.badge('working', 'badge-good'),
+      retired ? ui.badge('off the register', 'badge-mute') : (stopped ? ui.badge('stopped', 'badge-bad') : ui.badge('working', 'badge-good')),
       ui.h('div', { class: 'hint' }, [
         `Gotten ${asset.acquiredAt} · ${U.money(asset.purchasePrice)}`,
         asset.supplierName ? `from ${asset.supplierName}` : null,
@@ -462,10 +593,14 @@
       ui.h('div', { class: 'hint' }, `Maintenance ${U.money(asset.maintenanceTotal)}${asset.maintenanceCount ? ` across ${asset.maintenanceCount}` : ''}`),
       stopped ? ui.h('div', { class: 'hint' }, `Stopped ${asset.stoppedAt}${asset.stoppedReason ? ` — ${asset.stoppedReason}` : ''}`) : null));
     const buttons = ui.h('div', { class: 'btn-row' });
-    buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => reportAsset(asset, after) }, 'Report a fault'));
-    if (canManage) {
-      buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => serviceAsset(asset, after) }, 'Maintenance'));
+    if (!retired) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => reportAsset(asset, after) }, 'Report a fault'));
+    if (canOwn) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => correctAsset(asset, after) }, 'Edit'));
+    if (canOwn) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => setAssetRegister(asset, !retired, after) }, retired ? 'Put back' : 'Take off register'));
+    if (canManage && !retired && !canOwn) {
       buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => correctAsset(asset, after) }, 'Correct'));
+    }
+    if (canManage && !retired) {
+      buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => serviceAsset(asset, after) }, 'Maintenance'));
       buttons.appendChild(stopped
         ? ui.h('button', { class: 'btn btn-sm', onClick: () => restartAsset(asset, after) }, 'Back in use')
         : ui.h('button', { class: 'btn btn-sm', onClick: () => stopAsset(asset, after) }, 'Stopped working'));
@@ -485,9 +620,9 @@
     return block;
   }
 
-  function stockNodes(plant, canManage, after) {
-    const inputs = plant.inputs || [];
-    const low = inputs.filter((row) => row.low);
+  function stockNodes(plant, canManage, canOwn, after) {
+    const inputs = (plant.inputs || []).filter((row) => canOwn || !row.retired);
+    const low = inputs.filter((row) => row.low && !row.retired);
     const card = ui.h('div', { class: 'card' });
     const actions = ui.h('div', { class: 'actions' });
     if (canManage && plant.manufacturing && plant.missing && plant.missing.length) {
@@ -528,7 +663,7 @@
     if (!inputs.length) {
       body.appendChild(ui.h('p', { class: 'hint' }, 'No manufacturing inputs yet. Add treatment chemical, film, flour, or whatever this plant uses. They stay off the till unless a manager also sells them.'));
     }
-    for (const row of inputs) body.appendChild(inputBlock(row, plant, canManage, after, branchName));
+    for (const row of inputs) body.appendChild(inputBlock(row, plant, canManage, canOwn, after, branchName));
     const uses = plant.uses || [];
     if (uses.length) {
       body.appendChild(ui.h('h3', {}, 'Recently used in production'));
@@ -541,7 +676,7 @@
     return [card];
   }
 
-  function inputBlock(row, plant, canManage, after, branchName) {
+  function inputBlock(row, plant, canManage, canOwn, after, branchName) {
     const last = (plant.receipts || []).find((receipt) => receipt.productId === row.id);
     const here = row.branchOnHand != null ? row.branchOnHand : row.onHand;
     const split = branchName && Number(here) !== Number(row.onHand);
@@ -549,7 +684,8 @@
     const line = ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' } });
     line.appendChild(ui.h('div', {},
       ui.h('strong', {}, row.name),
-      row.low ? ui.badge('low', 'badge-warn') : null,
+      row.retired ? ui.badge('off the plant', 'badge-mute') : null,
+      row.low && !row.retired ? ui.badge('low', 'badge-warn') : null,
       row.offersSale ? ui.badge('also sold', 'badge-mute') : ui.badge('not on the till', 'badge-mute'),
       ui.h('div', { class: 'hint' }, split
         ? `${U.qty(here)} ${row.unit || ''} at ${branchName} · ${U.qty(row.onHand)} across the plant · ${U.money(row.value)}`
@@ -560,16 +696,76 @@
       ui.h('div', { class: 'hint' }, last
         ? `Last gotten ${String(last.receivedAt || '').slice(0, 10)} · ${U.qty(last.quantity)} at ${U.money(last.price)} each${last.stillOwed ? ' · still owed' : ''}${last.expiry ? ` · expires ${last.expiry}` : ''}`
         : 'Not received yet. Record the day, the price and the amount.')));
-    if (canManage) {
-      const buttons = ui.h('div', { class: 'btn-row' });
+    const buttons = ui.h('div', { class: 'btn-row' });
+    if (canOwn) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => editInput(row, after) }, 'Edit'));
+    if (canManage && !row.retired) {
       buttons.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => receiveInput(row, after) }, 'Receive'));
       buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => useInput(row, after, branchName) }, 'Used'));
-      buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => setReorder(row, after) }, 'Low-stock line'));
-      buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => toggleSale(row, after) }, row.offersSale ? 'Stop selling' : 'Also sell'));
-      line.appendChild(buttons);
+      if (!canOwn) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => setReorder(row, after) }, 'Low-stock line'));
+      if (!canOwn) buttons.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => toggleSale(row, after) }, row.offersSale ? 'Stop selling' : 'Also sell'));
     }
+    if (buttons.childNodes.length) line.appendChild(buttons);
     block.appendChild(line);
     return block;
+  }
+
+  function setAssetRegister(asset, onRegister, after) {
+    ui.confirmDialog({
+      title: onRegister ? `Put ${asset.name} back` : `Take ${asset.name} off the register`,
+      message: onRegister
+        ? `${asset.name} goes back on the plant. Maintenance already posted is not changed.`
+        : `${asset.name} leaves the working list. The price and any maintenance already posted stay on the books. It is not erased.`,
+      confirmLabel: onRegister ? 'Put it back' : 'Take it off',
+      danger: !onRegister,
+    }).then((yes) => {
+      if (!yes) return;
+      SR.api.post(`/api/plant/assets/${encodeURIComponent(asset.id)}/register`, { on_register: onRegister ? 1 : 0 }, { query: SR.state.query({}) }).then((res) => {
+        ui.ok(res.message || 'Saved.');
+        if (after) after();
+      }).catch((err) => ui.apiError(err));
+    });
+  }
+
+  function editInput(row, after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This edits the register. It does not rewrite a delivery already saved, and it does not convert quantity already counted. Take it off the plant only when nothing is on hand.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Name', name: 'name', required: true, value: row.name }),
+      ui.field({ label: 'Category', name: 'category_name', value: row.categoryName || '' }),
+      ui.field({ label: 'Unit', name: 'unit', value: row.unit || '' }),
+      ui.field({ label: 'Catalogue cost (₦)', name: 'cost', type: 'number', step: '0.01', min: '0', value: row.cost || 0, hint: 'The figure on the product. A delivery already saved keeps its own price.' }),
+      ui.field({ label: `Low when at or under (${row.unit || 'units'})`, name: 'reorder_level', type: 'number', step: '0.001', min: '0', value: row.reorder || 0 }),
+      ui.field({ label: 'Also sell this at the till', name: 'offers_sale', type: 'checkbox', value: row.offersSale ? 1 : 0, span: true }),
+      ui.field({ label: 'Keep it on the plant', name: 'on_plant', type: 'checkbox', value: row.retired ? 0 : 1, span: true, hint: 'Off only when nothing is on hand. Stock that is still counted cannot be hidden.' })));
+    const m = ui.openModal({
+      title: `Edit ${row.name}`,
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readForm(wrapEl);
+            if (!v.name || String(v.name).trim().length < 2) { ui.warn('Name the input.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post(`/api/plant/inputs/${encodeURIComponent(row.id)}/correct`, {
+                name: v.name,
+                category_name: v.category_name || null,
+                unit: v.unit || null,
+                cost: v.cost == null ? 0 : Number(v.cost),
+                reorder_level: v.reorder_level == null ? 0 : Number(v.reorder_level),
+                offers_sale: Number(v.offers_sale) ? 1 : 0,
+                on_plant: Number(v.on_plant) ? 1 : 0,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Updated.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Save'),
+      ],
+    });
   }
 
   function ensureInputs(after) {
