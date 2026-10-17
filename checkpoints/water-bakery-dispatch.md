@@ -68,6 +68,8 @@ A manager, an owner, or the administrator attaches the staff, the vehicle, and t
 
 ## Machines, tools, and production stock
 
+On sample as `ridge-20261017-1759-4161f46`. Not production.
+
 A plant that manufactures keeps two records, and they are not the same thing.
 
 A machine or a tool is gotten once. The register stores the day, the price paid, who it was bought from, and the serial if it has one. Each repair is an expense on the books the plant already uses, pointed at that machine, so the maintenance it has taken is a sum. When it stops working, the date and the reason stay. It is not deleted. Putting it back in use keeps the earlier stop in the notes. The purchase price is the record of what was paid when it was gotten. It is not posted again as if it were bought today.
