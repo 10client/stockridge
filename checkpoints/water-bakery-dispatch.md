@@ -78,7 +78,7 @@ Production stock is film rolls, flour, sugar, yeast, alum, chlorine, filter cart
 
 ## Plant records, by role
 
-Not on sample yet. This section ships with the next sample deploy. Not production.
+On sample as `ridge-20261017-1822-481af37`. Not production.
 
 The plant screen is three sections: supplies owed, machines, and production stock. A cashier can see all three and can report a fault on a machine. That report is a note. It does not stop the machine, and it does not spend money. A manager, an owner, or the administrator receives stock, records what was used, sets the low-stock line, maintains a machine, confirms a stop, puts it back in use, corrects a wrong name, date, price, supplier or serial, and decides whether an input is also sold at the till. There is no fifth stored role.
 
