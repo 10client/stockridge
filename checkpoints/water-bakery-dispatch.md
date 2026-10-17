@@ -62,4 +62,6 @@ A cashier or a dispatch rider can sell on the spot or on credit, where the verti
 
 ## Who attaches the load
 
+On sample as `ridge-20261017-1643-30ee24d`. Not production.
+
 A manager, an owner, or the administrator attaches the staff, the vehicle, and the amount of each product. The phone, the plate, and whether the person is on a wage or a share follow those records. A cashier or a driver can still record what happened on the drop — status, who received it, the pin, and whether it was credit or paid on the spot — but cannot change who was sent, which vehicle, or how much went out. A confirmed dispatch mix cannot leave until that attachment is saved. A smaller amount than the sale does not put the rest back on the shelf.
