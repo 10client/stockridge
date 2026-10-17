@@ -338,8 +338,8 @@
           SR.state.atLeast('MANAGER') && plant.manufacturing
             ? ui.h('button', { class: 'btn btn-sm', onClick: () => addInput(after) }, 'Add an input')
             : null,
-          SR.state.atLeast('MANAGER')
-            ? ui.h('button', { class: 'btn btn-sm', onClick: () => recordService(after) }, 'Machinery service')
+          SR.state.atLeast('MANAGER') && plant.manufacturing
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => addAsset(after) }, 'Add a machine or tool')
             : null)));
       const body = ui.h('div', { class: 'card-body stack' });
       body.appendChild(ui.h('div', { class: 'grid grid-3' },
@@ -371,17 +371,53 @@
           ` · ${U.money(row.balance)} unpaid`,
           row.phone ? ` · ${row.phone}` : ''))));
       }
+      if (plant.manufacturing) {
+        body.appendChild(ui.h('h3', {}, 'Machines and tools'));
+        body.appendChild(ui.h('p', { class: 'hint' }, 'A filler, an oven, a UV lamp, a mixer, a generator, a sealing jaw, a scale. Record the day it was gotten and what it cost. Each repair adds to the maintenance that machine has taken. When it stops working, the date stays. It is not deleted.'));
+        if ((plant.assets || []).length) {
+          body.appendChild(ui.h('div', { class: 'stack' }, (plant.assets || []).map((asset) => {
+            const line = ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px', alignItems: 'flex-start' } });
+            const stopped = asset.status === 'STOPPED';
+            line.appendChild(ui.h('div', {},
+              ui.h('strong', {}, asset.name),
+              ` · ${asset.kind === 'TOOL' ? 'Tool' : 'Machine'}`,
+              stopped ? ui.badge('stopped', 'badge-bad') : ui.badge('working', 'badge-good'),
+              ui.h('div', { class: 'hint' }, [
+                `Gotten ${asset.acquiredAt} · ${U.money(asset.purchasePrice)}`,
+                `Maintenance ${U.money(asset.maintenanceTotal)}${asset.maintenanceCount ? ` across ${asset.maintenanceCount}` : ''}`,
+                stopped ? `Stopped ${asset.stoppedAt}${asset.stoppedReason ? ` — ${asset.stoppedReason}` : ''}` : null,
+              ].filter(Boolean).join(' · '))));
+            if (SR.state.atLeast('MANAGER')) {
+              const actions = ui.h('div', { class: 'btn-row' });
+              actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => serviceAsset(asset, after) }, 'Maintenance'));
+              actions.appendChild(stopped
+                ? ui.h('button', { class: 'btn btn-sm', onClick: () => restartAsset(asset, after) }, 'Back in use')
+                : ui.h('button', { class: 'btn btn-sm', onClick: () => stopAsset(asset, after) }, 'Stopped working'));
+              line.appendChild(actions);
+            }
+            return line;
+          })));
+        } else {
+          body.appendChild(ui.h('p', { class: 'hint' }, 'No machine or tool recorded yet. Add the ones this plant actually has. Do not invent a price — put what was paid when it was gotten.'));
+        }
+        body.appendChild(ui.h('h3', {}, 'Production stock'));
+        body.appendChild(ui.h('p', { class: 'hint' }, 'Film rolls, flour, sugar, yeast, alum, chlorine, filter cartridges — whatever this plant uses to produce. Record each delivery: the day it was gotten, the price, and the amount. It sits on the same stock as the rest of the plant. It is not a second list, and it is not a recipe.'));
+      }
       if ((plant.inputs || []).length) {
         body.appendChild(ui.h('div', { class: 'stack' }, (plant.inputs || []).map((row) => {
           const line = ui.h('div', { class: 'row', style: { justifyContent: 'space-between', gap: '8px' } });
+          const last = (plant.receipts || []).find((receipt) => receipt.productId === row.id);
           line.appendChild(ui.h('div', {},
             ui.h('strong', {}, row.name),
-            ui.h('div', { class: 'hint' }, `${U.qty(row.onHand)} ${row.unit || ''} · ${U.money(row.value)}${row.offersSale ? ' · also sold at the till' : ' · not sold at the till'}`)));
+            ui.h('div', { class: 'hint' }, `${U.qty(row.onHand)} ${row.unit || ''} on hand · ${U.money(row.value)}${row.offersSale ? ' · also sold at the till' : ' · not sold at the till'}`),
+            ui.h('div', { class: 'hint' }, last
+              ? `Last gotten ${String(last.receivedAt || '').slice(0, 10)} · ${U.qty(last.quantity)} at ${U.money(last.price)} each`
+              : 'Not received yet. Record the day, the price and the amount.')));
           if (SR.state.atLeast('MANAGER')) {
-            line.appendChild(ui.h('button', {
-              class: 'btn btn-sm',
-              onClick: () => toggleSale(row, after),
-            }, row.offersSale ? 'Stop selling' : 'Also sell'));
+            const actions = ui.h('div', { class: 'btn-row' });
+            actions.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => receiveInput(row, after) }, 'Receive'));
+            actions.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => toggleSale(row, after) }, row.offersSale ? 'Stop selling' : 'Also sell'));
+            line.appendChild(actions);
           }
           return line;
         })));
@@ -436,6 +472,169 @@
             } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
           },
         }, 'Add it'),
+      ],
+    });
+  }
+
+  function addAsset(after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Name the machine or tool this plant has. A sachet filler, a UV sterilizer, an oven, a spiral mixer, a generator, a sealing jaw, a scale. The date and the price are what was paid when it was gotten. Do not guess a market price.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Name', name: 'name', required: true, placeholder: 'Sachet filling machine' }),
+      ui.field({ label: 'Kind', name: 'kind', value: 'MACHINE', options: [
+        { value: 'MACHINE', label: 'Machine' },
+        { value: 'TOOL', label: 'Tool' },
+      ] }),
+      ui.field({ label: 'Date gotten', name: 'acquired_at', type: 'date', required: true }),
+      ui.field({ label: 'Price paid (₦)', name: 'purchase_price', type: 'number', step: '0.01', min: '0', required: true }),
+      ui.field({ label: 'Where it was gotten', name: 'supplier_name', placeholder: 'Optional' }),
+      ui.field({ label: 'Serial number', name: 'serial_no', placeholder: 'If it has one' })));
+    const m = ui.openModal({
+      title: 'Add a machine or tool',
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.name || String(v.name).trim().length < 2) { ui.warn('Name the machine or the tool.'); return; }
+            if (!v.acquired_at) { ui.warn('Enter the day it was gotten.'); return; }
+            if (!(Number(v.purchase_price) >= 0)) { ui.warn('Enter the price that was paid.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post('/api/plant/assets', {
+                name: v.name,
+                kind: v.kind,
+                acquired_at: v.acquired_at,
+                purchase_price: Number(v.purchase_price),
+                supplier_name: v.supplier_name || null,
+                serial_no: v.serial_no || null,
+                branch_id: SR.state.activeBranchId,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Recorded.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Record it'),
+      ],
+    });
+  }
+
+  function serviceAsset(asset, after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, `This adds to the maintenance ${asset.name} has taken. The money is an expense on the same books, pointed at this machine.`));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'What was done', name: 'description', required: true, span: true, placeholder: 'New heating element, gearbox service, jaw replacement' }),
+      ui.field({ label: 'Amount (₦)', name: 'amount', type: 'number', step: '0.01', min: '0', required: true }),
+      ui.field({ label: 'Date', name: 'expense_date', type: 'date', value: U.todayWat() }),
+      ui.field({ label: 'Paid by', name: 'payment_method', value: 'BANK_TRANSFER', options: ['CASH', 'BANK_TRANSFER', 'POS_TERMINAL', 'MOBILE_MONEY'] })));
+    const m = ui.openModal({
+      title: `Maintenance · ${asset.name}`,
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.description || String(v.description).trim().length < 4) { ui.warn('Say what was done.'); return; }
+            if (!(Number(v.amount) > 0)) { ui.warn('Enter the amount.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post(`/api/plant/assets/${encodeURIComponent(asset.id)}/service`, {
+                description: v.description,
+                amount: Number(v.amount),
+                expense_date: v.expense_date || U.todayWat(),
+                payment_method: v.payment_method || 'BANK_TRANSFER',
+                branch_id: SR.state.activeBranchId,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Maintenance recorded.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Record it'),
+      ],
+    });
+  }
+
+  function stopAsset(asset, after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, `${asset.name} stays on the register. Stopping it records the day and why. It does not remove the price or the maintenance already taken.`));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Date it stopped', name: 'stopped_at', type: 'date', required: true }),
+      ui.field({ label: 'Why it stopped', name: 'reason', required: true, span: true, placeholder: 'Burnt element, seized gearbox, cracked jaw' })));
+    const m = ui.openModal({
+      title: `Stopped working · ${asset.name}`,
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.stopped_at) { ui.warn('Enter the day it stopped.'); return; }
+            if (!v.reason || String(v.reason).trim().length < 4) { ui.warn('Say why it stopped.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post(`/api/plant/assets/${encodeURIComponent(asset.id)}/stop`, {
+                stopped_at: v.stopped_at,
+                reason: v.reason,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Recorded.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Record that it stopped'),
+      ],
+    });
+  }
+
+  function restartAsset(asset, after) {
+    SR.api.post(`/api/plant/assets/${encodeURIComponent(asset.id)}/stop`, { status: 'WORKING' }, { query: SR.state.query({}) }).then((res) => {
+      ui.ok(res.message || `${asset.name} is back in use.`);
+      if (after) after();
+    }).catch((err) => ui.apiError(err));
+  }
+
+  function receiveInput(row, after) {
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, `Record this delivery of ${row.name}. The day, the price and the amount go onto the plant stock. The payment is recorded as paid on delivery, the same way any other goods receipt is.`));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Date gotten', name: 'received_on', type: 'date', required: true, value: U.todayWat() }),
+      ui.field({ label: `Amount (${row.unit || 'units'})`, name: 'quantity', type: 'number', step: '0.001', min: '0', required: true }),
+      ui.field({ label: 'Price each (₦)', name: 'price', type: 'number', step: '0.01', min: '0', required: true }),
+      ui.field({ label: 'Supplier', name: 'supplier_name', placeholder: 'Optional' })));
+    const m = ui.openModal({
+      title: `Receive ${row.name}`,
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.received_on) { ui.warn('Enter the day it was gotten.'); return; }
+            if (!(Number(v.quantity) > 0)) { ui.warn('Enter the amount gotten.'); return; }
+            if (!(Number(v.price) > 0)) { ui.warn('Enter the price paid for each.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post(`/api/plant/inputs/${encodeURIComponent(row.id)}/receive`, {
+                received_on: v.received_on,
+                quantity: Number(v.quantity),
+                price: Number(v.price),
+                supplier_name: v.supplier_name || null,
+                branch_id: SR.state.activeBranchId,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Received.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Record the delivery'),
       ],
     });
   }

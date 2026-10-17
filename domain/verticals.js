@@ -1052,6 +1052,9 @@ const PROFILES = Object.freeze({
       // cost when the bag is received. This is not leather, and it is not
       // a NAFDAC number.
       { name: 'Water treatment chemical', sku: 'WP-CH-001', category: 'TREATMENT', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
+      { name: 'Alum', sku: 'WP-CH-002', category: 'TREATMENT', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
+      { name: 'Chlorine', sku: 'WP-CH-003', category: 'TREATMENT', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
+      { name: 'Micro filter cartridge', sku: 'WP-CH-004', category: 'TREATMENT', cost: 0, price: 0, reorder: 4, ladder: 'EACH_ONLY', sale: false, stockRole: 'INPUT' },
     ]),
   },
 
@@ -1117,6 +1120,8 @@ const PROFILES = Object.freeze({
       { name: 'Flour 50kg', sku: 'BK-IN-001', category: 'INGREDIENTS', cost: 42000, price: 0, reorder: 6, ladder: 'BAG_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
       { name: 'Sugar 50kg', sku: 'BK-IN-002', category: 'INGREDIENTS', cost: 48000, price: 0, reorder: 4, ladder: 'BAG_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
       { name: 'Yeast', sku: 'BK-IN-003', category: 'INGREDIENTS', cost: 0, price: 0, reorder: 4, ladder: 'EACH_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
+      { name: 'Bread improver', sku: 'BK-IN-004', category: 'INGREDIENTS', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
+      { name: 'Margarine', sku: 'BK-IN-005', category: 'INGREDIENTS', cost: 0, price: 0, reorder: 2, ladder: 'EACH_ONLY', expiry: true, sale: false, stockRole: 'INPUT' },
     ]),
   },
 

@@ -65,3 +65,11 @@ A cashier or a dispatch rider can sell on the spot or on credit, where the verti
 On sample as `ridge-20261017-1643-30ee24d`. Not production.
 
 A manager, an owner, or the administrator attaches the staff, the vehicle, and the amount of each product. The phone, the plate, and whether the person is on a wage or a share follow those records. A cashier or a driver can still record what happened on the drop — status, who received it, the pin, and whether it was credit or paid on the spot — but cannot change who was sent, which vehicle, or how much went out. A confirmed dispatch mix cannot leave until that attachment is saved. A smaller amount than the sale does not put the rest back on the shelf.
+
+## Machines, tools, and production stock
+
+A plant that manufactures keeps two records, and they are not the same thing.
+
+A machine or a tool is gotten once. The register stores the day, the price paid, who it was bought from, and the serial if it has one. Each repair is an expense on the books the plant already uses, pointed at that machine, so the maintenance it has taken is a sum. When it stops working, the date and the reason stay. It is not deleted. Putting it back in use keeps the earlier stop in the notes. The purchase price is the record of what was paid when it was gotten. It is not posted again as if it were bought today.
+
+Production stock is film rolls, flour, sugar, yeast, alum, chlorine, filter cartridges, and whatever else that plant uses. Each delivery records the day, the price, and the amount on the same stock batches as any other goods received. It is not a second inventory, and it is not a recipe. Leather is not invented. A price is not guessed: a new input starts at zero until the plant records what it paid. Other businesses turn manufacturing on and add the machines and inputs they actually have.

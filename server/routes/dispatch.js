@@ -11,10 +11,11 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { idempotent } = require('../lib/idempotency');
 const { atLeast } = require('../../domain/roles');
-const { resolveBusiness, inScope, strField, numField, boolField } = require('../lib/respond');
+const { resolveBusiness, resolveBranch, inScope, strField, numField, boolField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
+const { weightedAverageCost } = require('../../domain/uom');
 const { newId } = require('../../domain/crypto');
-const { watToday } = require('../../domain/time');
+const { watToday, watNow, watToUtc } = require('../../domain/time');
 const { resolveProfile, inputSeeds, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
 const { eanCheckDigit } = require('../../domain/validation');
 const {
@@ -78,6 +79,26 @@ async function ensureCategory(db, businessId, code, name) {
                 VALUES (?,?,?,?, 80, 1, datetime('now'), datetime('now'))`,
   [id, String(businessId), code, name]);
   return id;
+}
+
+
+function dateField(value, label) {
+  const day = strField(value, { field: label, maxLength: 10, required: true });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+    throw new HttpError(`${label} must be YYYY-MM-DD.`, { status: 400, code: 'INVALID_DATE' });
+  }
+  if (day > watToday()) {
+    throw new HttpError(`${label} cannot be in the future.`, { status: 400, code: 'INVALID_DATE' });
+  }
+  return day;
+}
+
+async function loadAsset(db, id, businessId) {
+  const asset = await db.first('SELECT * FROM plant_assets WHERE id = ? AND is_deleted = 0', [String(id)]);
+  if (!asset || String(asset.business_id) !== String(businessId)) {
+    throw new HttpError('That machine or tool is not on this plant.', { status: 404, code: 'ASSET_NOT_FOUND' });
+  }
+  return asset;
 }
 
 async function insertInputProduct(db, business, seed, { offersSale = false } = {}) {
@@ -311,6 +332,20 @@ function mount(app, base = '/api') {
     const machineryAll = await db.first(`SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS n
         FROM expenses
         WHERE business_id = ? AND is_deleted = 0 AND category = 'MACHINERY_SERVICE'`, [String(business.id)]);
+    const assets = await db.all(`SELECT a.*,
+          (SELECT COALESCE(SUM(e.amount), 0) FROM expenses e
+            WHERE e.plant_asset_id = a.id AND e.is_deleted = 0 AND e.status <> 'REJECTED') AS maintenance_total,
+          (SELECT COUNT(*) FROM expenses e
+            WHERE e.plant_asset_id = a.id AND e.is_deleted = 0 AND e.status <> 'REJECTED') AS maintenance_count
+        FROM plant_assets a
+        WHERE a.business_id = ? AND a.is_deleted = 0
+        ORDER BY CASE a.status WHEN 'WORKING' THEN 0 ELSE 1 END, a.name`, [String(business.id)]);
+    const receipts = await db.all(`SELECT b.id, b.product_id, p.name AS product_name, p.base_unit_name,
+          b.initial_quantity, b.quantity, b.cost_price_per_unit, b.received_at
+        FROM stock_batches b
+        JOIN products p ON p.id = b.product_id
+        WHERE b.business_id = ? AND b.is_deleted = 0 AND p.is_deleted = 0 AND p.stock_role = 'INPUT'
+        ORDER BY b.received_at DESC, b.created_at DESC LIMIT 12`, [String(business.id)]);
     const have = new Set(inputs.map((row) => row.sku).filter(Boolean));
     const missing = inputSeeds(profile).filter((seed) => seed.sku && !have.has(seed.sku)).map((seed) => ({
       sku: seed.sku, name: seed.name,
@@ -342,6 +377,31 @@ function mount(app, base = '/api') {
         allTime: round2(Number(machineryAll && machineryAll.total) || 0),
         countAll: Number(machineryAll && machineryAll.n) || 0,
       },
+      assets: assets.map((row) => ({
+        id: row.id,
+        name: row.name,
+        kind: row.kind,
+        acquiredAt: row.acquired_at,
+        purchasePrice: round2(Number(row.purchase_price) || 0),
+        supplierName: row.supplier_name,
+        serialNo: row.serial_no,
+        status: row.status,
+        stoppedAt: row.stopped_at,
+        stoppedReason: row.stopped_reason,
+        notes: row.notes,
+        maintenanceTotal: round2(Number(row.maintenance_total) || 0),
+        maintenanceCount: Number(row.maintenance_count) || 0,
+      })),
+      receipts: receipts.map((row) => ({
+        id: row.id,
+        productId: row.product_id,
+        name: row.product_name,
+        unit: row.base_unit_name,
+        quantity: round2(Number(row.initial_quantity) || 0),
+        remaining: round2(Number(row.quantity) || 0),
+        price: round2(Number(row.cost_price_per_unit) || 0),
+        receivedAt: row.received_at,
+      })),
       missing,
     });
   });
@@ -417,6 +477,204 @@ function mount(app, base = '/api') {
       message: `${name} is on the plant stock. It is not sold at the till unless you say it is also sold.`,
     }, 201);
   });
+
+  /**
+   * A machine or a tool, recorded from the day it was gotten.
+   * The price is the fact of what was paid then. It is not posted again
+   * into this month's books: a filler bought in 2022 must not look like
+   * a purchase made today. Maintenance, which is money leaving now, is
+   * an expense on the existing ledger.
+   */
+  app.post(`${base}/plant/assets`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager records a machine or a tool.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const business = await loadBusiness(db, ctx);
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const body = await ctx.req.json();
+    const name = strField(body.name, { field: 'Name', maxLength: 160, required: true });
+    if (!name || name.length < 2) throw new HttpError('Name the machine or the tool. A filler, an oven, a UV lamp, a sealing jaw.', { status: 400, code: 'NAME_REQUIRED' });
+    const kind = String(body.kind || 'MACHINE').toUpperCase();
+    if (!['MACHINE', 'TOOL'].includes(kind)) {
+      throw new HttpError('Say whether this is a machine or a tool.', { status: 400, code: 'ASSET_KIND' });
+    }
+    const acquiredAt = dateField(body.acquired_at || body.acquiredAt, 'Date gotten');
+    const price = numField(body.purchase_price != null ? body.purchase_price : body.price, { field: 'Price', min: 0 });
+    const id = newId();
+    await db.run(`INSERT INTO plant_assets (
+        id, business_id, branch_id, name, kind, acquired_at, purchase_price, supplier_name, serial_no, notes, created_by, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+      id, String(business.id), branch ? String(branch.id) : null, name, kind, acquiredAt, price,
+      strField(body.supplier_name, { field: 'Where it was gotten', maxLength: 160 }),
+      strField(body.serial_no, { field: 'Serial number', maxLength: 80 }),
+      strField(body.notes, { field: 'Notes', maxLength: 500 }),
+      String(user.id),
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_ADDED', entityType: 'PLANT_ASSET', entityId: id, businessId: business.id,
+      after: { name, kind, acquiredAt, price },
+    });
+    ctx.json({
+      ok: true, id,
+      message: `${name} is on the plant. Gotten ${acquiredAt} for ₦${price.toLocaleString('en-NG')}. Repairs you record against it add up on this machine, not in a separate book.`,
+    }, 201);
+  }));
+
+  app.post(`${base}/plant/assets/:id/stop`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager records when a machine or a tool stops working.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const business = await loadBusiness(db, ctx);
+    const asset = await loadAsset(db, ctx.req.param('id'), business.id);
+    const body = await ctx.req.json();
+    const workingAgain = String(body.status || '').toUpperCase() === 'WORKING';
+    if (workingAgain) {
+      if (asset.status !== 'STOPPED') throw new HttpError('This is already in use.', { status: 409, code: 'ASSET_WORKING' });
+      const note = `\n[${watNow()}] Back in use, recorded by ${user.full_name || user.username}. It had stopped on ${asset.stopped_at || 'an unstated day'}${asset.stopped_reason ? `: ${asset.stopped_reason}` : ''}.`;
+      await db.run(`UPDATE plant_assets SET status = 'WORKING', stopped_at = NULL, stopped_reason = NULL,
+          notes = COALESCE(notes, '') || ?, updated_at = datetime('now') WHERE id = ?`, [note, String(asset.id)]);
+      ctx.json({ ok: true, message: `${asset.name} is back in use. The day it stopped stays in the notes.` });
+      return;
+    }
+    if (asset.status === 'STOPPED') {
+      throw new HttpError(`${asset.name} is already recorded as stopped on ${asset.stopped_at}.`, { status: 409, code: 'ASSET_STOPPED' });
+    }
+    const stoppedAt = dateField(body.stopped_at || body.stoppedAt, 'Date it stopped');
+    if (stoppedAt < String(asset.acquired_at)) {
+      throw new HttpError('It cannot have stopped before the day it was gotten.', { status: 400, code: 'INVALID_DATE' });
+    }
+    const reason = strField(body.reason || body.stopped_reason, { field: 'Why it stopped', maxLength: 300, required: true });
+    if (!reason || reason.length < 4) throw new HttpError('Say why it stopped. A burnt element, a seized gearbox, a cracked jaw — the next person has to know.', { status: 400, code: 'REASON_REQUIRED' });
+    await db.run(`UPDATE plant_assets SET status = 'STOPPED', stopped_at = ?, stopped_reason = ?, updated_at = datetime('now') WHERE id = ?`, [
+      stoppedAt, reason, String(asset.id),
+    ]);
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_STOPPED', entityType: 'PLANT_ASSET', entityId: asset.id, businessId: business.id,
+      before: { status: asset.status }, after: { status: 'STOPPED', stoppedAt, reason },
+    });
+    ctx.json({ ok: true, message: `${asset.name} stopped working on ${stoppedAt}. It stays on the register. It is not deleted.` });
+  }));
+
+  app.post(`${base}/plant/assets/:id/service`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager records maintenance on a machine or a tool.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const branch = await resolveBranch(db, ctx);
+    const business = await resolveBusiness(db, ctx, branch);
+    const asset = await loadAsset(db, ctx.req.param('id'), business.id);
+    const body = await ctx.req.json();
+    const amount = numField(body.amount, { field: 'Amount', min: 0.01 });
+    const what = strField(body.description, { field: 'What was done', maxLength: 300, required: true });
+    if (!what || what.length < 4) throw new HttpError('Say what was done. A new heating element, a gearbox service, a jaw replacement.', { status: 400, code: 'DESCRIPTION_REQUIRED' });
+    const expenseDate = dateField(body.expense_date || body.expenseDate || watToday(), 'Service date');
+    const paymentMethod = String(body.payment_method || 'BANK_TRANSFER').toUpperCase();
+    if (!['CASH', 'BANK_TRANSFER', 'POS_TERMINAL', 'MOBILE_MONEY'].includes(paymentMethod)) {
+      throw new HttpError('Say how it was paid.', { status: 400, code: 'PAYMENT_METHOD' });
+    }
+    const paidFrom = paymentMethod === 'CASH' ? 'TILL' : 'BANK';
+    const id = newId();
+    const description = `${asset.name}: ${what}`;
+    const accountIds = await glService.loadAccountCodes(db, business.id);
+    const expenseRow = {
+      id, category: 'MACHINERY_SERVICE', description, amount,
+      vat_amount: 0, wht_amount: 0, net_amount: amount,
+      expense_date: expenseDate, payment_method: paymentMethod, status: 'APPROVED', paid_from: paidFrom,
+    };
+    await db.transaction(async (tx) => {
+      tx.queue(`INSERT INTO expenses (
+          id, branch_id, business_id, category, description, amount, vat_amount, wht_amount, net_amount,
+          expense_date, payment_method, status, approved_by, approved_at, paid_from, created_by, plant_asset_id, notes, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,0,0,?,?,?, 'APPROVED', ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`, [
+        id, String(branch.id), String(business.id), 'MACHINERY_SERVICE', description, amount, amount,
+        expenseDate, paymentMethod, String(user.id), watNow(), paidFrom, String(user.id), String(asset.id),
+        strField(body.notes, { field: 'Notes', maxLength: 300 }),
+      ]);
+      for (const st of glService.postExpenseStatements({
+        expense: expenseRow, business: { id: business.id }, branch: { id: branch.id },
+        user, accountIds, vatInput: 0, whtAmount: 0,
+      })) tx.queue(st.sql, st.params);
+    });
+    await recordFromCtx(ctx, {
+      action: 'PLANT_ASSET_SERVICED', entityType: 'PLANT_ASSET', entityId: asset.id, businessId: business.id, branchId: branch.id,
+      after: { expenseId: id, amount, expenseDate },
+    });
+    ctx.json({
+      ok: true, id,
+      message: `₦${amount.toLocaleString('en-NG')} recorded against ${asset.name}. It adds to the maintenance this machine has taken, and it is the same expense book the rest of the plant uses.`,
+    }, 201);
+  }));
+
+  /**
+   * Production stock arriving: film, flour, alum, chlorine, yeast.
+   * Date, price and amount go onto a stock batch. The purchase posts
+   * to the same stock account a goods receipt uses. It is not a second inventory.
+   */
+  app.post(`${base}/plant/inputs/:id/receive`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) {
+      throw new HttpError('A manager records production stock when it is gotten.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const branch = await resolveBranch(db, ctx);
+    const business = await resolveBusiness(db, ctx, branch);
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [String(ctx.req.param('id'))]);
+    if (!product || String(product.business_id) !== String(business.id) || product.stock_role !== 'INPUT') {
+      throw new HttpError('That is not a production input on this plant. Film, flour and treatment chemical are recorded here. Till goods are received on the stock screen.', { status: 404, code: 'INPUT_NOT_FOUND' });
+    }
+    const body = await ctx.req.json();
+    const quantity = numField(body.quantity, { field: 'Amount', min: 0.0001, places: 4 });
+    const price = numField(body.price != null ? body.price : body.cost, { field: 'Price', min: 0.01, places: 6 });
+    const receivedOn = dateField(body.received_on || body.received_at, 'Date gotten');
+    const receivedAt = watToUtc(`${receivedOn} 12:00:00`) || `${receivedOn} 11:00:00`;
+    const supplierName = strField(body.supplier_name, { field: 'Supplier', maxLength: 160 });
+    const note = strField(body.notes, { field: 'Notes', maxLength: 300 });
+    const batchId = newId();
+    const held = await db.all('SELECT quantity, cost_price_per_unit FROM stock_batches WHERE product_id = ? AND branch_id = ? AND is_deleted = 0', [
+      String(product.id), String(branch.id),
+    ]);
+    const newAvg = weightedAverageCost([
+      ...held.map((row) => ({ quantity: Number(row.quantity), cost: Number(row.cost_price_per_unit) })),
+      { quantity, cost: price },
+    ]);
+    const accountIds = await glService.loadAccountCodes(db, business.id);
+    const gross = round2(quantity * price);
+    await db.transaction(async (tx) => {
+      tx.queue(`INSERT INTO stock_batches (
+          id, branch_id, business_id, product_id, batch_no, cost_price_per_unit, selling_price_per_unit,
+          quantity, quantity_reserved, initial_quantity, received_at, received_by, status, notes, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,0, ?,0,?,?,?, 'ACTIVE', ?, datetime('now'), datetime('now'))`, [
+        batchId, String(branch.id), String(business.id), String(product.id),
+        `IN-${receivedOn.replace(/-/g, '')}-${batchId.slice(0, 4).toUpperCase()}`,
+        price, quantity, quantity, receivedAt, String(user.id),
+        [supplierName ? `From ${supplierName}` : null, note, `Gotten ${receivedOn}`].filter(Boolean).join('. '),
+      ]);
+      if (newAvg != null) {
+        tx.queue("UPDATE products SET cost_price = ?, updated_at = datetime('now') WHERE id = ? AND business_id = ?", [
+          round2(newAvg), String(product.id), String(business.id),
+        ]);
+      }
+      for (const st of glService.postPurchaseReceiptStatements({
+        businessId: business.id, branchId: branch.id, poId: batchId,
+        items: [{ quantity_received: quantity, cost_per_unit: price }],
+        supplier: supplierName ? { name: supplierName } : null,
+        paidNow: gross, onCredit: 0, user, accountIds,
+      })) tx.queue(st.sql, st.params);
+    });
+    await recordFromCtx(ctx, {
+      action: 'PLANT_INPUT_RECEIVED', entityType: 'PRODUCT', entityId: product.id, businessId: business.id, branchId: branch.id,
+      after: { batchId, quantity, price, receivedOn },
+    });
+    ctx.json({
+      ok: true, id: batchId,
+      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} gotten on ${receivedOn} at ₦${price.toLocaleString('en-NG')} each. It is on the plant stock, and the money is on the same books as any other goods received.`.replace(/\s+/g, ' '),
+    }, 201);
+  }));
 }
 
 module.exports = { mount };
