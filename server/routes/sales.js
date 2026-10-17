@@ -31,6 +31,7 @@ const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, addDays } = require('../../domain/time');
 const { resolveProfile } = require('../../domain/verticals');
+const { normaliseModes, modeMatches, payForDrop, goodsValueOf } = require('../../domain/dispatch');
 const salesService = require('../services/salesService');
 const saleIssues = require('../services/saleIssues');
 const selling = require('../../domain/selling');
@@ -1215,8 +1216,17 @@ function mount(app, base = '/api') {
     if (status === 'DELIVERED') sets.push("delivered_at = datetime('now')");
     if (deliveredTo) { sets.push('delivered_to = ?'); params.push(deliveredTo); }
     if (proof) { sets.push('proof_of_delivery = ?'); params.push(proof); }
-    if (assignedDriver) { sets.push('driver_name = ?'); params.push(assignedDriver); }
-    if (driverPhone) { sets.push('driver_phone = ?'); params.push(driverPhone); }
+    if (assignment.driver_name) { sets.push('driver_name = ?'); params.push(assignment.driver_name); }
+    else if (assignedDriver) { sets.push('driver_name = ?'); params.push(assignedDriver); }
+    if (assignment.driver_phone) { sets.push('driver_phone = ?'); params.push(assignment.driver_phone); }
+    else if (driverPhone) { sets.push('driver_phone = ?'); params.push(driverPhone); }
+    if (assignment.vehicle_id) { sets.push('vehicle_id = ?'); params.push(assignment.vehicle_id); }
+    if (assignment.vehicle_class) { sets.push('vehicle_class = ?'); params.push(assignment.vehicle_class); }
+    if (assignment.arrangement) { sets.push('arrangement = ?'); params.push(assignment.arrangement); }
+    if (assignment.pay_basis) { sets.push('pay_basis = ?'); params.push(assignment.pay_basis); }
+    if (assignment.sales_share_pct != null) { sets.push('sales_share_pct = ?'); params.push(assignment.sales_share_pct); }
+    if (assignment.vehicle_no) { sets.push('vehicle_no = ?'); params.push(assignment.vehicle_no); }
+    if (assignment.driver_pay != null) { sets.push('driver_pay = ?'); params.push(assignment.driver_pay); }
     if (status === 'FAILED') { sets.push('attempts = COALESCE(attempts, 0) + 1'); }
     if (note) { sets.push("notes = COALESCE(notes,'') || ?"); params.push(`\n[${watNow()}] ${status} by ${user.full_name || user.username}${note ? ` — ${note}` : ''}`); }
     params.push(id);
@@ -1273,7 +1283,7 @@ function mount(app, base = '/api') {
 
     ctx.json({
       ok: true,
-      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${note ? ` Note: ${note}` : ''}`,
+      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${assignment.driver_pay > 0 ? ` Partner share on the goods: ₦${Number(assignment.driver_pay).toLocaleString('en-NG')}. Record the payout when you pay them — a wage driver is not paid from this drop.` : ''}${note ? ` Note: ${note}` : ''}`,
       previousStatus, status,
     });
   }));
@@ -1418,6 +1428,72 @@ function mount(app, base = '/api') {
       warrantyStartsAt, warrantyEndsAt,
     });
   }));
+}
+
+/**
+ * The vehicle on a drop, checked against the mix the owner confirmed.
+ *
+ * A furniture job has no mix, and is left alone. A water or bakery drop
+ * that is leaving the gate has to name a vehicle from that mix, because
+ * the person who carried it is either on a wage or owed a share.
+ */
+async function dispatchAssignment(db, job, body, status) {
+  const business = await db.first('SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ?', [job.business_id]);
+  let overrides = null;
+  if (business && business.profile_overrides_json) {
+    try { overrides = JSON.parse(business.profile_overrides_json); } catch (e) { overrides = null; }
+  }
+  const saved = normaliseModes(overrides && overrides.dispatch && overrides.dispatch.modes);
+  const confirmed = saved.ok ? saved.modes : null;
+  let vehicle = null;
+  if (body.vehicle_id) {
+    vehicle = await db.first('SELECT * FROM delivery_vehicles WHERE id = ? AND is_deleted = 0', [String(body.vehicle_id)]);
+    if (!vehicle || String(vehicle.business_id) !== String(job.business_id)) {
+      throw new HttpError('That vehicle is not on this business’s fleet.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
+    }
+  }
+  const vehicleClass = vehicle
+    ? vehicle.vehicle_class
+    : (body.vehicle_class ? String(body.vehicle_class).toUpperCase() : (job.vehicle_class || null));
+  const arrangement = vehicle
+    ? vehicle.arrangement
+    : (body.arrangement ? String(body.arrangement).toUpperCase() : (job.arrangement || null));
+  if (confirmed && (body.vehicle_id || body.vehicle_class || body.arrangement)) {
+    if (!modeMatches(confirmed, vehicleClass, arrangement)) {
+      throw new HttpError('That vehicle is not in the mix the owner confirmed.', { status: 400, code: 'VEHICLE_NOT_IN_MIX' });
+    }
+  }
+  const leaving = ['PICKED', 'IN_TRANSIT', 'DELIVERED'].includes(status);
+  if (confirmed && leaving && !vehicleClass) {
+    throw new HttpError('Name the vehicle before the load leaves. This business confirmed a dispatch mix, and a drop with no vehicle has nobody to pay.', { status: 400, code: 'DISPATCH_REQUIRED' });
+  }
+  if (confirmed && status === 'DELIVERED' && arrangement && !strField(body.driver_name, { field: 'Driver', maxLength: 120 }) && !(vehicle && vehicle.driver_name) && !job.driver_name) {
+    throw new HttpError('Name the driver. An owned vehicle needs the person on the wage roll, and a partner needs the person the share is paid to.', { status: 400, code: 'DRIVER_REQUIRED' });
+  }
+  const mode = confirmed && confirmed.find((item) => item.vehicleClass === vehicleClass && item.arrangement === arrangement);
+  const share = arrangement === 'PARTNER'
+    ? (mode && mode.salesSharePct != null ? mode.salesSharePct : (vehicle && vehicle.sales_share_pct))
+    : null;
+  let driverPay = null;
+  if (status === 'DELIVERED' && arrangement === 'PARTNER' && !job.partner_expense_id) {
+    const sale = job.sale_id
+      ? await db.first('SELECT total, delivery_fee, subtotal, discount_amount FROM sales WHERE id = ?', [job.sale_id])
+      : null;
+    driverPay = payForDrop({ arrangement, salesSharePct: share, goodsValue: goodsValueOf(sale) }).driverPay;
+  } else if (status === 'DELIVERED' && arrangement === 'OWNED') {
+    driverPay = 0;
+  }
+  return {
+    vehicle_id: vehicle ? String(vehicle.id) : null,
+    vehicle_class: vehicleClass,
+    arrangement,
+    pay_basis: arrangement === 'PARTNER' ? 'SALES_SHARE' : (arrangement === 'OWNED' ? 'WAGE' : null),
+    sales_share_pct: share,
+    vehicle_no: strField(body.vehicle_no, { field: 'Vehicle', maxLength: 40 }) || (vehicle && (vehicle.plate_no || vehicle.name)) || null,
+    driver_name: strField(body.driver_name, { field: 'Driver', maxLength: 120 }) || (vehicle && vehicle.driver_name) || null,
+    driver_phone: strField(body.driver_phone, { field: 'Driver phone', maxLength: 40 }) || (vehicle && vehicle.driver_phone) || null,
+    driver_pay: driverPay,
+  };
 }
 
 module.exports = { mount, normaliseLine, normalisePayments, buildEngineParams };

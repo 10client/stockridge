@@ -48,6 +48,7 @@ const sync = require('./sync');
 const dataManagement = require('./dataManagement');
 const changeOwed = require('./changeOwed');
 const bills = require('./bills');
+const dispatch = require('./dispatch');
 const agreements = require('./agreements');
 const userTransfers = require('./userTransfers');
 
@@ -299,6 +300,7 @@ function buildRoutes(app, env = {}) {
   stock.mount(app, '/api');
   sales.mount(app, '/api');
   bills.mount(app, '/api');
+  dispatch.mount(app, '/api');
   saleIssues.mount(app, '/api');
   agreements.mount(app, '/api');
   till.mount(app, '/api');

@@ -433,6 +433,11 @@
         ui.field({ label: 'Contact phone', name: 'contact_phone', value: b.contact_phone || '' }),
         ui.field({ label: 'Contact email', name: 'contact_email', value: b.contact_email || '' }),
         ui.field({ label: 'Address', name: 'address', span: true, value: b.address || '' })));
+      if (!isNew && b.profile && b.profile.dispatch) {
+        const dispatchHost = ui.h('div', {});
+        form.appendChild(dispatchHost);
+        paintDispatch(dispatchHost, b.profile.dispatchModes, b.profile.dispatchConfirmed);
+      }
       if (!isNew) {
         const billed = Boolean(b.profile && b.profile.features && b.profile.features.billBeforeReceipt);
         form.appendChild(ui.h('h2', {}, 'How goods leave'));
@@ -455,6 +460,9 @@
           required: true,
           options: [{ value: '', label: 'Loading the verticals…' }],
         })));
+        const dispatchHost = ui.h('div', {});
+        form.appendChild(dispatchHost);
+        form._paintDispatch = (row) => paintDispatch(dispatchHost, row && row.dispatchModes);
         form.appendChild(ui.h('h2', {}, 'First branch'));
         form.appendChild(ui.h('div', { class: 'form-grid' },
           ui.field({ label: 'Branch name', name: 'branch_name', placeholder: 'Main shop' }),
@@ -467,7 +475,7 @@
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
       const go = ui.h('button', { class: 'btn btn-primary', disabled: isNew }, isNew ? 'Create and provision' : 'Save changes');
       const m = ui.openModal({ title: isNew ? 'Create a business' : b.name, body: form, footer: [cancel, go], size: 'wide' });
-      if (isNew) fillVerticalSelect(form, go);
+      if (isNew) fillVerticalSelect(form, go, (row) => { if (form._paintDispatch) form._paintDispatch(row); });
 
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);
@@ -492,6 +500,7 @@
                 contact_email: v.contact_email || undefined,
                 address: v.address || undefined,
                 seed_catalogue: Number(v.seed_catalogue) ? true : false,
+                dispatch_modes: form.querySelector('[name="dispatch_class_1"]') ? readDispatch(v) : undefined,
                 branch: {
                   name: v.branch_name || undefined,
                   city: v.branch_city || undefined,
@@ -504,6 +513,7 @@
               await SR.state.load({ force: true }).catch(() => {});
               load();
             } else {
+              if (form.querySelector('[name="dispatch_class_1"]')) payload.dispatch_modes = readDispatch(v);
               const res = await SR.api.put(`/api/businesses/${encodeURIComponent(b.id)}`, payload);
               m.close();
               ui.ok(res.message || 'Saved.');
@@ -528,7 +538,7 @@
       return list.slice().sort((a, b) => verticalLabel(a).localeCompare(verticalLabel(b)));
     }
 
-    async function fillVerticalSelect(form, go) {
+    async function fillVerticalSelect(form, go, onPick) {
       const select = form.querySelector('select[name="profile_code"]');
       try {
         const list = await loadVerticals();
@@ -542,11 +552,64 @@
         for (const row of usable) {
           select.appendChild(ui.h('option', { value: verticalCode(row) }, verticalLabel(row)));
         }
+        const pick = () => {
+          if (!onPick) return;
+          const chosen = usable.find((row) => verticalCode(row) === select.value);
+          onPick(chosen || null);
+        };
+        select.addEventListener('change', pick);
+        pick();
         if (go) go.disabled = false;
       } catch (err) {
         if (select) select.replaceChildren(ui.h('option', { value: '' }, 'Could not load the verticals'));
         ui.apiError(err);
       }
+    }
+
+    const DISPATCH_VEHICLES = [
+      { value: 'BIKE', label: 'Motorcycle' },
+      { value: 'TRICYCLE', label: 'Tricycle (keke)' },
+      { value: 'CAR', label: 'Car' },
+      { value: 'PICKUP', label: 'Pickup' },
+      { value: 'VAN', label: 'Van' },
+    ];
+    const DISPATCH_HOW = [
+      { value: 'OWNED', label: 'Ours — driver on a wage' },
+      { value: 'PARTNER', label: 'Partner — paid on sales' },
+    ];
+
+    function paintDispatch(host, modes, confirmed) {
+      host.replaceChildren();
+      if (!modes) return;
+      const first = modes[0] || { vehicleClass: 'PICKUP', arrangement: 'OWNED', salesSharePct: 6 };
+      const second = modes[1] || null;
+      host.appendChild(ui.h('h2', {}, 'Dispatch'));
+      host.appendChild(ui.h('p', { class: 'sub' }, confirmed
+        ? 'This mix is saved. One type, or two. A vehicle the business owns pays the driver a wage. A partner owns the vehicle and is paid a share of the sales they deliver. A driver is still Staff.'
+        : 'Suggested for this trade. Save it to confirm — one type, or a mix of two. Owned vehicles pay a wage. Partner drivers own the vehicle and are paid on the sales they deliver. A bike is not a new login role.'));
+      host.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'First vehicle', name: 'dispatch_class_1', value: first.vehicleClass, options: DISPATCH_VEHICLES }),
+        ui.field({ label: 'Who owns it', name: 'dispatch_arrangement_1', value: first.arrangement, options: DISPATCH_HOW }),
+        ui.field({ label: 'Partner share %', name: 'dispatch_share_1', type: 'number', min: '1', max: '40', step: '0.5', value: first.salesSharePct || 8, hint: 'Used only when the driver owns the vehicle. Between 1 and 40.' }),
+        ui.field({ label: 'Second vehicle', name: 'dispatch_class_2', value: second ? second.vehicleClass : '', options: [{ value: '', label: 'None — one is enough' }, ...DISPATCH_VEHICLES] }),
+        ui.field({ label: 'Who owns the second', name: 'dispatch_arrangement_2', value: second ? second.arrangement : 'PARTNER', options: DISPATCH_HOW }),
+        ui.field({ label: 'Second share %', name: 'dispatch_share_2', type: 'number', min: '1', max: '40', step: '0.5', value: (second && second.salesSharePct) || 8, hint: 'Ignored when there is no second vehicle, and when the business owns it.' })));
+    }
+
+    function readDispatch(v) {
+      const modes = [{
+        vehicleClass: v.dispatch_class_1,
+        arrangement: v.dispatch_arrangement_1,
+        salesSharePct: v.dispatch_arrangement_1 === 'PARTNER' ? v.dispatch_share_1 : null,
+      }];
+      if (v.dispatch_class_2) {
+        modes.push({
+          vehicleClass: v.dispatch_class_2,
+          arrangement: v.dispatch_arrangement_2,
+          salesSharePct: v.dispatch_arrangement_2 === 'PARTNER' ? v.dispatch_share_2 : null,
+        });
+      }
+      return modes;
     }
 
     function verticalCard(p) {

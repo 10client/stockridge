@@ -29,4 +29,8 @@ Starter prices are samples. A bag is 20 times the sachet price because stock is 
 
 ## Stage 1 status
 
-Profiles and dispatch rules are in the tree and checked. Water packing and bakery bill before receipt, stay off the pharmacy catalogue, and show a suggested mix of two: an owned vehicle with a wage driver, and a partner vehicle paid on sales. Sample deploy follows this commit. Stage 2 (confirm the mix, fleet, and partner pay on a delivered drop) is not deployed yet.
+On sample as `ridge-20261017-1419-1c58091`. Water packing and bakery can be created. The vertical card shows the suggested mix. The owner could not yet save a different mix, and a drop could not yet name a vehicle.
+
+## Stage 2 status
+
+Dispatch confirmation, fleet, and partner payout are in the tree. An owner saves one or two modes. A manager adds a vehicle that matches a saved mode. Marking a drop delivered calculates a partner’s share of the goods, excluding the delivery fee, and records that payout once as a transport expense. An owned driver is not paid from the drop. Not on sample until the next deploy.

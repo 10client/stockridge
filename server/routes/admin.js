@@ -42,6 +42,7 @@ const {
   PLAN_FIELDS, SUBSCRIPTION_STATUSES, isPlanField, capValue, contactLine,
 } = require('../../domain/planLimits');
 const { getProfile, getProfileOrDefault, resolveProfile, PROFILE_CODES } = require('../../domain/verticals');
+const { normaliseModes, modesFromOverrides } = require('../../domain/dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const provisioning = require('../services/provisioningService');
 
@@ -98,6 +99,17 @@ function mount(app, base = '/api') {
 
     const name = strField(requireVal(body, 'name'), { field: 'Business name', maxLength: 160, required: true });
     const profileCode = valid(oneOf(body.profile_code || 'GENERAL_RETAIL', [...PROFILE_CODES], { field: 'Business type' }), 'profile_code');
+    let overrides = body.profile_overrides && typeof body.profile_overrides === 'object' ? { ...body.profile_overrides } : null;
+    if (body.dispatch_modes != null) {
+      const profile = getProfile(profileCode);
+      if (!profile || !profile.dispatch) {
+        throw new HttpError('This business type does not run a dispatch mix. Water packing and bakery do.', { status: 400, code: 'DISPATCH_NOT_FOR_PROFILE' });
+      }
+      const parsed = normaliseModes(body.dispatch_modes);
+      if (!parsed.ok) throw new HttpError(parsed.error, { status: 400, code: parsed.code });
+      overrides = overrides || {};
+      overrides.dispatch = { modes: parsed.modes };
+    }
     const id = newId();
     const seedCatalogue = boolField(body.seed_catalogue ?? true, true);
 
@@ -118,7 +130,7 @@ function mount(app, base = '/api') {
       id, name,
       strField(body.legal_name, { field: 'Legal name', maxLength: 200 }) || name,
       profileCode,
-      body.profile_overrides ? JSON.stringify(body.profile_overrides) : null,
+      overrides ? JSON.stringify(overrides) : null,
       strField(body.cac_reg_no, { field: 'CAC number', maxLength: 40 }),
       strField(body.tin, { field: 'TIN', maxLength: 40 }),
       boolField(body.vat_registered),
@@ -229,13 +241,25 @@ function mount(app, base = '/api') {
     }
     if (body.profile_code !== undefined) { sets.push('profile_code = ?'); params.push(valid(oneOf(body.profile_code, [...PROFILE_CODES], { field: 'Business type' }), 'profile_code')); }
     if (body.profile_overrides !== undefined) { sets.push('profile_overrides_json = ?'); params.push(body.profile_overrides ? JSON.stringify(body.profile_overrides) : null); }
-    if (body.bill_before_receipt !== undefined) {
+    if (body.bill_before_receipt !== undefined || body.dispatch_modes !== undefined) {
       let overrides = {};
       if (business.profile_overrides_json) {
         try { overrides = JSON.parse(business.profile_overrides_json) || {}; } catch (e) { overrides = {}; }
       }
-      if (!overrides.features || typeof overrides.features !== 'object') overrides.features = {};
-      overrides.features.billBeforeReceipt = Boolean(boolField(body.bill_before_receipt));
+      if (body.bill_before_receipt !== undefined) {
+        if (!overrides.features || typeof overrides.features !== 'object') overrides.features = {};
+        overrides.features.billBeforeReceipt = Boolean(boolField(body.bill_before_receipt));
+      }
+      if (body.dispatch_modes !== undefined) {
+        const nextCode = body.profile_code ? String(body.profile_code).toUpperCase() : business.profile_code;
+        const profile = getProfile(nextCode);
+        if (!profile || !profile.dispatch) {
+          throw new HttpError('This business type does not run a dispatch mix. Water packing and bakery do.', { status: 400, code: 'DISPATCH_NOT_FOR_PROFILE' });
+        }
+        const parsed = normaliseModes(body.dispatch_modes);
+        if (!parsed.ok) throw new HttpError(parsed.error, { status: 400, code: parsed.code });
+        overrides.dispatch = { modes: parsed.modes };
+      }
       sets.push('profile_overrides_json = ?');
       params.push(JSON.stringify(overrides));
     }
@@ -1720,14 +1744,26 @@ function mount(app, base = '/api') {
 function profileSummary(row) {
   const code = row.profile_code || 'GENERAL_RETAIL';
   let profile = null;
-  try { profile = resolveProfile(code, row.profile_overrides_json ? JSON.parse(row.profile_overrides_json) : null); } catch (e) { profile = getProfileOrDefault(code); }
+  let overrides = null;
+  try {
+    overrides = row.profile_overrides_json ? JSON.parse(row.profile_overrides_json) : null;
+    profile = resolveProfile(code, overrides);
+  } catch (e) { profile = getProfileOrDefault(code); }
+  const dispatch = modesFromOverrides(overrides, profile);
   return {
     // A SYNTHETIC ROW — one built from a profile code alone, as the vertical list builds them —
     // has no business name, and the profile's own label is the name that list is for. Without
     // this, `/api/profiles` answered four rows whose `name` was undefined while the label sat
     // one level down inside `profile`.
     id: row.id, name: row.name || (profile ? profile.label : code), profile_code: code,
-    profile: profile ? { label: profile.label, description: profile.description, features: profile.features } : null,
+    profile: profile ? {
+      label: profile.label,
+      description: profile.description,
+      features: profile.features,
+      dispatch: Boolean(profile.dispatch),
+      dispatchModes: dispatch.modes,
+      dispatchConfirmed: dispatch.confirmed,
+    } : null,
     is_active: row.is_active,
   };
 }

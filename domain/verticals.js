@@ -45,7 +45,7 @@
 // =====================================================================
 
 const { round2 } = require('./money');
-const { summariseModes } = require('./dispatch');
+const { summariseModes, suggestedModes } = require('./dispatch');
 
 // ---------------------------------------------------------------------
 // FEATURE FLAGS — the vocabulary every profile draws from
@@ -1233,6 +1233,7 @@ function describeProfile(code) {
     baseUnit: p.baseUnit,
     tradeModes: Array.isArray(p.tradeModes) ? p.tradeModes : ['RETAIL'],
     dispatch: p.dispatch ? summariseModes(p.dispatchDefaults) : null,
+    dispatchModes: p.dispatch ? suggestedModes(p) : null,
     enabledFeatures: FEATURE_FLAGS.filter((f) => p.features[f]),
     disabledFeatures: FEATURE_FLAGS.filter((f) => !p.features[f]),
     categoryCount: p.categories.length,

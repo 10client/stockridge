@@ -618,7 +618,7 @@
         reachField,
         branchField,
         businessField,
-        ui.field({ label: 'Job title', name: 'job_title', placeholder: 'Sales assistant' }),
+        ui.field({ label: 'Job title', name: 'job_title', placeholder: SR.state.moduleOn('dispatch') ? 'Driver, or Partner rider' : 'Sales assistant', hint: SR.state.moduleOn('dispatch') ? 'A driver is Staff. An owned vehicle pays a wage. A partner is paid from the delivery they completed, not from this commission box.' : null }),
         ui.field({ label: 'Phone', name: 'phone', placeholder: '0803 000 0000' }),
         ui.field({ label: 'PIN', name: 'pin', type: 'password', required: true, hint: 'Digits only. They can change it after signing in.' }),
         ui.field({ label: 'Confirm PIN', name: 'confirm_pin', type: 'password', required: true }),

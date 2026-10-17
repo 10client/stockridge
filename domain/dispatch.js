@@ -194,8 +194,26 @@ function modeMatches(modes, vehicleClass, arrangement) {
   return modes.some((mode) => mode.vehicleClass === vehicleClass && mode.arrangement === arrangement);
 }
 
+/**
+ * The mix on a business, or the suggestion if the owner has not confirmed one.
+ *
+ * `confirmed` is false for a suggestion. A suggestion is not a contract:
+ * a drop must not demand a vehicle, and a partner must not be paid, until
+ * the owner has saved the mix.
+ */
+function modesFromOverrides(overrides, profile) {
+  const saved = overrides && overrides.dispatch && overrides.dispatch.modes;
+  const parsed = normaliseModes(saved);
+  if (parsed.ok && parsed.modes) return { modes: parsed.modes, confirmed: true };
+  if (profile && profile.dispatch) {
+    return { modes: suggestedModes(profile), confirmed: false };
+  }
+  return { modes: null, confirmed: false };
+}
+
 module.exports = {
   VEHICLE_CLASSES, ARRANGEMENTS, DEFAULT_SHARE, CLASS_CODES, ARRANGEMENT_CODES,
   classOf, arrangementOf, defaultShare,
   normaliseModes, suggestedModes, summariseModes, payForDrop, goodsValueOf, modeMatches,
+  modesFromOverrides,
 };

@@ -30,6 +30,24 @@
   const DELIVERY_STATUSES = ['PENDING', 'SCHEDULED', 'PICKED', 'IN_TRANSIT', 'DELIVERED', 'FAILED', 'RETURNED', 'CANCELLED'];
   const BOARD = ['PENDING', 'SCHEDULED', 'PICKED', 'IN_TRANSIT'];
 
+  async function loadDispatch() {
+    try {
+      return await SR.api.get('/api/dispatch', { query: SR.state.query({}) });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function vehicleChoices(setup) {
+    const rows = ((setup && setup.vehicles) || []).filter((row) => Number(row.is_active) !== 0);
+    const opts = [{ value: '', label: rows.length ? 'Choose a vehicle' : 'No vehicles on the fleet yet' }];
+    for (const row of rows) {
+      const how = row.arrangement === 'PARTNER' ? 'partner, paid on sales' : 'ours, driver on a wage';
+      opts.push({ value: row.id, label: `${row.name} · ${U.humanise(String(row.vehicle_class || '').toLowerCase())} · ${how}` });
+    }
+    return opts;
+  }
+
   async function render(ctx) {
     if (ctx.params.id) return renderJob(ctx);
     ctx.setTitle('Deliveries');
@@ -57,6 +75,8 @@
       }, label));
     }
     wrap.appendChild(tabs);
+    const dispatchHost = ui.h('div', {});
+    wrap.appendChild(dispatchHost);
     const summaryHost = ui.h('div', {});
     wrap.appendChild(summaryHost);
     const host = ui.h('div', {});
@@ -148,7 +168,7 @@
               if (day < today && BOARD.includes(String(d.status).toUpperCase())) return ui.badge(U.date(day) + ' · late', 'badge-bad');
               return U.date(day);
             } },
-            { key: 'driver_name', label: 'Driver', render: (d) => (d.driver_name ? ui.h('div', {}, ui.h('div', {}, d.driver_name), ui.h('div', { class: 'hint' }, d.driver_phone || '')) : ui.badge('unassigned', 'badge-mute')) },
+            { key: 'driver_name', label: 'Driver', render: (d) => (d.driver_name ? ui.h('div', {}, ui.h('div', {}, d.driver_name), ui.h('div', { class: 'hint' }, [d.vehicle_class ? U.humanise(String(d.vehicle_class).toLowerCase()) : null, d.arrangement === 'PARTNER' ? 'partner' : (d.arrangement === 'OWNED' ? 'our vehicle' : null), d.driver_phone].filter(Boolean).join(' · '))) : ui.badge('unassigned', 'badge-mute')) },
             { key: 'delivery_fee', label: 'Fee', align: 'right', render: (d) => (Number(d.delivery_fee) ? U.money(d.delivery_fee) : '—') },
             { key: 'status', label: '', render: (d) => ui.statusBadge(d.status) },
             { key: 'x', label: '', render: (d) => ui.h('button', { class: 'btn btn-sm btn-primary', onClick: (ev) => { ev.stopPropagation(); SR.app.navigate(`/deliveries/${d.id}`); } }, 'Open') },
@@ -168,8 +188,111 @@
       }));
     }
 
+    function refreshFleet() {
+      paintFleet(dispatchHost, loadDispatch(), refreshFleet);
+    }
     await load();
+    refreshFleet();
     return wrap;
+  }
+
+  function paintFleet(host, setupPromise, after) {
+    host.replaceChildren(ui.loading('Checking the dispatch mix…'));
+    Promise.resolve(setupPromise).then((setup) => {
+      if (!setup || !setup.enabled) { host.replaceChildren(); return; }
+      const modes = setup.modes || [];
+      const sentence = modes.map((mode) => {
+        const name = U.humanise(String(mode.vehicleClass || '').toLowerCase());
+        return mode.arrangement === 'PARTNER'
+          ? `partner ${name} at ${mode.salesSharePct}% of the sales they deliver`
+          : `owned ${name}, driver on a wage`;
+      }).join('; ');
+      const note = ui.h('p', { class: 'sub' }, setup.confirmed
+        ? `This business releases goods on ${sentence || 'a confirmed mix'}. A driver is Staff. The share is of the goods, not of the delivery fee.`
+        : 'The mix is only a suggestion until an owner saves it. A drop cannot leave, and a partner cannot be paid, on a suggestion.');
+      const confirm = SR.state.atLeast('OWNER') && !setup.confirmed && modes.length
+        ? ui.h('button', {
+          class: 'btn btn-sm btn-primary',
+          onClick: async (ev) => {
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.put('/api/dispatch', { modes }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Dispatch mix saved.');
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Confirm this mix')
+        : null;
+      const add = setup.confirmed && SR.state.atLeast('MANAGER')
+        ? ui.h('button', { class: 'btn btn-sm', onClick: () => addVehicle(setup, after) }, 'Add a vehicle')
+        : null;
+      const table = ui.renderTable({
+        columns: [
+          { key: 'name', label: 'Vehicle' },
+          { key: 'vehicle_class', label: 'Type', render: (row) => U.humanise(String(row.vehicle_class || '').toLowerCase()) },
+          { key: 'arrangement', label: 'Pay', render: (row) => (row.arrangement === 'PARTNER' ? `Partner · ${row.sales_share_pct}% of sales` : 'Ours · wage') },
+          { key: 'plate_no', label: 'Plate', render: (row) => row.plate_no || '—' },
+          { key: 'driver_name', label: 'Usual driver', render: (row) => row.driver_name || '—' },
+        ],
+        rows: setup.vehicles || [],
+        emptyTitle: 'No vehicles yet',
+        emptyMessage: setup.confirmed
+          ? 'Add the pickup, the keke or the bike that actually leaves the gate. The type has to be one of the mix above.'
+          : 'Confirm the mix, then add the vehicles.',
+      });
+      const card = ui.h('div', { class: 'card' },
+        ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Dispatch'), add || confirm),
+        ui.h('div', { class: 'card-body' }, note, confirm && add ? confirm : null, table));
+      host.replaceChildren(card);
+    }).catch(() => host.replaceChildren());
+  }
+
+  function addVehicle(setup, after) {
+    const modes = setup.modes || [];
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The type has to be one the owner confirmed. A partner’s share comes from that mix, not from this form.'));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({
+        label: 'Which confirmed type',
+        name: 'mode',
+        required: true,
+        options: modes.map((mode, i) => ({
+          value: String(i),
+          label: `${U.humanise(String(mode.vehicleClass).toLowerCase())} · ${mode.arrangement === 'PARTNER' ? 'partner' : 'ours'}`,
+        })),
+      }),
+      ui.field({ label: 'Name', name: 'name', required: true, placeholder: 'Keke 2 — Musa' }),
+      ui.field({ label: 'Plate', name: 'plate_no', placeholder: 'If it has one' }),
+      ui.field({ label: 'Usual driver', name: 'driver_name', placeholder: 'The person who takes it out' }),
+      ui.field({ label: 'Driver phone', name: 'driver_phone' })));
+    const m = ui.openModal({
+      title: 'Add a vehicle',
+      body: wrapEl,
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            const mode = modes[Number(v.mode)] || modes[0];
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post('/api/dispatch/vehicles', {
+                vehicle_class: mode.vehicleClass,
+                arrangement: mode.arrangement,
+                name: v.name,
+                plate_no: v.plate_no,
+                driver_name: v.driver_name,
+                driver_phone: v.driver_phone,
+              }, { query: SR.state.query({}) });
+              ui.ok(res.message || 'Vehicle added.');
+              m.close();
+              if (after) after();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          },
+        }, 'Add'),
+      ],
+    });
   }
 
   // -------------------------------------------------------------------
@@ -180,10 +303,12 @@
     const wrap = ui.h('div', { class: 'stack' });
     const host = ui.h('div', { class: 'stack' });
     wrap.appendChild(host);
+    let dispatchSetup = null;
     await load();
 
     async function load() {
       host.replaceChildren(ui.skeleton(7));
+      dispatchSetup = await loadDispatch();
       let data;
       try {
         data = await SR.api.get(`/api/deliveries/${encodeURIComponent(ctx.params.id)}`);
@@ -211,6 +336,9 @@
           job.sale_id ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/sales/${job.sale_id}`) }, 'The sale') : null,
           nextStatus ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => move(job, nextStatus, load) }, `Mark ${U.humanise(nextStatus).toLowerCase()}`) : null,
           ui.h('button', { class: 'btn btn-sm', onClick: () => move(job, null, load) }, 'Change status'),
+          job.arrangement === 'PARTNER' && job.status === 'DELIVERED' && Number(job.driver_pay) > 0 && !job.partner_expense_id
+            ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => recordPartnerPay(job, load) }, `Pay partner ${U.money(job.driver_pay)}`)
+            : null,
           SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => addInstallation(job, items, load) }, 'Add installation') : null));
 
       const jobNodes = [];
@@ -239,7 +367,10 @@
         table: ui.kv([
           ['Driver', job.driver_name],
           ['Driver phone', job.driver_phone],
-          ['Vehicle', job.vehicle_no],
+          ['Vehicle', job.vehicle_no || job.vehicle_class],
+          ['Arrangement', job.arrangement === 'PARTNER' ? `Partner · ${job.sales_share_pct || 0}% of the goods` : (job.arrangement === 'OWNED' ? 'Ours · driver on a wage' : null)],
+          ['Partner share', job.arrangement === 'PARTNER' ? (Number(job.driver_pay) ? U.money(job.driver_pay) : 'Calculated when the drop is delivered') : null],
+          ['Payout', job.partner_expense_id ? 'Recorded' : (job.arrangement === 'PARTNER' && job.status === 'DELIVERED' ? 'Not recorded yet' : null)],
           ['Transporter', job.transporter_name],
           ['Transport cost', Number(job.transport_cost) ? U.money(job.transport_cost) : null],
           ['Fee charged', Number(job.delivery_fee) ? U.money(job.delivery_fee) : null],
@@ -308,14 +439,48 @@
       }));
     }
 
+    function recordPartnerPay(job, after) {
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, `${U.money(job.driver_pay)} is ${job.sales_share_pct || 0}% of the goods on this drop, not of the delivery fee. Recording it pays the partner once. A wage driver is not paid here.`));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'How it is paid', name: 'payment_method', value: 'BANK_TRANSFER', options: [
+          { value: 'BANK_TRANSFER', label: 'Transfer' },
+          { value: 'CASH', label: 'Cash from the till' },
+        ] })));
+      const m = ui.openModal({
+        title: `Pay ${job.driver_name || 'the partner'}`,
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              ev.currentTarget.disabled = true;
+              try {
+                const res = await SR.api.post(`/api/deliveries/${encodeURIComponent(job.id)}/partner-pay`, {
+                  payment_method: v.payment_method || 'BANK_TRANSFER',
+                });
+                ui.ok(res.message || 'Payout recorded.');
+                m.close();
+                if (after) after();
+              } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+            },
+          }, 'Record the payout'),
+        ],
+      });
+    }
+
     function move(job, preset, after) {
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The board only moves forward. Walking a job backwards hides a failed drop unless a manager does it deliberately.'));
+      const fleet = vehicleChoices(dispatchSetup);
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'New status', name: 'status', value: preset || job.status, options: DELIVERY_STATUSES.map((s) => ({ value: s, label: U.humanise(s) })), required: true }),
+        dispatchSetup && dispatchSetup.enabled ? ui.field({ label: 'Fleet vehicle', name: 'vehicle_id', value: job.vehicle_id || '', options: fleet, hint: dispatchSetup.confirmed ? 'Has to be one of the mix the owner confirmed.' : 'Confirm the mix on the deliveries board before the load leaves.' }) : null,
         ui.field({ label: 'Driver', name: 'driver_name', value: job.driver_name || '', placeholder: 'Who is carrying it' }),
         ui.field({ label: 'Driver phone', name: 'driver_phone', value: job.driver_phone || '' }),
-        ui.field({ label: 'Vehicle', name: 'vehicle_no', value: job.vehicle_no || '' }),
+        ui.field({ label: 'Vehicle', name: 'vehicle_no', value: job.vehicle_no || '', placeholder: 'Plate, or the name on the fleet' }),
         ui.field({ label: 'Received by', name: 'delivered_to', placeholder: 'Name of the person who took delivery', hint: 'For a delivered job, this is the name a dispute is settled against.' }),
         ui.field({ label: 'Proof of delivery', name: 'proof_of_delivery', placeholder: 'Waybill number, or a note of the photo taken' }),
         ui.field({ label: 'Note', name: 'note', type: 'textarea', span: true, hint: 'Required for FAILED, RETURNED and CANCELLED. A failed drop with no reason cannot be chased up or charged back to the transporter.' })));
@@ -335,6 +500,7 @@
                   status: v.status,
                   driver_name: v.driver_name || null,
                   driver_phone: v.driver_phone || null,
+                  vehicle_id: v.vehicle_id || null,
                   vehicle_no: v.vehicle_no || null,
                   delivered_to: v.delivered_to || null,
                   proof_of_delivery: v.proof_of_delivery || null,
