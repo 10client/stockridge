@@ -86,16 +86,19 @@
     const serialsOn = () => SR.state.usesSerialNumbers();
     const scanInput = ui.h('input', {
       type: 'search',
-      placeholder: serialsOn() ? 'Scan a barcode, or type a name, SKU or serial…' : 'Scan a barcode, or type a name or SKU…',
+      placeholder: serialsOn() ? 'Scan a barcode, or type a name, SKU or serial…' : 'Scan a barcode, or type a name, SKU or barcode…',
       id: 'pos-scan',
       autocomplete: 'off',
+      autocorrect: 'off',
       autocapitalize: 'off',
       spellcheck: 'false',
+      enterkeyhint: 'search',
+      'aria-label': 'Scan or search',
     });
     const categorySelect = ui.h('select', { id: 'pos-retail-category' });
     categorySelect.appendChild(ui.h('option', { value: '' }, 'Both sides'));
     const scanBox = ui.h('div', { class: 'pos-scan' }, scanInput,
-      ui.h('button', { class: 'btn btn-primary scan-btn', onClick: () => doSearch(scanInput.value) }, 'Find'));
+      ui.h('button', { class: 'btn btn-primary scan-btn', type: 'button', onClick: () => commitField(scanInput.value, { fast: wedgeCount >= 4 }) }, 'Find'));
     const results = ui.h('div', { class: 'pos-results', hidden: true });
     const scanCard = ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
@@ -105,8 +108,8 @@
           ui.h('span', { class: 'hint' }, 'A NAFDAC catalogue drug is pharmaceutical. A shop-added drug counts only when it is filed under a pharmaceutical category. Everything else is the other side.')),
         scanBox,
         ui.h('div', { class: 'hint' }, serialsOn()
-          ? 'A barcode scanner types and presses Enter. A serial number is looked up too.'
-          : 'A barcode scanner types and presses Enter. Serial numbers stay off until the business turns them on in Settings.'),
+          ? 'A USB scanner types into this box and presses Enter. The shelf barcode is looked up exactly, and a serial number is too.'
+          : 'A USB scanner types into this box and presses Enter. The shelf barcode is looked up exactly and the product is added.'),
         results));
     left.appendChild(scanCard);
 
@@ -152,7 +155,7 @@
 
     // ---------------- search ----------------
     let searchSeq = 0;
-    const doSearch = U.debounce(async (term) => {
+    async function runSearch(term) {
       const q = String(term || '').trim();
       if (!SR.state.activeBranchId) {
         results.replaceChildren();
@@ -200,7 +203,17 @@
         for (const p of hits) results.appendChild(hitRow(p));
       }
       results.hidden = false;
-    }, 220);
+    }
+    let searchTimer = null;
+    function scheduleSearch(term) {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => { searchTimer = null; runSearch(term); }, 180);
+    }
+    function cancelSearch() {
+      clearTimeout(searchTimer);
+      searchTimer = null;
+      searchSeq += 1;
+    }
 
     function hitRow(p) {
       const btn = ui.h('button', { class: 'pos-hit', onClick: () => { addFromSearch(p); scanInput.value = ''; results.hidden = true; scanInput.focus(); } });
@@ -300,6 +313,15 @@
       const categoryById = new Map((categories || []).filter((c) => !Number(c.is_deleted)).map((c) => [String(c.id), c]));
       const stock = await sellableIndex();
       if (!stock.byProduct.size) return [];
+      const barcodeRows = await SR.store.all('product_barcodes').catch(() => []);
+      const codesByProduct = new Map();
+      for (const b of barcodeRows) {
+        if (Number(b.is_deleted) || !b.barcode) continue;
+        const id = String(b.product_id);
+        const list = codesByProduct.get(id) || [];
+        list.push(String(b.barcode));
+        codesByProduct.set(id, list);
+      }
       // Look up only the products that are on the shelf. Loading the whole
       // catalogue here used to fail on a phone, and the till then said nothing
       // matched even though the shoe was in the stock it already held.
@@ -315,7 +337,9 @@
         const cat = (product && categoryById.get(String(product.category_id))) || null;
         const categoryCode = (product && product.category_code) || (cat && cat.code) || info.categoryCode || '';
         const categoryName = (product && product.category_name) || (cat && cat.name) || info.categoryName || '';
-        const blob = `${name} ${sku} ${brand} ${model} ${categoryName}`.toLowerCase();
+        const codes = (codesByProduct.get(id) || []).join(' ');
+        const ownBarcode = (product && product.barcode) || '';
+        const blob = `${name} ${sku} ${brand} ${model} ${categoryName} ${codes} ${ownBarcode}`.toLowerCase();
         if (needle && !blob.includes(needle)) continue;
         if (!needle && !groupCode) continue;
         if (groupCode && U.sellingGroup({
@@ -388,122 +412,240 @@
       });
     }
 
-    /** An exact barcode/serial scan goes straight into the cart. */
+    /**
+     * A USB barcode gun in a Nigerian shop is a keyboard. It types the code
+     * into whichever box has focus, very fast, then presses Enter (some guns
+     * press Tab, and some prefix an AIM mark such as ]E0). This box is kept
+     * ready, and a burst that lands on a button is pulled back into it.
+     */
+    function normalizeScan(raw) {
+      let s = String(raw == null ? '' : raw);
+      s = s.replace(/[\u0000-\u001f\u007f]/g, '');
+      s = s.trim().replace(/^\][A-Za-z][0-9]/, '').replace(/^[*]+|[*]+$/g, '').trim();
+      return s;
+    }
+    function scanCandidates(raw) {
+      const code = normalizeScan(raw);
+      const list = [];
+      const push = (v) => { if (v && !list.includes(v)) list.push(v); };
+      push(code);
+      if (/^\d{12}$/.test(code)) push('0' + code);
+      if (/^\d{13,14}$/.test(code) && code[0] === '0') push(code.slice(1));
+      return list;
+    }
+    function shouldScan(code, fast) {
+      if (!code || /\s/.test(code)) return false;
+      if (/^\d{6,14}$/.test(code)) return true;
+      if (fast && code.length >= 4) return true;
+      if (/\d/.test(code) && code.length >= 4 && /^[\w./+-]+$/.test(code)) return true;
+      return false;
+    }
+
+    let wedgeAt = 0;
+    let wedgeCount = 0;
+    let wedgeSettle = null;
+    let scanQueue = Promise.resolve();
+    function noteWedgeKey() {
+      const now = Date.now();
+      wedgeCount = now - wedgeAt < 50 ? wedgeCount + 1 : 1;
+      wedgeAt = now;
+      // A gun that is not set to press Enter still finishes in a burst.
+      // Waiting past the last character commits the code without a name search.
+      clearTimeout(wedgeSettle);
+      wedgeSettle = setTimeout(() => {
+        wedgeSettle = null;
+        if (!scanInput.isConnected || modalOpen()) return;
+        if (wedgeCount >= 4 && shouldScan(normalizeScan(scanInput.value), true)) {
+          commitField(scanInput.value, { fast: true });
+        }
+      }, 90);
+    }
+    function modalOpen() {
+      const root = document.getElementById('modal-root');
+      return Boolean(root && !root.hidden);
+    }
+    function otherField(target) {
+      if (!target || target === scanInput) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+    }
+    let lastCommitCode = '';
+    let lastCommitAt = 0;
+    function commitField(raw, { fast = false } = {}) {
+      const code = normalizeScan(raw);
+      clearTimeout(wedgeSettle);
+      wedgeSettle = null;
+      const now = Date.now();
+      if (code && code === lastCommitCode && now - lastCommitAt < 250) return;
+      lastCommitCode = code;
+      lastCommitAt = now;
+      cancelSearch();
+      wedgeCount = 0;
+      if (!code) {
+        results.hidden = true;
+        results.replaceChildren();
+        return;
+      }
+      if (shouldScan(code, fast)) {
+        scanQueue = scanQueue.then(() => scan(code)).catch(() => {});
+        return;
+      }
+      runSearch(code);
+    }
+
+    /** An exact barcode, SKU or serial goes straight into the cart. */
     async function scan(raw) {
-      const code = String(raw || '').trim();
+      const code = normalizeScan(raw);
       if (!code) return;
+      cancelSearch();
       try {
         const data = await SR.api.get('/api/catalogue/scan', { query: SR.state.query({ code, for_sale: '1' }) });
         if (data && data.product) {
           if (data.product.on_hand == null && data.onHand != null) data.product.on_hand = data.onHand;
-          addLine(data.product, { barcode: code, variantId: data.variant_id || null, unitCode: data.unit_code || null, serialNo: data.serial_no || null, units: data.units });
-          flash(scanBox, true);
-          scanInput.value = '';
+          await acceptScan(data.product, {
+            barcode: code,
+            variantId: data.barcodeVariantId || data.variant_id || null,
+            unitCode: data.scannedUnit || data.unit_code || null,
+            serialNo: data.serial_no || null,
+            units: data.units,
+          });
           return;
         }
       } catch (err) {
         if (err && err.code === 'NOT_IN_RECEIVED_STOCK') {
+          const local = await scanMirror(code);
+          if (local) { await acceptScan(local.product, local); return; }
           flash(scanBox, false);
           ui.warn(err.message);
+          readyForNextScan();
           return;
         }
-        if (!err.isOffline && err.status !== 404) { ui.apiError(err); }
+        if (!err.isOffline && err.status !== 404) ui.apiError(err);
       }
-      // Offline, or not found on the server: try the mirror, then fall back to
-      // a name search so a mistyped barcode still finds something plausible.
       const local = await scanMirror(code);
-      if (local) {
-        addLine(local.product, local);
-        flash(scanBox, true);
-        scanInput.value = '';
-        return;
-      }
-      const known = (await SR.store.all('product_barcodes').catch(() => [])).find((b) => String(b.barcode) === code && !Number(b.is_deleted));
+      if (local) { await acceptScan(local.product, local); return; }
+      const known = await catalogueNameForCode(code);
       if (known) {
         flash(scanBox, false);
-        ui.warn('That code is in the catalogue, but it is not on the shelf from a received purchase order.');
+        ui.warn(`${known} is in the catalogue, but it is not on this till's shelf yet.`);
+        readyForNextScan();
         return;
       }
       flash(scanBox, false);
-      ui.warn(`No product with the code “${code}”. Searching by name instead.`);
-      doSearch(code);
+      ui.warn(`No product with the code “${code}”.`);
+      scanInput.value = code;
+      runSearch(code);
+    }
+
+    async function acceptScan(product, extra) {
+      flash(scanBox, true);
+      readyForNextScan();
+      await addLine(product, extra || {});
+      if (scanInput.isConnected && !modalOpen()) scanInput.focus();
+    }
+    function readyForNextScan() {
+      scanInput.value = '';
+      results.hidden = true;
+      results.replaceChildren();
+      if (scanInput.isConnected && !modalOpen()) scanInput.focus();
+    }
+
+    async function catalogueNameForCode(code) {
+      const wants = new Set(scanCandidates(code).map((c) => c.toUpperCase()));
+      const barcodes = await SR.store.all('product_barcodes').catch(() => []);
+      const hit = barcodes.find((b) => !Number(b.is_deleted) && wants.has(String(b.barcode).toUpperCase()));
+      if (hit) {
+        const product = await SR.store.get('products', hit.product_id).catch(() => null);
+        return (product && product.name) || 'That product';
+      }
+      const products = await SR.store.all('products').catch(() => []);
+      const row = products.find((p) => !Number(p.is_deleted) && (
+        wants.has(String(p.sku || '').toUpperCase())
+        || wants.has(String(p.barcode || '').toUpperCase())
+        || wants.has(String(p.registration_no || '').toUpperCase())
+      ));
+      return row ? row.name : null;
     }
 
     async function scanMirror(code) {
       const stock = await sellableIndex();
+      const wants = new Set(scanCandidates(code).map((c) => c.toUpperCase()));
       const withStock = (product, extra) => {
         if (!product || !stock.byProduct.has(String(product.id))) return null;
         return Object.assign({ product: Object.assign({}, product, { on_hand: stock.byProduct.get(String(product.id)) || 0 }) }, extra);
       };
       const barcodes = await SR.store.all('product_barcodes').catch(() => []);
-      const hit = barcodes.find((b) => String(b.barcode) === code && !Number(b.is_deleted));
+      const hit = barcodes.find((b) => !Number(b.is_deleted) && wants.has(String(b.barcode).toUpperCase()));
       if (hit) {
         const product = await SR.store.get('products', hit.product_id);
         const found = withStock(product, { variantId: hit.variant_id || null, unitCode: hit.unit_code || null, units: hit.units, barcode: code });
         if (found) return found;
       }
-      const serials = await SR.store.all('serial_numbers').catch(() => []);
-      const serial = serials.find((s) => String(s.serial_no).toUpperCase() === code.toUpperCase());
-      if (serial) {
-        const product = await SR.store.get('products', serial.product_id);
-        const found = withStock(product, { serialNo: serial.serial_no, serialId: serial.id, unitCode: serial.unit_code || null, units: serial.units });
+      const products = await SR.store.all('products').catch(() => []);
+      const byCode = products.find((p) => !Number(p.is_deleted) && Number(p.is_active) !== 0 && (
+        wants.has(String(p.sku || '').toUpperCase())
+        || wants.has(String(p.barcode || '').toUpperCase())
+        || wants.has(String(p.registration_no || '').toUpperCase())
+      ));
+      if (byCode) {
+        const found = withStock(byCode, { barcode: code });
         if (found) return found;
+      }
+      if (serialsOn()) {
+        const serials = await SR.store.all('serial_numbers').catch(() => []);
+        const serial = serials.find((s) => wants.has(String(s.serial_no).toUpperCase()));
+        if (serial) {
+          const product = await SR.store.get('products', serial.product_id);
+          const found = withStock(product, { serialNo: serial.serial_no, serialId: serial.id, unitCode: serial.unit_code || null, units: serial.units });
+          if (found) return found;
+        }
       }
       return null;
     }
 
-    /**
-     * Take the sale off the on-device stock before the server has seen it.
-     * The next search on this till must not offer units that were just rung
-     * up. The pull after a successful sync replaces these rows with the
-     * server's figures, which include the same sale.
-     */
-    async function applyLocalSale(lines) {
-      const stock = await sellableIndex();
-      const batches = stock.rows.slice().sort((a, b) => {
-        const ae = a.expiry_date ? 0 : 1;
-        const be = b.expiry_date ? 0 : 1;
-        if (ae !== be) return ae - be;
-        const exp = String(a.expiry_date || '').localeCompare(String(b.expiry_date || ''));
-        if (exp) return exp;
-        const rec = String(a.received_at || '').localeCompare(String(b.received_at || ''));
-        if (rec) return rec;
-        return String(a.batch_no || '').localeCompare(String(b.batch_no || '')) || String(a.id).localeCompare(String(b.id));
-      });
-      const changed = [];
-      for (const line of lines || []) {
-        let need = Number(line.quantity) * (Number(line.unitFactor) > 0 ? Number(line.unitFactor) : 1);
-        if (!(need > 0)) continue;
-        for (const b of batches) {
-          if (need <= 0) break;
-          if (String(b.product_id) !== String(line.productId)) continue;
-          if (line.variantId && b.variant_id && String(b.variant_id) !== String(line.variantId)) continue;
-          const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
-          if (!(avail > 0)) continue;
-          const take = Math.min(avail, need);
-          b.quantity = Number(b.quantity) - take;
-          if (Number(b.quantity) - Number(b.quantity_reserved || 0) <= 0) b.status = 'DEPLETED';
-          changed.push(b);
-          need -= take;
+    function onScanKey(ev) {
+      if (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey) noteWedgeKey();
+      if (ev.key !== 'Enter' && ev.key !== 'Tab') return;
+      ev.preventDefault();
+      commitField(scanInput.value, { fast: wedgeCount >= 4 });
+    }
+    function onWedgeKey(ev) {
+      if (!scanInput.isConnected || modalOpen()) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.target === scanInput || otherField(ev.target)) return;
+      if (ev.key === 'Enter' || ev.key === 'Tab') {
+        if (wedgeCount >= 4 && normalizeScan(scanInput.value)) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          commitField(scanInput.value, { fast: true });
         }
+        return;
       }
-      if (changed.length) await SR.store.putMany('stock_batches', changed);
+      if (ev.key.length !== 1) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      noteWedgeKey();
+      scanInput.focus();
+      const start = scanInput.selectionStart == null ? scanInput.value.length : scanInput.selectionStart;
+      const end = scanInput.selectionEnd == null ? start : scanInput.selectionEnd;
+      scanInput.value = scanInput.value.slice(0, start) + ev.key + scanInput.value.slice(end);
+      const caret = start + 1;
+      try { scanInput.setSelectionRange(caret, caret); } catch (err) { /* search inputs on some phones */ }
     }
 
-    scanInput.addEventListener('keydown', (ev) => {
-      if (ev.key !== 'Enter') return;
-      ev.preventDefault();
-      const value = scanInput.value.trim();
-      if (!value) return;
-      // A code that looks like a barcode (8–14 digits or an SR serial) is looked
-      // up exactly; anything else is a name search.
-      if (/^[0-9]{8,14}$/.test(value) || /^[A-Z0-9-]{6,}$/i.test(value) && !/\s/.test(value)) scan(value);
-      else doSearch(value);
+    scanInput.addEventListener('keydown', onScanKey);
+    scanInput.addEventListener('input', () => {
+      if (wedgeCount >= 4 && shouldScan(normalizeScan(scanInput.value), true)) {
+        cancelSearch();
+        return;
+      }
+      scheduleSearch(scanInput.value);
     });
-    scanInput.addEventListener('input', () => doSearch(scanInput.value));
-    categorySelect.addEventListener('change', () => doSearch(scanInput.value));
+    document.addEventListener('keydown', onWedgeKey, true);
+    categorySelect.addEventListener('change', () => scheduleSearch(scanInput.value));
     paintSellingCategories();
     if (SR.sync && SR.sync.on) SR.sync.on('change', () => { paintSellingCategories(); });
+    setTimeout(() => { if (scanInput.isConnected && !modalOpen()) scanInput.focus(); }, 80);
 
     // ---------------- cart mutations ----------------
     /**
@@ -1998,7 +2140,9 @@
 
     // Serials and money in the URL are ignored; a cart is device state.
     ctx.onCleanup(() => {
-      clearTimeout(0);
+      clearTimeout(searchTimer);
+      clearTimeout(wedgeSettle);
+      document.removeEventListener('keydown', onWedgeKey, true);
     });
 
     return wrap;

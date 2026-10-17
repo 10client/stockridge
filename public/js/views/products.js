@@ -327,8 +327,20 @@
     async function labelSheet() {
       const rows = (await SR.store.all('products', { where: (p) => !Number(p.is_deleted) })).slice(0, 60);
       if (!rows.length) { ui.warn('There is nothing in the catalogue to label.'); return; }
+      const codes = await SR.store.all('product_barcodes').catch(() => []);
+      const byId = new Map();
+      for (const b of codes) {
+        if (Number(b.is_deleted) || !b.barcode) continue;
+        const id = String(b.product_id);
+        if (!byId.has(id) || Number(b.is_primary)) byId.set(id, String(b.barcode));
+      }
       SR.barcode.printLabels(rows.map((p) => ({
-        name: p.name, sku: p.sku, price: p.selling_price, unit: p.base_unit_name, spec: p.model_no || p.brand,
+        name: p.name,
+        sku: p.sku,
+        barcode: byId.get(String(p.id)) || p.barcode || null,
+        price: p.selling_price,
+        unit: p.base_unit_name,
+        spec: p.model_no || p.brand,
       })), { title: 'StockRidge price labels' });
     }
 
@@ -531,6 +543,9 @@
       onClick: () => { ladder.push({ name: '', code: '', quantity_in_base: 0, unit_price: null }); paintLadder(); },
     }, 'Add another unit level'));
     wrapEl.appendChild(ladderWrap);
+    if (!editing) {
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A shelf barcode is assigned when you save, the same as the other products in this catalogue. A USB scanner at the till reads that code. You do not type it.'));
+    }
 
     return new Promise((resolve) => {
       let settled = false;
@@ -598,12 +613,24 @@
                   : editing
                     ? await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, payload)
                     : await SR.api.post('/api/products', payload);
-                if (result && result.barcodeWarning) ui.warn(result.barcodeWarning);
+                if (result && result.warning) ui.warn(result.warning);
+                else if (result && result.barcodeWarning) ui.warn(result.barcodeWarning);
+                if (!editing && result && result.barcode && SR.store && SR.store.putMany) {
+                  await SR.store.putMany('product_barcodes', [{
+                    id: result.barcodeId || `bc-${result.id}`,
+                    product_id: result.id,
+                    barcode: result.barcode,
+                    unit_code: result.barcodeUnit || 'PIECE',
+                    label: 'Shelf label',
+                    is_primary: 1,
+                    is_deleted: 0,
+                  }]).catch(() => {});
+                }
                 if (flagValues.requires_serial === 1 && !SR.state.usesSerialNumbers() && SR.state.can('OWNER')) {
                   await SR.api.put('/api/settings', { serial_tracking_enabled: 1 });
                   await SR.state.load({ force: true }).catch(() => {});
                 }
-                ui.ok(editing ? 'Product updated.' : `${v.name} is in the catalogue, in alphabetical order.`);
+                ui.ok(editing ? 'Product updated.' : (result && result.message) || `${v.name} is in the catalogue, in alphabetical order.`);
                 finish({ id: (result && result.id) || (product && product.id), name: v.name });
               } catch (err) {
                 ui.apiError(err);
@@ -764,6 +791,9 @@
       const variants = data.variants || [];
       const batches = data.batches || [];
       const barcodes = data.barcodes || [];
+      const primary = barcodes.find((b) => Number(b.is_primary)) || barcodes[0] || null;
+      const primaryCode = (primary && primary.barcode) || p.barcode || null;
+      const labelItem = { name: p.name, sku: p.sku, barcode: primaryCode, price: price || p.selling_price, unit: p.base_unit_name, spec: p.model_no };
 
       host.replaceChildren();
       const overview = [];
@@ -771,7 +801,7 @@
       const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, p.name),
-          ui.h('p', { class: 'sub' }, [p.sku, p.brand, p.model_no, data.category ? data.category.name : p.category_name].filter(Boolean).join(' · '))),
+          ui.h('p', { class: 'sub' }, [p.sku, primaryCode ? `barcode ${primaryCode}` : null, p.brand, p.model_no, data.category ? data.category.name : p.category_name].filter(Boolean).join(' · '))),
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/products') }, 'Back'),
           ui.h('button', { class: 'btn btn-sm', onClick: async () => {
@@ -782,7 +812,7 @@
             } catch (err) { ui.apiError(err); }
           } }, Number(p.requires_serial) ? 'Serial off' : 'Serial on'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(data).then((ok) => { if (ok) load(); }); } }, 'Edit'),
-          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label')));
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel(labelItem) }, 'Label')));
 
       if (offline) overview.push(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
@@ -869,7 +899,7 @@
         }
         if (barcodes.length > 8) body.appendChild(ui.h('div', { class: 'hint' }, `and ${barcodes.length - 8} more`));
         body.appendChild(ui.h('div', { class: 'btn-row' },
-          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.printLabels([{ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name }]) }, 'Print these as labels')));
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.printLabels([labelItem]) }, 'Print these as labels')));
         chips.appendChild(body);
         stockNodes.push(chips);
       }

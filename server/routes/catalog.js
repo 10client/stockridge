@@ -34,7 +34,7 @@ const { newId } = require('../../domain/crypto');
 const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
-const { fileGreenbook } = require('../services/provisioningService');
+const { fileGreenbook, syntheticBarcode } = require('../services/provisioningService');
 
 /**
  * The catalogue columns a client may set.
@@ -175,6 +175,75 @@ async function receivedAvailable(db, productId, branchId) {
     [String(productId), String(branchId)],
   );
   return Number(n) || 0;
+}
+
+
+/**
+ * Every catalogue product carries one shelf barcode, the same way the seeded
+ * list does. A USB scanner at the till reads that code. A manufacturer barcode
+ * is kept when one was supplied and it is valid and free; otherwise an
+ * in-store EAN-13 (GS1 prefix 2) is assigned from the product id so two shops
+ * with the same SKU cannot collide.
+ */
+async function assignShelfBarcode(db, { productId, unitCode, supplied, seed }) {
+  const unit = unitCode || 'PIECE';
+  const insert = async (code, label) => {
+    const id = newId();
+    await db.run(`INSERT INTO product_barcodes (id, product_id, barcode, unit_code, label, is_primary, created_at, updated_at)
+                  VALUES (?,?,?,?,?,1, datetime('now'), datetime('now'))`,
+    [id, productId, code, unit, label]);
+    await db.run("UPDATE products SET barcode = ?, updated_at = datetime('now') WHERE id = ?", [code, productId]);
+    return { barcode: code, id, unitCode: unit, warning: null };
+  };
+  if (supplied != null && String(supplied).trim() !== '') {
+    const bc = barcodeRule(String(supplied));
+    if (bc.ok) {
+      const clash = await db.first('SELECT id, product_id FROM product_barcodes WHERE barcode = ?', [bc.value]);
+      if (!clash) return insert(bc.value, 'Shelf label');
+      if (String(clash.product_id) === String(productId)) {
+        return { barcode: bc.value, id: clash.id, unitCode: unit, warning: null };
+      }
+      const generated = await insertGeneratedBarcode(db, insert, productId, seed);
+      return Object.assign(generated, { warning: 'That barcode is already on another product, so a shelf barcode was assigned instead.' });
+    }
+    const generated = await insertGeneratedBarcode(db, insert, productId, seed);
+    return Object.assign(generated, { warning: bc.error });
+  }
+  return insertGeneratedBarcode(db, insert, productId, seed);
+}
+
+async function insertGeneratedBarcode(db, insert, productId, seed) {
+  for (let n = 0; n < 6; n += 1) {
+    const code = syntheticBarcode(`${productId}|${seed || ''}|${n}`);
+    if (!code) continue;
+    const clash = await db.first('SELECT id FROM product_barcodes WHERE barcode = ?', [code]);
+    if (clash) continue;
+    try {
+      return await insert(code, 'Shelf label');
+    } catch (err) {
+      /* unique race: try the next seed */
+    }
+  }
+  return { barcode: null, id: null, unitCode: null, warning: 'A shelf barcode could not be assigned. The product is still in the catalogue and can be found by name.' };
+}
+
+/** What a USB wedge actually delivers: the code, without the gun's prefix or suffix. */
+function normalizeScanCode(raw) {
+  let s = String(raw == null ? '' : raw);
+  s = s.replace(/[\u0000-\u001f\u007f]/g, '');
+  s = s.trim().replace(/^\][A-Za-z][0-9]/, '').replace(/^[*]+|[*]+$/g, '').trim();
+  return s;
+}
+
+function scanCandidates(raw) {
+  const code = normalizeScanCode(raw);
+  const list = [];
+  const push = (v) => { if (v && !list.includes(v)) list.push(v); };
+  push(code);
+  if (code) push(code.toUpperCase());
+  if (/^\d{12}$/.test(code)) push(`0${code}`);
+  if (/^\d{13,14}$/.test(code) && code[0] === '0') push(code.slice(1));
+  return list;
 }
 
 async function assertSellable(db, productId, branchId, name) {
@@ -641,28 +710,32 @@ function mount(app, base = '/api') {
       [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, level.isSellable ? 1 : 0, level.isDefaultSell ? 1 : 0]);
     }
 
-    if (body.barcode) {
-      const bc = barcodeRule(String(body.barcode));
-      // A rejected barcode is reported but does not fail the product: the item is
-      // already in the catalogue and usable by name or SKU, and refusing the
-      // whole create because a check digit was mistyped would send the merchant
-      // back to a paper label.
-      if (!bc.ok) ctx.set('barcodeWarning', bc.error);
-      if (bc.ok) {
-        await db.run(`INSERT INTO product_barcodes (id, product_id, barcode, unit_code, label, is_primary, created_at, updated_at)
-                      VALUES (?,?,?,?,?,1, datetime('now'), datetime('now'))`,
-        [newId(), id, bc.value, check.levels[0].code, 'Primary barcode']);
-      }
+    // A shelf barcode is assigned even when the form left it blank. The seeded
+    // catalogue already has one on every row; a product added later must too,
+    // or the USB scanner at the till has nothing to read.
+    let assigned = { barcode: null, id: null, unitCode: check.levels[0].code, warning: null };
+    try {
+      assigned = await assignShelfBarcode(db, {
+        productId: id,
+        unitCode: check.levels[0].code,
+        supplied: body.barcode,
+        seed: fields.sku || fields.name,
+      });
+    } catch (err) {
+      assigned.warning = 'A shelf barcode could not be assigned. The product is still in the catalogue and can be found by name.';
     }
 
     await recordFromCtx(ctx, {
       action: 'PRODUCT_CREATED', entityType: 'PRODUCT', entityId: id, branchId: branch ? branch.id : null, businessId: business.id,
-      after: { name: fields.name, sku: fields.sku, selling_price: fields.selling_price, belowCost: belowCost || undefined },
+      after: { name: fields.name, sku: fields.sku, selling_price: fields.selling_price, barcode: assigned.barcode || undefined, belowCost: belowCost || undefined },
     });
     ctx.json({
       ok: true, id,
-      message: `“${fields.name}” added to the catalogue.${belowCost ? ' Note: it is priced below cost.' : ''}`,
-      warning: ctx.get('barcodeWarning') || null,
+      barcode: assigned.barcode,
+      barcodeId: assigned.id,
+      barcodeUnit: assigned.unitCode,
+      message: `“${fields.name}” added to the catalogue.${assigned.barcode ? ` Shelf barcode ${assigned.barcode}.` : ''}${belowCost ? ' Note: it is priced below cost.' : ''}`,
+      warning: assigned.warning || null,
     }, 201);
   });
 
@@ -768,20 +841,43 @@ function mount(app, base = '/api') {
   app.get(`${base}/catalogue/scan`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
-    const code = (ctx.req.queryParam('code') || ctx.req.queryParam('barcode') || '').trim();
+    const rawCode = ctx.req.queryParam('code') || ctx.req.queryParam('barcode') || '';
+    const candidates = scanCandidates(rawCode);
+    const code = candidates[0] || '';
     if (!code) throw new HttpError('Pass ?code= with the scanned value.', { status: 400, code: 'MISSING_FIELD' });
     const forSale = ctx.req.queryParam('for_sale') === '1';
     const branch = await resolveBranch(db, ctx);
 
     // Exact match first. A LIKE search on a scan would let a damaged barcode
     // that reads as a prefix of another product silently sell the wrong item.
-    const hit = await db.first(`
-      SELECT p.*, pb.unit_code AS scanned_unit, pb.variant_id AS barcode_variant_id, pb.label AS barcode_label,
-             c.name AS category_name
-      FROM product_barcodes pb
-      JOIN products p ON p.id = pb.product_id AND p.is_deleted = 0 AND p.is_active = 1
-      LEFT JOIN product_categories c ON c.id = p.category_id
-      WHERE pb.barcode = ? AND pb.is_deleted = 0`, [code]);
+    // A USB wedge may prefix an AIM identifier or drop the leading zero of a
+    // UPC, so each cleaned candidate is tried, never a prefix match.
+    let hit = null;
+    for (const candidate of candidates) {
+      hit = await db.first(`
+        SELECT p.*, pb.unit_code AS scanned_unit, pb.variant_id AS barcode_variant_id, pb.label AS barcode_label,
+               c.name AS category_name
+        FROM product_barcodes pb
+        JOIN products p ON p.id = pb.product_id AND p.is_deleted = 0 AND p.is_active = 1
+        LEFT JOIN product_categories c ON c.id = p.category_id
+        WHERE pb.barcode = ? AND pb.is_deleted = 0`, [candidate]);
+      if (hit) break;
+    }
+    if (!hit) {
+      for (const candidate of candidates) {
+        hit = await db.first(`
+          SELECT p.*, c.name AS category_name
+          FROM products p
+          LEFT JOIN product_categories c ON c.id = p.category_id
+          WHERE p.barcode = ? AND p.is_deleted = 0 AND p.is_active = 1
+          LIMIT 1`, [candidate]);
+        if (hit) {
+          hit.scanned_unit = null;
+          hit.barcode_variant_id = null;
+          break;
+        }
+      }
+    }
 
     if (!hit) {
       // Fall back to SKU, because a lot of Nigerian stock arrives with the
@@ -791,12 +887,17 @@ function mount(app, base = '/api') {
       // shop's row wins, or a scan sells the unpriced master instead of the
       // good this branch priced.
       const scanBiz = branch && branch.business_id ? String(branch.business_id) : null;
-      const bySku = await db.first(`SELECT p.*, c.name AS category_name FROM products p
+      let bySku = null;
+      for (const candidate of candidates) {
+        const sku = candidate.toUpperCase();
+        bySku = await db.first(`SELECT p.*, c.name AS category_name FROM products p
           LEFT JOIN product_categories c ON c.id = p.category_id
           WHERE (p.sku = ? OR p.registration_no = ?) AND p.is_deleted = 0 AND p.is_active = 1
             ${scanBiz ? 'AND (p.business_id IS NULL OR p.business_id = ?)' : ''}
           ORDER BY (p.business_id IS NULL) ASC
-          LIMIT 1`, scanBiz ? [code.toUpperCase(), code.toUpperCase(), scanBiz] : [code.toUpperCase(), code.toUpperCase()]);
+          LIMIT 1`, scanBiz ? [sku, sku, scanBiz] : [sku, sku]);
+        if (bySku) break;
+      }
       if (!bySku) throw new HttpError(`Nothing in your catalogue matches “${code}”. Check the barcode, or add the product under Products.`, { status: 404, code: 'SCAN_NOT_FOUND' });
       if (forSale) await assertSellable(db, bySku.id, branch.id, bySku.name);
       return ctx.json({ ok: true, matchedBy: 'SKU', ...(await productPayload(db, bySku, branch, scope, null, null, { sellableOnly: forSale })) });
@@ -1213,7 +1314,11 @@ function mount(app, base = '/api') {
                     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
       [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, 1, 1]);
       have.add(item.sku);
-      added.push({ id, sku: item.sku, name: item.name, requires_serial: serial });
+      let shelf = null;
+      try {
+        shelf = await assignShelfBarcode(db, { productId: id, unitCode: level.code, seed: item.sku || item.name });
+      } catch (err) { shelf = null; }
+      added.push({ id, sku: item.sku, name: item.name, requires_serial: serial, barcode: shelf && shelf.barcode });
     }
     if (!added.length && !already.length) {
       throw new HttpError('None of those items are in the Nigerian market list.', { status: 400, code: 'NOT_IN_MARKET', fields: { items: missing.join(', ') } });
@@ -1319,11 +1424,22 @@ function mount(app, base = '/api') {
                   VALUES (?,?,0,?,?,?,1,1,1, datetime('now'), datetime('now'))`, [
       newId(), id, 'PIECE', row.base_unit || 'Piece', `${row.base_unit || 'Piece'}s`,
     ]);
+    let shelf = { barcode: null, id: null, unitCode: 'PIECE', warning: null };
+    try {
+      shelf = await assignShelfBarcode(db, { productId: id, unitCode: 'PIECE', supplied: body.barcode, seed: sku || name });
+    } catch (err) {
+      shelf.warning = 'A shelf barcode could not be assigned.';
+    }
     await recordFromCtx(ctx, {
       action: 'PRODUCT_CREATED', entityType: 'PRODUCT', entityId: id, businessId: business.id,
-      after: { source: 'nafdac', nafdac_reg_no: row.nafdac_reg_no, name: row.product_name },
+      after: { source: 'nafdac', nafdac_reg_no: row.nafdac_reg_no, name: row.product_name, barcode: shelf.barcode || undefined },
     });
-    ctx.json({ ok: true, id, name, message: `${name} is in this catalogue. It is not on the shared market list.` }, 201);
+    ctx.json({
+      ok: true, id, name,
+      barcode: shelf.barcode, barcodeId: shelf.id, barcodeUnit: shelf.unitCode,
+      warning: shelf.warning,
+      message: `${name} is in this catalogue.${shelf.barcode ? ` Shelf barcode ${shelf.barcode}.` : ''} It is not on the shared market list.`,
+    }, 201);
   });
 
   app.get(`${base}/pharmacy/register`, async (ctx) => {
