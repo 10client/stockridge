@@ -96,6 +96,8 @@ AquaRidge on sample had saved an owned pickup and a partner tricycle when the bu
 
 ## Owner edits the register
 
+On sample as `ridge-20261017-1934-90abe07`. Not production.
+
 The owner, and the administrator, can change the dispatch after it was saved: the mix, and each vehicle’s name, plate, usual driver, type, and whether it is on the fleet. Taking a vehicle off the fleet does not delete a drop that already used it, and it does not create a replacement of the same type.
 
 The same seat can edit every plant item. A machine or tool can be corrected, taken off the register, or put back. A production input can have its name, unit, category, catalogue cost, low-stock line, and till flag changed, and can leave the plant only when nothing is on hand. None of those edits rewrite a delivery, a service, or a purchase already posted. A manager still records the day-to-day. A cashier still only reports a fault.
