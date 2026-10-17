@@ -27,11 +27,6 @@
   async function render(ctx) {
     ctx.setTitle('My account');
     const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('div', { class: 'page-head' },
-      ui.h('div', {},
-        ui.h('h1', {}, 'My account'),
-        ui.h('p', { class: 'sub' }, 'Your access, your PIN, this device, and the build you are running'))));
-
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
@@ -70,10 +65,8 @@
     function render(me, sessions, transfers) {
       const device = SR.device.current() || {};
       const prefs = SR.print.prefs ? SR.print.prefs() : { paper: '80' };
-      const stack = ui.h('div', { class: 'stack' });
-
-      // ------------------------------------------------------------ who I am
-      stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+      let moveCard = null;
+      const profile = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('div', { class: 'row' },
           ui.h('div', { class: 'account-avatar', html: U.esc(U.initials(me.full_name || me.username || '?')) }),
           ui.h('div', { class: 'grow' },
@@ -90,7 +83,7 @@
           ['Employed since', me.employment_started],
           ['Last signed in', me.last_login_at ? U.watClock(me.last_login_at) : null],
         ]),
-        ui.h('p', { class: 'sub' }, 'Sales you ring up, tills you open and clock-ins you record are credited to this account. If you are borrowing a colleague\'s device, sign out and sign in as yourself first — otherwise their figures and yours mix.'))));
+        ui.h('p', { class: 'sub' }, 'Sales you ring up, tills you open and clock-ins you record are credited to this account. If you are borrowing a colleague\'s device, sign out and sign in as yourself first — otherwise their figures and yours mix.')));
 
       // -------------------------------------------------------------- my PIN
       const pinCard = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }));
@@ -104,7 +97,6 @@
       pinCard.firstElementChild.appendChild(pinForm);
       const pinGo = ui.h('button', { class: 'btn btn-primary', onClick: () => changePin(pinForm) }, 'Change my PIN');
       pinCard.firstElementChild.appendChild(pinGo);
-      stack.appendChild(pinCard);
 
       // ---------------------------------------------------------- this device
       const deviceCard = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }));
@@ -130,7 +122,6 @@
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.print.testPage({ brand: brandInput.value }) }, 'Print a test receipt'),
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sync') }, 'Sync & offline'),
         themeSwitch()));
-      stack.appendChild(deviceCard);
 
       // ------------------------------------------------------ a move in progress
       if (transfers.length) {
@@ -142,7 +133,7 @@
           asked: t.requested_by_name || '—',
           mine: String(t.user_id) === String(me.id),
         }));
-        stack.appendChild(ui.dataCard({
+        moveCard = ui.dataCard({
           title: 'A branch move is being discussed',
           hint: 'Nothing has changed yet. You keep working where you are until somebody at the branch receiving you agrees to the move.',
           table: ui.renderTable({
@@ -162,12 +153,13 @@
             ],
             rows,
           }),
-        }));
+        });
       }
 
       // ------------------------------------------------------------ sessions
+      let sessionCard = null;
       if (sessions.length) {
-        stack.appendChild(ui.dataCard({
+        sessionCard = ui.dataCard({
           title: 'Where you are signed in',
           table: ui.renderTable({
             // THE FIELDS THE API SENDS, not the ones this screen was written against: it read
@@ -185,7 +177,7 @@
             emptyTitle: 'Only this device',
             emptyMessage: '',
           }),
-        }));
+        });
       }
 
       // --------------------------------------------------------------- about
@@ -201,9 +193,21 @@
         ui.h('button', { class: 'btn btn-sm', onClick: () => signOut() }, 'Sign out')));
       about.firstElementChild.appendChild(ui.h('p', { class: 'sub' },
         'StockRidge stores your work on this device first and uploads it as soon as the line allows. Signing out does not throw anything away — anything not yet uploaded stays queued and goes the next time somebody signs in here.'));
-      stack.appendChild(about);
-
-      host.replaceChildren(stack);
+      const head = ui.h('div', { class: 'page-head' },
+        ui.h('div', {},
+          ui.h('h1', {}, 'My account'),
+          ui.h('p', { class: 'sub' }, 'Your access, your PIN, this device, and the build you are running')));
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.accountTab',
+        sections: [
+          { id: 'profile', label: 'Profile', nodes: [profile, moveCard] },
+          { id: 'pin', label: 'PIN', nodes: [pinCard] },
+          { id: 'device', label: 'This device', nodes: [deviceCard] },
+          { id: 'sessions', label: 'Sessions', nodes: [sessionCard] },
+          { id: 'about', label: 'About', nodes: [about] },
+        ],
+      }));
     }
 
     // ------------------------------------------------------------- actions

@@ -684,7 +684,7 @@
       const trigger = data.trigger || {};
 
       host.replaceChildren();
-      host.appendChild(ui.h('div', { class: 'page-head' },
+      const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, plan.plan_no || 'Instalment plan'),
           ui.h('p', { class: 'sub' }, [plan.customer_name, plan.customer_phone, plan.description].filter(Boolean).join(' · '))),
@@ -694,16 +694,17 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => printPlan(plan, schedule) }, 'Print the schedule'),
           !['COMPLETED', 'CANCELLED', 'DEFAULTED'].includes(String(plan.status))
             ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.views.instalments.pay(plan, load) }, 'Take a payment')
-            : null)));
+            : null));
 
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      const planNodes = [];
+      planNodes.push(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'Outstanding', value: U.money(plan.outstanding), tone: Number(plan.outstanding) > 0 ? 'warn' : 'good', small: true }),
         ui.kpi({ label: 'Paid so far', value: U.money(plan.amount_paid), foot: `${progress.instalmentsPaid || 0} of ${progress.instalmentsTotal || 0} instalments`, small: true }),
         ui.kpi({ label: 'Next due', value: plan.next_due ? U.date(plan.next_due) : '—', tone: plan.next_due && plan.next_due < U.todayWat() ? 'bad' : null, foot: plan.status, small: true }),
         ui.kpi({ label: 'Interest', value: U.money(plan.interest_amount), foot: Number(plan.interest_percent) ? `${plan.interest_percent}% over the tenure` : 'interest free', small: true })));
 
       if (trigger && trigger.shouldRemind) {
-        host.appendChild(ui.h('div', { class: 'alert alert-warn' }, trigger.message || 'This plan is due or overdue — contact the customer.'));
+        planNodes.push(ui.h('div', { class: 'alert alert-warn' }, trigger.message || 'This plan is due or overdue — contact the customer.'));
       }
 
       const cols = ui.h('div', { class: 'grid grid-2' });
@@ -738,14 +739,14 @@
           emptyMessage: 'No payments received yet.',
         }),
       }));
-      host.appendChild(cols);
+      planNodes.push(cols);
 
       const bar = ui.h('div', { style: { height: '10px', borderRadius: '5px', background: 'var(--slate-200)', margin: '4px 0 14px' } },
         ui.h('div', { style: { width: `${U.clamp(Number(progress.pctPaid) || 0, 0, 100)}%`, height: '100%', borderRadius: '5px', background: 'var(--teal-600)' } }));
-      host.appendChild(ui.h('div', {}, bar,
+      planNodes.push(ui.h('div', {}, bar,
         ui.h('div', { class: 'hint' }, `${U.pct(progress.pctPaid || 0)} of the total payable collected${progress.overdueInstalments ? ` · ${progress.overdueInstalments} instalment(s) past due` : ''}`)));
 
-      host.appendChild(ui.dataCard({
+      const scheduleCard = ui.dataCard({
         title: 'The schedule',
         table: ui.renderTable({
           columns: [
@@ -765,8 +766,16 @@
           foot: ['', 'Total', U.money(U.sum(schedule, (r) => r.amount_due)), U.money(U.sum(schedule, (r) => r.amount_paid)), U.money(U.sum(schedule, (r) => U.round2(Number(r.amount_due) - Number(r.amount_paid)))), '', ''],
           emptyMessage: 'No schedule rows — this plan may have been opened without one, which should not happen.',
         }),
+      });
+      const scheduleNote = ui.h('div', { class: 'hint' }, 'The rounding remainder sits on the FIRST instalment on purpose. A customer who pays every printed figure to the kobo has to end at exactly zero, and a remainder on the last payment is the one nobody checks until the plan reads "paid" and still shows a balance.');
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.instalmentTab',
+        sections: [
+          { id: 'plan', label: 'Plan', nodes: planNodes },
+          { id: 'schedule', label: 'Schedule', nodes: [scheduleCard, scheduleNote] },
+        ],
       }));
-      host.appendChild(ui.h('div', { class: 'hint' }, 'The rounding remainder sits on the FIRST instalment on purpose. A customer who pays every printed figure to the kobo has to end at exactly zero, and a remainder on the last payment is the one nobody checks until the plan reads "paid" and still shows a balance.'));
     }
 
     function printPlan(plan, schedule) {

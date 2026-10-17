@@ -372,10 +372,10 @@
   function printText(text, { title = 'StockRidge', copies = null, paper = null } = {}) {
     const kind = String(paper || printerPrefs.paper || '80');
     const pageRule = kind === '58'
-      ? 'size: 58mm auto; margin: 3mm;'
+      ? 'size: 58mm auto; margin: 1.5mm 2mm;'
       : kind === 'a4'
         ? 'size: A4; margin: 12mm;'
-        : 'margin: 10mm;';
+        : 'size: 80mm auto; margin: 2mm 2.5mm;';
     const n = Math.max(1, Number(copies || printerPrefs.copies || 1));
     const blocks = [];
     for (let i = 0; i < n; i += 1) {
@@ -389,6 +389,9 @@
       frame.title = 'Receipt print';
       document.body.appendChild(frame);
     }
+    const spec = paperSpec(kind);
+    frame.style.width = spec.frameW;
+    frame.style.height = spec.frameH;
     const stray = document.getElementById('print-area');
     if (stray) stray.remove();
     const doc = frame.contentDocument || frame.contentWindow.document;
@@ -402,13 +405,13 @@
         display: block;
         width: 100%;
         max-width: 100%;
-        margin: 0 auto;
+        margin: 0;
         padding: 0;
         font-family: ui-monospace, "Cascadia Mono", Menlo, Consolas, monospace;
-        font-size: 16pt;
+        font-size: ${kind === '58' ? '10px' : kind === 'a4' ? '12px' : '9.5px'};
         line-height: 1.35;
-        white-space: pre-wrap;
-        word-break: break-word;
+        white-space: pre;
+        overflow: visible;
         page-break-after: always;
         page-break-inside: auto;
       }
@@ -662,32 +665,58 @@
     const node = slipNode(sale, { brand, footer });
     const holder = document.createElement('div');
     holder.appendChild(node);
-    writeFrame(holder.innerHTML, title, SLIP_PRINT_CSS);
+    const kind = printerPrefs.paper || '80';
+    writeFrame(holder.innerHTML, title, slipPrintCss(kind), kind);
   }
 
-  const SLIP_PRINT_CSS = `
-    @page { margin: 10mm; }
-    html, body { margin: 0; padding: 0; width: 100%; height: auto; background: #fff; color: #111; }
-    .slip { width: 100%; max-width: none; margin: 0; background: #fff; color: #111; border: 0; border-radius: 0; box-shadow: none; padding: 0; }
-    .slip-head, .slip-foot { text-align: center; }
-    .slip-logo { width: 56px; height: 56px; object-fit: contain; display: block; margin: 0 auto 4px; }
-    .slip-brand { font-weight: 750; font-size: 18pt; }
-    .slip-sub { color: #444; font-size: 10pt; margin-top: 2px; }
-    .slip-rule { border: 0; border-top: 1px dashed #999; margin: 8px 0; }
-    .slip-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12pt; padding: 2px 0; }
-    .slip-row span:last-child { text-align: right; }
-    .slip-item { padding: 6px 0; }
-    .slip-item + .slip-item { border-top: 1px solid #eee; }
-    .slip-item-name { font-weight: 700; font-size: 12pt; }
-    .slip-serial { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 10pt; }
-    .slip-total { font-size: 16pt; font-weight: 750; }
-    .slip-group-name { font-size: 9pt; font-weight: 750; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 8px; }
-    .slip-claim { text-align: center; margin-top: 8px; padding: 8px 0; border-top: 1px dashed #999; }
-    .slip-claim-code { font-size: 18pt; font-weight: 800; letter-spacing: 0.12em; }
-    .slip-foot { font-size: 10pt; }
-  `;
+  function paperSpec(kind) {
+    const paper = String(kind || printerPrefs.paper || '80');
+    if (paper === '58') {
+      return { kind: '58', page: '58mm auto', margin: '1.2mm 1.8mm', frameW: '58mm', frameH: '80mm', body: '11px', brand: '14px', total: '14px', code: '16px' };
+    }
+    if (paper === 'a4') {
+      return { kind: 'a4', page: 'A4', margin: '14mm', frameW: '210mm', frameH: '297mm', body: '13px', brand: '20px', total: '18px', code: '22px' };
+    }
+    return { kind: '80', page: '80mm auto', margin: '2mm 2.5mm', frameW: '80mm', frameH: '100mm', body: '12px', brand: '16px', total: '15px', code: '18px' };
+  }
 
-  function writeFrame(bodyHtml, title, css) {
+  function slipPrintCss(kind) {
+    const spec = paperSpec(kind);
+    // Amounts share one right edge. width:1% + nowrap is the thermal-safe
+    // version of a two-column receipt: the figure column shrinks to its text,
+    // every figure ends on the same line as its label, and a long name wraps
+    // in the first cell instead of shoving the money off the roll.
+    return `
+    @page { size: ${spec.page}; margin: ${spec.margin}; }
+    html, body { margin: 0; padding: 0; width: 100%; height: auto; min-height: 0; background: #fff; color: #111; }
+    body { font-family: "Segoe UI", system-ui, sans-serif; font-size: ${spec.body}; line-height: 1.35; }
+    .slip { width: 100%; max-width: 100%; margin: 0; background: #fff; color: #111; border: 0; border-radius: 0; box-shadow: none; padding: 0; box-sizing: border-box; break-after: avoid; page-break-after: avoid; }
+    .slip-head, .slip-foot { text-align: center; }
+    .slip-logo { width: 48px; height: 48px; object-fit: contain; display: block; margin: 0 auto 4px; }
+    .slip-brand { font-weight: 750; font-size: ${spec.brand}; line-height: 1.2; }
+    .slip-sub { color: #333; font-size: 0.92em; margin-top: 1px; overflow-wrap: anywhere; }
+    .slip-rule { border: 0; border-top: 1px dashed #666; margin: 6px 0; }
+    .slip-meta, .slip-totals, .slip-pay, .slip-items { width: 100%; }
+    .slip-row { display: table; width: 100%; border-collapse: collapse; table-layout: auto; }
+    .slip-row > span { display: table-cell; vertical-align: baseline; }
+    .slip-row > span:first-child { width: 100%; padding: 1px 8px 1px 0; overflow-wrap: anywhere; }
+    .slip-row > span:last-child { width: 1%; white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; padding: 1px 0; }
+    .slip-item { padding: 4px 0 3px; }
+    .slip-item + .slip-item { border-top: 1px solid #ddd; }
+    .slip-item-name { font-weight: 700; }
+    .slip-serial { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.92em; }
+    .slip-total { font-size: ${spec.total}; font-weight: 750; }
+    .slip-total > span:last-child { font-weight: 750; }
+    .slip-group-name { font-size: 0.78em; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; margin-top: 6px; }
+    .slip-claim { text-align: center; margin-top: 6px; padding: 6px 0 2px; border-top: 1px dashed #666; }
+    .slip-claim-code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: ${spec.code}; font-weight: 800; letter-spacing: 0.08em; }
+    .slip-foot { font-size: 0.92em; }
+    .slip-words { margin-bottom: 4px; }
+  `;
+  }
+
+  function writeFrame(bodyHtml, title, css, kind) {
+    const spec = paperSpec(kind);
     let frame = document.getElementById('print-frame');
     if (!frame) {
       frame = document.createElement('iframe');
@@ -696,6 +725,8 @@
       frame.title = 'Receipt print';
       document.body.appendChild(frame);
     }
+    frame.style.width = spec.frameW;
+    frame.style.height = spec.frameH;
     const stray = document.getElementById('print-area');
     if (stray) stray.remove();
     const doc = frame.contentDocument || frame.contentWindow.document;
@@ -703,9 +734,15 @@
     doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${css}</style></head><body>${bodyHtml}</body></html>`);
     doc.close();
     const win = frame.contentWindow;
-    setTimeout(() => {
-      try { win.focus(); win.print(); } catch (e) { /* the till stays usable if the dialog is blocked */ }
-    }, 80);
+    const images = Array.from(doc.images || []);
+    const ready = images.length
+      ? Promise.all(images.map((img) => (img.complete ? Promise.resolve() : new Promise((resolve) => { img.onload = img.onerror = resolve; }))))
+      : Promise.resolve();
+    ready.then(() => {
+      setTimeout(() => {
+        try { win.focus(); win.print(); } catch (e) { /* the till stays usable if the dialog is blocked */ }
+      }, 40);
+    });
   }
 
   SR.print = {

@@ -1316,7 +1316,7 @@
       const whtRate = po.wht_rate_percent != null ? po.wht_rate_percent : po.wht_percent;
 
       host.replaceChildren();
-      host.appendChild(ui.h('div', { class: 'page-head' },
+      const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, po.po_number),
           ui.h('p', { class: 'sub' }, [po.supplier_name, po.branch_name, `raised ${U.date(po.ordered_at)}`].filter(Boolean).join(' · '))),
@@ -1324,11 +1324,12 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/purchase-orders') }, 'Back'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => printOrder(po, items) }, 'Print'),
           openForReceiving && SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openReceive(po, outstanding, receipts, load) }, 'Receive goods') : null,
-          canCancelOrder ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => cancel(po, load) }, 'Cancel order') : null)));
+          canCancelOrder ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => cancel(po, load) }, 'Cancel order') : null));
 
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
+      const orderNodes = [];
+      if (offline) orderNodes.push(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      orderNodes.push(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'Order total', value: U.money(po.total), foot: `${U.qty(unitsOrdered)} units on ${items.length} line${items.length === 1 ? '' : 's'}`, small: true }),
         ui.kpi({ label: 'Received', value: `${U.qty(unitsReceived)} units`, tone: outstanding.length ? 'warn' : 'good', foot: outstanding.length ? `${outstanding.length} line${outstanding.length === 1 ? '' : 's'} outstanding` : 'complete', small: true }),
         ui.kpi({
@@ -1345,7 +1346,7 @@
           small: true,
         })));
 
-      host.appendChild(ui.dataCard({
+      orderNodes.push(ui.dataCard({
         title: 'Ordered items',
         table: ui.renderTable({
           columns: [
@@ -1371,8 +1372,9 @@
         }),
       }));
 
+      const deliveryNodes = [];
       if (receipts.length) {
-        host.appendChild(ui.dataCard({
+        deliveryNodes.push(ui.dataCard({
           title: 'Deliveries against this order',
           table: ui.renderTable({
             columns: [
@@ -1386,7 +1388,19 @@
             rows: receipts,
           }),
         }));
+      } else {
+        deliveryNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Deliveries'),
+          ui.h('p', { class: 'sub' }, 'Nothing has been received against this order yet.'))));
       }
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.poTab',
+        sections: [
+          { id: 'order', label: 'Order', nodes: orderNodes },
+          { id: 'deliveries', label: 'Deliveries', nodes: deliveryNodes },
+        ],
+      }));
     }
 
     function round4(n) { return Math.round((Number(n) || 0) * 10000) / 10000; }

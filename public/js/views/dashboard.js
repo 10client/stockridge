@@ -150,9 +150,12 @@
     }
 
     function paint(host, data, { offline, changeOwed = null }) {
+      const todayNodes = [];
+      const tradingNodes = [];
+      const attentionNodes = [];
       host.replaceChildren();
       if (offline) {
-        host.appendChild(ui.h('div', { class: 'alert alert-warn' },
+        todayNodes.push(ui.h('div', { class: 'alert alert-warn' },
           ui.h('strong', {}, 'Offline — '),
           'these figures are computed from this device\'s last sync, not from the office. Sales made here are counted in the queue below.'));
       }
@@ -173,7 +176,7 @@
         let hint = 'These figures are every business together. Switch business to work in one.';
         if (onABranch) hint = `These figures are ${scopeBranch} only.`;
         else if (onABusiness) hint = `These figures are ${scopeBusiness}, every shop together. Switch business for another, or pick a shop for that shop's totals.`;
-        host.appendChild(ui.h('p', { class: 'hint' }, hint));
+        todayNodes.push(ui.h('p', { class: 'hint' }, hint));
       }
 
       const today = data.today || {};
@@ -192,7 +195,7 @@
       // percentage nor a delta there is no arrow at all, because there is nothing to
       // compare against.
       const trend = until ? { pct: until.changePct, change: until.change, goodWhen: 'up', vs: 'yesterday' } : null;
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      todayNodes.push(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({
           label: 'Takings today',
           value: U.money(today.gross),
@@ -270,7 +273,7 @@
             })),
           ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
             ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/change-owed') }, 'Open change owed'))));
-        host.appendChild(owedCard);
+        todayNodes.push(owedCard);
       }
 
       // ---- the till, because a cashier needs this more than the owner does
@@ -320,7 +323,7 @@
         }));
       }
       tillCard.appendChild(tillBody);
-      host.appendChild(tillCard);
+      todayNodes.push(tillCard);
 
       // ---- two columns: what moved, and what needs attention
       const cols = ui.h('div', { class: 'grid grid-2' });
@@ -358,7 +361,7 @@
       // No "By branch" card. Those totals are the tiles above, and only after the
       // owner has switched to a branch. Listing every shop here showed branch totals
       // on the group screen, which is the view that must not carry them.
-      if (cols.childElementCount) host.appendChild(cols);
+      if (cols.childElementCount) tradingNodes.push(cols);
 
       // ---- what needs somebody to do something
       //
@@ -378,7 +381,7 @@
         const list = ui.h('div', { class: 'card-body tight' });
         for (const a of actions) list.appendChild(actionRow(a));
         card.appendChild(list);
-        host.appendChild(card);
+        attentionNodes.push(card);
       }
 
       // ---- the plan, only when it is nearly full
@@ -400,7 +403,7 @@
         // is and what follows, which is that the next create will be refused.
         const over = pressure.filter(([, cap]) => cap.used > cap.allowed);
         const nearly = pressure.filter(([, cap]) => cap.used <= cap.allowed);
-        host.appendChild(ui.h('div', { class: `alert ${over.length ? 'alert-danger' : 'alert-warn'}` },
+        todayNodes.push(ui.h('div', { class: `alert ${over.length ? 'alert-danger' : 'alert-warn'}` },
           ui.h('strong', {}, over.length ? 'You are over your plan. ' : 'Your plan is nearly full. '),
           [
             ...over.map(([noun, cap]) => `${cap.used} ${noun} in use against a plan limit of ${cap.allowed}`),
@@ -410,6 +413,24 @@
           over.length ? 'Nothing has been removed, but the next one will be refused until one is deactivated or the plan is raised. ' : '',
           ui.h('button', { class: 'link-btn', onClick: () => SR.app.navigate('/plan') }, 'See the plan')));
       }
+      if (!tradingNodes.length) {
+        tradingNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Nothing sold in this window'),
+          ui.h('p', { class: 'sub' }, 'Best sellers and category totals appear here once this period has receipts.'))));
+      }
+      if (!attentionNodes.length) {
+        attentionNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Nothing needs you'),
+          ui.h('p', { class: 'sub' }, 'No expiry, till variance, expense or delivery is waiting on this screen.'))));
+      }
+      host.replaceChildren(ui.sectionTabs({
+        remember: 'sr.dashTab',
+        sections: [
+          { id: 'today', label: 'Today', nodes: todayNodes },
+          { id: 'trading', label: 'Trading', nodes: tradingNodes },
+          { id: 'attention', label: 'Attention', nodes: attentionNodes },
+        ],
+      }));
     }
 
     /**

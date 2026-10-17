@@ -189,11 +189,6 @@
   async function render(ctx) {
     ctx.setTitle('Subscription');
     const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('div', { class: 'page-head' },
-      ui.h('div', {},
-        ui.h('h1', {}, 'Subscription'),
-        ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · the plan this deployment runs on, and what it allows`))));
-
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
@@ -268,11 +263,13 @@
       const statusTone = String(s.status || '').toUpperCase() === 'ACTIVE' ? 'alert-ok'
         : String(s.status || '').toUpperCase() === 'TRIAL' ? 'alert-info' : 'alert-warn';
 
-      const stack = ui.h('div', { class: 'stack' });
-      stack.appendChild(ui.h('div', { class: `alert ${statusTone}` },
+      const overview = [];
+      const capacity = [];
+      const commercial = [];
+      overview.push(ui.h('div', { class: `alert ${statusTone}` },
         `Plan: ${s.plan || 'Standard'} · status ${U.humanise(s.status || 'TRIAL')}${s.renewalDate ? ` · renews ${U.date(s.renewalDate)}` : ''}.`));
 
-      stack.appendChild(ui.h('div', { class: 'kpis' },
+      overview.push(ui.h('div', { class: 'kpis' },
         ui.kpi({ label: 'Businesses allowed', value: Number(s.maxBusinesses) === 0 ? 'Unlimited' : U.qty(s.maxBusinesses), foot: `${U.qty(counts.businesses || usage.businesses && usage.businesses.used || 0)} in use` }),
         ui.kpi({ label: 'Branches allowed', value: Number(s.maxBranches) === 0 ? 'Unlimited' : U.qty(s.maxBranches), foot: `${U.qty(counts.branches || 0)} in use` }),
         ui.kpi({ label: 'Staff allowed', value: Number(s.maxStaff) === 0 ? 'Unlimited' : U.qty(s.maxStaff), foot: `${U.qty(counts.staff || 0)} active` }),
@@ -328,9 +325,9 @@
               ],
             }) : ui.h('p', { class: 'sub' }, 'No cleanup has ever been run on this deployment.'),
             ui.h('p', { class: 'hint' }, dm.retention_notice || '')));
-        stack.appendChild(card);
+        capacity.push(card);
       } else if (data.dataManagementRefused === 'role') {
-        stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+        capacity.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
           ui.h('h2', {}, 'Records and room'),
           ui.h('p', { class: 'sub' }, 'Ask a manager or the owner how much room this deployment has left. Capacity and retention are shown to managers and above.'))));
       }
@@ -348,15 +345,15 @@
       // The card is drawn by ROLE, not by trust: an owner never sees inputs that would
       // be refused, and the server refuses them whether or not this card is here.
       const platform = platformCard(data, load);
-      if (platform) stack.appendChild(platform);
+      if (platform) commercial.push(platform);
 
       // THE CLEANUPS THEMSELVES, under the card that says how full the database is:
       // "there is no room left" and "here is how you make room" are the two halves of
       // one answer, and the second half is destructive enough to deserve its own card.
       const cleanup = cleanupCard(data, load);
-      if (cleanup) stack.appendChild(cleanup);
+      if (cleanup) commercial.push(cleanup);
 
-      stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+      overview.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'What is in use'),
         ui.h('p', { class: 'sub' }, 'Counted live, and only counting rows that are active. A deactivated member of staff does not consume a seat — otherwise a limit would punish a shop twice for somebody leaving.'),
         // WHERE THE PLAN COMES FROM, said on the screen the client actually opens.
@@ -372,7 +369,7 @@
         limitBar('Staff', counts.staff || 0, Number(s.maxStaff) || 0, Boolean(usage.staff && usage.staff.unlimited)))));
 
       const featureRows = Object.entries(features).map(([key, f]) => ({ key, label: f.label || U.humanise(key), enabled: f.enabled }));
-      stack.appendChild(ui.dataCard({
+      const featuresCard = ui.dataCard({
         title: 'Features',
         table: ui.renderTable({
           columns: [
@@ -388,10 +385,10 @@
           emptyTitle: 'No features listed',
           emptyMessage: 'Features come from the plan attached to this deployment.',
         }),
-      }));
+      });
 
       if (contact.name || contact.phone || contact.email) {
-        stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+        overview.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
           ui.h('h2', {}, 'Who to call'),
           ui.kv([
             ['Contact', contact.name],
@@ -401,11 +398,24 @@
           ui.h('p', { class: 'sub' }, 'Raising a limit, turning a feature on or getting help with a return — this is the number to use. Your plan itself is set for you; nobody at the shop can change it, including the owner.'))));
       }
 
-      stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+      overview.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, 'How the limits are enforced'),
         ui.h('p', { class: 'sub' }, 'At the moment of creation, with a message that names the limit. A branch that cannot be opened tells you it is the branch limit and what to do about it — it does not fail later, somewhere else, with a stack trace. No existing data is ever hidden or locked when a plan changes; nothing you have already recorded disappears.'))));
 
-      host.replaceChildren(stack);
+      const head = ui.h('div', { class: 'page-head' },
+        ui.h('div', {},
+          ui.h('h1', {}, 'Subscription'),
+          ui.h('p', { class: 'sub' }, `${SR.state.activeBusinessName()} · the plan this deployment runs on, and what it allows`)));
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.planTab',
+        sections: [
+          { id: 'plan', label: 'Plan', nodes: overview },
+          { id: 'capacity', label: 'Capacity', nodes: capacity },
+          { id: 'features', label: 'Features', nodes: [featuresCard] },
+          { id: 'commercial', label: 'Set the plan', nodes: commercial },
+        ],
+      }));
     }
 
     /**

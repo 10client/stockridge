@@ -60,25 +60,18 @@
     const tillSlot = ui.h('span', {});
 
     const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('div', { class: 'page-head' },
+    const head = ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Till & safe'),
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · the drawer, and what happened to the cash in it`)),
       ui.h('div', { class: 'actions' },
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openSafeEntry() }, 'Safe entry') : null,
-        tillSlot)));
+        tillSlot));
 
     const banner = ui.h('div', {});
-    wrap.appendChild(banner);
-
     const currentHost = ui.h('div', {});
-    wrap.appendChild(currentHost);
-
     const summaryHost = ui.h('div', {});
-    wrap.appendChild(summaryHost);
-
     const safeHost = ui.h('div', {});
-    wrap.appendChild(safeHost);
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
@@ -91,10 +84,17 @@
     }
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Status'), statusSel));
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Period'), daysSel));
-    wrap.appendChild(toolbar);
 
     const host = ui.h('div', {});
-    wrap.appendChild(host);
+    wrap.appendChild(ui.sectionTabs({
+      head,
+      remember: 'sr.tillTab',
+      sections: [
+        { id: 'drawer', label: 'Drawer', nodes: [banner, currentHost, summaryHost] },
+        { id: 'safe', label: 'Safe', nodes: [safeHost] },
+        { id: 'history', label: 'History', nodes: [toolbar, host] },
+      ],
+    }));
 
     // ---------------------------------------------------------------- load
     async function load() {

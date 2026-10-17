@@ -200,7 +200,7 @@
         : null;
 
       host.replaceChildren();
-      host.appendChild(ui.h('div', { class: 'page-head' },
+      const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, job.job_no || 'Delivery job'),
           ui.h('p', { class: 'sub' }, [job.customer_name, job.customer_phone, job.receipt_no, job.branch_name].filter(Boolean).join(' · '))),
@@ -209,9 +209,10 @@
           job.sale_id ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/sales/${job.sale_id}`) }, 'The sale') : null,
           nextStatus ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => move(job, nextStatus, load) }, `Mark ${U.humanise(nextStatus).toLowerCase()}`) : null,
           ui.h('button', { class: 'btn btn-sm', onClick: () => move(job, null, load) }, 'Change status'),
-          SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => addInstallation(job, items, load) }, 'Add installation') : null)));
+          SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => addInstallation(job, items, load) }, 'Add installation') : null));
 
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      const jobNodes = [];
+      jobNodes.push(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'Status', value: U.humanise(job.status), tone: job.status === 'DELIVERED' ? 'good' : (['FAILED', 'RETURNED', 'CANCELLED'].includes(job.status) ? 'bad' : 'warn'), small: true }),
         ui.kpi({ label: 'Scheduled', value: job.scheduled_for ? U.date(job.scheduled_for) : 'not set', small: true }),
         ui.kpi({ label: 'Driver', value: job.driver_name || 'unassigned', foot: job.driver_phone || null, small: true }),
@@ -244,9 +245,9 @@
           ['Requires installation', Number(job.requires_installation) ? 'yes' : 'no'],
         ]),
       }));
-      host.appendChild(cols);
+      jobNodes.push(cols);
 
-      host.appendChild(ui.dataCard({
+      const loadCard = ui.dataCard({
         title: 'What is on the truck',
         table: ui.renderTable({
           columns: [
@@ -260,9 +261,9 @@
           rows: items,
           emptyMessage: 'No items recorded on this job.',
         }),
-      }));
+      });
 
-      host.appendChild(ui.dataCard({
+      const installCard = ui.dataCard({
         title: 'Installation',
         actions: SR.state.atLeast('MANAGER') ? [ui.h('button', { class: 'btn btn-sm', onClick: () => addInstallation(job, items, load) }, 'Add a job')] : [],
         table: ui.renderTable({
@@ -278,20 +279,31 @@
           emptyTitle: 'No installation work',
           emptyMessage: 'A split air conditioner, a wall bracket, a bed frame — anything that needs fitting gets a job here. Completing it is what starts the warranty.',
         }),
-      }));
+      });
 
+      let historyCard = null;
       if (String(job.notes || '').includes('|')) {
         const history = String(job.notes).split('\n').filter((l) => l.includes('|'));
         if (history.length) {
-          host.appendChild(ui.dataCard({
+          historyCard = ui.dataCard({
             title: 'What happened',
             table: ui.renderTable({
               columns: [{ key: 'line', label: 'Entry', className: 'wrap' }],
               rows: history.map((line) => ({ line })),
             }),
-          }));
+          });
         }
       }
+      if (historyCard) jobNodes.push(historyCard);
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.deliveryTab',
+        sections: [
+          { id: 'job', label: 'Job', nodes: jobNodes },
+          { id: 'load', label: 'Load', nodes: [loadCard] },
+          { id: 'installation', label: 'Installation', nodes: [installCard] },
+        ],
+      }));
     }
 
     function move(job, preset, after) {

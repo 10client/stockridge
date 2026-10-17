@@ -219,20 +219,25 @@
           ui.h('p', { class: 'sub' }, `${U.soldAt(sale.sold_at)} · ${sale.branch_name || SR.state.activeBranchName()} · ${sale.cashier_name || '—'}`)),
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales') }, 'Back to sales'),
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.print.previewSale(Object.assign({}, sale, { items, payments, serials }), { brand: (SR.state.settings || {}).business_name || 'StockRidge', footer: (SR.state.settings || {}).receipt_footer_text || '', title: `Receipt ${sale.receipt_no}` }) }, 'Print'),
+          ui.h('button', { class: 'btn btn-sm', onClick: () => openReturn(sale, items) }, 'Return'),
+          (sale.status !== 'VOIDED' && canVoidThis(sale)) ? ui.h('button', { class: 'btn btn-sm btn-danger', onClick: () => openVoid(sale) }, 'Void') : null,
+          Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED' ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openSettle(sale) }, 'Take payment') : null,
           repaintButton(sale, items, payments, serials)));
+      const saleNodes = [];
+      const recordNodes = [];
       host.replaceChildren();
-      host.appendChild(head);
 
       if (sale.status === 'VOIDED') {
-        host.appendChild(ui.h('div', { class: 'alert alert-danger' },
+        saleNodes.push(ui.h('div', { class: 'alert alert-danger' },
           ui.h('strong', {}, 'This sale was voided. '),
           `${U.watClock(sale.voided_at)} — ${sale.void_reason || 'no reason recorded'}. The stock was returned and the ledger reversed; nothing was deleted.`));
       }
       if (Number(sale.balance_due) > 0.01 && sale.status !== 'VOIDED') {
-        host.appendChild(ui.h('div', { class: 'alert alert-warn' },
-          `${U.money(sale.balance_due)} is still owed on this receipt. Take it from Actions — that is the only place this receipt is settled.`));
+        saleNodes.push(ui.h('div', { class: 'alert alert-warn' },
+          `${U.money(sale.balance_due)} is still owed on this receipt. Take payment is in the bar above — that is the only place this receipt is settled.`));
       }
-      host.appendChild(saleIssuesCard(sale));
+      saleNodes.push(saleIssuesCard(sale));
 
       const totals = ui.h('div', { class: 'grid grid-5' },
         ui.kpi({ label: 'Total', value: U.money(sale.total), small: true }),
@@ -240,9 +245,9 @@
         ui.kpi({ label: 'Balance', value: U.money(sale.balance_due), small: true, tone: Number(sale.balance_due) > 0 ? 'warn' : null }),
         ui.kpi({ label: 'VAT included', value: U.money(sale.vat_amount), small: true }),
         ui.kpi({ label: 'Status', value: U.humanise(sale.status), small: true }));
-      host.appendChild(totals);
+      saleNodes.push(totals);
       if (prescriptions.length) {
-        host.appendChild(ui.dataCard({
+        recordNodes.push(ui.dataCard({
           title: 'Prescription',
           table: ui.renderTable({
             columns: [
@@ -255,7 +260,7 @@
         }));
       }
       if (controlledRegister.length) {
-        host.appendChild(ui.dataCard({
+        recordNodes.push(ui.dataCard({
           title: 'Controlled register',
           table: ui.renderTable({
             columns: [
@@ -323,10 +328,10 @@
         ]),
       }));
       cols.appendChild(side);
-      host.appendChild(cols);
+      saleNodes.push(cols);
 
       if (serials.length) {
-        host.appendChild(ui.dataCard({
+        recordNodes.push(ui.dataCard({
           title: 'Serial numbers on this sale',
           table: ui.renderTable({
             columns: [
@@ -343,7 +348,7 @@
       if (journal.length) {
         const debit = journal.reduce((a, l) => a + Number(l.debit || 0), 0);
         const credit = journal.reduce((a, l) => a + Number(l.credit || 0), 0);
-        host.appendChild(ui.dataCard({
+        recordNodes.push(ui.dataCard({
           title: 'Posted to the books',
           toolbar: ui.h('span', { class: `badge ${Math.abs(debit - credit) < 0.01 ? 'badge-good' : 'badge-bad'}` },
             Math.abs(debit - credit) < 0.01 ? 'balanced' : `out by ${U.money(Math.abs(debit - credit))}`),
@@ -378,7 +383,20 @@
           'You cannot void this sale. A void is allowed for a manager at any time, and for staff only on their own sale inside the window the owner has set.'));
       }
       actions.appendChild(abody);
-      host.appendChild(actions);
+      if (!recordNodes.length) {
+        recordNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Records'),
+          ui.h('p', { class: 'sub' }, 'No prescription, controlled-substance entry, serial number or ledger posting is attached to this receipt.'))));
+      }
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.saleTab',
+        sections: [
+          { id: 'sale', label: 'Sale', nodes: saleNodes },
+          { id: 'records', label: 'Records', nodes: recordNodes },
+          { id: 'actions', label: 'Actions', nodes: [actions] },
+        ],
+      }));
 
       void payments;
     }

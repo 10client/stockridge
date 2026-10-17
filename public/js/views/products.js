@@ -766,7 +766,9 @@
       const barcodes = data.barcodes || [];
 
       host.replaceChildren();
-      host.appendChild(ui.h('div', { class: 'page-head' },
+      const overview = [];
+      const stockNodes = [];
+      const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, p.name),
           ui.h('p', { class: 'sub' }, [p.sku, p.brand, p.model_no, data.category ? data.category.name : p.category_name].filter(Boolean).join(' · '))),
@@ -780,11 +782,11 @@
             } catch (err) { ui.apiError(err); }
           } }, Number(p.requires_serial) ? 'Serial off' : 'Serial on'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(data).then((ok) => { if (ok) load(); }); } }, 'Edit'),
-          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label'))));
+          ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel({ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name, spec: p.model_no }) }, 'Label')));
 
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
+      if (offline) overview.push(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
 
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      overview.push(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({
           label: 'Selling price',
           value: price > 0 ? U.money(price) : 'No price',
@@ -851,7 +853,7 @@
         }));
       }
       cols.appendChild(facts);
-      host.appendChild(cols);
+      overview.push(cols);
 
       if (barcodes.length) {
         const chips = ui.h('div', { class: 'card' });
@@ -869,11 +871,11 @@
         body.appendChild(ui.h('div', { class: 'btn-row' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.printLabels([{ name: p.name, sku: p.sku, price: price || p.selling_price, unit: p.base_unit_name }]) }, 'Print these as labels')));
         chips.appendChild(body);
-        host.appendChild(chips);
+        stockNodes.push(chips);
       }
 
       if (batches.length) {
-        host.appendChild(ui.dataCard({
+        stockNodes.push(ui.dataCard({
           title: 'Batches at this branch',
           table: ui.renderTable({
             columns: [
@@ -947,7 +949,20 @@
         }));
       }
       priceCard.appendChild(priceBody);
-      host.appendChild(priceCard);
+      if (!stockNodes.length) {
+        stockNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Stock'),
+          ui.h('p', { class: 'sub' }, 'No barcodes or batches are on file for this product at this branch.'))));
+      }
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.productTab',
+        sections: [
+          { id: 'overview', label: 'Overview', nodes: overview },
+          { id: 'stock', label: 'Stock', nodes: stockNodes },
+          { id: 'prices', label: 'Prices', nodes: [priceCard] },
+        ],
+      }));
     }
 
     return wrap;

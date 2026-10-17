@@ -116,10 +116,13 @@
   function controlKind(el) {
     if (!el || (el.closest && el.closest('.numpad'))) return 'press';
     const cls = el.classList;
-    if (!cls) return 'takeover';
+    if (!cls) return 'inline';
+    // Icon controls have no label to keep. Everything else keeps its label and
+    // shows the ring beside it. Hiding the label (the old takeover) made a
+    // button look idle until the handler later wrote "Saving…", which is after
+    // the request — the ring was the only signal, and a blank button is not one.
     if (cls.contains('icon-btn') || cls.contains('avatar') || cls.contains('field-reveal')) return 'icon';
-    if (cls.contains('nav-item') || cls.contains('chip') || cls.contains('link-btn') || cls.contains('sidenav-switch') || cls.contains('menu-item') || cls.contains('tab') || cls.contains('report-chip') || cls.contains('switch')) return 'inline';
-    return 'takeover';
+    return 'inline';
   }
 
   function holdMs(kind, el) {
@@ -136,6 +139,10 @@
     el.dataset.srBusy = '1';
     el.classList.add(kind === 'press' ? 'is-pressed' : (kind === 'inline' ? 'is-busy' : 'is-loading'));
     el.setAttribute('aria-busy', 'true');
+    // Flush layout so the ring is painted on this click, before the handler
+    // awaits. Without it the class lands in the same turn as the request and
+    // the first frame the user sees is the one after the action finishes.
+    try { void el.offsetWidth; } catch (e) { /* detached */ }
     const started = Date.now();
     let ended = false;
     return function endBusy() {
@@ -150,20 +157,103 @@
     };
   }
 
-  function releaseWhenIdle(el, end, wasDisabled) {
-    if (controlKind(el) === 'press') { end(); return; }
-    setTimeout(() => {
+  let fetchCount = 0;
+  function installFetchWatch() {
+    if (typeof window === 'undefined' || window.__srFetchWatch) return;
+    window.__srFetchWatch = true;
+    const orig = window.fetch ? window.fetch.bind(window) : null;
+    if (!orig) return;
+    window.fetch = function srFetch(...args) {
+      fetchCount += 1;
+      let settled = false;
+      const done = () => { if (!settled) { settled = true; fetchCount -= 1; } };
+      try {
+        return Promise.resolve(orig(...args)).then((value) => { done(); return value; }, (err) => { done(); throw err; });
+      } catch (err) {
+        done();
+        throw err;
+      }
+    };
+  }
+  installFetchWatch();
+
+  // A click listener added with addEventListener does not hand its promise back
+  // to the capture-phase ring. Remember it on the button so the ring stays up
+  // until that async handler settles, including a confirm that runs before the
+  // request. ui.h buttons already return their promise to runBoundClick.
+  function installClickWorkCapture() {
+    if (typeof EventTarget === 'undefined' || EventTarget.prototype.__srClickWrap) return;
+    const wraps = new WeakMap();
+    const origAdd = EventTarget.prototype.addEventListener;
+    const origRemove = EventTarget.prototype.removeEventListener;
+    EventTarget.prototype.addEventListener = function (type, listener, options) {
+      if (type === 'click' && this && this.tagName === 'BUTTON' && typeof listener === 'function') {
+        let wrapped = wraps.get(listener);
+        if (!wrapped) {
+          wrapped = function srClickWork(ev) {
+            const result = listener.apply(this, arguments);
+            if (result && typeof result.then === 'function') {
+              this.__srClickWork = result;
+              const clear = () => { if (this.__srClickWork === result) this.__srClickWork = null; };
+              result.then(clear, clear);
+            }
+            return result;
+          };
+          wraps.set(listener, wrapped);
+        }
+        return origAdd.call(this, type, wrapped, options);
+      }
+      return origAdd.call(this, type, listener, options);
+    };
+    EventTarget.prototype.removeEventListener = function (type, listener, options) {
+      if (type === 'click' && listener && wraps.has(listener)) {
+        return origRemove.call(this, type, wraps.get(listener), options);
+      }
+      return origRemove.call(this, type, listener, options);
+    };
+    EventTarget.prototype.__srClickWrap = true;
+  }
+  installClickWorkCapture();
+
+  let pressedButton = null;
+  function notePress(el) {
+    if (el && el.tagName === 'BUTTON') pressedButton = el;
+  }
+
+  function releaseWhenIdle(el, end, wasDisabled, fetchesAtStart) {
+    if (!el || controlKind(el) === 'press') { end(); return; }
+    const baseline = Number.isFinite(fetchesAtStart) ? fetchesAtStart : fetchCount;
+    let waitingWork = false;
+    let watchingDisabled = false;
+    const tick = () => {
       if (!el.isConnected) { end(); return; }
+      const work = el.__srClickWork;
+      if (work && typeof work.then === 'function' && !waitingWork) {
+        waitingWork = true;
+        el.__srClickWork = null;
+        work.finally(() => { waitingWork = false; setTimeout(tick, 0); });
+        return;
+      }
+      if (waitingWork || watchingDisabled) return;
+      if (fetchCount > baseline) { setTimeout(tick, 40); return; }
       if (el.disabled && !wasDisabled) {
+        watchingDisabled = true;
         let done = false;
-        const finish = () => { if (done) return; done = true; obs.disconnect(); end(); };
+        const finish = () => {
+          if (done) return;
+          done = true;
+          watchingDisabled = false;
+          obs.disconnect();
+          setTimeout(tick, 0);
+        };
         const obs = new MutationObserver(() => { if (!el.disabled) finish(); });
         obs.observe(el, { attributes: true, attributeFilter: ['disabled'] });
         setTimeout(finish, 20000);
         return;
       }
       end();
-    }, 0);
+    };
+    setTimeout(tick, 0);
   }
 
   function mountVeil(title, detail) {
@@ -376,6 +466,9 @@
       ev.stopPropagation();
       return;
     }
+    notePress(el);
+    const wasDisabled = el.disabled;
+    const fetchesAtStart = fetchCount;
     const end = beginControl(el);
     const panel = isPanelControl(el) ? beginPanel(el) : null;
     let result;
@@ -387,10 +480,13 @@
       error((err && err.message) || 'That did not work.');
       return;
     }
-    Promise.resolve(result).then(() => {
-      end();
-      if (panel) return panel.finish();
-    }, (err) => {
+    const finish = () => {
+      releaseWhenIdle(el, () => {
+        end();
+        if (panel) panel.finish();
+      }, wasDisabled, fetchesAtStart);
+    };
+    Promise.resolve(result).then(finish, (err) => {
       end();
       if (panel) panel.cancel();
       error((err && err.message) || 'That did not work.');
@@ -409,8 +505,11 @@
     if (!el || el.dataset.uiBound === '1') return;
     if (el.dataset.srBusy === '1') return;
     if (controlKind(el) === 'press') return;
+    notePress(el);
+    const wasDisabled = el.disabled;
+    const fetchesAtStart = fetchCount;
     const end = beginControl(el);
-    releaseWhenIdle(el, end, el.disabled);
+    releaseWhenIdle(el, end, wasDisabled, fetchesAtStart);
   }
 
   if (typeof document !== 'undefined') {
@@ -1021,12 +1120,97 @@
 
   /** Disable a form's controls while an action is in flight, so a double-tap on
    *  a slow connection cannot post the same sale twice. */
+
+  /**
+   * Settings-style sections. The tab bar sticks with the page title. Every
+   * panel stays in the document, hidden, so switching tabs does not throw away
+   * a half-typed PIN or a plan field. Pass only the nodes that exist.
+   */
+  function sectionTabs({ head = null, tools = null, sections = [], remember = '', active = '' } = {}) {
+    const usable = (sections || []).map((section) => ({
+      id: section.id,
+      label: section.label,
+      nodes: (section.nodes || []).filter(Boolean),
+    })).filter((section) => section.nodes.length);
+    if (!usable.length) {
+      const bare = h('div', { class: 'stack' });
+      if (head) bare.appendChild(head);
+      return bare;
+    }
+    let current = active;
+    if (remember) {
+      try { current = sessionStorage.getItem(remember) || current; } catch (e) { /* private mode */ }
+    }
+    if (!usable.some((section) => section.id === current)) current = usable[0].id;
+
+    const bar = h('div', { class: 'tabs', role: 'tablist' });
+    const panels = h('div', { class: 'section-panels stack' });
+    const buttons = new Map();
+    const panelOf = new Map();
+
+    function show(id) {
+      if (!usable.some((section) => section.id === id)) id = usable[0].id;
+      current = id;
+      if (remember) {
+        try { sessionStorage.setItem(remember, id); } catch (e) { /* fine */ }
+      }
+      for (const section of usable) {
+        const on = section.id === id;
+        const btn = buttons.get(section.id);
+        const panel = panelOf.get(section.id);
+        if (btn) {
+          btn.classList.toggle('is-active', on);
+          btn.setAttribute('aria-selected', on ? 'true' : 'false');
+          if (on && btn.parentElement) {
+            const list = btn.parentElement;
+            const left = btn.offsetLeft;
+            const right = left + btn.offsetWidth;
+            if (left < list.scrollLeft) list.scrollLeft = Math.max(0, left - 8);
+            else if (right > list.scrollLeft + list.clientWidth) list.scrollLeft = right - list.clientWidth + 8;
+          }
+        }
+        if (panel) panel.hidden = !on;
+      }
+    }
+
+    for (const section of usable) {
+      const btn = h('button', {
+        class: 'tab',
+        type: 'button',
+        role: 'tab',
+        'aria-selected': 'false',
+        onClick: () => show(section.id),
+      }, section.label);
+      buttons.set(section.id, btn);
+      bar.appendChild(btn);
+      const panel = h('div', { class: 'section-panel stack', role: 'tabpanel' });
+      for (const node of section.nodes) panel.appendChild(node);
+      panelOf.set(section.id, panel);
+      panels.appendChild(panel);
+    }
+    show(current);
+
+    const dock = h('div', { class: 'section-dock' }, head || null, bar);
+    return h('div', { class: 'stack section-tabs-wrap' }, dock, tools || null, panels);
+  }
+
   async function withBusy(container, fn) {
-    const controls = Array.from(container.querySelectorAll('button, input, select, textarea'));
+    const controls = container && container.querySelectorAll
+      ? Array.from(container.querySelectorAll('button, input, select, textarea'))
+      : [];
     const before = controls.map((c) => c.disabled);
     controls.forEach((c) => { c.disabled = true; });
+    // The button that opened this is often in the modal footer, outside the
+    // form. Disabling only the form left that button looking idle for the
+    // whole request, and the page skeleton appeared only when it finished.
+    const extra = pressedButton && (!container || !container.contains || !container.contains(pressedButton))
+      ? pressedButton
+      : null;
+    const extraWas = extra ? extra.disabled : false;
+    if (extra) extra.disabled = true;
     try { return await fn(); } finally {
       controls.forEach((c, i) => { c.disabled = before[i]; });
+      if (extra && extra.isConnected) extra.disabled = extraWas;
     }
   }
 
@@ -1080,7 +1264,7 @@
     beginControl, beginPage, endPage, endPageNow,
     renderTable, dataCard, pager,
     badge, statusBadge, TONES, kpi, kv, bars, sparkline, iconForFigure, trendChip,
-    field, readForm, readFormStrings, withBusy,
+    field, readForm, readFormStrings, withBusy, sectionTabs,
     copyToClipboard, tableToCsv, debounceInput,
   };
 }(window));

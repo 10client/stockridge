@@ -48,13 +48,13 @@
     const state = { page: 0, pageSize: 50, status: ctx.query.status || '', category: ctx.query.category || '', days: 30 };
 
     const wrap = ui.h('div', { class: 'stack' });
-    wrap.appendChild(ui.h('div', { class: 'page-head' },
+    const head = ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Expenses'),
         ui.h('p', { class: 'sub' }, `${SR.state.activeBranchName()} · what the business spent, with the VAT and withholding already extracted`)),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Record an expense'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export'))));
+        ui.h('button', { class: 'btn btn-sm', onClick: () => exportList() }, 'Export')));
 
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
@@ -71,12 +71,18 @@
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Status'), statusSel));
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), catSel));
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Period'), daysSel));
-    wrap.appendChild(toolbar);
 
     const summaryHost = ui.h('div', {});
-    wrap.appendChild(summaryHost);
     const host = ui.h('div', {});
-    wrap.appendChild(host);
+    wrap.appendChild(ui.sectionTabs({
+      head,
+      tools: toolbar,
+      remember: 'sr.expensesTab',
+      sections: [
+        { id: 'summary', label: 'Summary', nodes: [summaryHost] },
+        { id: 'list', label: 'Expenses', nodes: [host] },
+      ],
+    }));
 
     async function exportList() {
       try {
@@ -137,11 +143,17 @@
         ui.kpi({ label: 'Largest category', value: byCategory.length ? U.humanise(byCategory[0].category) : '—', foot: byCategory.length ? U.money(byCategory[0].amount) : null, small: true })));
 
       host.replaceChildren();
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — expenses already synced to this device, plus anything queued. Recording a new expense will be queued too.'));
+      if (offline) {
+        const note = ui.h('div', { class: 'alert alert-warn' }, 'Offline — expenses already synced to this device, plus anything queued. Recording a new expense will be queued too.');
+        summaryHost.insertBefore(note, summaryHost.firstChild);
+        host.appendChild(note.cloneNode(true));
+      }
       if (byCategory.length > 1) {
-        host.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+        summaryHost.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
           ui.h('h2', { style: { marginTop: 0 } }, 'Where the money went'),
           ui.bars(byCategory.slice(0, 10).map((c) => ({ label: U.humanise(c.category), value: Number(c.amount) })), { format: U.money, tone: 'b2' }))));
+      } else {
+        summaryHost.appendChild(ui.h('p', { class: 'sub' }, 'One category, or none, in this window. The list is on the Expenses tab.'));
       }
 
       host.appendChild(ui.dataCard({

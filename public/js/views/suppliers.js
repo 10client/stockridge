@@ -277,7 +277,7 @@
       payments = data.payments || data.creditorLedger || [];
 
       host.replaceChildren();
-      host.appendChild(ui.h('div', { class: 'page-head' },
+      const head = ui.h('div', { class: 'page-head' },
         ui.h('div', {},
           ui.h('h1', {}, s.name),
           ui.h('p', { class: 'sub' }, [s.contact_person, s.phone, s.email, s.city].filter(Boolean).join(' · ') || 'no contact details recorded')),
@@ -285,9 +285,9 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/suppliers') }, 'Back'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => edit(s) }, 'Edit'),
           SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/purchase-orders') }, 'New order') : null,
-          SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openPay(s, load) }, 'Pay supplier') : null)));
+          SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openPay(s, load) }, 'Pay supplier') : null));
 
-      host.appendChild(ui.h('div', { class: 'grid grid-4' },
+      const kpis = ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'We owe', value: U.money(s.balance_owed || s.owed), tone: Number(s.balance_owed || s.owed) > 0 ? 'warn' : 'good', small: true }),
         ui.kpi({ label: 'Lifetime purchases', value: U.money(s.lifetime_purchases), small: true }),
         ui.kpi({ label: 'Payment terms', value: Number(s.payment_terms_days) ? `${s.payment_terms_days} days` : 'on demand', small: true }),
@@ -297,10 +297,9 @@
           tone: Number(s.is_manufacturer) ? 'good' : 'warn',
           foot: s.tin ? `TIN ${s.tin}` : 'no TIN recorded — payments cannot be withheld against',
           small: true,
-        })));
+        }));
 
-      const cols = ui.h('div', { class: 'grid grid-2' });
-      cols.appendChild(ui.dataCard({
+      const detailsCard = ui.dataCard({
         title: 'Details',
         table: ui.kv([
           ['Contact', s.contact_person], ['Phone', s.phone], ['Alternate phone', s.alt_phone],
@@ -311,8 +310,8 @@
           ['Credit limit', Number(s.credit_limit) ? U.money(s.credit_limit) : null],
           ['Notes', s.notes],
         ]),
-      }));
-      cols.appendChild(ui.dataCard({
+      });
+      const paymentsCard = ui.dataCard({
         title: 'Recent payments',
         table: ui.renderTable({
           columns: [
@@ -323,11 +322,10 @@
           rows: payments.slice(0, 12),
           emptyMessage: 'No payments recorded to this supplier yet.',
         }),
-      }));
-      host.appendChild(cols);
-
+      });
+      let ordersCard = null;
       if (purchaseOrders.length) {
-        host.appendChild(ui.dataCard({
+        ordersCard = ui.dataCard({
           title: 'Purchase orders',
           table: ui.renderTable({
             columns: [
@@ -342,8 +340,21 @@
             rows: purchaseOrders,
             onRowClick: (r) => SR.app.navigate(`/purchase-orders/${r.id}`),
           }),
-        }));
+        });
+      } else {
+        ordersCard = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Purchase orders'),
+          ui.h('p', { class: 'sub' }, 'No purchase order for this supplier is on this screen yet.')));
       }
+      host.replaceChildren(ui.sectionTabs({
+        head,
+        remember: 'sr.supplierTab',
+        sections: [
+          { id: 'overview', label: 'Overview', nodes: [kpis, detailsCard] },
+          { id: 'payments', label: 'Payments', nodes: [paymentsCard] },
+          { id: 'orders', label: 'Orders', nodes: [ordersCard] },
+        ],
+      }));
     }
 
     function edit(s) {
