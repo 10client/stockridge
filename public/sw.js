@@ -57,6 +57,7 @@ const SHELL = [
   '/js/views/expenses.js?v=ridge-20261018-0603-ebf882b',
   '/js/views/till.js?v=ridge-20261018-0603-ebf882b',
   '/js/views/deliveries.js?v=ridge-20261018-0603-ebf882b',
+  '/js/views/fleet.js?v=ridge-20261018-0603-ebf882b',
   '/js/views/returns.js?v=ridge-20261018-0603-ebf882b',
   '/js/views/instalments.js?v=ridge-20261018-0603-ebf882b',
   '/js/views/attendance.js?v=ridge-20261018-0603-ebf882b',

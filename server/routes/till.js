@@ -881,6 +881,16 @@ function mount(app, base = '/api') {
       throw new HttpError('Describe what this was actually for. “Expense” cannot be approved or audited three months later.', { status: 400, code: 'DESCRIPTION_REQUIRED' });
     }
 
+    let vehicleId = null;
+    if (body.vehicle_id || body.vehicleId) {
+      const vehicle = await db.first(
+        'SELECT id FROM delivery_vehicles WHERE id = ? AND business_id = ? AND is_deleted = 0',
+        [String(body.vehicle_id || body.vehicleId), String(business.id)],
+      );
+      if (!vehicle) throw new HttpError('That vehicle is not on this business.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
+      vehicleId = String(vehicle.id);
+    }
+
     const expenseDate = strField(body.expense_date || body.expenseDate, { field: 'Expense date', maxLength: 10 }) || watToday();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(expenseDate)) throw new HttpError('The expense date must be YYYY-MM-DD.', { status: 400, code: 'INVALID_DATE' });
 
@@ -1031,9 +1041,11 @@ function mount(app, base = '/api') {
       }
     });
 
+    if (vehicleId) await db.run('UPDATE expenses SET vehicle_id = ? WHERE id = ?', [vehicleId, id]);
+
     await recordFromCtx(ctx, {
       action: 'EXPENSE_RECORDED', entityType: 'EXPENSE', entityId: id, branchId: branch.id, businessId: business.id,
-      after: { category, amount, netAmount, wht: whtAmount, whtCode: whtResolvedCode, paymentMethod, status },
+      after: { category, amount, netAmount, wht: whtAmount, whtCode: whtResolvedCode, paymentMethod, status, vehicleId },
     });
     ctx.json({
       ok: true, id, status,

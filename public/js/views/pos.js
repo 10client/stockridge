@@ -81,13 +81,92 @@
       claimCode: null,
       changeHolderName: null,
       changeHolderPhone: null,
+      salePlace: 'PREMISES',
+      vehicleId: null,
       startedAt: U.nowWatSql(),
     };
   }
 
   async function render(ctx) {
-    ctx.setTitle('Sell');
+    const plant = Boolean(SR.state.moduleOn && (SR.state.moduleOn('manufacturing') || SR.state.moduleOn('dispatch')));
+    const dispatchOn = Boolean(SR.state.moduleOn && SR.state.moduleOn('dispatch'));
+    const profileCode = (SR.state.activeBusiness() || {}).profile_code || '';
+    ctx.setTitle(plant ? 'Plant counter' : 'Sell');
     const cart = SR.state.loadCart() || blankCart();
+    if (!cart.salePlace) cart.salePlace = 'PREMISES';
+    let duties = [];
+    if (dispatchOn) {
+      try {
+        const dutyRes = await SR.api.get('/api/dispatch/duties', { query: SR.state.query({ mine: 1, active: 1 }) });
+        duties = dutyRes.data || [];
+      } catch (e) { duties = []; }
+    }
+
+    function chosenDuty() {
+      return duties.find((row) => String(row.vehicle_id) === String(cart.vehicleId)) || null;
+    }
+    function placeLabel() {
+      if (cart.salePlace !== 'VEHICLE') return 'Plant premises';
+      const duty = chosenDuty();
+      if (!duty) return 'Vehicle — not assigned';
+      return duty.plate_no ? `${duty.vehicle_name} · ${duty.plate_no}` : duty.vehicle_name;
+    }
+    function assertPlace() {
+      if (!dispatchOn) return true;
+      if (cart.salePlace !== 'VEHICLE') return true;
+      if (chosenDuty()) return true;
+      ui.warn('No vehicle is assigned to you for this sale. Sell on the plant premises, or ask a manager to assign the vehicle.');
+      return false;
+    }
+    function plantPlaceCard() {
+      const card = ui.h('div', { class: 'card' });
+      const body = ui.h('div', { class: 'card-body stack' });
+      card.appendChild(body);
+      const title = profileCode === 'WATER_PACKING'
+        ? 'Where is this water being sold?'
+        : (profileCode === 'BAKERY' ? 'Where is this being sold?' : 'Where is this sale?');
+      function paintPlace() {
+        const onVehicle = cart.salePlace === 'VEHICLE' && chosenDuty();
+        const premisesBtn = ui.h('button', {
+          class: onVehicle ? 'btn btn-sm' : 'btn btn-primary btn-sm',
+          type: 'button',
+          onClick: () => { cart.salePlace = 'PREMISES'; cart.vehicleId = null; save(); paintPlace(); paint(); },
+        }, 'On the plant premises');
+        const vehicleBtn = ui.h('button', {
+          class: onVehicle ? 'btn btn-primary btn-sm' : 'btn btn-sm',
+          type: 'button',
+          onClick: () => {
+            if (!duties.length) return;
+            cart.salePlace = 'VEHICLE';
+            if (!chosenDuty()) cart.vehicleId = duties[0].vehicle_id;
+            save();
+            paintPlace();
+            paint();
+          },
+        }, 'From my vehicle');
+        if (!duties.length) vehicleBtn.disabled = true;
+        const hint = duties.length
+          ? (onVehicle
+            ? `Recorded on ${placeLabel()}. The stock still comes off the plant. This vehicle keeps the sale, the customer and any fuel or repair you record on it.`
+            : `You have ${duties.map((row) => row.vehicle_name).join(', ')}. Use the vehicle when you are selling from it, and the plant premises when you are at the factory.`)
+          : 'No vehicle is assigned to you. This sale stays on the plant premises. A manager assigns a vehicle under Vehicles.';
+        body.replaceChildren(
+          ui.h('h2', {}, title),
+          ui.h('div', { class: 'actions' }, premisesBtn, vehicleBtn),
+          ui.h('p', { class: 'hint' }, hint),
+        );
+        if (duties.length > 1 && cart.salePlace === 'VEHICLE') {
+          const sel = ui.h('select', { class: 'input', onChange: (e) => { cart.vehicleId = e.target.value; save(); paintPlace(); paint(); } });
+          for (const row of duties) {
+            sel.appendChild(ui.h('option', { value: row.vehicle_id }, row.plate_no ? `${row.vehicle_name} · ${row.plate_no}` : row.vehicle_name));
+          }
+          sel.value = cart.vehicleId || duties[0].vehicle_id;
+          body.appendChild(ui.field({ label: 'Vehicle', control: sel }));
+        }
+      }
+      paintPlace();
+      return card;
+    }
 
     const wrap = ui.h('div', { class: 'stack' });
 
@@ -102,7 +181,9 @@
     const serialsOn = () => SR.state.usesSerialNumbers();
     const scanInput = ui.h('input', {
       type: 'search',
-      placeholder: serialsOn() ? 'Scan a barcode, or type a name, SKU or serial…' : 'Scan a barcode, or type a name, SKU or barcode…',
+      placeholder: plant
+        ? 'Scan a barcode, or type what this plant sells…'
+        : (serialsOn() ? 'Scan a barcode, or type a name, SKU or serial…' : 'Scan a barcode, or type a name, SKU or barcode…'),
       id: 'pos-scan',
       autocomplete: 'off',
       autocorrect: 'off',
@@ -116,12 +197,14 @@
     const scanBox = ui.h('div', { class: 'pos-scan' }, scanInput,
       ui.h('button', { class: 'btn btn-primary scan-btn', type: 'button', onClick: () => commitField(scanInput.value, { fast: wedgeCount >= 4 }) }, 'Find'));
     const results = ui.h('div', { class: 'pos-results', hidden: true });
+    const categoryField = ui.h('label', { class: 'field pos-category' },
+      ui.h('span', { class: 'field-label' }, 'Selling category'),
+      categorySelect,
+      ui.h('span', { class: 'hint' }, 'A NAFDAC catalogue drug is pharmaceutical. A shop-added drug counts only when it is filed under a pharmaceutical category. Everything else is the other side.'));
+    if (plant) categoryField.hidden = true;
     const scanCard = ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
-        ui.h('label', { class: 'field pos-category' },
-          ui.h('span', { class: 'field-label' }, 'Selling category'),
-          categorySelect,
-          ui.h('span', { class: 'hint' }, 'A NAFDAC catalogue drug is pharmaceutical. A shop-added drug counts only when it is filed under a pharmaceutical category. Everything else is the other side.')),
+        categoryField,
         scanBox,
         ui.h('div', { class: 'hint' }, serialsOn()
           ? 'A USB scanner types into this box and presses Enter. The shelf barcode is looked up exactly, and a serial number is too.'
@@ -164,6 +247,13 @@
     infoCard.appendChild(infoBody);
     right.appendChild(infoCard);
 
+    if (dispatchOn) wrap.appendChild(plantPlaceCard());
+    else if (plant) {
+      wrap.appendChild(ui.h('div', { class: 'card' },
+        ui.h('div', { class: 'card-body' },
+          ui.h('h2', {}, 'Plant premises'),
+          ui.h('p', { class: 'hint' }, 'This counter is the plant floor. Stock leaves the plant when the sale is recorded.'))));
+    }
     if (!SR.state.activeBranchId && SR.state.canSeeAllBranches()) {
       wrap.appendChild(ui.h('div', { class: 'alert alert-warn' },
         ui.h('strong', {}, 'Pick a shop before you sell. '),
@@ -1446,6 +1536,7 @@
       ensureSettlement();
       totalsEl.appendChild(row('Sale', U.humanise(cart.saleType)));
       totalsEl.appendChild(row('Terms', cart.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot'));
+      if (dispatchOn) totalsEl.appendChild(row('Where', placeLabel()));
       const method = dominantMethod();
       if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
       const pay = document.getElementById('pos-complete');
@@ -1962,6 +2053,7 @@
 
     async function raiseBill() {
       if (!cart.lines.length) { ui.warn('Add something to the bill first.'); return; }
+      if (!assertPlace()) return;
       if (cartIsBooking()) {
         ui.warn('A hire or a lease is booked, not billed. Take payment for that line on its own.');
         return;
@@ -1991,6 +2083,8 @@
         delivery_required: Boolean(cart.deliveryRequired),
         delivery_address: cart.deliveryAddress || null,
         notes: cart.notes || null,
+        sale_place: dispatchOn ? (cart.salePlace || 'PREMISES') : null,
+        vehicle_id: dispatchOn && cart.salePlace === 'VEHICLE' ? cart.vehicleId : null,
         manual_price_overrides: cart.manualPriceOverrides,
         lines: cart.lines.map((l) => linePayload(l)),
       };
@@ -2195,6 +2289,7 @@
         ui.warn('A credit supply needs a customer. The invoice has to belong to somebody who can pay it later.');
         return null;
       }
+      if (!assertPlace()) return null;
       const payload = {
         branch_id: SR.state.activeBranchId,
         business_id: SR.state.activeBusinessId,
@@ -2211,6 +2306,8 @@
         delivery_required: Boolean(cart.deliveryRequired),
         delivery_address: cart.deliveryAddress || null,
         notes: cart.notes || null,
+        sale_place: dispatchOn ? (cart.salePlace || 'PREMISES') : null,
+        vehicle_id: dispatchOn && cart.salePlace === 'VEHICLE' ? cart.vehicleId : null,
         credit_override_reason: (creditReasonInput && creditReasonInput.value.trim()) || cart.creditOverrideReason || null,
         manual_price_overrides: cart.manualPriceOverrides,
         payments: cart.payments.map((p) => ({

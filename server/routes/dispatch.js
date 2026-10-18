@@ -22,6 +22,7 @@ const {
   VEHICLE_CLASSES, ARRANGEMENTS, normaliseModes, modesFromOverrides, modeMatches, classOf, arrangementOf,
 } = require('../../domain/dispatch');
 const glService = require('../services/glService');
+const vehicleDuty = require('../lib/vehicleDuty');
 
 function parseOverrides(raw) {
   if (!raw) return {};
@@ -1117,6 +1118,133 @@ function mount(app, base = '/api') {
         : 'Noted on ' + asset.name + '. A manager records the stop and any money spent. This report does not take it off the register by itself.',
     });
   }));
+
+  app.get(`${base}/dispatch/duties`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const business = await loadBusiness(db, ctx);
+    if (!setupOf(business).enabled) {
+      ctx.json({ ok: true, data: [] });
+      return;
+    }
+    const mine = ctx.req.queryParam('mine') === '1' || !atLeast(user.role, 'MANAGER');
+    const active = ctx.req.queryParam('active') !== '0';
+    const rows = await vehicleDuty.dutiesFor(db, {
+      businessId: business.id,
+      userId: mine ? user.id : (ctx.req.queryParam('user_id') || null),
+      vehicleId: ctx.req.queryParam('vehicle_id') || null,
+      activeOnly: active,
+    });
+    ctx.json({ ok: true, data: rows });
+  });
+
+  app.post(`${base}/dispatch/duties`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('A manager assigns the vehicle.', { status: 403, code: 'FORBIDDEN' });
+    const business = await loadBusiness(db, ctx);
+    if (!setupOf(business).enabled) throw new HttpError('This business has no dispatch vehicles.', { status: 400, code: 'DISPATCH_OFF' });
+    const body = await ctx.req.json();
+    const duty = await vehicleDuty.assignDuty(db, {
+      businessId: business.id,
+      vehicleId: body.vehicle_id || body.vehicleId,
+      userId: body.user_id || body.userId,
+      period: body.period,
+      startsOn: body.starts_on || body.startsOn,
+      assignedBy: user.id,
+      notes: strField(body.notes, { field: 'Note', maxLength: 300 }),
+    });
+    await recordFromCtx(ctx, {
+      action: 'VEHICLE_DUTY_ASSIGNED', entityType: 'VEHICLE_DUTY', entityId: duty.id, businessId: business.id,
+      after: { vehicleId: duty.vehicle_id, userId: duty.user_id, period: duty.period, startsOn: duty.starts_on, endsOn: duty.ends_on },
+    });
+    const until = duty.period === 'UNTIL_CHANGED' ? 'until you change the driver' : (duty.ends_on ? `through ${duty.ends_on}` : duty.starts_on);
+    ctx.json({
+      ok: true,
+      duty,
+      message: `${duty.full_name || duty.username} has ${duty.vehicle_name} from ${duty.starts_on}, ${until}.`,
+    }, 201);
+  }));
+
+  app.post(`${base}/duties/:id/end`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('A manager changes the driver.', { status: 403, code: 'FORBIDDEN' });
+    const business = await loadBusiness(db, ctx);
+    const duty = await vehicleDuty.endDuty(db, { businessId: business.id, dutyId: ctx.req.param('id') });
+    await recordFromCtx(ctx, {
+      action: 'VEHICLE_DUTY_ENDED', entityType: 'VEHICLE_DUTY', entityId: duty.id, businessId: business.id,
+      after: { vehicleId: duty.vehicle_id, userId: duty.user_id, endsOn: duty.ends_on },
+    });
+    ctx.json({ ok: true, duty, message: `${duty.vehicle_name} is no longer assigned to ${duty.full_name || duty.username}.` });
+  }));
+
+  app.get(`${base}/dispatch/vehicles/:id/record`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    const business = await loadBusiness(db, ctx);
+    const vehicle = await db.first(
+      'SELECT * FROM delivery_vehicles WHERE id = ? AND business_id = ? AND is_deleted = 0',
+      [String(ctx.req.param('id')), String(business.id)],
+    );
+    if (!vehicle) throw new HttpError('That vehicle is not on this business.', { status: 404, code: 'VEHICLE_NOT_FOUND' });
+    const duties = await vehicleDuty.dutiesFor(db, { businessId: business.id, vehicleId: vehicle.id, activeOnly: false });
+    if (!vehicleDuty.canReadVehicle(user, duties)) {
+      throw new HttpError('This vehicle is not assigned to you.', { status: 403, code: 'FORBIDDEN' });
+    }
+    const today = watToday();
+    const driver = duties.find((row) => !row.ended_at && row.starts_on <= today && (!row.ends_on || row.ends_on >= today)) || null;
+    const sales = await db.all(
+      `SELECT id, receipt_no, sold_at, total, amount_paid, balance_due, status, customer_id, customer_name, customer_phone, salesperson_id, sale_place
+         FROM sales WHERE vehicle_id = ? AND business_id = ? AND is_deleted = 0
+        ORDER BY sold_at DESC LIMIT 200`,
+      [String(vehicle.id), String(business.id)],
+    );
+    const totals = await db.first(
+      `SELECT COUNT(*) AS sales_count, COALESCE(SUM(CASE WHEN status = 'VOIDED' THEN 0 ELSE total END), 0) AS sales_total
+         FROM sales WHERE vehicle_id = ? AND business_id = ? AND is_deleted = 0`,
+      [String(vehicle.id), String(business.id)],
+    );
+    const customers = await db.all(
+      `SELECT customer_id, customer_name, customer_phone, COUNT(*) AS sales_count,
+              COALESCE(SUM(CASE WHEN status = 'VOIDED' THEN 0 ELSE total END), 0) AS spent
+         FROM sales
+        WHERE vehicle_id = ? AND business_id = ? AND is_deleted = 0
+          AND (customer_id IS NOT NULL OR customer_name IS NOT NULL OR customer_phone IS NOT NULL)
+        GROUP BY customer_id, customer_name, customer_phone
+        ORDER BY spent DESC LIMIT 100`,
+      [String(vehicle.id), String(business.id)],
+    );
+    const expenses = await db.all(
+      `SELECT id, expense_date, category, description, amount, status, payment_method
+         FROM expenses WHERE vehicle_id = ? AND business_id = ? AND is_deleted = 0
+        ORDER BY expense_date DESC, created_at DESC LIMIT 200`,
+      [String(vehicle.id), String(business.id)],
+    );
+    const maintenanceCategories = ['REPAIRS_MAINTENANCE', 'MACHINERY_SERVICE', 'DIESEL_FUEL', 'TRANSPORT_LOGISTICS'];
+    const rounds = await db.all(
+      `SELECT id, job_no, status, created_at, delivered_at, delivery_address, driver_name
+         FROM delivery_jobs WHERE vehicle_id = ? AND business_id = ? AND is_deleted = 0
+        ORDER BY created_at DESC LIMIT 50`,
+      [String(vehicle.id), String(business.id)],
+    );
+    ctx.json({
+      ok: true,
+      vehicle,
+      driver,
+      duties,
+      sales,
+      customers,
+      expenses,
+      maintenance: expenses.filter((row) => maintenanceCategories.includes(String(row.category || '').toUpperCase())),
+      rounds,
+      totals: {
+        salesCount: Number(totals && totals.sales_count) || 0,
+        salesTotal: Number(totals && totals.sales_total) || 0,
+        expenseTotal: expenses.reduce((sum, row) => sum + (Number(row.amount) || 0), 0),
+      },
+    });
+  });
 }
 
 module.exports = { mount, ensureFleet };

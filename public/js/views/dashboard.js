@@ -154,6 +154,18 @@
       const tradingNodes = [];
       const attentionNodes = [];
       host.replaceChildren();
+      if (SR.state.moduleOn && SR.state.moduleOn('manufacturing')) {
+        const water = (SR.state.activeBusiness() || {}).profile_code === 'WATER_PACKING';
+        todayNodes.push(ui.h('div', { class: 'card' },
+          ui.h('div', { class: 'card-body' },
+            ui.h('h2', {}, water ? 'Packing plant' : 'Plant'),
+            ui.h('p', { class: 'hint' }, water
+              ? 'Sell bags and bottles on the plant floor, or from the vehicle assigned to the person at the counter. Open a vehicle for its sales, fuel, repairs, customers and driver.'
+              : 'Sell at the plant, or from the vehicle assigned to the person at the counter. Open a vehicle for its sales, fuel, repairs, customers and driver.'),
+            ui.h('div', { class: 'actions' },
+              ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', onClick: () => SR.navigate('/pos') }, 'Sell'),
+              SR.state.moduleOn('dispatch') ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => SR.navigate('/fleet') }, 'Vehicles') : null))));
+      }
       if (offline) {
         todayNodes.push(ui.h('div', { class: 'alert alert-warn' },
           ui.h('strong', {}, 'Offline — '),

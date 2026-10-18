@@ -13,6 +13,7 @@ const { scopeFilter, inScope, strField } = require('../lib/respond');
 const salesRoutes = require('./sales');
 const salesService = require('../services/salesService');
 const bills = require('../services/billService');
+const vehicleDuty = require('../lib/vehicleDuty');
 
 async function branchIdsInScope(db, scope) {
   if (!scope) return [];
@@ -90,7 +91,17 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const body = await ctx.req.json();
     const params = await salesRoutes.buildEngineParams(db, ctx, body, { forComplete: false });
+    const place = await vehicleDuty.resolveSalePlace(db, params.business, user, body);
     const raised = await bills.raise(db, { params, rawLines: params.lines, user });
+    if (!place.skip) {
+      await db.run(
+        'UPDATE customer_bills SET sale_place = ?, vehicle_id = ? WHERE id = ?',
+        [place.salePlace, place.vehicleId, raised.id],
+      );
+      raised.bill.sale_place = place.salePlace;
+      raised.bill.vehicle_id = place.vehicleId;
+      raised.bill.vehicle_name = place.vehicleName || null;
+    }
     await recordFromCtx(ctx, {
       action: 'BILL_RAISED',
       entityType: 'CUSTOMER_BILL',
@@ -133,6 +144,12 @@ function mount(app, base = '/api') {
       params.stockHolds = locked.holds;
       params.allowReservedSerials = locked.serials;
       sale = await salesService.complete(db, params);
+      const stamped = bill.sale_place
+        ? { skip: false, salePlace: bill.sale_place, vehicleId: bill.vehicle_id || null, vehicleName: null }
+        : await vehicleDuty.resolveSalePlace(db, params.business, user, body);
+      await vehicleDuty.writeSalePlace(db, sale.saleId, stamped);
+      sale.salePlace = stamped.salePlace || null;
+      sale.vehicleId = stamped.vehicleId || null;
       await bills.markPaid(db, bill, sale, user);
     } catch (e) {
       if (!e || e.code !== 'BILL_CLOSE_FAILED') await bills.abortPay(db, bill.id);

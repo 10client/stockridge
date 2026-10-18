@@ -38,6 +38,7 @@ const saleIssues = require('../services/saleIssues');
 const selling = require('../../domain/selling');
 const { trustedReplay } = require('../lib/replay');
 const glService = require('../services/glService');
+const vehicleDuty = require('../lib/vehicleDuty');
 
 // ---------------------------------------------------------------------
 // BODY -> ENGINE TRANSLATION
@@ -419,8 +420,13 @@ function mount(app, base = '/api') {
     const user = ctx.get('user');
     const body = await ctx.req.json();
     const params = await buildEngineParams(db, ctx, body, { forComplete: true });
+    const place = await vehicleDuty.resolveSalePlace(db, params.business, user, body);
 
     const result = await salesService.complete(db, params);
+    await vehicleDuty.writeSalePlace(db, result.saleId, place);
+    result.salePlace = place.salePlace || null;
+    result.vehicleId = place.vehicleId || null;
+    result.vehicleName = place.vehicleName || null;
 
     await recordFromCtx(ctx, {
       action: 'SALE_COMPLETED', entityType: 'SALE', entityId: result.saleId,
@@ -429,6 +435,7 @@ function mount(app, base = '/api') {
         receiptNo: result.receiptNo, total: result.totals.total, paid: result.paid,
         balanceDue: result.balanceDue, lines: result.lineCount, saleType: params.saleType,
         soldAt: result.soldAt, backdated: result.backdated, deviceId: params.deviceId,
+        salePlace: result.salePlace || null, vehicleId: result.vehicleId || null,
       },
     });
 
@@ -480,6 +487,9 @@ function mount(app, base = '/api') {
       backdated: result.backdated,
       settlement: result.settlement || null,
       paper: result.paper || null,
+      salePlace: result.salePlace || null,
+      vehicleId: result.vehicleId || null,
+      vehicleName: result.vehicleName || null,
       replayed: Boolean(ctx.get('idempotencyReplayed')),
       message: `Sale ${result.receiptNo} recorded — ₦${Number(result.totals.total).toLocaleString('en-NG')}.${result.paper && result.paper.kind === 'INVOICE' ? ' Invoice issued. This is not a receipt.' : ''}${result.balanceDue > 0 ? ` ₦${Number(result.balanceDue).toLocaleString('en-NG')} still owed.` : ''}${result.latePosting ? ' Posted after the till was counted.' : ''}`,
     }, 201);

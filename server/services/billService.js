@@ -130,6 +130,8 @@ function publicBill(row, extra = {}) {
     raised_at: row.raised_at,
     raised_by_name: row.raised_by_name || null,
     notes: row.notes || null,
+    sale_place: row.sale_place || null,
+    vehicle_id: row.vehicle_id || null,
     lines: packed.display || [],
     paid_sale_id: row.paid_sale_id || null,
     document: 'BILL',

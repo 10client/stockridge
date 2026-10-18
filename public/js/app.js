@@ -202,6 +202,7 @@
     { path: '/change-owed', title: 'Change owed', group: 'Customers', view: 'change-owed', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'instalments' },
     { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'deliveries' },
+    { path: '/fleet', title: 'Vehicles', group: 'Today', view: 'fleet', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'], module: 'dispatch' },
     { path: '/returns', title: 'Returns & warranty', group: 'Customers', view: 'returns', icon: 'back', roles: ['STAFF', 'MANAGER', 'OWNER'] },
 
     { path: '/attendance', title: 'Attendance', group: 'People', view: 'attendance', icon: 'clock', roles: ['STAFF', 'MANAGER', 'OWNER'] },
@@ -225,6 +226,7 @@
     { path: '/customers/:id', view: 'customers', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/tills/:id', view: 'till', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/deliveries/:id', view: 'deliveries', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/fleet/:id', view: 'fleet', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'], module: 'dispatch' },
     { path: '/instalments/:id', view: 'instalments', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
     { path: '/suppliers/:id', view: 'suppliers', nav: false, roles: ['MANAGER', 'OWNER'] },
     { path: '/purchase-orders/:id', view: 'purchase-orders', nav: false, roles: ['MANAGER', 'OWNER'] },
