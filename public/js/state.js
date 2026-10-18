@@ -89,6 +89,23 @@
   function isRole(role) { return String((state.user && state.user.role) || '').toUpperCase() === String(role).toUpperCase(); }
   function isAdmin() { return isRole('ADMIN'); }
   function isOwner() { return isRole('OWNER'); }
+  /**
+   * The proprietor owns every business. A co-owner is the same stored role
+   * with a business on the row. The server sends `proprietor`; the business
+   * object is the fallback for a session loaded before that flag existed.
+   */
+  function isProprietor() {
+    const me = state.user || {};
+    if (me.proprietor === true) return true;
+    if (me.coOwner === true) return false;
+    return String(me.role || '').toUpperCase() === 'OWNER' && !(me.business && me.business.id);
+  }
+  function canAppointCoOwner() {
+    return isAdmin() || isProprietor();
+  }
+  function canChangeDeployment() {
+    return isAdmin() || isProprietor();
+  }
   function isManager() { return isRole('MANAGER'); }
   function isStaff() { return isRole('STAFF'); }
   /** A general manager has no branch pin: they cover every branch of a business. */
@@ -119,6 +136,9 @@
     if (targetId !== 'undefined' && targetId === String(me.id)) return true; // your own session
     if (targetRole === 'ADMIN') return false;
     if (!atLeast('MANAGER')) return false;
+    // The proprietor edits a co-owner. Both are stored as OWNER, so rank
+    // alone would hide the button the route allows.
+    if (isProprietor() && targetRole === 'OWNER' && target.business_id) return true;
     return rank(me.role) > rank(targetRole);
   }
 
@@ -158,7 +178,7 @@
    */
   function roleNeedsBranch(role, opts) {
     const r = String(role || '').toUpperCase();
-    if (r === 'ADMIN' || r === 'OWNER') return false;
+    if (r === 'ADMIN' || r === 'OWNER' || r === 'CO_OWNER') return false;
     if (r === 'MANAGER' && opts && opts.generalManager) return false;
     return true;
   }
@@ -506,7 +526,8 @@
 
   SR.state = Object.assign(state, {
     on, emit, load, loadFromMirror, clear,
-    rank, atLeast, isRole, isAdmin, isOwner, isManager, isStaff, isGeneralManager, canManageUser,
+    rank, atLeast, isRole, isAdmin, isOwner, isProprietor, canAppointCoOwner, canChangeDeployment,
+    isManager, isStaff, isGeneralManager, canManageUser,
     canCreateRole, roleNeedsBranch,
     canSeeAllBranches, can, usesSerialNumbers,
     feature, featureLabel, moduleOn,

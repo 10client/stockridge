@@ -586,7 +586,11 @@
     setText('business-chip-name', working);
     setText('user-initials', U.initials(user && user.fullName));
     setText('menu-name', (user && user.fullName) || '—');
-    setText('menu-meta', user ? `${user.roleLabel || user.role}${user.branch ? ` · ${user.branch.name}` : ''}` : '—');
+    const coOwner = user && (user.coOwner || user.roleLabel === 'Co-owner');
+    const reach = user && user.branch
+      ? ` · ${user.branch.name}`
+      : (coOwner ? ` · ${SR.state.businesses().length} business${SR.state.businesses().length === 1 ? '' : 'es'}` : '');
+    setText('menu-meta', user ? `${user.roleLabel || user.role}${reach}` : '—');
     setText('branch-chip-name', SR.state.activeBranchName());
     setText('build-tag', `v${SR.APP_VERSION}`);
     const bizSwitch = document.getElementById('business-switch');
@@ -1057,7 +1061,13 @@
       const rows = ((res && (res.data || res.rows)) || []).filter((u) => {
         if (!u || String(u.id) === String(SR.state.user && SR.state.user.id)) return false;
         const r = String(u.role || '').toUpperCase();
-        return isAdmin ? r === 'OWNER' : (r === 'STAFF' || r === 'MANAGER');
+        if (!isAdmin) return r === 'STAFF' || r === 'MANAGER';
+        if (r !== 'OWNER') return false;
+        // The proprietor owns every business. A co-owner only if this business is one of theirs.
+        if (!u.business_id) return true;
+        const here = String(SR.state.activeBusinessId || '');
+        if (String(u.business_id) === here) return true;
+        return String(u.owned_business_ids || '').split(',').map((id) => id.trim()).includes(here);
       });
       person.replaceChildren();
       if (!rows.length) {
@@ -1065,7 +1075,7 @@
       } else {
         person.appendChild(ui.h('option', { value: '' }, 'Choose someone'));
         for (const u of rows) {
-          const who = `${u.full_name || u.username} · ${U.titleCase(u.role)}${u.branch_name ? ` · ${u.branch_name}` : ''}`;
+          const who = `${u.full_name || u.username} · ${U.titleCase(u.roleLabel || u.role)}${u.owned_businesses ? ` · ${u.owned_businesses}` : (u.branch_name ? ` · ${u.branch_name}` : '')}`;
           person.appendChild(ui.h('option', { value: u.id }, who));
         }
       }

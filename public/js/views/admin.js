@@ -700,7 +700,7 @@
   // =====================================================================
   async function renderSettings(ctx) {
     ctx.setTitle('Settings');
-    const canEdit = SR.state.atLeast('OWNER');
+    const canEdit = SR.state.canChangeDeployment && SR.state.canChangeDeployment();
     const tabs = [{ id: 'shop', label: 'Shop', find: 'shop branding logo trading name receipt footer contact' }]
       .concat(SETTING_GROUPS.map((group) => ({
         id: group.id,
@@ -745,7 +745,9 @@
           ui.h('h1', {}, 'Settings'),
           ui.h('p', { class: 'sub' }, canEdit
             ? 'One section at a time. Save stays here, however far you scroll.'
-            : 'You can look through these. An owner has to save a change.')),
+            : (SR.state.isOwner()
+              ? 'You can look through these. The proprietor saves a change that covers every business.'
+              : 'You can look through these. An owner has to save a change.'))),
         ui.h('div', { class: 'settings-dock-actions' }, unsaved, saveBtn)),
       ui.h('div', { class: 'settings-find' }, find),
       tabList);

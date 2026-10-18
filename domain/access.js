@@ -48,8 +48,13 @@ function buildScope(user, { businessIds = null, allBranchIds = null } = {}) {
   const pinnedBusinessId = user && user.business_id ? String(user.business_id) : null;
 
   const isAdminVendor = role === ROLES.ADMIN;
-  const allBusinesses = isAdminVendor || role === ROLES.OWNER || pinnedBusinessId === null;
-  const allBranches = isAdminVendor || role === ROLES.OWNER || role === ROLES.MANAGER && pinnedBranchId === null;
+  // An OWNER with a business on the row is a co-owner of that business plus
+  // any grants. Treating every OWNER as every business made a co-owner of one
+  // shop the proprietor of the deployment. The proprietor is the owner whose
+  // business pin is empty — the same derivation a general manager gets from
+  // an empty branch pin. No fifth stored role.
+  const allBusinesses = isAdminVendor || pinnedBusinessId === null;
+  const allBranches = isAdminVendor || (role === ROLES.OWNER && pinnedBusinessId === null) || (role === ROLES.MANAGER && pinnedBranchId === null);
 
   const scope = {
     role,
@@ -67,6 +72,18 @@ function buildScope(user, { businessIds = null, allBranchIds = null } = {}) {
   if (scope.allBranches && !scope.allBusinesses && Array.isArray(allBranchIds)) {
     scope.branchIds = new Set(allBranchIds.filter((b) => scope.businessIds.has(String(b.business_id))).map((b) => String(b.id)));
     scope.allBranches = false;
+  }
+  // A co-owner reaches every branch of the businesses they own, including a
+  // branch opened after they signed in. The set is rebuilt on each request
+  // from the live branch list, so it is not a frozen snapshot and it is not
+  // every branch on the deployment.
+  if (role === ROLES.OWNER && pinnedBusinessId && Array.isArray(allBranchIds)) {
+    scope.allBranches = false;
+    scope.branchIds = new Set(
+      allBranchIds
+        .filter((b) => scope.businessIds.has(String(b.business_id)))
+        .map((b) => String(b.id)),
+    );
   }
   return scope;
 }

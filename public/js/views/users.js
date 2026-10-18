@@ -28,7 +28,7 @@
   const ROLE_LABELS = [
     { value: 'STAFF', label: 'Staff — sell, take payment, clock in' },
     { value: 'MANAGER', label: 'Manager — everything at their branch' },
-    { value: 'OWNER', label: 'Owner — every branch, the books, the settings' },
+    { value: 'OWNER', label: 'Owner — every business and every branch' },
     { value: 'ADMIN', label: 'Administrator — the deployment itself' },
   ];
   // WHAT THIS PERSON MAY HAND OUT, not what exists. `SR.state.canCreateRole` mirrors
@@ -37,6 +37,18 @@
   const ROLES = ROLE_LABELS;
   /** The roles THIS person may hand out — the create form and the role filter use these. */
   const creatableRoles = () => ROLE_LABELS.filter((r) => SR.state.canCreateRole(r.value));
+  // Co-owner is a form choice, not a stored role. The route records OWNER plus
+  // the businesses ticked. Offering it only where the route will accept it.
+  function createRoleOptions() {
+    const rows = creatableRoles().slice();
+    if (SR.state.canAppointCoOwner && SR.state.canAppointCoOwner()) {
+      const at = rows.findIndex((r) => r.value === 'OWNER');
+      const co = { value: 'CO_OWNER', label: 'Co-owner — all, one, or a couple of the businesses' };
+      if (at >= 0) rows.splice(at + 1, 0, co);
+      else rows.push(co);
+    }
+    return rows;
+  }
 
   async function render(ctx) {
     ctx.setTitle('Staff');
@@ -128,10 +140,13 @@
       }
 
       const byRole = {};
-      for (const u of rows) byRole[u.role] = (byRole[u.role] || 0) + 1;
+      for (const u of rows) {
+        const label = u.role === 'OWNER' && u.business_id ? 'Co-owner' : (u.roleLabel || u.role);
+        byRole[label] = (byRole[label] || 0) + 1;
+      }
       stack.appendChild(ui.h('div', { class: 'kpis' },
         ui.kpi({ label: 'People', value: U.qty(total) }),
-        ...['STAFF', 'MANAGER', 'OWNER', 'ADMIN'].filter((r) => byRole[r]).map((r) => ui.kpi({ label: U.titleCase(r), value: U.qty(byRole[r]) }))));
+        ...['Staff', 'STAFF', 'Manager', 'MANAGER', 'Co-owner', 'Owner', 'OWNER', 'ADMIN'].filter((r) => byRole[r]).map((r) => ui.kpi({ label: U.titleCase(r), value: U.qty(byRole[r]) }))));
 
       stack.appendChild(ui.dataCard({
         title: 'The team',
@@ -150,7 +165,8 @@
             { key: 'branch_name', label: 'Branch', render: (u) => {
               if (u.branch_name) return u.branch_name;
               if (u.role === 'MANAGER') return ui.badge('General Manager', 'badge-violet');
-              if (u.role === 'OWNER' || u.role === 'ADMIN') return ui.badge('all branches', 'badge-violet');
+              if (u.role === 'OWNER' && u.business_id) return ui.badge(u.owned_businesses || u.business_name || 'chosen businesses', 'badge-violet');
+              if (u.role === 'OWNER' || u.role === 'ADMIN') return ui.badge('all businesses', 'badge-violet');
               return '—';
             } },
             { key: 'revenue_30d', label: 'Sold (30d)', align: 'right', render: (u) => (Number(u.revenue_30d) ? U.money(u.revenue_30d) : '—') },
@@ -606,15 +622,23 @@
       const businessField = ui.field({
         label: 'Business', name: 'business_id',
         options: [{ value: '', label: 'Choose the business' }],
-        hint: 'An owner belongs to a business even though they are not pinned to a branch. This is the set of books their record sits under.',
+        hint: 'A general manager belongs to one business and covers every branch of it.',
       });
       businessField.hidden = true;
+      const ownerNote = ui.h('div', { class: 'hint', hidden: true },
+        'An owner reaches every business and every branch, including a business or a branch opened later. They are not pinned to one set of books.');
+      const ownField = ui.h('div', { class: 'field', hidden: true });
+      const ownList = ui.h('div', { class: 'stack' });
+      ownField.appendChild(ui.h('div', { class: 'field-label' }, 'Businesses they own'));
+      ownField.appendChild(ownList);
+      ownField.appendChild(ui.h('div', { class: 'hint' },
+        'Tick all of them, one, or a couple. A co-owner reaches every branch of the businesses you tick. A business opened later is not theirs until you add it.'));
       const emptyNote = ui.h('div', { class: 'alert alert-warn', hidden: true });
 
       form.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Full name', name: 'full_name', required: true, placeholder: 'Chidinma Okafor' }),
         ui.field({ label: 'Username', name: 'username', required: true, hint: 'Lower case, no spaces. This is what they type on the sign-in screen.' }),
-        ui.field({ label: 'Role', name: 'role', required: true, options: creatableRoles() }),
+        ui.field({ label: 'Role', name: 'role', required: true, options: createRoleOptions() }),
         reachField,
         branchField,
         businessField,
@@ -626,6 +650,8 @@
         ui.field({ label: 'Bank', name: 'bank_name', placeholder: 'GTBank' }),
         ui.field({ label: 'Account number', name: 'bank_account_no', placeholder: '0123456789' }),
         ui.field({ label: 'Employed since', name: 'employment_started', type: 'date' })));
+      form.appendChild(ownerNote);
+      form.appendChild(ownField);
       form.appendChild(emptyNote);
       form.appendChild(ui.h('div', { class: 'hint' }, 'The PIN is stored hashed. Nobody — including you — can read it back. If it is forgotten, issue a new one.'));
 
@@ -640,6 +666,34 @@
 
       function branchLabel(b) {
         return b.business_name ? `${b.name} · ${b.business_name}` : b.name;
+      }
+      function chosenBusinessIds() {
+        return [...ownList.querySelectorAll('input[data-business]')].filter((el) => el.checked).map((el) => el.value);
+      }
+      function paintOwnership() {
+        const previous = new Set(chosenBusinessIds());
+        ownList.replaceChildren();
+        if (!businessRows.length) {
+          ownList.appendChild(ui.h('div', { class: 'hint' }, 'No business yet.'));
+          return;
+        }
+        const boxes = [];
+        const allBox = ui.h('input', { type: 'checkbox' });
+        ownList.appendChild(ui.h('label', { class: 'check' }, allBox, ui.h('span', {}, 'All businesses')));
+        for (const b of businessRows) {
+          const checked = previous.size ? previous.has(String(b.id)) : businessRows.length === 1;
+          const box = ui.h('input', { type: 'checkbox', value: b.id, 'data-business': '1', checked: checked });
+          boxes.push(box);
+          ownList.appendChild(ui.h('label', { class: 'check' }, box, ui.h('span', {}, b.name)));
+          box.addEventListener('change', syncAll);
+        }
+        function syncAll() {
+          allBox.checked = boxes.length > 0 && boxes.every((box) => box.checked);
+        }
+        allBox.addEventListener('change', () => {
+          for (const box of boxes) box.checked = allBox.checked;
+        });
+        syncAll();
       }
       function paintChoices() {
         const role = roleSel ? String(roleSel.value || '') : '';
@@ -679,15 +733,24 @@
         for (const b of businessRows) businessSel.appendChild(ui.h('option', { value: b.id }, b.name));
         if ([...businessSel.options].some((o) => o.value === keptBiz && keptBiz)) businessSel.value = keptBiz;
         else if (businessRows.length === 1) businessSel.value = businessRows[0].id;
-        // The business is asked only when it cannot be read off a branch: an owner or an
-        // administrator with no branch, and more than one business to sit under.
-        businessField.hidden = needs || businessRows.length <= 1;
-        branchField.hidden = general;
+        const ownerSeat = role === 'OWNER';
+        const coSeat = role === 'CO_OWNER';
+        // The business select is for a general manager when the branch cannot
+        // name it. An owner is not asked. A co-owner uses the checklist.
+        businessField.hidden = needs || ownerSeat || coSeat || businessRows.length <= 1;
+        branchField.hidden = general || ownerSeat || coSeat;
+        ownerNote.hidden = !ownerSeat;
+        ownField.hidden = !coSeat;
+        paintOwnership();
 
         emptyNote.replaceChildren();
-        if (!businessRows.length) {
+        if (coSeat && !businessRows.length) {
           emptyNote.hidden = false;
-          emptyNote.appendChild(ui.h('div', {}, 'There is no business yet. Create one first — its first branch is opened with it, and then the owner can be added. An owner is not pinned to a branch.'));
+          emptyNote.appendChild(ui.h('div', {}, 'There is no business to give a co-owner yet. Create one first. An owner can still be added — they own every business, including one opened later.'));
+          emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/businesses'); } }, 'Create a business'));
+        } else if (!businessRows.length && !ownerSeat) {
+          emptyNote.hidden = false;
+          emptyNote.appendChild(ui.h('div', {}, 'There is no business yet. Create one first — its first branch is opened with it. An owner is not pinned to a branch, and can be added either way.'));
           emptyNote.appendChild(ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => { m.close(); SR.app.navigate('/businesses'); } }, 'Create a business'));
         } else if (needs && !branchRows.length) {
           emptyNote.hidden = false;
@@ -716,8 +779,17 @@
         const v = ui.readForm(form);
         if (!v.pin || String(v.pin) !== String(v.confirm_pin)) { ui.warn('The two PINs must match.'); return; }
         if (!listsSettled) { ui.warn('Still loading the businesses and branches. One moment, then try again.'); return; }
-        if (!businessRows.length) {
-          ui.warn('Create a business first. An owner belongs to a business, even though they are not pinned to a branch.');
+        const ownerSeat = v.role === 'OWNER';
+        const coSeat = v.role === 'CO_OWNER';
+        const ownedIds = coSeat ? chosenBusinessIds() : [];
+        if (coSeat && !ownedIds.length) {
+          ui.warn(businessRows.length
+            ? 'Choose the businesses this co-owner owns. That can be all of them, one, or a couple.'
+            : 'Create a business first. A co-owner has to be given at least one.');
+          return;
+        }
+        if (!ownerSeat && !coSeat && !businessRows.length) {
+          ui.warn('Create a business first.');
           return;
         }
         const general = v.role === 'MANAGER' && v.reach === 'all';
@@ -731,14 +803,14 @@
             : 'There is no branch yet. Open a branch first — or add them as an owner, who reaches every branch.');
           return;
         }
-        const chosenBranch = general ? null : branchRows.find((b) => String(b.id) === String(v.branch_id));
-        const businessId = (chosenBranch && chosenBranch.business_id)
+        const chosenBranch = (general || ownerSeat || coSeat) ? null : branchRows.find((b) => String(b.id) === String(v.branch_id));
+        const businessId = ownerSeat || coSeat ? null : ((chosenBranch && chosenBranch.business_id)
           || v.business_id
-          || (businessRows.length === 1 ? businessRows[0].id : null);
-        if (!v.branch_id && !businessId) {
+          || (businessRows.length === 1 ? businessRows[0].id : null));
+        if (!ownerSeat && !coSeat && !v.branch_id && !businessId) {
           ui.warn(general
             ? 'Choose which business this general manager belongs to. They cover every branch of that business, not every business on the deployment.'
-            : 'Choose which business this owner belongs to. They reach every branch, but the record has to sit under one set of books.');
+            : 'Choose which business this person belongs to.');
           return;
         }
         await ui.withBusy(form, async () => {
@@ -746,9 +818,11 @@
             const res = await SR.api.post('/api/users', {
               full_name: v.full_name,
               username: v.username,
-              role: v.role,
+              role: coSeat ? 'OWNER' : v.role,
+              co_owner: coSeat || undefined,
+              business_ids: coSeat ? ownedIds : undefined,
               general_manager: general || undefined,
-              branch_id: general ? null : (v.branch_id || null),
+              branch_id: (general || ownerSeat || coSeat) ? null : (v.branch_id || null),
               business_id: businessId || undefined,
               job_title: v.job_title || undefined,
               phone: v.phone || undefined,
@@ -811,7 +885,7 @@
         const whyLocked = byRole === 'ROLE:ADMIN'
           ? `${u.full_name || u.username} is the deployment administrator and reaches every business here by virtue of that role. There is nothing to grant or withdraw.`
           : byRole === 'ROLE:OWNER'
-            ? `${u.full_name || u.username} is an owner, and an owner reaches every business in this deployment. There is nothing to grant or withdraw.`
+            ? `${u.full_name || u.username} is the proprietor and reaches every business and every branch. There is nothing to grant or withdraw.`
             : byRole === 'NO_BUSINESS_PINNED'
               ? `${u.full_name || u.username} is not tied to any one business, so every business already reaches them. Put them on a business to confine their view to it.`
               : null;
@@ -872,7 +946,9 @@
       form.appendChild(ui.kv([
         ['Username', `@${u.username}`],
         ['Role', U.titleCase(u.roleLabel || u.role)],
-        ['Branch', u.branch_name || 'Every branch'],
+        ['Reach', u.role === 'OWNER' && !u.business_id
+          ? 'Every business and every branch'
+          : (u.role === 'OWNER' ? (u.owned_businesses || u.business_name || 'Chosen businesses') : (u.branch_name || 'Every branch'))],
         ['Role grants', (u.navigation || []).map((n) => U.titleCase(n)).join(', ') || '—'],
       ]));
       form.appendChild(ui.h('div', { class: 'form-grid' },
@@ -884,12 +960,12 @@
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Role',
           name: 'role',
-          options: ROLES.map((r) => ({ value: r.value, label: U.titleCase(r.value) })),
+          options: ROLES.map((r) => ({ value: r.value, label: r.value === 'OWNER' && u.business_id ? 'Co-owner' : U.titleCase(r.value) })),
           value: u.role,
           disabled: self,
           hint: self ? 'You cannot change your own role.' : 'Changing a role takes effect at their next sign-in.',
         }) : null,
-        SR.state.atLeast('OWNER') ? ui.field({
+        SR.state.atLeast('OWNER') && String(u.role).toUpperCase() !== 'OWNER' ? ui.field({
           label: 'Branch',
           name: 'branch_id',
           options: [{ value: '', label: 'No branch — owner, administrator, or general manager' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.business_name ? `${b.name} · ${b.business_name}` : b.name }))),
@@ -916,14 +992,50 @@
       // locked out at all. All three are reached from here now, with the same gates the routes
       // enforce (a manager may look, only an owner may clear) and the same field names they
       // answer with.
+      let ownEditor = null;
+      if (String(u.role).toUpperCase() === 'OWNER' && !u.business_id) {
+        form.appendChild(ui.h('div', { class: 'hint' }, 'The proprietor. They own every business and every branch, including a business or a branch opened later.'));
+      }
+      if (String(u.role).toUpperCase() === 'OWNER' && u.business_id && !self && SR.state.canAppointCoOwner && SR.state.canAppointCoOwner()) {
+        ownEditor = ui.h('div', { class: 'field' });
+        ownEditor.appendChild(ui.h('div', { class: 'field-label' }, 'Businesses they own'));
+        const ownList = ui.h('div', { class: 'stack' });
+        ownEditor.appendChild(ownList);
+        ownEditor.appendChild(ui.h('div', { class: 'hint' }, 'Tick all of them, one, or a couple. They reach every branch of those businesses. A business opened later is not theirs until you add it.'));
+        const ownedNow = new Set(String(u.owned_business_ids || u.business_id || '').split(',').map((id) => id.trim()).filter(Boolean));
+        function paintOwned(businesses) {
+          ownList.replaceChildren();
+          if (!businesses.length) {
+            ownList.appendChild(ui.h('div', { class: 'hint' }, 'No business to choose.'));
+            return;
+          }
+          const boxes = [];
+          const allBox = ui.h('input', { type: 'checkbox' });
+          ownList.appendChild(ui.h('label', { class: 'check' }, allBox, ui.h('span', {}, 'All businesses')));
+          for (const b of businesses) {
+            const box = ui.h('input', { type: 'checkbox', value: b.id, 'data-owned': '1', checked: ownedNow.has(String(b.id)) });
+            boxes.push(box);
+            ownList.appendChild(ui.h('label', { class: 'check' }, box, ui.h('span', {}, b.name)));
+            box.addEventListener('change', () => { allBox.checked = boxes.every((el) => el.checked); });
+          }
+          allBox.addEventListener('change', () => { for (const box of boxes) box.checked = allBox.checked; });
+          allBox.checked = boxes.length > 0 && boxes.every((el) => el.checked);
+        }
+        paintOwned(SR.state.businesses() || []);
+        SR.api.get('/api/businesses').then((res) => {
+          if (form.isConnected && res && Array.isArray(res.data)) paintOwned(res.data);
+        }).catch(() => {});
+        ownEditor.collect = () => [...ownList.querySelectorAll('input[data-owned]')].filter((el) => el.checked).map((el) => el.value);
+        form.appendChild(ownEditor);
+      }
+
       if (SR.state.atLeast('MANAGER')) form.appendChild(signInSecurity(u));
 
-      // A grant reaches across businesses, so only the deployment administrator
-      // sees this. A client's own owner is scoped to every business in THEIR
-      // deployment by role already, which is a different thing from handing
-      // somebody else a second company to work in.
-      const isAdmin = String((SR.state.user && SR.state.user.role) || '').toUpperCase() === 'ADMIN';
-      if (isAdmin && !self) form.appendChild(accessSection(u));
+      // The proprietor owns every business, so they can hand a manager a
+      // second one. A co-owner's businesses are the checklist below, not
+      // these grant switches — a switch cannot untick the home business.
+      const mayAssign = SR.state.canAppointCoOwner && SR.state.canAppointCoOwner();
+      if (mayAssign && !self && String(u.role).toUpperCase() !== 'OWNER') form.appendChild(accessSection(u));
 
       const pinBtn = ui.h('button', { class: 'btn' }, 'Issue a new PIN');
       // WHERE THEY HAVE WORKED, and the move itself, sit next to the PIN button because
@@ -986,14 +1098,24 @@
             };
             if (SR.state.atLeast('OWNER') && !self) {
               if (v.role) body.role = v.role;
-              body.branch_id = v.branch_id ? v.branch_id : null;
               body.is_active = Number(v.is_active) ? true : false;
               const roleNow = v.role || u.role;
-              if (roleNow === 'STAFF' && !body.branch_id) {
-                ui.warn('A cashier has to belong to one branch.');
-                return;
+              if (String(u.role).toUpperCase() !== 'OWNER') {
+                body.branch_id = v.branch_id ? v.branch_id : null;
+                if (roleNow === 'STAFF' && !body.branch_id) {
+                  ui.warn('A cashier has to belong to one branch.');
+                  return;
+                }
+                if (roleNow === 'MANAGER' && !body.branch_id) body.general_manager = true;
               }
-              if (roleNow === 'MANAGER' && !body.branch_id) body.general_manager = true;
+              if (ownEditor && roleNow === 'OWNER' && u.business_id) {
+                const ids = ownEditor.collect();
+                if (!ids.length) {
+                  ui.warn('Choose the businesses this co-owner owns. That can be all of them, one, or a couple.');
+                  return;
+                }
+                body.business_ids = ids;
+              }
             }
             // THE PAYLOAD IS THE SECOND ARGUMENT, not an object holding it. `{ body }`
             // sent the JSON `{"body":{...}}`, so editing a user saved nothing: the

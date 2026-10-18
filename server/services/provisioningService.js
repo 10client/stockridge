@@ -671,9 +671,13 @@ async function provisionDeployment(db, {
 
   const ownerId = newId();
   const ownerHash = await hashPin(String(ownerPin));
+  // The proprietor is not pinned to the business just created. An empty
+  // business_id is what makes them own every business and every branch,
+  // including one opened later. Pinning them here made the first owner look
+  // like a co-owner of one set of books.
   await db.run(`INSERT INTO users (id, business_id, branch_id, full_name, username, pin_hash, role, job_title, is_active, created_at, updated_at)
                 VALUES (?,?,?,?,?,?,'OWNER','Proprietor',1, datetime('now'), datetime('now'))`,
-  [ownerId, businessId, null, ownerName, ownerUsername, ownerHash.stored]);
+  [ownerId, null, null, ownerName, ownerUsername, ownerHash.stored]);
   await recordCreation(db, { userId: ownerId, businessId, reason: 'Business created — proprietor' });
   userIds.owner = ownerId;
 

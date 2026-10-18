@@ -14,14 +14,17 @@
 //             client's instance), and hidden from the ordinary Users screen
 //             the client's own staff use to manage their team.
 //
-//   OWNER   — the proprietor. Full operational access identical to MANAGER
-//             (every business, every branch, all reports) PLUS visibility of
-//             their own subscription/plan usage via /api/dashboard/plan, and
-//             SOLE authority over the OWNER-controlled permission switches in
-//             client_settings. Distinct from MANAGER mainly so a client can
-//             have day-to-day managers who run operations without being the
-//             person accountable for the commercial relationship with the
-//             vendor.
+//   OWNER   — ONE stored role, not two. The businesses on the row are the fact,
+//             the same way a manager's branch is the fact. A CO_OWNER value
+//             would be a second fact that can disagree with what they can reach.
+//               Proprietor   business_id IS NULL — every business, every branch,
+//                            including a business or branch opened later.
+//                            Settings and the trading name are theirs.
+//               Co-owner     business_id IS SET  — that business, plus any
+//                            user_business_access grants. Every branch of those
+//                            businesses, and not a business left unticked.
+//                            Owner-level work inside that set. Not the
+//                            deployment settings, and not another co-owner.
 //
 //   MANAGER — day-to-day operations admin. ONE STORED ROLE, NOT TWO:
 //               General Manager   branch_id IS NULL — every branch
@@ -83,10 +86,43 @@ function managerJobTitle(user) {
   return user.job_title || derived;
 }
 
+/**
+ * The proprietor is an owner with no business on the row. That empty pin is
+ * what makes them reach every business, including one opened tomorrow.
+ * A co-owner is the same stored role with a business on the row.
+ */
+function isProprietor(user) {
+  if (!user) return false;
+  return String(user.role || '').toUpperCase() === 'OWNER' && !user.business_id;
+}
+
+function isCoOwner(user) {
+  if (!user) return false;
+  return String(user.role || '').toUpperCase() === 'OWNER' && !!user.business_id;
+}
+
+/** Admin, or the proprietor. A co-owner does not appoint another co-owner. */
+function canAppointCoOwner(actor) {
+  if (!actor) return false;
+  if (String(actor.role || '').toUpperCase() === 'ADMIN') return true;
+  return isProprietor(actor);
+}
+
+/**
+ * Deployment-wide settings, the trading name, the logo. A co-owner of one
+ * business must not rename the receipt every other business prints.
+ */
+function canChangeDeployment(user) {
+  if (!user) return false;
+  if (String(user.role || '').toUpperCase() === 'ADMIN') return true;
+  return isProprietor(user);
+}
+
 function roleLabel(role, user) {
   const r = String(role || '').toUpperCase();
   if (r === 'MANAGER') return managerJobTitle(user) || 'Manager';
-  return { ADMIN: 'Platform Administrator', OWNER: 'Owner', STAFF: 'Staff' }[r] || r;
+  if (r === 'OWNER') return user && user.business_id ? 'Co-owner' : 'Owner';
+  return { ADMIN: 'Platform Administrator', STAFF: 'Staff' }[r] || r;
 }
 
 /**
@@ -102,6 +138,10 @@ function canManageUser(actor, target) {
   if (String(actor.id) === String(target.id)) return false; // nobody edits their own role via this path
   if (String(actor.role).toUpperCase() === 'ADMIN') return true;
   if (String(target.role).toUpperCase() === 'ADMIN') return false; // only ADMIN touches ADMIN
+  // Both are stored as OWNER, so rank alone would refuse the proprietor
+  // editing the co-owner they appointed. A co-owner does not edit the
+  // proprietor, and two co-owners do not edit each other.
+  if (isProprietor(actor) && isCoOwner(target)) return true;
   return outranks(actor.role, target.role);
 }
 
@@ -157,6 +197,7 @@ module.exports = {
   ROLES, ROLE_RANK, ROLE_ORDER,
   rankOf, isRole, outranks, atLeast,
   managerJobTitle, roleLabel,
+  isProprietor, isCoOwner, canAppointCoOwner, canChangeDeployment,
   canManageUser, canResetPin, canChangeRole, canOrganizeCatalogue,
   NAVIGATION_BY_ROLE, navigationFor,
 };

@@ -28,7 +28,7 @@ const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit')
 // EVERY BRANCH CHANGE GOES THROUGH THIS, including the ones made from this file — see
 // the module header in services/assignmentService.js for why a move is a handover.
 const assignments = require('../services/assignmentService');
-const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor } = require('../../domain/roles');
+const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor, canAppointCoOwner, canChangeDeployment } = require('../../domain/roles');
 const { TOKEN_TTL_SECONDS } = require('../middleware/auth');
 const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
@@ -48,6 +48,82 @@ const { ensureFleet } = require('./dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const provisioning = require('../services/provisioningService');
 
+
+/**
+ * The businesses a co-owner was given, in the order the form sent them.
+ * The first is the home row. The rest are grants. "All" is every business
+ * that exists now, not a promise about one opened next week.
+ */
+async function chosenBusinesses(db, ctx, body) {
+  const raw = Array.isArray(body.business_ids) ? body.business_ids : [];
+  const ids = [];
+  const seen = new Set();
+  for (const item of raw) {
+    const id = String(item || '').trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (!ids.length) {
+    throw new HttpError('Choose the businesses this co-owner owns. That can be all of them, one, or a couple.', { status: 400, code: 'BUSINESS_REQUIRED' });
+  }
+  const rows = await db.all(
+    `SELECT id, name FROM businesses WHERE is_deleted = 0 AND id IN (${ids.map(() => '?').join(',')})`,
+    ids,
+  );
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  if (ids.some((id) => !byId.has(id))) {
+    throw new HttpError('One of those businesses does not exist. Choose from the businesses on this deployment.', { status: 400, code: 'BUSINESS_NOT_FOUND' });
+  }
+  const scope = ctx.get('scope');
+  const owned = ids.map((id) => byId.get(id));
+  for (const business of owned) {
+    const reaches = scope && (scope.allBusinesses || (scope.businessIds && scope.businessIds.has(String(business.id))));
+    if (!reaches) throw new HttpError(`${business.name} is outside your access.`, { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
+  }
+  return owned;
+}
+
+async function syncCoOwnerGrants(db, { userId, extraBusinessIds, grantedBy }) {
+  const wanted = new Set((extraBusinessIds || []).map(String));
+  const existing = await db.all('SELECT * FROM user_business_access WHERE user_id = ?', [String(userId)]);
+  for (const row of existing) {
+    const id = String(row.business_id);
+    if (wanted.has(id)) {
+      if (Number(row.is_deleted) === 1 || row.revoked_at) {
+        await db.run(
+          `UPDATE user_business_access
+             SET is_deleted = 0, revoked_at = NULL, granted_by = ?, granted_at = datetime('now'), updated_at = datetime('now')
+           WHERE id = ?`,
+          [String(grantedBy), row.id],
+        );
+      }
+      wanted.delete(id);
+    } else if (Number(row.is_deleted) === 0 && !row.revoked_at) {
+      await db.run(
+        `UPDATE user_business_access SET is_deleted = 1, revoked_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`,
+        [row.id],
+      );
+    }
+  }
+  for (const businessId of wanted) {
+    await db.run(
+      `INSERT INTO user_business_access (id, user_id, business_id, granted_by, granted_at, updated_at)
+       VALUES (?,?,?,?, datetime('now'), datetime('now'))`,
+      [newId(), String(userId), String(businessId), String(grantedBy)],
+    );
+  }
+}
+
+async function revokeCoOwnerGrants(db, userId) {
+  await db.run(
+    `UPDATE user_business_access
+       SET is_deleted = 1, revoked_at = datetime('now'), updated_at = datetime('now')
+     WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL`,
+    [String(userId)],
+  );
+}
+
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // BUSINESSES
@@ -62,7 +138,12 @@ function mount(app, base = '/api') {
     }
     const rows = await db.all(`SELECT b.*,
           (SELECT COUNT(*) FROM branches br WHERE br.business_id = b.id AND br.is_deleted = 0 AND br.is_active = 1) AS active_branches,
-          (SELECT COUNT(*) FROM users u WHERE u.business_id = b.id AND u.is_deleted = 0 AND u.is_active = 1) AS active_staff,
+          (SELECT COUNT(*) FROM users u WHERE u.is_deleted = 0 AND u.is_active = 1 AND u.role <> 'ADMIN' AND (
+              u.business_id = b.id
+              OR (u.role = 'OWNER' AND u.business_id IS NULL)
+              OR EXISTS (SELECT 1 FROM user_business_access uba
+                WHERE uba.user_id = u.id AND uba.business_id = b.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL)
+            )) AS active_staff,
           (SELECT COUNT(*) FROM products p WHERE p.business_id = b.id AND p.is_deleted = 0 AND p.is_active = 1) AS products,
           (SELECT COALESCE(SUM(s.total),0) FROM sales s WHERE s.business_id = b.id AND s.is_deleted = 0 AND s.status <> 'VOIDED') AS lifetime_revenue
         FROM businesses b WHERE ${where.join(' AND ')} ORDER BY b.name`, params);
@@ -509,6 +590,18 @@ function mount(app, base = '/api') {
           u.email, u.phone, u.nin, u.bvn_last4, u.bank_name, u.bank_account_no, u.employment_started, u.employment_ended,
           u.commission_rate_pct, u.is_active, u.last_login_at, u.created_at,
           b.name AS branch_name, b.code AS branch_code, biz.name AS business_name,
+          (SELECT GROUP_CONCAT(b2.name, ' · ') FROM businesses b2
+            WHERE b2.is_deleted = 0 AND (
+              b2.id = u.business_id
+              OR b2.id IN (SELECT uba.business_id FROM user_business_access uba
+                WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL)
+            )) AS owned_businesses,
+          (SELECT GROUP_CONCAT(b2.id, ',') FROM businesses b2
+            WHERE b2.is_deleted = 0 AND (
+              b2.id = u.business_id
+              OR b2.id IN (SELECT uba.business_id FROM user_business_access uba
+                WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL)
+            )) AS owned_business_ids,
           (SELECT COUNT(*) FROM sales s WHERE s.salesperson_id = u.id AND s.is_deleted = 0 AND date(s.sold_at) = date('now','+1 hours')) AS sales_today,
           (SELECT COALESCE(SUM(s.total),0) FROM sales s WHERE s.salesperson_id = u.id AND s.is_deleted = 0 AND s.status <> 'VOIDED'
              AND date(s.sold_at) BETWEEN date('now','-29 days','+1 hours') AND date('now','+1 hours')) AS revenue_30d,
@@ -546,7 +639,18 @@ function mount(app, base = '/api') {
     // invoice is paid. One rule, one place.
 
     const role = valid(oneOf(requireVal(body, 'role'), [...ROLE_ORDER], { field: 'Role' }), 'role');
-    if (!canManageUser(user, { role })) {
+    // Co-owner is not a stored role. The form sends OWNER plus co_owner, and the
+    // businesses they ticked are the scope. A fifth role value would be able to
+    // disagree with that set.
+    const coOwner = role === 'OWNER' && Boolean(boolField(body.co_owner));
+    if (boolField(body.co_owner) && role !== 'OWNER') {
+      throw new HttpError('A co-owner is recorded as an owner of the businesses you choose. There is no separate co-owner role.', { status: 400, code: 'ROLE_NOT_STORED' });
+    }
+    if (coOwner) {
+      if (!canAppointCoOwner(user)) {
+        throw new HttpError('Only the proprietor or the administrator can add a co-owner.', { status: 403, code: 'ROLE_REQUIRED' });
+      }
+    } else if (!canManageUser(user, { role })) {
       throw new HttpError(`You are a ${roleLabel(user.role)} and cannot create a ${roleLabel(role)}. Only somebody above that role can.`, { status: 403, code: 'ROLE_REQUIRED' });
     }
     // Only the deployment administrator may create another ADMIN. Two admins who
@@ -573,40 +677,38 @@ function mount(app, base = '/api') {
     //
     // `required: false` because an administrator may be creating another
     // administrator, who belongs to no branch at all.
-    const branch = await resolveBranch(db, ctx, { required: false });
-    const business = await resolveBusiness(db, ctx, branch);
-
-    // An explicit business_id naming a business the caller may reach is honoured
-    // (see resolveBusiness). Naming one they may not reach is refused there, with
-    // BUSINESS_SCOPE_VIOLATION, rather than ignored.
-    //
-    // WHO NEEDS A BRANCH. The deployment administrator is not pinned to one, and neither is an
-    // owner: an owner reaches every branch by role (domain/access.js sets allBranches for OWNER
-    // whether or not the row carries a branch_id), and provisioning creates the proprietor with
-    // branch_id null. A cashier with no branch would see nothing. A manager is the exception
-    // the role file already describes: MANAGER with a branch is a branch manager; MANAGER with
-    // branch_id null is a general manager of that business, not of the whole deployment. Only
-    // an owner may appoint one. A branch manager must not be able to create a peer who can
-    // see every shop.
-    //
-    // A chosen branch is still honoured for an owner — a shop that wants the proprietor recorded
-    // against the main branch may say so — it just is not demanded. A manager creating staff is
-    // pinned to their own branch: the branch_id in the request is ignored rather than trusted,
-    // because that field is the sole scoping truth and letting it be set from a request would
-    // let a manager create staff they can then see the sales of, anywhere.
+    // The proprietor is not pinned to a business or a branch. An empty pin is
+    // the fact: they own every business and every branch, including one opened
+    // later. A co-owner is the same stored role with an explicit set — all of
+    // the businesses that exist, one, or a couple. They reach every branch of
+    // those businesses, and a business opened later is not theirs until added.
     const wantsGeneral = role === 'MANAGER' && Boolean(boolField(body.general_manager));
     if (wantsGeneral && !atLeast(user.role, 'OWNER')) {
       throw new HttpError('Only an owner can appoint a general manager. A general manager sees every branch of the business, and a branch manager must not be able to grant that.', { status: 403, code: 'ROLE_REQUIRED' });
     }
-    const branchOptional = role === 'ADMIN' || role === 'OWNER' || wantsGeneral;
-    const effectiveBranch = (role === 'ADMIN' || wantsGeneral)
-      ? null
-      : (atLeast(user.role, 'OWNER') ? (branch || null) : await resolveBranch(db, ctx));
-    if (!branchOptional && !effectiveBranch) {
-      const said = role === 'MANAGER'
-        ? 'Choose a branch for a branch manager, or appoint them as a general manager so they cover every branch of this business. A manager with neither has no scope.'
-        : 'Choose which branch this person works at. A cashier with no branch has no scope, so they would see nothing. An owner does not need one — an owner reaches every branch.';
-      throw new HttpError(said, { status: 400, code: 'BRANCH_REQUIRED' });
+    let ownedBusinesses = [];
+    let business = null;
+    let effectiveBranch = null;
+    if (role === 'OWNER' && !coOwner) {
+      effectiveBranch = null;
+      business = null;
+    } else if (coOwner) {
+      ownedBusinesses = await chosenBusinesses(db, ctx, body);
+      business = ownedBusinesses[0];
+      effectiveBranch = null;
+    } else {
+      const branch = await resolveBranch(db, ctx, { required: false });
+      business = await resolveBusiness(db, ctx, branch);
+      const branchOptional = role === 'ADMIN' || wantsGeneral;
+      effectiveBranch = (role === 'ADMIN' || wantsGeneral)
+        ? null
+        : (atLeast(user.role, 'OWNER') ? (branch || null) : await resolveBranch(db, ctx));
+      if (!branchOptional && !effectiveBranch) {
+        const said = role === 'MANAGER'
+          ? 'Choose a branch for a branch manager, or appoint them as a general manager so they cover every branch of this business. A manager with neither has no scope.'
+          : 'Choose which branch this person works at. A cashier with no branch has no scope, so they would see nothing.';
+        throw new HttpError(said, { status: 400, code: 'BRANCH_REQUIRED' });
+      }
     }
 
     if (role === 'STAFF') await assertCanCreateStaff(db, settings, business.id);
@@ -651,9 +753,9 @@ function mount(app, base = '/api') {
         nin, bvn_last4, bank_name, bank_account_no, employment_started, employment_ended,
         commission_rate_pct, is_active, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
-      id, String(business.id), effectiveBranch ? String(effectiveBranch.id) : null,
+      id, business ? String(business.id) : null, effectiveBranch ? String(effectiveBranch.id) : null,
       fullName, username, hashed.stored, role,
-      strField(body.job_title, { field: 'Job title', maxLength: 120 }) || (wantsGeneral ? 'General Manager' : (role === 'MANAGER' ? 'Branch Manager' : roleLabel(role))),
+      strField(body.job_title, { field: 'Job title', maxLength: 120 }) || (coOwner ? 'Co-owner' : (wantsGeneral ? 'General Manager' : (role === 'MANAGER' ? 'Branch Manager' : (role === 'OWNER' ? 'Owner' : roleLabel(role))))),
       emailCheck ? emailCheck.value : null, phone ? phone.value : null,
       strField(body.nin, { field: 'NIN', maxLength: 40 }),
       strField(body.bvn_last4, { field: 'BVN last 4', maxLength: 4 }),
@@ -666,26 +768,48 @@ function mount(app, base = '/api') {
     // transfer at all, so a history that began at the first move could not answer
     // "who could see the Minna till on 14 March?" for the majority of the people it
     // is asked about. The row says: from this moment, this person is at that branch.
+    if (coOwner && ownedBusinesses.length > 1) {
+      await syncCoOwnerGrants(db, {
+        userId: id,
+        extraBusinessIds: ownedBusinesses.slice(1).map((b) => b.id),
+        grantedBy: user.id,
+      });
+    }
+
+    const ownedNames = ownedBusinesses.map((b) => b.name).join(', ');
     await assignments.recordAssignment(db, {
       userId: id,
       fromBranchId: null,
       toBranchId: effectiveBranch ? effectiveBranch.id : null,
       fromBusinessId: null,
-      toBusinessId: business.id,
-      reason: wantsGeneral ? 'Created as General Manager' : `Created as ${roleLabel(role)}`,
+      toBusinessId: business ? business.id : null,
+      reason: coOwner
+        ? `Created as co-owner of ${ownedNames}`
+        : (role === 'OWNER'
+          ? 'Created as proprietor — every business and every branch'
+          : (wantsGeneral ? 'Created as General Manager' : `Created as ${roleLabel(role)}`)),
       changedBy: user.id,
     });
 
     await recordFromCtx(ctx, {
       action: 'USER_CREATED', entityType: 'USER', entityId: id,
-      branchId: effectiveBranch ? effectiveBranch.id : null, businessId: business.id,
-      after: { fullName, username, role, branch: effectiveBranch ? effectiveBranch.name : null, commissionRate },
+      branchId: effectiveBranch ? effectiveBranch.id : null, businessId: business ? business.id : null,
+      after: {
+        fullName, username, role, coOwner,
+        businesses: coOwner ? ownedBusinesses.map((b) => b.id) : null,
+        branch: effectiveBranch ? effectiveBranch.name : null,
+        commissionRate,
+      },
     });
     ctx.json({
       ok: true, id, username,
-      message: wantsGeneral
-        ? `${fullName} is a general manager of ${business.name}. They can sign in and work at every branch of that business. Their PIN is set.`
-        : `${fullName} created as ${roleLabel(role)}${effectiveBranch ? ` at ${effectiveBranch.name}` : ' with access to every branch'}. Their PIN is set and they can sign in now.`,
+      message: coOwner
+        ? `${fullName} is a co-owner of ${ownedNames}. They reach every branch of those businesses. A business opened later is not theirs until you add it.`
+        : (role === 'OWNER'
+          ? `${fullName} is the owner. They reach every business and every branch, including ones opened later. Their PIN is set and they can sign in now.`
+          : (wantsGeneral
+            ? `${fullName} is a general manager of ${business.name}. They can sign in and work at every branch of that business. Their PIN is set.`
+            : `${fullName} created as ${roleLabel(role)}${effectiveBranch ? ` at ${effectiveBranch.name}` : ' with access to every branch'}. Their PIN is set and they can sign in now.`)),
       advisories,
     }, 201);
   });
@@ -733,14 +857,17 @@ function mount(app, base = '/api') {
     //   * a move by the platform ADMINISTRATOR, whose job is moving rows across
     //     businesses and who has no branch to be refused by.
     let pendingTransfer = null;
+    const resultingRole = body.role ? String(body.role).toUpperCase() : String(target.role).toUpperCase();
     if (body.branch_id !== undefined && body.branch_id !== target.branch_id) {
+      if (resultingRole === 'OWNER' && body.branch_id) {
+        throw new HttpError('An owner is not pinned to a branch. The proprietor reaches every branch. A co-owner reaches every branch of the businesses they own.', { status: 400, code: 'BRANCH_NOT_FOR_OWNER' });
+      }
       if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only an owner can move somebody to another branch. Their branch is what they can see.', { status: 403, code: 'ROLE_REQUIRED' });
       const nb = body.branch_id ? await db.first('SELECT * FROM branches WHERE id = ? AND is_deleted = 0', [String(body.branch_id)]) : null;
       if (body.branch_id && !nb) throw new HttpError('That branch does not exist.', { status: 404, code: 'BRANCH_NOT_FOUND' });
       if (nb && String(nb.business_id) !== String(target.business_id) && !atLeast(user.role, 'ADMIN')) {
         throw new HttpError(`${nb.name} belongs to another business. Moving somebody between businesses is an administrator action, because it moves them between two sets of books.`, { status: 403, code: 'CROSS_BUSINESS_MOVE' });
       }
-      const resultingRole = body.role ? String(body.role).toUpperCase() : target.role;
       if (!nb && resultingRole === 'MANAGER') {
         if (!atLeast(user.role, 'OWNER')) {
           throw new HttpError('Only an owner can make somebody a general manager. Clearing the branch is what gives them every shop of the business.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -797,6 +924,41 @@ function mount(app, base = '/api') {
         }
       }
       sets.push('role = ?'); params.push(newRole);
+      // Becoming the proprietor clears the pin. A business_id left on the row
+      // would make them a co-owner of one business. Leaving the role clears
+      // the grants, so a demoted co-owner does not keep the other businesses.
+      if (newRole === 'OWNER') {
+        sets.push('business_id = ?'); params.push(null);
+        sets.push('branch_id = ?'); params.push(null);
+        await revokeCoOwnerGrants(db, target.id);
+      } else if (String(target.role).toUpperCase() === 'OWNER') {
+        await revokeCoOwnerGrants(db, target.id);
+      }
+    }
+    let ownershipNote = null;
+    if (Array.isArray(body.business_ids) && resultingRole === 'OWNER' && String(target.role).toUpperCase() === 'OWNER') {
+      if (!target.business_id) {
+        throw new HttpError(`${target.full_name} is the proprietor and already owns every business and every branch. That is not a list to edit.`, { status: 400, code: 'PROPRIETOR_OWNS_ALL' });
+      }
+      if (!canAppointCoOwner(user)) {
+        throw new HttpError('Only the proprietor or the administrator can choose which businesses a co-owner owns.', { status: 403, code: 'ROLE_REQUIRED' });
+      }
+      const owned = await chosenBusinesses(db, ctx, body);
+      const home = String(owned[0].id);
+      if (!sets.some((clause) => clause.startsWith('business_id')) && String(target.business_id) !== home) {
+        sets.push('business_id = ?');
+        params.push(home);
+      }
+      if (target.branch_id && !sets.some((clause) => clause.startsWith('branch_id'))) {
+        sets.push('branch_id = ?');
+        params.push(null);
+      }
+      await syncCoOwnerGrants(db, {
+        userId: target.id,
+        extraBusinessIds: owned.slice(1).map((b) => b.id),
+        grantedBy: user.id,
+      });
+      ownershipNote = owned.map((b) => b.name).join(', ');
     }
     if (body.is_active !== undefined) {
       const active = boolField(body.is_active, 1);
@@ -815,7 +977,7 @@ function mount(app, base = '/api') {
     // for a handover and changes no column on this row, and refusing it with "Nothing
     // to update" would make the move impossible to ask for from a screen that saves one
     // field at a time.
-    if (!sets.length && !pendingTransfer) throw new HttpError('Nothing to update.', { status: 400, code: 'NO_CHANGES' });
+    if (!sets.length && !pendingTransfer && !ownershipNote) throw new HttpError('Nothing to update.', { status: 400, code: 'NO_CHANGES' });
     const willWrite = sets.length > 0;
     sets.push("updated_at = datetime('now')"); params.push(id);
 
@@ -856,9 +1018,11 @@ function mount(app, base = '/api') {
       pendingTransfer: pendingTransfer ? pendingTransfer.transfer : null,
       message: body.is_active === false
         ? `${target.full_name} deactivated and signed out of every device. Their past sales and audit entries stay attributed to them.`
-        : (pendingTransfer
-          ? `${target.full_name} updated. The move to ${pendingTransfer.to.name} is now a question for that branch — they keep working where they are until somebody there agrees to receive them.`
-          : `${target.full_name} updated.`),
+        : (ownershipNote
+          ? `${target.full_name} now owns ${ownershipNote}. They reach every branch of those businesses. A business opened later is not theirs until you add it.`
+          : (pendingTransfer
+            ? `${target.full_name} updated. The move to ${pendingTransfer.to.name} is now a question for that branch — they keep working where they are until somebody there agrees to receive them.`
+            : `${target.full_name} updated.`)),
     });
   });
 
@@ -997,20 +1161,17 @@ function mount(app, base = '/api') {
    * account with a second PIN, and the audit trail then shows two people where
    * there is one — which is exactly the thing an audit trail exists to prevent.
    *
-   * WHO MAY GRANT: the deployment administrator only.
+   * WHO MAY GRANT: the proprietor, or the deployment administrator.
    *
-   * This is a CROSS-TENANT act. An owner's scope is deliberately "every business
-   * in this deployment" (that is what makes them an owner), so letting an owner
-   * grant would mean the owner of business A could hand out access to business B —
-   * two separate legal entities with separate books, which is the one boundary this
-   * whole design treats as inviolable. Creating a business is already ADMIN-only
-   * for the same reason; reaching into another one stays with it.
+   * The proprietor owns every business, so assigning a co-owner or a manager
+   * to one of them is not a cross-tenant act. A co-owner does not grant.
+   * Creating a business stays with the administrator.
    */
   app.get(`${base}/users/:id/business-access`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'ADMIN')) {
-      throw new HttpError('Only the deployment administrator can review cross-business access.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canAppointCoOwner(user)) {
+      throw new HttpError('Only the proprietor or the administrator can review who reaches which business.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const targetId = String(ctx.req.param('id'));
     const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [targetId]);
@@ -1041,8 +1202,9 @@ function mount(app, base = '/api') {
     // is now stated once, here, and used by both the refusal and the screen.
     const targetRole = String(target.role).toUpperCase();
     const unpinned = target.business_id === null || target.business_id === undefined || target.business_id === '';
+    const proprietorTarget = targetRole === 'OWNER' && unpinned;
     const reachesEverythingBy = targetRole === 'ADMIN' ? 'ROLE:ADMIN'
-      : targetRole === 'OWNER' ? 'ROLE:OWNER'
+      : proprietorTarget ? 'ROLE:OWNER'
         : unpinned ? 'NO_BUSINESS_PINNED' : null;
     const isAdminTarget = reachesEverythingBy !== null;
 
@@ -1065,8 +1227,8 @@ function mount(app, base = '/api') {
   app.post(`${base}/users/:id/business-access`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'ADMIN')) {
-      throw new HttpError('Only the deployment administrator can grant access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canAppointCoOwner(user)) {
+      throw new HttpError('Only the proprietor or the administrator can grant access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const targetId = String(ctx.req.param('id'));
     const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [targetId]);
@@ -1088,8 +1250,8 @@ function mount(app, base = '/api') {
     if (targetRoleNow === 'ADMIN') {
       throw new HttpError(`${target.full_name} is the deployment administrator and already reaches every business. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
     }
-    if (targetRoleNow === 'OWNER') {
-      throw new HttpError(`${target.full_name} is an owner, and an owner reaches every business in this deployment. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
+    if (targetRoleNow === 'OWNER' && targetUnpinned) {
+      throw new HttpError(`${target.full_name} is the proprietor and already reaches every business. There is nothing to grant.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
     }
     if (targetUnpinned) {
       throw new HttpError(`${target.full_name} is not tied to any one business, so they already reach every business. Put them on one first, if that is the intent.`, { status: 409, code: 'ALREADY_REACHES_EVERY_BUSINESS' });
@@ -1135,8 +1297,8 @@ function mount(app, base = '/api') {
   app.delete(`${base}/users/:id/business-access/:businessId`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'ADMIN')) {
-      throw new HttpError('Only the deployment administrator can withdraw access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canAppointCoOwner(user)) {
+      throw new HttpError('Only the proprietor or the administrator can withdraw access to another business.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const targetId = String(ctx.req.param('id'));
     const businessId = String(ctx.req.param('businessId'));
@@ -1192,8 +1354,8 @@ function mount(app, base = '/api') {
   app.put(`${base}/settings`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'OWNER')) {
-      throw new HttpError('Only an owner can change business settings. These flags decide what staff are allowed to do.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canChangeDeployment(user)) {
+      throw new HttpError('Only the proprietor can change these settings. A co-owner runs the businesses they own, and does not change the deployment.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const body = await ctx.req.json();
     const before = await getSettings(db);
@@ -1599,11 +1761,19 @@ function mount(app, base = '/api') {
     // grant is what makes them an owner of it.
     const home = `COALESCE(u.business_id, (SELECT b.business_id FROM branches b WHERE b.id = u.branch_id)) = ?`;
     if (audience === 'OWNERS' || (audience === 'USER' && isAdmin)) {
-      // An owner reaches every business. Their home business_id is only the
-      // entity they were created against, and a grant cannot be added for
-      // them, so filtering by that home id found nobody when the administrator
-      // was working in a second plant. The message still names the business.
-      where.push("u.role = 'OWNER'");
+      // The proprietor has no business on the row, so a filter on that column
+      // found nobody. A co-owner is included only when this business is their
+      // home or a grant. The message still names the business.
+      where.push(`u.role = 'OWNER' AND (
+        u.business_id IS NULL
+        OR u.business_id = ?
+        OR EXISTS (
+          SELECT 1 FROM user_business_access uba
+          WHERE uba.user_id = u.id AND uba.business_id = ?
+            AND uba.is_deleted = 0 AND uba.revoked_at IS NULL
+        )
+      )`);
+      params.push(String(business.id), String(business.id));
     } else {
       where.push(home);
       params.push(String(business.id));

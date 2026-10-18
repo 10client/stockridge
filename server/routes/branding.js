@@ -21,7 +21,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { logoDataUrl, MAX_LOGO_BYTES } = require('../../domain/validation');
-const { atLeast } = require('../../domain/roles');
+const { atLeast, canChangeDeployment } = require('../../domain/roles');
 const { requireField } = require('../lib/respond');
 
 /** The public face of the deployment. Safe to call with no token. */
@@ -74,11 +74,10 @@ function mountGuarded(app, base = '/api/branding') {
   app.put(base, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'OWNER')) {
-      // An owner-level decision: this renames the deployment for EVERY branch
-      // and every receipt. A manager who could do it could rebrand a shop they
-      // do not own.
-      throw new HttpError('Only the owner or an administrator can change the trading name or branding.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canChangeDeployment(user)) {
+      // This renames the deployment for every branch and every receipt. A
+      // co-owner of one business must not rebrand the others.
+      throw new HttpError('Only the proprietor or an administrator can change the trading name or branding.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const body = await ctx.req.json();
     const before = await db.first('SELECT * FROM client_settings WHERE id = 1');
@@ -124,7 +123,7 @@ function mountGuarded(app, base = '/api/branding') {
   app.post(`${base}/logo`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only the owner or an administrator can change the logo.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canChangeDeployment(user)) throw new HttpError('Only the proprietor or an administrator can change the logo.', { status: 403, code: 'ROLE_REQUIRED' });
 
     const body = await ctx.req.json();
     const value = requireField(body, 'logoDataUrl', 'Logo');
@@ -145,7 +144,7 @@ function mountGuarded(app, base = '/api/branding') {
   app.delete(`${base}/logo`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only the owner or an administrator can change the logo.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canChangeDeployment(user)) throw new HttpError('Only the proprietor or an administrator can change the logo.', { status: 403, code: 'ROLE_REQUIRED' });
     await db.run("UPDATE client_settings SET logo_data_url = NULL, updated_at = datetime('now'), updated_by = ? WHERE id = 1", [String(user.id)]);
     await recordFromCtx(ctx, { action: 'BRANDING_UPDATED', entityType: 'CLIENT_SETTINGS', entityId: '1', after: { logoDataUrl: null } });
     ctx.json({ ok: true, message: 'Logo removed. The StockRidge logo will be used instead.' });
