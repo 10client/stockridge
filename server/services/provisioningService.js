@@ -16,6 +16,7 @@
 // =====================================================================
 
 const { newId } = require('../../domain/crypto');
+const { shelfForNafdacCategory } = require('../../domain/selling');
 const assignments = require('./assignmentService');
 const { round2 } = require('../../domain/money');
 const { getProfile, resolveProfile, PROFILE_CODES, MEASURE_AXES, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
@@ -324,7 +325,7 @@ async function fileGreenbook(db, businessId) {
       )`,
     [id],
   );
-  if (!Number(missing)) return 0;
+  if (Number(missing)) {
   await db.run(
     `INSERT OR IGNORE INTO products (
         id, business_id, category_id, sku, name, brand, model_no,
@@ -376,7 +377,58 @@ async function fileGreenbook(db, businessId) {
          )`,
     [id],
   );
+  }
+  await fileNafdacShelves(db, id);
   return Number(missing);
+}
+
+/**
+ * A Greenbook row is pharmaceutical, but its shelf name is not the shop's
+ * category name. Until it is filed, Analgesics shows no products and the
+ * catalogue cannot list them under a category. Products the shop has already
+ * moved are left where they are.
+ */
+async function fileNafdacShelves(db, businessId) {
+  const id = String(businessId);
+  const unfiled = await db.scalar(
+    `SELECT COUNT(*) FROM products
+      WHERE business_id = ? AND is_deleted = 0 AND nafdac_catalog_id IS NOT NULL AND category_id IS NULL`,
+    [id],
+  );
+  if (!Number(unfiled)) return 0;
+  const names = await db.all(
+    `SELECT DISTINCT n.category AS category
+       FROM nafdac_catalog n
+       JOIN products p ON p.nafdac_catalog_id = n.id
+      WHERE p.business_id = ? AND p.is_deleted = 0 AND p.category_id IS NULL
+        AND n.category IS NOT NULL AND trim(n.category) <> ''`,
+    [id],
+  );
+  for (const row of names) {
+    const shelf = shelfForNafdacCategory(row.category);
+    let category = await db.first(
+      'SELECT id FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0',
+      [id, shelf.code],
+    );
+    if (!category) {
+      const categoryId = newId();
+      await db.run(
+        `INSERT INTO product_categories (id, business_id, code, name, sort_order, is_active, created_at, updated_at)
+         VALUES (?,?,?,?, 0, 1, datetime('now'), datetime('now'))`,
+        [categoryId, id, shelf.code, shelf.name],
+      );
+      category = { id: categoryId };
+    }
+    await db.run(
+      `UPDATE products SET category_id = ?, updated_at = datetime('now')
+        WHERE business_id = ? AND is_deleted = 0 AND category_id IS NULL
+          AND nafdac_catalog_id IN (
+            SELECT n.id FROM nafdac_catalog n WHERE lower(n.category) = lower(?)
+          )`,
+      [String(category.id), id, row.category],
+    );
+  }
+  return Number(unfiled);
 }
 
 /** Expand [{colour:[a,b]},{size:[x,y]}] into the cartesian combinations. */

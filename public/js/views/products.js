@@ -85,6 +85,16 @@
         SR.exporter.buttons((format) => exportList(format)),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 
+    const shelvesHost = ui.h('div', { class: 'stack' });
+    function canOrganize() {
+      return Boolean(SR.state.isAdmin && SR.state.isAdmin())
+        || Boolean(SR.state.isOwner && SR.state.isOwner())
+        || Boolean(SR.state.isGeneralManager && SR.state.isGeneralManager());
+    }
+    function sideOf(row) {
+      return row && row.selling_group ? row.selling_group : U.sellingGroup(row || {}).code;
+    }
+
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const qInput = ui.h('input', {
       type: 'search',
@@ -100,27 +110,133 @@
     const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; state.highlightId = null; load(); } });
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), catSel));
     wrap.appendChild(toolbar);
+    wrap.appendChild(shelvesHost);
 
-    const host = ui.h('div', {});
+    const host = ui.h('div', { id: 'catalogue-products' });
     wrap.appendChild(host);
 
     function byName(rows) {
       return rows.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
     }
+    let shelfPayload = { data: [], unfiled: { product_count: 0, products: [] } };
     async function fillCategories() {
       try {
         const data = await SR.api.get('/api/categories', { query: SR.state.query() });
-        const rows = byName(data.data || []).filter((c) => !state.sellingGroup || U.sellingGroup(c).code === state.sellingGroup);
+        shelfPayload = data;
+        const rows = byName(data.data || []).filter((c) => !state.sellingGroup || sideOf(c) === state.sellingGroup);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
-        for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, `${c.name}${c.product_count ? ` (${c.product_count})` : ''}`));
+        for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, `${c.name} (${Number(c.product_count) || 0})`));
+        if (state.category) catSel.value = state.category;
+        paintShelves(rows, data.unfiled || { product_count: 0, products: [] });
         return rows;
       } catch (err) {
         const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) }))
-          .filter((c) => !state.sellingGroup || U.sellingGroup(c).code === state.sellingGroup);
+          .filter((c) => !state.sellingGroup || sideOf(c) === state.sellingGroup);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, c.name));
+        paintShelves(rows, { product_count: 0, products: [] });
         return rows;
       }
+    }
+    function openCategory(id) {
+      state.category = id || '';
+      state.page = 0;
+      state.highlightId = null;
+      catSel.value = state.category;
+      load();
+      const table = document.getElementById('catalogue-products');
+      if (table && table.scrollIntoView) table.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    async function renameCategory(category) {
+      const name = await ui.promptDialog({
+        title: `Rename ${category.name}`,
+        label: 'Category name',
+        value: category.name,
+        required: true,
+        hint: 'Products already in this category stay in it. The new name is what the catalogue shows.',
+      });
+      if (!name || name === category.name) return;
+      try {
+        const res = await SR.api.put(`/api/categories/${encodeURIComponent(category.id)}`, { name }, { query: SR.state.query() });
+        ui.ok(res.message || `“${name}” saved.`);
+        await fillCategories();
+        load();
+      } catch (err) { ui.apiError(err); }
+    }
+    async function moveProduct(product) {
+      const choices = byName((shelfPayload.data || []).slice());
+      if (!choices.length) { ui.warn('Add a category first.'); return; }
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, `${product.name} stays the same product. Only the shelf changes. Past sales keep the category they were rung under.`));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({
+          label: 'Move to',
+          name: 'category_id',
+          value: product.category_id || '',
+          options: [{ value: '', label: 'Not in a category' }].concat(choices.map((c) => ({
+            value: String(c.id),
+            label: `${c.name} · ${sideOf(c) === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} (${Number(c.product_count) || 0})`,
+          }))),
+        })));
+      const m = ui.openModal({
+        title: `Move ${product.name}`,
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              ev.currentTarget.disabled = true;
+              try {
+                const res = await SR.api.put(`/api/products/${encodeURIComponent(product.id)}`, { category_id: v.category_id || null });
+                ui.ok(res.message || `${product.name} moved.`);
+                m.close();
+                await fillCategories();
+                load();
+              } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+            },
+          }, 'Move'),
+        ],
+      });
+    }
+    function productLine(product) {
+      return ui.h('div', { class: 'totals-row' },
+        ui.h('span', {},
+          ui.h('button', { class: 'btn btn-sm btn-ghost', type: 'button', onClick: () => openProduct(product) }, product.name),
+          product.sku ? ui.h('span', { class: 'hint' }, ` · ${product.sku}`) : null),
+        canOrganize() ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => moveProduct(product) }, 'Move') : null);
+    }
+    function shelfCard(category, products, count) {
+      const shown = products || [];
+      const side = category.id ? sideOf(category) : '';
+      const more = count > shown.length;
+      return ui.h('div', { class: 'card' },
+        ui.h('div', { class: 'card-body stack' },
+          ui.h('div', { class: 'card-head' },
+            ui.h('h2', {}, category.name),
+            ui.h('span', { class: 'badge' }, `${count} product${count === 1 ? '' : 's'}`),
+            side === 'PHARMACEUTICALS' ? ui.badge('Pharmaceuticals', 'badge-info') : (side ? ui.badge('Non-pharmaceuticals', 'badge-mute') : null)),
+          shown.length
+            ? ui.h('div', { class: 'stack' }, ...shown.map(productLine))
+            : ui.h('p', { class: 'hint' }, 'No product is in this category yet.'),
+          ui.h('div', { class: 'actions' },
+            category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => openCategory(category.id) }, more ? `Show all ${count}` : 'Show in the list') : null,
+            canOrganize() && category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => renameCategory(category) }, 'Rename') : null)));
+    }
+    function paintShelves(rows, unfiled) {
+      const cards = rows.map((row) => shelfCard(row, row.products || [], Number(row.product_count) || 0));
+      if (unfiled && Number(unfiled.product_count)) {
+        cards.push(shelfCard({ id: '', name: 'Not in a category' }, unfiled.products || [], Number(unfiled.product_count) || 0));
+      }
+      shelvesHost.replaceChildren(
+        ui.h('div', { class: 'card' },
+          ui.h('div', { class: 'card-body' },
+            ui.h('h2', {}, 'Categories'),
+            ui.h('p', { class: 'hint' }, canOrganize()
+              ? 'Each category lists the products in it, and the number. Pharmaceutical categories are shown the same way. Rename a category and the products stay in it. Move a product when it belongs on another shelf.'
+              : 'Each category lists the products in it, and the number. Pharmaceutical categories are shown the same way.'))),
+        cards.length ? ui.h('div', { class: 'stack' }, ...cards) : ui.empty({ title: 'No categories yet', message: 'Add a category, then move products into it.' }));
     }
     fillCategories();
 
@@ -238,7 +354,9 @@
             const floor = Number(p.min_margin_pct) || 0;
             return ui.h('span', { style: m < floor ? { color: 'var(--red-700)', fontWeight: '700' } : (m < floor + 5 ? { color: 'var(--amber-700)' } : {}) }, U.pct(m));
           } },
-          { key: 'x', label: '', render: (p) => ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); openProduct(p); } }, 'Open') },
+          { key: 'x', label: '', render: (p) => ui.h('div', { class: 'actions' },
+            canOrganize() ? ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); moveProduct(p); } }, 'Move') : null,
+            ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); openProduct(p); } }, 'Open')) },
         ],
         rows,
         onRowClick: (p) => openProduct(p),

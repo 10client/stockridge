@@ -19,7 +19,43 @@ const GROUPS = Object.freeze([
 const PHARMACEUTICAL_CODES = Object.freeze([
   'ALIMENTARY', 'ANALGESICS', 'ANTIPARASITIC', 'CARDIOVASCULAR', 'CONTROLLED',
   'DERMATOLOGY', 'INJECTIONS', 'RESPIRATORY', 'VITAMINS', 'PHARMACEUTICALS',
+  // NAFDAC catalogue shelves. A registration is filed under one of these so the
+  // catalogue can list the products under the category, the same as provisions.
+  'NERVOUS_SYSTEM', 'ANTI_INFECTIVES', 'MUSCULOSKELETAL', 'BLOOD', 'GENITO_URINARY',
+  'SENSORY', 'ANTINEOPLASTIC', 'VETERINARY', 'SYSTEMIC_HORMONES', 'MEDICAL_DEVICE',
+  'VACCINES', 'HERBAL', 'PHARMA_OTHER', 'PHARMA_VARIOUS',
 ]);
+
+// The Greenbook names its shelves differently from the shop. The shop name is
+// what the catalogue shows. The code is what keeps the side pharmaceutical.
+const NAFDAC_SHELVES = Object.freeze({
+  'nervous system': { code: 'NERVOUS_SYSTEM', name: 'Nervous system' },
+  'anti-infectives (systemic)': { code: 'ANTI_INFECTIVES', name: 'Anti-infectives' },
+  'alimentary & metabolism': { code: 'ALIMENTARY', name: 'Alimentary' },
+  'antiparasitic': { code: 'ANTIPARASITIC', name: 'Antiparasitic' },
+  'cardiovascular': { code: 'CARDIOVASCULAR', name: 'Cardiovascular' },
+  'dermatological': { code: 'DERMATOLOGY', name: 'Dermatology' },
+  'musculoskeletal': { code: 'MUSCULOSKELETAL', name: 'Musculoskeletal' },
+  'other': { code: 'PHARMA_OTHER', name: 'Other medicines' },
+  'respiratory': { code: 'RESPIRATORY', name: 'Respiratory' },
+  'blood & blood forming': { code: 'BLOOD', name: 'Blood and blood forming' },
+  'genito-urinary & sex hormones': { code: 'GENITO_URINARY', name: 'Genito-urinary' },
+  'sensory organs': { code: 'SENSORY', name: 'Sensory organs' },
+  'antineoplastic & immunomodulating': { code: 'ANTINEOPLASTIC', name: 'Antineoplastic' },
+  'veterinary': { code: 'VETERINARY', name: 'Veterinary' },
+  'systemic hormones': { code: 'SYSTEMIC_HORMONES', name: 'Systemic hormones' },
+  'medical device': { code: 'MEDICAL_DEVICE', name: 'Medical devices' },
+  'various': { code: 'PHARMA_VARIOUS', name: 'Various' },
+  'herbal & nutraceutical': { code: 'VITAMINS', name: 'Vitamins and supplements' },
+  'vaccines & biologics': { code: 'VACCINES', name: 'Vaccines and biologics' },
+});
+
+function shelfForNafdacCategory(name) {
+  const key = String(name || '').trim().toLowerCase();
+  if (NAFDAC_SHELVES[key]) return NAFDAC_SHELVES[key];
+  const code = key.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'PHARMA_OTHER';
+  return { code, name: String(name || 'Other medicines').trim().slice(0, 120) || 'Other medicines' };
+}
 
 const DRUGS = new Set(PHARMACEUTICAL_CODES);
 
@@ -108,5 +144,6 @@ function saleLineWhere(groupCode) {
 }
 
 module.exports = {
-  GROUPS, PHARMACEUTICAL_CODES, sellingGroup, codesFor, groupOrder, codeClause, productWhere, saleLineWhere,
+  GROUPS, PHARMACEUTICAL_CODES, NAFDAC_SHELVES, shelfForNafdacCategory,
+  sellingGroup, codesFor, groupOrder, codeClause, productWhere, saleLineWhere,
 };

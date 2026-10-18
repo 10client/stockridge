@@ -23,7 +23,8 @@
 
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
-const { atLeast } = require('../../domain/roles');
+const { atLeast, canOrganizeCatalogue } = require('../../domain/roles');
+const selling = require('../../domain/selling');
 const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, valid, numField, strField, boolField, searchTerm } = require('../lib/respond');
 const { validateLadder } = require('../../domain/uom');
 const { LADDERS, MEASURE_AXES, PROFILE_CODES, getProfile, resolveProfile, describeProfile } = require('../../domain/verticals');
@@ -780,6 +781,28 @@ function mount(app, base = '/api') {
       if (!allowed.allowed) throw new HttpError(allowed.reason, { status: 403, code: 'PRICE_EDIT_NOT_ALLOWED' });
     }
 
+    if (Object.prototype.hasOwnProperty.call(fields, 'category_id')) {
+      const nextCategory = fields.category_id || null;
+      const prevCategory = before.category_id || null;
+      if (String(nextCategory || '') !== String(prevCategory || '')) {
+        if (!canOrganizeCatalogue(ctx.get('user'))) {
+          throw new HttpError('Only the owner or a general manager can move a product to another category.', { status: 403, code: 'ROLE_REQUIRED' });
+        }
+        if (!before.business_id) {
+          throw new HttpError('The shared market list is not filed under a shop category. Copy the product into this business first.', { status: 400, code: 'SHARED_GOODS' });
+        }
+        if (nextCategory) {
+          const category = await db.first(
+            'SELECT id, business_id, name FROM product_categories WHERE id = ? AND is_deleted = 0',
+            [String(nextCategory)],
+          );
+          if (!category || String(category.business_id || '') !== String(before.business_id)) {
+            throw new HttpError('That category is not on this business.', { status: 400, code: 'BAD_CATEGORY' });
+          }
+        }
+      }
+    }
+
     const updates = []; const params = [];
     for (const [k, v] of Object.entries(fields)) { updates.push(`${k} = ?`); params.push(v); }
     if (!updates.length) throw new HttpError('Nothing to update.', { status: 400, code: 'NOTHING_TO_UPDATE' });
@@ -949,9 +972,119 @@ function mount(app, base = '/api') {
           AND own.business_id IS NOT NULL
       ))`);
     }
-    const rows = await db.all(`SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0) AS product_count
-      FROM product_categories c WHERE ${where.join(' AND ')} ORDER BY c.name COLLATE NOCASE, c.code`, params);
-    ctx.json({ ok: true, data: rows });
+    if (businessId) {
+      const focused = await db.first(
+        'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
+        [String(businessId)],
+      );
+      if (focused && modulesOfBusiness(focused).nafdac) await fileGreenbook(db, String(businessId));
+    }
+    const countBusiness = businessId ? String(businessId) : null;
+    const countSql = countBusiness
+      ? `(SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0 AND (p.business_id = ? OR p.business_id IS NULL))`
+      : `(SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0)`;
+    const nafdacSql = countBusiness
+      ? `(SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0 AND p.nafdac_catalog_id IS NOT NULL AND (p.business_id = ? OR p.business_id IS NULL))`
+      : `(SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0 AND p.nafdac_catalog_id IS NOT NULL)`;
+    const countParams = countBusiness ? [countBusiness, countBusiness] : [];
+    const rows = await db.all(
+      `SELECT c.*, ${countSql} AS product_count, ${nafdacSql} AS nafdac_count
+         FROM product_categories c WHERE ${where.join(' AND ')} ORDER BY c.name COLLATE NOCASE, c.code`,
+      [...countParams, ...params],
+    );
+    const previews = new Map();
+    let unfiled = { product_count: 0, products: [] };
+    if (countBusiness) {
+      const listed = await db.all(
+        `SELECT category_id, id, name, sku, brand FROM (
+           SELECT p.category_id, p.id, p.name, p.sku, p.brand,
+                  ROW_NUMBER() OVER (PARTITION BY p.category_id ORDER BY LOWER(p.name), p.id) AS rn
+             FROM products p
+            WHERE p.is_deleted = 0 AND p.category_id IS NOT NULL
+              AND (p.business_id = ? OR p.business_id IS NULL)
+         ) WHERE rn <= 8`,
+        [countBusiness],
+      );
+      for (const product of listed) {
+        const key = String(product.category_id);
+        const list = previews.get(key) || [];
+        list.push({ id: product.id, name: product.name, sku: product.sku, brand: product.brand });
+        previews.set(key, list);
+      }
+      const unfiledCount = await db.scalar(
+        `SELECT COUNT(*) FROM products WHERE is_deleted = 0 AND category_id IS NULL AND business_id = ?`,
+        [countBusiness],
+      );
+      const unfiledRows = await db.all(
+        `SELECT id, name, sku, brand FROM products
+          WHERE is_deleted = 0 AND category_id IS NULL AND business_id = ?
+          ORDER BY LOWER(name) LIMIT 8`,
+        [countBusiness],
+      );
+      unfiled = { product_count: Number(unfiledCount) || 0, products: unfiledRows };
+    }
+    ctx.json({
+      ok: true,
+      data: rows.map((row) => {
+        const pharma = Number(row.nafdac_count) > 0 || selling.sellingGroup({ code: row.code }).code === 'PHARMACEUTICALS';
+        return {
+          ...row,
+          product_count: Number(row.product_count) || 0,
+          selling_group: pharma ? 'PHARMACEUTICALS' : 'NON_PHARMACEUTICALS',
+          products: previews.get(String(row.id)) || [],
+        };
+      }),
+      unfiled,
+    });
+  });
+
+  app.put(`${base}/categories/:id`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!canOrganizeCatalogue(user)) {
+      throw new HttpError('Only the owner or a general manager can rename a category.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const id = String(ctx.req.param('id'));
+    const before = await db.first('SELECT * FROM product_categories WHERE id = ? AND is_deleted = 0', [id]);
+    if (!before) throw new HttpError('That category does not exist.', { status: 404, code: 'CATEGORY_NOT_FOUND' });
+    if (!before.business_id) {
+      throw new HttpError('The shared market categories are not renamed from a shop. Add a category on this business instead.', { status: 400, code: 'SHARED_CATEGORY' });
+    }
+    const body = await ctx.req.json();
+    const name = strField(requireField(body, 'name', 'Category name'), { field: 'Category name', maxLength: 120, required: true });
+    if (!name || name.length < 2) throw new HttpError('A category needs a name of at least two characters.', { status: 400, code: 'CATEGORY_NAME' });
+    if (String(name).toLowerCase() === String(before.name).toLowerCase()) {
+      ctx.json({ ok: true, id, name: before.name, message: `“${before.name}” is already called that.` });
+      return;
+    }
+    const dupe = await db.first(
+      `SELECT id FROM product_categories
+        WHERE business_id = ? AND is_deleted = 0 AND id <> ? AND lower(name) = lower(?)`,
+      [String(before.business_id), id, name],
+    );
+    if (dupe) throw new HttpError(`“${name}” is already a category on this business. Move products into that one instead of giving two categories the same name.`, { status: 409, code: 'DUPLICATE_CATEGORY' });
+    const held = await db.scalar(
+      'SELECT COUNT(*) FROM products WHERE category_id = ? AND is_deleted = 0',
+      [id],
+    );
+    await db.run(
+      `UPDATE product_categories SET name = ?, updated_at = datetime('now') WHERE id = ? AND is_deleted = 0`,
+      [name, id],
+    );
+    await fileCategoriesAlphabetically(db, before.business_id);
+    await recordFromCtx(ctx, {
+      action: 'CATEGORY_UPDATED', entityType: 'CATEGORY', entityId: id, businessId: before.business_id,
+      before: { name: before.name }, after: { name, products: Number(held) || 0 },
+    });
+    ctx.json({
+      ok: true,
+      id,
+      name,
+      product_count: Number(held) || 0,
+      message: Number(held)
+        ? `“${before.name}” is now “${name}”. ${Number(held)} product${Number(held) === 1 ? '' : 's'} stay in it.`
+        : `“${before.name}” is now “${name}”.`,
+    });
   });
 
   app.post(`${base}/categories`, async (ctx) => {

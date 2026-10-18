@@ -111,6 +111,18 @@ function canResetPin(actor, target) {
 }
 
 /** Promotion/demotion authority: only strictly higher rank. */
+/**
+ * Who may rename a category or move a product between categories.
+ * Owner, the platform administrator, or a general manager. A branch manager
+ * is a manager with a branch, and that is not this job. No fifth stored role.
+ */
+function canOrganizeCatalogue(user) {
+  if (!user) return false;
+  const role = String(user.role || '').toUpperCase();
+  if (role === 'ADMIN' || role === 'OWNER') return true;
+  return role === 'MANAGER' && !user.branch_id;
+}
+
 function canChangeRole(actor, target, newRole) {
   if (!canManageUser(actor, target)) return false;
   if (!isRole(newRole)) return false;
@@ -145,6 +157,6 @@ module.exports = {
   ROLES, ROLE_RANK, ROLE_ORDER,
   rankOf, isRole, outranks, atLeast,
   managerJobTitle, roleLabel,
-  canManageUser, canResetPin, canChangeRole,
+  canManageUser, canResetPin, canChangeRole, canOrganizeCatalogue,
   NAVIGATION_BY_ROLE, navigationFor,
 };
