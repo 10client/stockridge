@@ -42,10 +42,17 @@ const { newId } = require('../../domain/crypto');
 
 const TRANSFER_STATUSES = Object.freeze(['PENDING', 'ACCEPTED', 'REJECTED', 'CANCELLED']);
 
+/** Branch and business in one phrase, so a move between books is not just a shop name. */
+function placeName(branch, business) {
+  if (branch && business) return `${branch} · ${business}`;
+  return branch || business || 'no branch';
+}
+
 /** What this transfer is about, in one line, for a screen or a refusal message. */
 function describeTransfer(row) {
-  const from = row.from_branch_name || 'no branch';
-  return `${row.full_name || row.username} moves from ${from} to ${row.to_branch_name}`;
+  const from = placeName(row.from_branch_name, row.from_business_name);
+  const to = placeName(row.to_branch_name, row.to_business_name);
+  return `${row.full_name || row.username} moves from ${from} to ${to}`;
 }
 
 /**
@@ -90,8 +97,11 @@ async function requestTransfer(db, { userId, toBranchId, requestedBy, reason = n
   const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [String(userId)]);
   if (!target) return { error: 'USER_NOT_FOUND' };
 
-  const to = await db.first('SELECT * FROM branches WHERE id = ? AND is_deleted = 0', [String(toBranchId)]);
+  const to = await db.first(`SELECT b.*, biz.name AS business_name
+      FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id
+      WHERE b.id = ? AND b.is_deleted = 0`, [String(toBranchId)]);
   if (!to) return { error: 'BRANCH_NOT_FOUND' };
+  if (Number(to.is_active) === 0) return { error: 'BRANCH_CLOSED', to };
 
   if (String(target.branch_id || '') === String(to.id)) return { error: 'ALREADY_THERE', target, to };
 
@@ -118,7 +128,36 @@ async function requestTransfer(db, { userId, toBranchId, requestedBy, reason = n
  * user. The row is claimed with a conditional UPDATE first, so two managers pressing
  * accept at the same moment cannot both move the person and both write a history row.
  */
+/**
+ * THE BOOKS CLOSE ON THE BUSINESS THEY ARE LEAVING.
+ *
+ * A grant to the old business would keep them reading those books after the
+ * move. A live session would keep selling into the old till until the token
+ * expired. Neither is a transfer. Sales, attendance and till counts already
+ * written are not touched — those rows stay on the business that earned them.
+ */
+async function finishMove(db, { userId, fromBusinessId = null, toBusinessId = null }) {
+  if (!userId) throw new Error('finishMove needs a user');
+  if (fromBusinessId && toBusinessId && String(fromBusinessId) !== String(toBusinessId)) {
+    await db.run(`UPDATE user_business_access
+        SET is_deleted = 1, revoked_at = datetime('now'), updated_at = datetime('now')
+      WHERE user_id = ? AND business_id = ? AND is_deleted = 0 AND revoked_at IS NULL`,
+    [String(userId), String(fromBusinessId)]);
+  }
+  await db.run('DELETE FROM user_sessions WHERE user_id = ?', [String(userId)]);
+}
+
 async function acceptTransfer(db, { transferId, actorId, at = null }) {
+  const pending = await db.first('SELECT * FROM pending_user_transfers WHERE id = ? AND is_deleted = 0', [String(transferId)]);
+  if (!pending || pending.status !== 'PENDING') return { error: 'NOT_PENDING' };
+  // Cash still in a drawer belongs to the business they are leaving. Accepting
+  // first and counting later leaves a till nobody at that business can own.
+  const openTill = Number(await db.scalar(
+    "SELECT COUNT(*) FROM till_sessions WHERE user_id = ? AND status = 'OPEN' AND is_deleted = 0",
+    [String(pending.user_id)],
+  ) || 0);
+  if (openTill > 0) return { error: 'OPEN_TILL', transfer: pending };
+
   const claimed = await db.run(`UPDATE pending_user_transfers
       SET status = 'ACCEPTED', resolved_by = ?, resolved_at = COALESCE(?, datetime('now')), updated_at = datetime('now')
     WHERE id = ? AND status = 'PENDING' AND is_deleted = 0`,
@@ -128,22 +167,37 @@ async function acceptTransfer(db, { transferId, actorId, at = null }) {
 
   const row = await db.first('SELECT * FROM pending_user_transfers WHERE id = ?', [String(transferId)]);
   const before = await db.first('SELECT * FROM users WHERE id = ?', [String(row.user_id)]);
-  const to = await db.first('SELECT * FROM branches WHERE id = ?', [String(row.to_branch_id)]);
+  const to = await db.first(`SELECT b.*, biz.name AS business_name
+      FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id
+      WHERE b.id = ?`, [String(row.to_branch_id)]);
+  const fromBusinessId = before ? before.business_id : null;
+  const fromBiz = fromBusinessId
+    ? await db.first('SELECT name FROM businesses WHERE id = ?', [String(fromBusinessId)])
+    : null;
+  const cross = Boolean(fromBusinessId) && String(fromBusinessId) !== String(to.business_id);
+  const books = cross
+    ? `Transfer accepted from ${fromBiz ? fromBiz.name : 'the original business'} to ${to.business_name || 'the new business'}. Past sales stay on the original books.`
+    : 'Transfer accepted';
 
   await db.run(`UPDATE users SET branch_id = ?, business_id = ?, updated_at = datetime('now')
       WHERE id = ? AND is_deleted = 0`, [String(to.id), String(to.business_id), String(row.user_id)]);
+  await finishMove(db, { userId: row.user_id, fromBusinessId, toBusinessId: to.business_id });
 
   await recordAssignment(db, {
     userId: row.user_id,
     fromBranchId: before ? before.branch_id : row.from_branch_id,
     toBranchId: to.id,
-    fromBusinessId: before ? before.business_id : null,
+    fromBusinessId,
     toBusinessId: to.business_id,
-    reason: `Transfer accepted${row.reason ? ` — ${row.reason}` : ''}`,
+    reason: `${books}${row.reason ? ` — ${row.reason}` : ''}`,
     changedBy: actorId,
     changedAt: at,
   });
-  return { transfer: row, user: before, to };
+  return {
+    transfer: row, user: before, to, crossBusiness: cross,
+    fromBusinessId, fromBusinessName: fromBiz ? fromBiz.name : null,
+    toBusinessName: to.business_name || null,
+  };
 }
 
 /**
@@ -185,25 +239,31 @@ async function assignmentAt(db, { userId, at, endOfDay = 'T23:59:59' }) {
  * WHO COULD SEE THIS BRANCH ON THIS DAY. One query, because the answer is read while
  * somebody is looking at a discrepancy and not at the end of a report run.
  */
-async function coverageAt(db, { businessId, branchId, at, endOfDay = 'T23:59:59' }) {
+async function coverageAt(db, { branchId, at, endOfDay = 'T23:59:59' }) {
   const cutoff = `${String(at)}${endOfDay}`;
+  // Do not filter on the person's CURRENT business. A cashier transferred to
+  // another business last week was still on these books on the day asked about.
+  // The history row is the fact; today's pin is not.
   const rows = await db.all(`SELECT u.id, u.full_name, u.username, u.role, u.is_active,
         (SELECT h.to_branch_id FROM user_assignment_history h
            WHERE h.user_id = u.id AND h.changed_at <= ?
            ORDER BY h.changed_at DESC, h.rowid DESC LIMIT 1) AS branch_then
       FROM users u
-      WHERE u.is_deleted = 0${businessId ? ' AND u.business_id = ?' : ''}
-      ORDER BY u.full_name, u.id`, businessId ? [cutoff, String(businessId)] : [cutoff]);
+      WHERE u.is_deleted = 0
+      ORDER BY u.full_name, u.id`, [cutoff]);
   return rows.filter((r) => String(r.branch_then || '') === String(branchId));
 }
 
 /** The history of one person, newest first, with the branches named. */
 async function historyFor(db, { userId, limit = 50 }) {
   return db.all(`SELECT h.*, fb.name AS from_branch_name, tb.name AS to_branch_name,
+        fbiz.name AS from_business_name, tbiz.name AS to_business_name,
         cu.full_name AS changed_by_name, cu.username AS changed_by_username
       FROM user_assignment_history h
       LEFT JOIN branches fb ON fb.id = h.from_branch_id
       LEFT JOIN branches tb ON tb.id = h.to_branch_id
+      LEFT JOIN businesses fbiz ON fbiz.id = h.from_business_id
+      LEFT JOIN businesses tbiz ON tbiz.id = h.to_business_id
       LEFT JOIN users cu ON cu.id = h.changed_by
       WHERE h.user_id = ?
       ORDER BY h.changed_at DESC, h.rowid DESC
@@ -211,7 +271,7 @@ async function historyFor(db, { userId, limit = 50 }) {
 }
 
 /** The pending transfers aimed at a set of branches, with everything a screen needs. */
-async function pendingFor(db, { businessId = null, toBranchIds = null, userId = null } = {}) {
+async function pendingFor(db, { businessId = null, businessIds = null, toBranchIds = null, userId = null } = {}) {
   const where = ["t.status = 'PENDING'", 't.is_deleted = 0'];
   const params = [];
   if (userId) { where.push('t.user_id = ?'); params.push(String(userId)); }
@@ -219,14 +279,26 @@ async function pendingFor(db, { businessId = null, toBranchIds = null, userId = 
     where.push(`t.to_branch_id IN (${toBranchIds.map(() => '?').join(',')})`);
     params.push(...toBranchIds.map(String));
   }
-  if (businessId) { where.push('u.business_id = ?'); params.push(String(businessId)); }
+  // Filter by the business RECEIVING them. Filtering on the person's current
+  // business hid a cross-business arrival from the only shop that could accept it.
+  if (businessIds && businessIds.length) {
+    where.push(`tb.business_id IN (${businessIds.map(() => '?').join(',')})`);
+    params.push(...businessIds.map(String));
+  } else if (businessId) { where.push('tb.business_id = ?'); params.push(String(businessId)); }
   return db.all(`SELECT t.*, u.full_name, u.username, u.role, u.is_active,
         fb.name AS from_branch_name, tb.name AS to_branch_name,
+        COALESCE(fbiz.name, ubiz.name) AS from_business_name,
+        tbiz.name AS to_business_name,
+        COALESCE(fb.business_id, u.business_id) AS from_business_id,
+        tb.business_id AS to_business_id,
         ru.full_name AS requested_by_name, ru.username AS requested_by_username
       FROM pending_user_transfers t
       JOIN users u ON u.id = t.user_id
       LEFT JOIN branches fb ON fb.id = t.from_branch_id
       LEFT JOIN branches tb ON tb.id = t.to_branch_id
+      LEFT JOIN businesses fbiz ON fbiz.id = fb.business_id
+      LEFT JOIN businesses ubiz ON ubiz.id = u.business_id
+      LEFT JOIN businesses tbiz ON tbiz.id = tb.business_id
       LEFT JOIN users ru ON ru.id = t.requested_by
       WHERE ${where.join(' AND ')}
       ORDER BY t.requested_at DESC, t.rowid DESC
@@ -235,10 +307,12 @@ async function pendingFor(db, { businessId = null, toBranchIds = null, userId = 
 
 module.exports = {
   TRANSFER_STATUSES,
+  placeName,
   describeTransfer,
   recordAssignment,
   requestTransfer,
   acceptTransfer,
+  finishMove,
   resolveTransfer,
   assignmentAt,
   coverageAt,

@@ -28,7 +28,8 @@ const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit')
 // EVERY BRANCH CHANGE GOES THROUGH THIS, including the ones made from this file — see
 // the module header in services/assignmentService.js for why a move is a handover.
 const assignments = require('../services/assignmentService');
-const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor, canAppointCoOwner, canChangeDeployment } = require('../../domain/roles');
+const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor, canAppointCoOwner, canChangeDeployment, isProprietor } = require('../../domain/roles');
+const { canAccessBusiness } = require('../../domain/access');
 const { TOKEN_TTL_SECONDS } = require('../middleware/auth');
 const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
@@ -881,8 +882,10 @@ function mount(app, base = '/api') {
       sets.push('commission_rate_pct = ?'); params.push(numField(body.commission_rate_pct, { field: 'Commission rate', min: 0, max: 100 }));
     }
     // MOVING A USER between branches is the sensitive edit: it changes everything
-    // they can see. It is refused across businesses unless the caller is an admin,
-    // and it is never allowed to reparent a row into a scope the caller controls.
+    // they can see. A move between businesses is a documented handover, not a
+    // silent rewrite: the proprietor may ask for any business, a co-owner only
+    // for one they own, and a branch manager may not. The person does not move
+    // until the receiving branch agrees. Past sales stay on the original books.
     //
     // AND SINCE STAGE G3 IT IS A HANDOVER, NOT A ROW UPDATE. A move asked for in this
     // request does not happen here: a transfer row is created and the person stays
@@ -904,8 +907,21 @@ function mount(app, base = '/api') {
       if (!atLeast(user.role, 'OWNER')) throw new HttpError('Only an owner can move somebody to another branch. Their branch is what they can see.', { status: 403, code: 'ROLE_REQUIRED' });
       const nb = body.branch_id ? await db.first('SELECT * FROM branches WHERE id = ? AND is_deleted = 0', [String(body.branch_id)]) : null;
       if (body.branch_id && !nb) throw new HttpError('That branch does not exist.', { status: 404, code: 'BRANCH_NOT_FOUND' });
-      if (nb && String(nb.business_id) !== String(target.business_id) && !atLeast(user.role, 'ADMIN')) {
-        throw new HttpError(`${nb.name} belongs to another business. Moving somebody between businesses is an administrator action, because it moves them between two sets of books.`, { status: 403, code: 'CROSS_BUSINESS_MOVE' });
+      // A move between businesses is a handover, not a silent rewrite, and not
+      // an administrator-only trick. The proprietor may ask for any of them. A
+      // co-owner may ask only for a business they own. A branch manager may not.
+      // The receiving branch still has to agree, so the books show who asked and
+      // who accepted. Past sales are not moved with the person.
+      if (nb && String(nb.business_id) !== String(target.business_id || '')) {
+        const scope = ctx.get('scope');
+        const reaches = atLeast(user.role, 'ADMIN')
+          || (atLeast(user.role, 'OWNER') && (isProprietor(user) || (scope && scope.allBusinesses) || canAccessBusiness(scope, nb.business_id)));
+        if (!reaches) {
+          throw new HttpError(`${nb.name} belongs to another business. Only the proprietor, a co-owner of that business, or the administrator can move somebody between sets of books.`, { status: 403, code: 'CROSS_BUSINESS_MOVE' });
+        }
+        if (String(target.role || '').toUpperCase() === 'OWNER') {
+          throw new HttpError('An owner is not transferred between businesses. Choose the businesses they own on their record.', { status: 400, code: 'NOT_STAFF' });
+        }
       }
       if (!nb && resultingRole === 'MANAGER') {
         if (!atLeast(user.role, 'OWNER')) {
@@ -917,6 +933,12 @@ function mount(app, base = '/api') {
       }
 
       const immediate = !nb || atLeast(user.role, 'ADMIN');
+      if (immediate && String(body.branch_id || '') !== String(target.branch_id || '')) {
+        const openTill = Number(await db.scalar("SELECT COUNT(*) FROM till_sessions WHERE user_id = ? AND status = 'OPEN' AND is_deleted = 0", [id]) || 0);
+        if (openTill > 0) {
+          throw new HttpError(`${target.full_name} has an open till. Close it before moving them — the cash in that drawer belongs to the business they are leaving.`, { status: 409, code: 'OPEN_TILL' });
+        }
+      }
       if (immediate) {
         sets.push('branch_id = ?'); params.push(nb ? String(nb.id) : null);
         if (nb) { sets.push('business_id = ?'); params.push(String(nb.business_id)); }
@@ -924,9 +946,14 @@ function mount(app, base = '/api') {
         // THE RECEIVING BRANCH DECIDES. Asked for in the same breath as the edit, so a
         // screen that saves a form does not need to know about transfers — but the
         // answer says plainly that the move is a question and not a fact.
+        const fromBiz = target.business_id ? await db.first('SELECT name FROM businesses WHERE id = ?', [String(target.business_id)]) : null;
+        const toBiz = await db.first('SELECT name FROM businesses WHERE id = ?', [String(nb.business_id)]);
+        const cross = Boolean(target.business_id) && String(target.business_id) !== String(nb.business_id);
         const asked = await assignments.requestTransfer(db, {
           userId: target.id, toBranchId: nb.id, requestedBy: user.id,
-          reason: strField(body.transfer_reason, { field: 'Reason', maxLength: 300 }) || `Asked from the staff screen by ${user.full_name || user.username}`,
+          reason: strField(body.transfer_reason, { field: 'Reason', maxLength: 300 }) || (cross
+            ? `Asked to move from ${fromBiz ? fromBiz.name : 'their business'} to ${toBiz ? toBiz.name : 'the other business'} by ${user.full_name || user.username}`
+            : `Asked from the staff screen by ${user.full_name || user.username}`),
         });
         if (asked.error === 'ALREADY_PENDING') {
           throw new HttpError(`${target.full_name} already has a transfer waiting — to ${asked.to.name}. Cancel that one first, or wait for somebody at ${asked.to.name} to answer it.`, { status: 409, code: 'TRANSFER_ALREADY_PENDING' });
@@ -934,13 +961,16 @@ function mount(app, base = '/api') {
         if (asked.error === 'ALREADY_THERE') {
           throw new HttpError(`${target.full_name} is already at ${asked.to.name}.`, { status: 409, code: 'ALREADY_THERE' });
         }
+        if (asked.error === 'BRANCH_CLOSED') {
+          throw new HttpError(`${asked.to.name} is closed. Open it before asking somebody to work there.`, { status: 400, code: 'BRANCH_CLOSED' });
+        }
         if (asked.error) throw new HttpError('That move could not be requested.', { status: 400, code: asked.error });
         pendingTransfer = asked;
         await recordFromCtx(ctx, {
           action: 'USER_TRANSFER_REQUESTED', entityType: 'USER_TRANSFER', entityId: asked.transfer.id,
           branchId: String(nb.id), businessId: String(nb.business_id),
-          before: { user_id: target.id, branch_id: target.branch_id },
-          after: { user_id: target.id, to_branch_id: nb.id, to_branch: nb.name },
+          before: { user_id: target.id, branch_id: target.branch_id, business_id: target.business_id, business: fromBiz ? fromBiz.name : null },
+          after: { user_id: target.id, to_branch_id: nb.id, to_branch: nb.name, to_business_id: nb.business_id, to_business: toBiz ? toBiz.name : null, cross_business: cross },
         });
       }
     }
@@ -1027,17 +1057,25 @@ function mount(app, base = '/api') {
     // handover and none of the administrator's own corrections, which is the half of
     // the story that is hardest to reconstruct afterwards.
     if (!pendingTransfer && body.branch_id !== undefined && String(body.branch_id || '') !== String(target.branch_id || '')) {
+      const dest = body.branch_id
+        ? await db.first(`SELECT b.business_id, b.name, biz.name AS business_name
+            FROM branches b LEFT JOIN businesses biz ON biz.id = b.business_id WHERE b.id = ?`, [String(body.branch_id)])
+        : null;
+      const fromBiz = target.business_id ? await db.first('SELECT name FROM businesses WHERE id = ?', [String(target.business_id)]) : null;
+      const toBusinessId = dest ? dest.business_id : target.business_id;
+      const cross = Boolean(dest && target.business_id && String(dest.business_id) !== String(target.business_id));
       await assignments.recordAssignment(db, {
         userId: target.id,
         fromBranchId: target.branch_id,
         toBranchId: body.branch_id || null,
         fromBusinessId: target.business_id,
-        toBusinessId: body.branch_id && body.branch_id !== target.branch_id
-          ? (await db.first('SELECT business_id FROM branches WHERE id = ?', [String(body.branch_id)]) || {}).business_id || null
-          : target.business_id,
-        reason: body.branch_id ? 'Moved directly, without a handover' : 'Released from a branch',
+        toBusinessId,
+        reason: cross
+          ? `Moved by the administrator from ${fromBiz ? fromBiz.name : 'no business'} to ${dest.business_name || 'the new business'}. Past sales stay on the original books.`
+          : (body.branch_id ? 'Moved directly, without a handover' : 'Released from a branch'),
         changedBy: user.id,
       });
+      await assignments.finishMove(db, { userId: target.id, fromBusinessId: target.business_id, toBusinessId });
     }
 
     // Deactivating someone must end their live session immediately. Their token
@@ -1060,7 +1098,9 @@ function mount(app, base = '/api') {
         : (ownershipNote
           ? `${target.full_name} now owns ${ownershipNote}. They reach every branch of those businesses. A business opened later is not theirs until you add it.`
           : (pendingTransfer
-            ? `${target.full_name} updated. The move to ${pendingTransfer.to.name} is now a question for that branch — they keep working where they are until somebody there agrees to receive them.`
+            ? (pendingTransfer.to.business_name && String(pendingTransfer.to.business_id) !== String(target.business_id || '')
+              ? `${target.full_name} updated. The move to ${pendingTransfer.to.name} · ${pendingTransfer.to.business_name} is a question for that business. They keep working where they are, and sales already recorded stay on the original books, until somebody there agrees. The request is on the record.`
+              : `${target.full_name} updated. The move to ${pendingTransfer.to.name} is now a question for that branch — they keep working where they are until somebody there agrees to receive them.`)
             : `${target.full_name} updated.`)),
     });
   });

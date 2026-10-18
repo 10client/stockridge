@@ -62,7 +62,7 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Staff & access'),
-        ui.h('p', { class: 'sub' }, 'Who works here, where, and what the system lets them do')),
+        ui.h('p', { class: 'sub' }, 'Who works here, where, and what the system lets them do. Open a person to move them to another business. The request, the agreement and both businesses stay on the record. Sales already made stay on the original books.')),
       ui.h('div', { class: 'actions' },
         (SR.state.isOwner() || SR.state.isAdmin()) ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.openMessageComposer() }, 'Send a message') : null,
         SR.state.atLeast('MANAGER') ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add someone') : null,
@@ -209,7 +209,7 @@
     async function renderTransfers() {
       const stack = ui.h('div', { class: 'stack' });
       stack.appendChild(ui.h('div', { class: 'alert alert-info' },
-        'A move between branches is a question first: the person keeps working where they are until somebody at the branch receiving them agrees. Nobody can be moved into a shop that has not agreed to take them.'));
+        'A move is a question first, including a move from one business to another. The person keeps working where they are, and every sale already recorded stays on that business, until the branch receiving them agrees. The request, the answer, both businesses and who decided stay on the record.'));
       let waiting = { data: [] };
       let mine = { data: [] };
       try {
@@ -228,8 +228,8 @@
             { key: 'full_name', label: 'Who', render: (r) => ui.h('div', {},
                 ui.h('div', {}, r.full_name || r.username),
                 ui.h('div', { class: 'hint' }, [r.username ? `@${r.username}` : null, U.titleCase(r.role)].filter(Boolean).join(' · '))) },
-            { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
-            { key: 'to_branch_name', label: 'To', render: (r) => ui.h('strong', {}, r.to_branch_name) },
+            { key: 'from_branch_name', label: 'From', render: (r) => placeLabel(r.from_branch_name, r.from_business_name) },
+            { key: 'to_branch_name', label: 'To', render: (r) => ui.h('strong', {}, placeLabel(r.to_branch_name, r.to_business_name)) },
             { key: 'requested_by_name', label: 'Asked by', render: (r) => r.requested_by_name || '—' },
             { key: 'requested_at', label: 'Asked', render: (r) => U.relTime(r.requested_at) },
             { key: 'reason', label: 'Why', render: (r) => ui.h('span', { class: 'hint' }, r.reason || '—') },
@@ -252,8 +252,8 @@
           table: ui.renderTable({
             columns: [
               { key: 'full_name', label: 'Person', render: (r) => r.full_name || r.username },
-              { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
-              { key: 'to_branch_name', label: 'To', render: (r) => r.to_branch_name || '—' },
+              { key: 'from_branch_name', label: 'From', render: (r) => placeLabel(r.from_branch_name, r.from_business_name) },
+              { key: 'to_branch_name', label: 'To', render: (r) => placeLabel(r.to_branch_name, r.to_business_name) },
               { key: 'requested_by_name', label: 'Asked by', render: (r) => r.requested_by_name || '—' },
               { key: 'status', label: 'State', render: () => ui.badge('waiting', 'badge-warn') },
               { key: 'act', label: '', render: (r) => ui.h('button', { class: 'btn btn-sm', onClick: () => withdraw(r) }, 'Withdraw') },
@@ -270,12 +270,17 @@
     async function decide(ev, row, what) {
       const btn = ev && ev.currentTarget ? ev.currentTarget : null;
       const label = what === 'accept' ? 'Accept' : 'Refuse';
+      const fromPlace = placeLabel(row.from_branch_name, row.from_business_name);
+      const toPlace = placeLabel(row.to_branch_name, row.to_business_name);
+      const cross = row.from_business_name && row.to_business_name && row.from_business_name !== row.to_business_name;
       if (what === 'accept') {
         const ok = await ui.confirmDialog({
           danger: false,
           title: `Accept ${row.full_name || row.username}?`,
-          // Said in full, because accepting is the moment a person's scope changes.
-          message: `${row.full_name || row.username} will start working at ${row.to_branch_name} and will be able to see its sales, its stock and its cash. Their record of where they have worked keeps the date and your name against this decision.`,
+          // Said in full, because accepting is the moment a person's books change.
+          message: cross
+            ? `${row.full_name || row.username} will start working at ${toPlace}. Sales, attendance and till counts already recorded stay on ${row.from_business_name}. They will be signed out, so the next sign-in is on ${row.to_business_name}. The date, both businesses and your name are written against this decision.`
+            : `${row.full_name || row.username} will start working at ${toPlace} and will be able to see its sales, its stock and its cash. Their record of where they have worked keeps the date and your name against this decision.`,
           confirmLabel: 'Accept the move',
         });
         if (!ok) return;
@@ -286,8 +291,8 @@
         // allowed to be brief, and the placeholder says what would be useful rather
         // than what is mandatory. `null` means the dialog was cancelled.
         reason = await ui.promptDialog({
-          title: `Refuse the move to ${row.to_branch_name}?`,
-          label: `Why is this being refused? (optional — ${row.full_name || row.username} stays at ${row.from_branch_name || 'their branch'})`,
+          title: `Refuse the move to ${toPlace}?`,
+          label: `Why is this being refused? (optional — ${row.full_name || row.username} stays at ${fromPlace})`,
           placeholder: 'We have no counter free for another cashier this quarter.',
           hint: 'Kept on the record. It is what the owner reads the next time this is asked.',
           multiline: true,
@@ -328,30 +333,76 @@
     }
 
     // ------------------------------------------------------ move & history
+    /** Branch and business, so a move between books is not just a shop name. */
+    function placeLabel(branch, business) {
+      if (branch && business) return `${branch} · ${business}`;
+      return branch || business || '—';
+    }
+
     /**
-     * ASK FOR A MOVE FROM HERE, so the person who knows the reason is the person who
-     * types it. The screen says plainly that this does not move anybody yet — an owner
-     * who believes they have moved a cashier is worse off than one who knows they have
-     * asked.
+     * ASK FOR A MOVE FROM HERE, including a move to another business.
+     *
+     * The screen says plainly that this does not move anybody yet, and that sales
+     * already recorded stay on the business that earned them. An owner who believes
+     * they have rewritten last month's books is worse off than one who knows they
+     * have asked.
      */
     function openMove(u) {
-      const branchSel = ui.h('select', {}, SR.state.branches()
-        .filter((b) => String(b.id) !== String(u.branch_id || ''))
-        .map((b) => ui.h('option', { value: b.id }, b.name)));
-      const reason = ui.h('input', { type: 'text', placeholder: 'Why are they moving? (optional, kept on the record)', autocomplete: 'off' });
       const body = ui.h('div', { class: 'stack' });
-      body.appendChild(ui.h('p', {}, `${u.full_name || u.username} works at ${u.branch_name || 'no branch'} now.`));
-      if (!branchSel.options.length) {
-        body.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'There is no other branch to move them to. Open a branch first.'));
-        const m = ui.openModal({ title: 'Move to another branch', body, size: 'narrow' });
-        body.appendChild(ui.h('div', { class: 'btn-row' }, ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close')));
-        return;
-      }
+      const from = placeLabel(u.branch_name, u.business_name);
+      body.appendChild(ui.h('p', {}, `${u.full_name || u.username} works at ${from} now.`));
+      body.appendChild(ui.h('div', { class: 'alert alert-info' },
+        'Asking does not move them. They keep working where they are until the branch receiving them agrees. Sales, attendance and till counts already recorded stay on the original business. The request, the answer, both businesses and who decided are written into their record and the audit trail.'));
+      const branchSel = ui.h('select', {});
+      const reason = ui.h('input', { type: 'text', maxlength: '300', placeholder: 'Why are they moving? (optional, kept on the record)', autocomplete: 'off' });
+      const note = ui.h('div', { class: 'hint' }, 'Choose the branch they will work at. The business is the one that branch belongs to.');
       body.appendChild(ui.h('label', { class: 'ctl' }, 'Move to'));
       body.appendChild(branchSel);
+      body.appendChild(note);
       body.appendChild(ui.h('label', { class: 'ctl' }, 'Why (optional)'));
       body.appendChild(reason);
-      const go = ui.h('button', { class: 'btn btn-primary', onClick: async () => {
+      const go = ui.h('button', { class: 'btn btn-primary', disabled: true }, 'Ask for the move');
+      const m = ui.openModal({
+        title: 'Move to another business',
+        body,
+        footer: [ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'), go],
+        size: 'narrow',
+      });
+      function paint(rows) {
+        const options = (rows || [])
+          .filter((b) => String(b.id) !== String(u.branch_id || '') && Number(b.is_active) !== 0)
+          .slice()
+          .sort((a, b) => String(a.business_name || '').localeCompare(String(b.business_name || '')) || String(a.name || '').localeCompare(String(b.name || '')));
+        branchSel.replaceChildren();
+        if (!options.length) {
+          note.textContent = 'There is no other open branch to move them to. Open a branch on the business that should receive them.';
+          go.disabled = true;
+          return;
+        }
+        for (const b of options) {
+          branchSel.appendChild(ui.h('option', {
+            value: b.id,
+            'data-business': b.business_name || '',
+          }, placeLabel(b.name, b.business_name)));
+        }
+        go.disabled = false;
+        const refresh = () => {
+          const opt = branchSel.options[branchSel.selectedIndex];
+          const toBiz = opt ? opt.getAttribute('data-business') : '';
+          const cross = toBiz && u.business_name && toBiz !== u.business_name;
+          note.textContent = cross
+            ? `This leaves ${u.business_name} and joins ${toBiz}. Past sales stay on ${u.business_name}. New sales, from the day ${toBiz} accepts them, are ${toBiz}'s.`
+            : 'They stay on the same business. The branch receiving them still has to agree.';
+        };
+        branchSel.onchange = refresh;
+        refresh();
+      }
+      paint(SR.state.branches() || []);
+      SR.api.get('/api/branches').then((res) => {
+        if (branchSel.isConnected) paint((res && res.data) || []);
+      }).catch(() => {});
+      go.addEventListener('click', async () => {
+        if (!branchSel.value) return;
         go.disabled = true;
         try {
           const res = await SR.api.post(`/api/users/${encodeURIComponent(u.id)}/transfer`, {
@@ -365,12 +416,6 @@
           ui.apiError(err);
           go.disabled = false;
         }
-      } }, 'Ask for the move');
-      const m = ui.openModal({
-        title: 'Move to another branch',
-        body,
-        footer: [ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'), go],
-        size: 'narrow',
       });
     }
 
@@ -412,7 +457,7 @@
     function openHistory(u) {
       const out = ui.h('div', {}, ui.loading('Reading their history…'));
       const body = ui.h('div', { class: 'stack' },
-        ui.h('p', { class: 'sub' }, `Every move and the moment the record for ${u.full_name || u.username} was created.`), out);
+        ui.h('p', { class: 'sub' }, `Every move for ${u.full_name || u.username}, from the day the record was created through to the business they work in now. A move between businesses names both. Sales already recorded are not rewritten.`), out);
       const m = ui.openModal({ title: 'Where they have worked', body, size: 'wide' });
       SR.api.get(`/api/users/${encodeURIComponent(u.id)}/assignment-history`).then((res) => {
         const rows = res.data || [];
@@ -420,8 +465,8 @@
           ? ui.renderTable({
               columns: [
                 { key: 'changed_at', label: 'When', render: (r) => U.date(r.changed_at) },
-                { key: 'from_branch_name', label: 'From', render: (r) => r.from_branch_name || '—' },
-                { key: 'to_branch_name', label: 'To', render: (r) => r.to_branch_name || '—' },
+                { key: 'from_branch_name', label: 'From', render: (r) => placeLabel(r.from_branch_name, r.from_business_name) },
+                { key: 'to_branch_name', label: 'To', render: (r) => placeLabel(r.to_branch_name, r.to_business_name) },
                 { key: 'reason', label: 'Why', render: (r) => ui.h('span', { class: 'hint' }, r.reason || '—') },
                 { key: 'changed_by_name', label: 'Decided by', render: (r) => r.changed_by_name || '—' },
               ],
@@ -430,7 +475,7 @@
           : ui.empty({ title: 'No history', message: 'This account has no recorded assignment, which should only be true of a user created before this feature existed.' }));
         if (res.pending) {
           out.appendChild(ui.h('div', { class: 'alert alert-info', style: { marginTop: '10px' } },
-            `A move to ${res.pending.to_branch_name} is waiting for somebody there to agree to it. Until then they stay where they are.`));
+            `A move to ${placeLabel(res.pending.to_branch_name, res.pending.to_business_name)} is waiting for somebody there to agree to it. Until then they stay where they are, and sales already recorded stay on the original business.`));
         }
       }).catch((err) => { out.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, (err && err.message) || 'That could not be read.')); });
       return m;
@@ -1025,7 +1070,7 @@
           options: [{ value: '', label: 'No branch — owner, administrator, or general manager' }].concat(SR.state.branches().map((b) => ({ value: b.id, label: b.business_name ? `${b.name} · ${b.business_name}` : b.name }))),
           value: u.branch_id || '',
           disabled: self,
-          hint: 'Leave this empty on a manager to make them a general manager of every branch of their business. A cashier still needs one branch. An owner reaches every branch either way.',
+          hint: 'Choosing a branch of another business asks for a transfer. They stay where they are until that branch agrees, and past sales stay on the original books. Leave this empty on a manager to make them a general manager of their current business. A cashier still needs one branch.',
         }) : null,
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Active',
@@ -1096,8 +1141,8 @@
       // they are the same kind of action: they change what this person can do, and they
       // are decisions rather than edits.
       const historyBtn = ui.h('button', { class: 'btn btn-sm', onClick: () => openHistory(u) }, 'Where they have worked');
-      const moveBtn = !self && SR.state.atLeast('OWNER') && u.branch_id
-        ? ui.h('button', { class: 'btn btn-sm', onClick: () => { m.close(); openMove(u); } }, 'Move to another branch')
+      const moveBtn = !self && SR.state.atLeast('OWNER') && !['OWNER', 'ADMIN'].includes(String(u.role || '').toUpperCase())
+        ? ui.h('button', { class: 'btn btn-sm', onClick: () => { m.close(); openMove(u); } }, 'Move to another business')
         : null;
       const close = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close');
       const save = ui.h('button', { class: 'btn btn-primary' }, 'Save changes');
