@@ -93,12 +93,24 @@ function managerJobTitle(user) {
  */
 function isProprietor(user) {
   if (!user) return false;
-  return String(user.role || '').toUpperCase() === 'OWNER' && !user.business_id;
+  if (String(user.role || '').toUpperCase() !== 'OWNER') return false;
+  // A co-owner always carries a grant, including for the business on their
+  // row. An owner with no grant still owns every business — that is how an
+  // owner added before co-owners existed stays the proprietor without a
+  // rewrite of their row.
+  if (user.owner_limited === true) return false;
+  if (user.owner_limited === false) return true;
+  if (user.grant_count != null) return Number(user.grant_count) === 0;
+  return !user.business_id;
 }
 
 function isCoOwner(user) {
   if (!user) return false;
-  return String(user.role || '').toUpperCase() === 'OWNER' && !!user.business_id;
+  if (String(user.role || '').toUpperCase() !== 'OWNER' || !user.business_id) return false;
+  if (user.owner_limited === true) return true;
+  if (user.owner_limited === false) return false;
+  if (user.grant_count != null) return Number(user.grant_count) > 0;
+  return false;
 }
 
 /** Admin, or the proprietor. A co-owner does not appoint another co-owner. */
@@ -121,7 +133,7 @@ function canChangeDeployment(user) {
 function roleLabel(role, user) {
   const r = String(role || '').toUpperCase();
   if (r === 'MANAGER') return managerJobTitle(user) || 'Manager';
-  if (r === 'OWNER') return user && user.business_id ? 'Co-owner' : 'Owner';
+  if (r === 'OWNER') return isCoOwner(user) ? 'Co-owner' : 'Owner';
   return { ADMIN: 'Platform Administrator', STAFF: 'Staff' }[r] || r;
 }
 

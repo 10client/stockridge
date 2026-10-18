@@ -180,8 +180,8 @@ function mount(app, base = '/api/auth', makeEnv = null) {
       user: {
         id: user.id, username: user.username, fullName: user.full_name,
         role: user.role, roleLabel: roleLabel(user.role, user), jobTitle: user.job_title || null,
-        proprietor: String(user.role).toUpperCase() === 'OWNER' && !user.business_id,
-        coOwner: String(user.role).toUpperCase() === 'OWNER' && !!user.business_id,
+        proprietor: String(user.role).toUpperCase() === 'OWNER' && !user.owner_limited,
+        coOwner: Boolean(user.owner_limited),
         email: user.email || null, phone: user.phone || null,
         commissionRatePct: user.commission_rate_pct == null ? null : Number(user.commission_rate_pct),
         branch: user.branch_id ? { id: user.branch_id, name: user.branch_name } : null,

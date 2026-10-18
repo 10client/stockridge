@@ -1063,8 +1063,8 @@
         const r = String(u.role || '').toUpperCase();
         if (!isAdmin) return r === 'STAFF' || r === 'MANAGER';
         if (r !== 'OWNER') return false;
-        // The proprietor owns every business. A co-owner only if this business is one of theirs.
-        if (!u.business_id) return true;
+        // No grant means the proprietor, even if an older row still names one business.
+        if (!Number(u.grant_count)) return true;
         const here = String(SR.state.activeBusinessId || '');
         if (String(u.business_id) === here) return true;
         return String(u.owned_business_ids || '').split(',').map((id) => id.trim()).includes(here);

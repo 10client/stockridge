@@ -42,19 +42,22 @@ const { rankOf, ROLES } = require('./roles');
 // branch — a branch created after login must be visible without re-login,
 // which is why the flag exists rather than an enumerated set.
 
-function buildScope(user, { businessIds = null, allBranchIds = null } = {}) {
+function buildScope(user, { businessIds = null, grantIds = null, allBranchIds = null } = {}) {
   const role = String((user && user.role) || '').toUpperCase();
   const pinnedBranchId = user && user.branch_id ? String(user.branch_id) : null;
   const pinnedBusinessId = user && user.business_id ? String(user.business_id) : null;
 
   const isAdminVendor = role === ROLES.ADMIN;
-  // An OWNER with a business on the row is a co-owner of that business plus
-  // any grants. Treating every OWNER as every business made a co-owner of one
-  // shop the proprietor of the deployment. The proprietor is the owner whose
-  // business pin is empty — the same derivation a general manager gets from
-  // an empty branch pin. No fifth stored role.
-  const allBusinesses = isAdminVendor || pinnedBusinessId === null;
-  const allBranches = isAdminVendor || (role === ROLES.OWNER && pinnedBusinessId === null) || (role === ROLES.MANAGER && pinnedBranchId === null);
+  const grants = new Set((grantIds || []).filter(Boolean).map(String));
+  // A co-owner is an OWNER with a business pin AND a grant. The grant is the
+  // fact, including a grant for the business on the row, so a co-owner of one
+  // business is not the proprietor. An owner with no grant still reaches
+  // every business: that is the proprietor, whether or not an older row still
+  // names the business they were created against. No fifth stored role, and
+  // no rewrite of those older rows.
+  const limitedOwner = role === ROLES.OWNER && Boolean(pinnedBusinessId) && grants.size > 0;
+  const allBusinesses = isAdminVendor || !limitedOwner && (role === ROLES.OWNER || pinnedBusinessId === null);
+  const allBranches = isAdminVendor || (role === ROLES.OWNER && !limitedOwner) || (role === ROLES.MANAGER && pinnedBranchId === null);
 
   const scope = {
     role,
@@ -77,7 +80,7 @@ function buildScope(user, { businessIds = null, allBranchIds = null } = {}) {
   // branch opened after they signed in. The set is rebuilt on each request
   // from the live branch list, so it is not a frozen snapshot and it is not
   // every branch on the deployment.
-  if (role === ROLES.OWNER && pinnedBusinessId && Array.isArray(allBranchIds)) {
+  if (limitedOwner && Array.isArray(allBranchIds)) {
     scope.allBranches = false;
     scope.branchIds = new Set(
       allBranchIds

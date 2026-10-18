@@ -60,26 +60,31 @@ async function loadUser(db, userId) {
 
 /** Businesses a user can reach: their own, plus explicit grants. */
 async function accessibleBusinessIds(db, user) {
-  if (!user) return [];
+  if (!user) return { businessIds: [], grantIds: [] };
   const rows = await db.all(
     `SELECT business_id FROM user_business_access
      WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL`,
     [String(user.id)],
   );
-  const ids = new Set(rows.map((r) => String(r.business_id)));
+  const grantIds = rows.map((r) => String(r.business_id));
+  const ids = new Set(grantIds);
   if (user.business_id) ids.add(String(user.business_id));
   if (user.branch_business_id) ids.add(String(user.branch_business_id));
-  return Array.from(ids);
+  // A co-owner is an owner who has a grant. Set it on the row the rest of
+  // this request already holds, so settings and the shell do not guess.
+  user.grant_count = grantIds.length;
+  user.owner_limited = String(user.role || '').toUpperCase() === 'OWNER' && Boolean(user.business_id) && grantIds.length > 0;
+  return { businessIds: Array.from(ids), grantIds };
 }
 
 /** Build the resolved scope object used by every access decision. */
 async function resolveScope(db, user) {
-  const businessIds = await accessibleBusinessIds(db, user);
+  const access = await accessibleBusinessIds(db, user);
   let allBranchRows = null;
   if (!user.branch_id) {
     allBranchRows = await db.all('SELECT id, business_id FROM branches WHERE is_deleted = 0 AND is_active = 1');
   }
-  return buildScope(user, { businessIds, allBranchIds: allBranchRows });
+  return buildScope(user, { businessIds: access.businessIds, grantIds: access.grantIds, allBranchIds: allBranchRows });
 }
 
 // ---------------------------------------------------------------------

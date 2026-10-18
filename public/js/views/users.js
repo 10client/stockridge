@@ -141,7 +141,7 @@
 
       const byRole = {};
       for (const u of rows) {
-        const label = u.role === 'OWNER' && u.business_id ? 'Co-owner' : (u.roleLabel || u.role);
+        const label = Number(u.grant_count) > 0 ? 'Co-owner' : (u.roleLabel || u.role);
         byRole[label] = (byRole[label] || 0) + 1;
       }
       stack.appendChild(ui.h('div', { class: 'kpis' },
@@ -165,7 +165,7 @@
             { key: 'branch_name', label: 'Branch', render: (u) => {
               if (u.branch_name) return u.branch_name;
               if (u.role === 'MANAGER') return ui.badge('General Manager', 'badge-violet');
-              if (u.role === 'OWNER' && u.business_id) return ui.badge(u.owned_businesses || u.business_name || 'chosen businesses', 'badge-violet');
+              if (u.role === 'OWNER' && Number(u.grant_count) > 0) return ui.badge(u.owned_businesses || u.business_name || 'chosen businesses', 'badge-violet');
               if (u.role === 'OWNER' || u.role === 'ADMIN') return ui.badge('all businesses', 'badge-violet');
               return '—';
             } },
@@ -946,7 +946,7 @@
       form.appendChild(ui.kv([
         ['Username', `@${u.username}`],
         ['Role', U.titleCase(u.roleLabel || u.role)],
-        ['Reach', u.role === 'OWNER' && !u.business_id
+        ['Reach', u.role === 'OWNER' && !Number(u.grant_count)
           ? 'Every business and every branch'
           : (u.role === 'OWNER' ? (u.owned_businesses || u.business_name || 'Chosen businesses') : (u.branch_name || 'Every branch'))],
         ['Role grants', (u.navigation || []).map((n) => U.titleCase(n)).join(', ') || '—'],
@@ -960,7 +960,7 @@
         SR.state.atLeast('OWNER') ? ui.field({
           label: 'Role',
           name: 'role',
-          options: ROLES.map((r) => ({ value: r.value, label: r.value === 'OWNER' && u.business_id ? 'Co-owner' : U.titleCase(r.value) })),
+          options: ROLES.map((r) => ({ value: r.value, label: r.value === 'OWNER' && Number(u.grant_count) > 0 ? 'Co-owner' : U.titleCase(r.value) })),
           value: u.role,
           disabled: self,
           hint: self ? 'You cannot change your own role.' : 'Changing a role takes effect at their next sign-in.',
@@ -993,10 +993,10 @@
       // enforce (a manager may look, only an owner may clear) and the same field names they
       // answer with.
       let ownEditor = null;
-      if (String(u.role).toUpperCase() === 'OWNER' && !u.business_id) {
+      if (String(u.role).toUpperCase() === 'OWNER' && !Number(u.grant_count)) {
         form.appendChild(ui.h('div', { class: 'hint' }, 'The proprietor. They own every business and every branch, including a business or a branch opened later.'));
       }
-      if (String(u.role).toUpperCase() === 'OWNER' && u.business_id && !self && SR.state.canAppointCoOwner && SR.state.canAppointCoOwner()) {
+      if (String(u.role).toUpperCase() === 'OWNER' && Number(u.grant_count) > 0 && !self && SR.state.canAppointCoOwner && SR.state.canAppointCoOwner()) {
         ownEditor = ui.h('div', { class: 'field' });
         ownEditor.appendChild(ui.h('div', { class: 'field-label' }, 'Businesses they own'));
         const ownList = ui.h('div', { class: 'stack' });
@@ -1108,7 +1108,7 @@
                 }
                 if (roleNow === 'MANAGER' && !body.branch_id) body.general_manager = true;
               }
-              if (ownEditor && roleNow === 'OWNER' && u.business_id) {
+              if (ownEditor && roleNow === 'OWNER' && Number(u.grant_count) > 0) {
                 const ids = ownEditor.collect();
                 if (!ids.length) {
                   ui.warn('Choose the businesses this co-owner owns. That can be all of them, one, or a couple.');

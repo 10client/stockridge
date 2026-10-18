@@ -602,6 +602,8 @@ function mount(app, base = '/api') {
               OR b2.id IN (SELECT uba.business_id FROM user_business_access uba
                 WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL)
             )) AS owned_business_ids,
+          (SELECT COUNT(*) FROM user_business_access uba
+            WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL) AS grant_count,
           (SELECT COUNT(*) FROM sales s WHERE s.salesperson_id = u.id AND s.is_deleted = 0 AND date(s.sold_at) = date('now','+1 hours')) AS sales_today,
           (SELECT COALESCE(SUM(s.total),0) FROM sales s WHERE s.salesperson_id = u.id AND s.is_deleted = 0 AND s.status <> 'VOIDED'
              AND date(s.sold_at) BETWEEN date('now','-29 days','+1 hours') AND date('now','+1 hours')) AS revenue_30d,
@@ -768,10 +770,13 @@ function mount(app, base = '/api') {
     // transfer at all, so a history that began at the first move could not answer
     // "who could see the Minna till on 14 March?" for the majority of the people it
     // is asked about. The row says: from this moment, this person is at that branch.
-    if (coOwner && ownedBusinesses.length > 1) {
+    if (coOwner) {
+      // The home business is a grant too. A co-owner of one business would
+      // otherwise look like a proprietor, because an owner with no grant
+      // still reaches every business.
       await syncCoOwnerGrants(db, {
         userId: id,
-        extraBusinessIds: ownedBusinesses.slice(1).map((b) => b.id),
+        extraBusinessIds: ownedBusinesses.map((b) => b.id),
         grantedBy: user.id,
       });
     }
@@ -821,6 +826,10 @@ function mount(app, base = '/api') {
     const body = await ctx.req.json();
     const target = await db.first('SELECT * FROM users WHERE id = ? AND is_deleted = 0', [id]);
     if (!target) throw new HttpError('That user does not exist.', { status: 404, code: 'USER_NOT_FOUND' });
+    target.grant_count = Number(await db.scalar(
+      'SELECT COUNT(*) FROM user_business_access WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL',
+      [id],
+    ) || 0);
     if (String(target.id) === String(user.id) && (body.role || body.is_active === false || body.branch_id)) {
       throw new HttpError('You cannot change your own role, branch or active status. Somebody else has to do that, or the hierarchy could be edited by the person it constrains.', { status: 400, code: 'SELF_CHANGE_FORBIDDEN' });
     }
@@ -937,7 +946,7 @@ function mount(app, base = '/api') {
     }
     let ownershipNote = null;
     if (Array.isArray(body.business_ids) && resultingRole === 'OWNER' && String(target.role).toUpperCase() === 'OWNER') {
-      if (!target.business_id) {
+      if (!target.business_id || !Number(target.grant_count)) {
         throw new HttpError(`${target.full_name} is the proprietor and already owns every business and every branch. That is not a list to edit.`, { status: 400, code: 'PROPRIETOR_OWNS_ALL' });
       }
       if (!canAppointCoOwner(user)) {
@@ -955,7 +964,7 @@ function mount(app, base = '/api') {
       }
       await syncCoOwnerGrants(db, {
         userId: target.id,
-        extraBusinessIds: owned.slice(1).map((b) => b.id),
+        extraBusinessIds: owned.map((b) => b.id),
         grantedBy: user.id,
       });
       ownershipNote = owned.map((b) => b.name).join(', ');
