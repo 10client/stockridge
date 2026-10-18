@@ -21,6 +21,12 @@
 
   /** The rows out of a paged list response, whichever shape the server used. */
   function inRows(res) { return (res && (res.data || res.rows || res.cleanups)) || []; }
+  function roomAmount(mb) {
+    const n = Number(mb);
+    if (!Number.isFinite(n)) return '—';
+    if (n >= 1024) return `${U.qty(Math.round(n / 102.4) / 10)} GB`;
+    return `${U.qty(n)} MB`;
+  }
 
   /**
    * THE CLEANUP, SCREENED THE WAY A DESTRUCTIVE ACTION DESERVES.
@@ -294,7 +300,17 @@
           ui.h('div', { class: 'card-body' },
             ui.h('h2', {}, 'Records and room'),
             ui.h('div', { class: `alert ${tone}` },
-              `${U.qty(st.megabytes)} MB of ${U.qty(st.limit_megabytes)} MB used (${st.percent_used}%). ${st.message || ''}`),
+              `${roomAmount(st.megabytes)} of ${st.quotas && st.quotas[0] ? st.quotas[0].allowance : roomAmount(st.limit_megabytes)} used (${st.percent_used}%). ${st.message || ''}`),
+            st.allowance ? ui.h('p', { class: 'sub' }, st.allowance) : null,
+            (st.quotas || []).length ? ui.dataCard({
+              title: st.provider === 'turso' ? 'Turso allowance' : 'Database allowance',
+              rows: st.quotas,
+              columns: [
+                { key: 'name', label: 'Limit' },
+                { key: 'allowance', label: 'Allowance' },
+                { key: 'note', label: 'What it means' },
+              ],
+            }) : null,
             st.assumption ? ui.h('p', { class: 'sub' }, st.assumption.note || '') : null,
             roomRows.length ? ui.dataCard({
               title: 'The largest records',

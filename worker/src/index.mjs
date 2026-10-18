@@ -41,6 +41,7 @@ import routes from '../../server/routes/index.js';
 import schema from '../../server/lib/schemaInfo';
 import crypto from '../../domain/crypto.js';
 import d1 from './d1.js';
+import turso from './turso.js';
 import housekeeping from './housekeeping.js';
 
 const { createApp } = http;
@@ -48,14 +49,30 @@ const { buildRoutes } = routes;
 const { schemaInfo, appliedMigrationCount } = schema;
 const { hashPin, verifyPin } = crypto;
 const { createD1Database } = d1;
+const { createTursoDatabase } = turso;
 const { runHousekeeping } = housekeeping;
 
 /** One app per isolate, built lazily: route registration is pure and cheap. */
 let cachedApp = null;
 let cachedDb = null;
 
+function databaseFor(env) {
+  const url = env.TURSO_DATABASE_URL;
+  const token = env.TURSO_AUTH_TOKEN;
+  if (url && token) {
+    return createTursoDatabase({ url, authToken: token, name: env.DB_NAME || 'turso' });
+  }
+  // Sample is the hosted deployment that moved off D1. A missing secret must
+  // fail here, not silently read the old D1 database and look like the move
+  // succeeded.
+  if (url || token || env.ENVIRONMENT === 'sample') {
+    throw new Error('This deployment uses Turso, but TURSO_DATABASE_URL or TURSO_AUTH_TOKEN is missing.');
+  }
+  return createD1Database(env.DB, { name: env.DB_NAME || 'stockridge' });
+}
+
 function appFor(env) {
-  const db = createD1Database(env.DB, { name: env.DB_NAME || 'stockridge' });
+  const db = databaseFor(env);
   const app = createApp();
   // `env` values are per-request, so the routes read them from ctx.env rather
   // than closing over a snapshot. The db object is safe to reuse, the settings
@@ -203,7 +220,7 @@ const worker = {
    */
   async diagnose(env) {
     const { db } = appFor(env);
-    const out = { runtime: 'cloudflare-workers', ok: true, checks: [] };
+    const out = { runtime: 'cloudflare-workers', ok: true, checks: [], database: db.dialect, database_name: db.location };
     try {
       const probe = await db.scalar('SELECT 1');
       out.checks.push({ name: 'database reachable', ok: probe === 1 });

@@ -343,10 +343,32 @@ function administratorExists() {
 }
 
 function applyMigrations() {
+  if (process.env.TURSO_DATABASE_URL && process.env.TURSO_AUTH_TOKEN) {
+    log('3/7', 'Skipping D1 migrations — this deployment reads Turso');
+    warn('the D1 binding is still declared so Wrangler can deploy; the Worker does not query it');
+    return;
+  }
   log('3/7', 'Applying migrations to D1 (the same .sql files Node applies)');
   const res = wrangler(['d1', 'migrations', 'apply', D1_NAME, '--remote', '--config', WRANGLER_CONFIG, ...ENV_FLAG]);
   const summary = (res.output.match(/Migrations? to be applied:[\s\S]*?(?=\n\n|$)/) || [res.output.match(/No migrations to apply\.|✅[^\n]*/) || []])[0];
   ok(String(summary || 'applied').trim().split('\n').slice(0, 12).join('\n      '));
+}
+
+async function configureTurso() {
+  const url = process.env.TURSO_DATABASE_URL;
+  const token = process.env.TURSO_AUTH_TOKEN;
+  if (!url && !token) return null;
+  if (!url || !token) throw new Error('Turso needs both TURSO_DATABASE_URL and TURSO_AUTH_TOKEN. The token belongs in .env.deploy, not in wrangler.toml.');
+  log('5b/7', 'Pointing the Worker at Turso');
+  const secret = wrangler(['secret', 'put', 'TURSO_AUTH_TOKEN', '--config', WRANGLER_CONFIG, ...ENV_FLAG], { input: `${token}\n` });
+  if (/error/i.test(secret.output) && !/Success/i.test(secret.output)) {
+    throw new Error('Could not store the Turso token as a Worker secret.');
+  }
+  ok('Turso token stored as a Worker secret (not printed)');
+  const { applyTursoMigrations } = require('./turso-admin');
+  const result = await applyTursoMigrations();
+  ok(`Turso schema: ${result.applied.length} migration(s) applied, ${result.skipped.length} already recorded`);
+  return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
 }
 
 function seedAdministrator() {
@@ -635,6 +657,7 @@ async function main() {
   applyMigrations();
   const seeding = seedAdministrator();
   setJwtSecret();
+  const tursoHost = await configureTurso();
   const url = deployWorker();
 
   let smoke = { ok: false, problems: ['not run'] };
@@ -644,7 +667,8 @@ async function main() {
   console.log('Deployment summary');
   console.log(`  account       : ${ACCOUNT_ID}`);
   console.log(`  environment   : ${ENV_NAME || 'production (default)'}`);
-  console.log(`  D1 database   : ${D1_NAME} (${databaseId})`);
+  console.log(`  D1 database   : ${D1_NAME} (${databaseId})${tursoHost ? ' — not used by this Worker' : ''}`);
+  if (tursoHost) console.log(`  Turso database: ${tursoHost}`);
   console.log(`  Worker        : ${url || '(dry run)'}`);
   const lifecycle = smoke.readiness && smoke.readiness.status;
   if (lifecycle) console.log(`  readiness     : ${lifecycle}`);

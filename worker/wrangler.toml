@@ -136,6 +136,12 @@ name = "sample"
 [env.sample.vars]
 ENVIRONMENT = "sample"
 DB_NAME = "stockridge-sample"
+# The database is Turso, not the D1 binding below. The URL is not a secret.
+# TURSO_AUTH_TOKEN is a Worker secret (`wrangler secret put`) and must not
+# be written into this file. The D1 binding stays so a local `wrangler dev`
+# without the secret still has a database to bind; the Worker refuses to
+# use it for sample once this URL is set.
+TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
 [[env.sample.d1_databases]]
 binding = "DB"
 database_name = "stockridge-sample"

@@ -97,6 +97,45 @@ const OVERHEAD = 1.35;
 const D1_FREE_LIMIT_BYTES = 500 * 1024 * 1024;
 const D1_PAID_LIMIT_BYTES = 10 * 1024 * 1024 * 1024;
 
+/**
+ * Turso's included allowance, the one that replaces Cloudflare D1's free tier
+ * on a deployment that has moved. Published at turso.tech/pricing: 5 GB of
+ * storage, 500 million rows read a month, 10 million rows written a month.
+ * A query past a monthly allowance is refused (BLOCKED) until it resets.
+ * A higher Turso plan raises these; the screen warns against the included
+ * allowance, which is the early direction.
+ */
+const TURSO_FREE_STORAGE_BYTES = 5 * 1024 * 1024 * 1024;
+const TURSO_FREE_ROWS_READ_MONTH = 500000000;
+const TURSO_FREE_ROWS_WRITTEN_MONTH = 10000000;
+
+function limitsFor(db) {
+  if (db && db.dialect === 'turso') {
+    return {
+      provider: 'turso',
+      limitBytes: TURSO_FREE_STORAGE_BYTES,
+      quotas: [
+        { name: 'Storage', allowance: '5 GB', note: 'Included Turso allowance. The figure above estimates how full it is.' },
+        { name: 'Rows read', allowance: '500 million a month', note: 'A query past this is refused until the month resets.' },
+        { name: 'Rows written', allowance: '10 million a month', note: 'Replaces Cloudflare D1’s 100,000 rows written a day.' },
+      ],
+      allowance: 'Turso included allowance: 5 GB of storage, 500 million rows read a month, and 10 million rows written a month. A query past either monthly allowance is refused until the next month.',
+      note: 'An estimate from row counts, not a measurement of the file. The ceiling is Turso’s included allowance of 5 GB, not Cloudflare D1’s 500 MB. Monthly row allowances are listed separately; this deployment cannot read Turso’s month-to-date usage.',
+    };
+  }
+  return {
+    provider: 'd1',
+    limitBytes: D1_FREE_LIMIT_BYTES,
+    quotas: [
+      { name: 'Storage', allowance: '500 MB', note: 'Cloudflare D1 free allowance.' },
+      { name: 'Rows read', allowance: '5 million a day', note: 'Cloudflare D1 free allowance.' },
+      { name: 'Rows written', allowance: '100,000 a day', note: 'Cloudflare D1 free allowance.' },
+    ],
+    allowance: 'Cloudflare D1 free allowance: 500 MB of storage, 5 million rows read a day, and 100,000 rows written a day.',
+    note: 'An estimate from row counts, not a measurement: Cloudflare does not expose the size of a D1 database to the Worker reading it. It is calibrated to warn LATE rather than early — the fixed floor of an empty schema is included.',
+  };
+}
+
 /** Warn before the wall, in the language of somebody who owns a shop. */
 const WARN_AT = 0.70;
 const CRITICAL_AT = 0.90;
@@ -108,7 +147,9 @@ const megabytes = (bytes) => Math.round((bytes / 1024 / 1024) * 10) / 10;
  * deployment, a half-applied migration) loses that table's contribution rather
  * than failing a screen somebody opened to find out what was wrong.
  */
-async function estimate(db, { limitBytes = D1_FREE_LIMIT_BYTES } = {}) {
+async function estimate(db, opts = {}) {
+  const limits = limitsFor(db);
+  const limitBytes = opts.limitBytes != null ? opts.limitBytes : limits.limitBytes;
   const available = [];
   let known = [];
   try {
@@ -166,12 +207,17 @@ async function estimate(db, { limitBytes = D1_FREE_LIMIT_BYTES } = {}) {
       rows: rowBytes,
       // Said plainly, because an estimate presented as a measurement is a lie a
       // proprietor may act on.
-      note: 'An estimate from row counts, not a measurement: Cloudflare does not expose the size of a D1 database to the Worker reading it. It is calibrated to warn LATE rather than early — the fixed floor of an empty schema is included.',
+      note: limits.note,
     },
+    provider: limits.provider,
+    quotas: limits.quotas,
+    allowance: limits.allowance,
   };
 }
 
 module.exports = {
   estimate, ROW_COST_BYTES, OVERHEAD, EMPTY_SCHEMA_BYTES,
   D1_FREE_LIMIT_BYTES, D1_PAID_LIMIT_BYTES, WARN_AT, CRITICAL_AT,
+  TURSO_FREE_STORAGE_BYTES, TURSO_FREE_ROWS_READ_MONTH, TURSO_FREE_ROWS_WRITTEN_MONTH,
+  limitsFor,
 };
