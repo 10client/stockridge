@@ -40,6 +40,7 @@ import http from '../../server/lib/http';
 import routes from '../../server/routes/index.js';
 import schema from '../../server/lib/schemaInfo';
 import crypto from '../../domain/crypto.js';
+import { connect as openSocket } from 'cloudflare:sockets';
 import d1 from './d1.js';
 import turso from './turso.js';
 import housekeeping from './housekeeping.js';
@@ -60,7 +61,9 @@ function databaseFor(env) {
   const url = env.TURSO_DATABASE_URL;
   const token = env.TURSO_AUTH_TOKEN;
   if (url && token) {
-    return createTursoDatabase({ url, authToken: token, name: env.DB_NAME || 'turso' });
+    // `openSocket` is one TLS connection for the whole invocation. Every
+    // statement goes down that socket, so a screen is not capped at 50 fetches.
+    return createTursoDatabase({ url, authToken: token, name: env.DB_NAME || 'turso', connect: openSocket });
   }
   // Sample is the hosted deployment that moved off D1. A missing secret must
   // fail here, not silently read the old D1 database and look like the move
@@ -109,7 +112,9 @@ async function handleApi(request, env, ctx) {
   const { app, db } = appFor(env);
   const { secret, source } = jwtSecret(env);
 
-  const response = await app.fetch(request, {
+  let response;
+  try {
+    response = await app.fetch(request, {
     DB: db,
     db,
     JWT_SECRET: secret,
@@ -132,6 +137,11 @@ async function handleApi(request, env, ctx) {
   }
   void ctx;
   return out;
+  } finally {
+    if (db && db.close) {
+      try { await db.close(); } catch (e) { /* the answer is already built */ }
+    }
+  }
 }
 
 const worker = {
@@ -206,6 +216,10 @@ const worker = {
       for (const problem of done.errors) console.error(`[cron] ${problem}`);
     } catch (err) {
       console.error('[cron] housekeeping failed:', err && err.message);
+    } finally {
+      if (db && db.close) {
+        try { await db.close(); } catch (e) { /* cron evidence is already logged */ }
+      }
     }
     void ctx;
     void event;
@@ -220,6 +234,7 @@ const worker = {
    */
   async diagnose(env) {
     const { db } = appFor(env);
+    try {
     const out = { runtime: 'cloudflare-workers', ok: true, checks: [], database: db.dialect, database_name: db.location };
     try {
       const probe = await db.scalar('SELECT 1');
@@ -306,6 +321,11 @@ const worker = {
     } catch (err) { /* reported through the checks above */ }
     out.ok = out.checks.every((c) => c.ok);
     return out;
+    } finally {
+      if (db && db.close) {
+        try { await db.close(); } catch (e) { /* the report is already built */ }
+      }
+    }
   },
 };
 

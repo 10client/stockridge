@@ -4,17 +4,22 @@
 // =====================================================================
 // Same six methods as worker/src/d1.js, so the shared route table does not
 // know which database it is talking to. Turso is reached over HTTPS
-// (libSQL's /v2/pipeline), which is what a Cloudflare Worker can do: there
-// is no native SQLite in that runtime, and there is no second copy of any
-// query in this file.
+// (libSQL's /v2/pipeline). There is no native SQLite in a Worker, and there
+// is no second copy of any query in this file.
 //
-// A pipeline is one connection. Foreign keys default to OFF on that
-// connection, unlike D1, which always enforces them. Every pipeline
-// therefore starts with `PRAGMA foreign_keys = ON` before any statement
-// the application wrote. A batch begins a transaction, sends the writes,
-// and only then commits — on a second request. Turso keeps executing a
-// pipeline after a statement fails, so a COMMIT in the same request would
-// keep the writes that landed before the failure.
+// A Worker on the free plan may make 50 outbound calls per invocation.
+// Opening a fresh fetch for every statement blows that on the first screen
+// ("Too many subrequests"). The Worker therefore opens ONE TLS socket with
+// cloudflare:sockets and sends every statement down that socket. Opening
+// the socket is the only subrequest. Node, which has no such cap, keeps
+// using fetch.
+//
+// Foreign keys default to OFF on a Turso HTTP connection, unlike D1, which
+// always enforces them. Every pipeline therefore starts with
+// `PRAGMA foreign_keys = ON`. A batch begins a transaction, sends the
+// writes, and only then commits — on a second request. Turso keeps
+// executing a pipeline after a statement fails, so a COMMIT in the same
+// request would keep the writes that landed before the failure.
 //
 // The auth token is a Worker secret. This file never logs it.
 // =====================================================================
@@ -241,11 +246,147 @@ function createCollector(db) {
   };
 }
 
-function createTursoDatabase({ url, authToken, name = null } = {}) {
+function concatBytes(left, right) {
+  if (!left || !left.length) return right || new Uint8Array(0);
+  if (!right || !right.length) return left;
+  const out = new Uint8Array(left.length + right.length);
+  out.set(left, 0);
+  out.set(right, left.length);
+  return out;
+}
+
+function indexOfBytes(hay, needle) {
+  if (!needle.length || hay.length < needle.length) return -1;
+  outer: for (let i = 0; i + needle.length <= hay.length; i += 1) {
+    for (let j = 0; j < needle.length; j += 1) if (hay[i + j] !== needle[j]) continue outer;
+    return i;
+  }
+  return -1;
+}
+
+/**
+ * One TLS connection, many HTTP/1.1 requests. Used only inside a Worker.
+ * `connect` is `cloudflare:sockets` connect, passed in so this file can
+ * still be required from Node.
+ */
+function createSocketLane(hostname, authToken, connect) {
+  let socket = null;
+  let reader = null;
+  let writer = null;
+  let buffer = new Uint8Array(0);
+  let chain = Promise.resolve();
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  const headerMark = encoder.encode('\r\n\r\n');
+
+  async function reset() {
+    const currentReader = reader;
+    const currentWriter = writer;
+    const currentSocket = socket;
+    reader = null;
+    writer = null;
+    socket = null;
+    buffer = new Uint8Array(0);
+    try { if (currentReader) await currentReader.cancel(); } catch (e) { /* already closed */ }
+    try { if (currentWriter) await currentWriter.close(); } catch (e) { /* already closed */ }
+    try { if (currentSocket && currentSocket.close) currentSocket.close(); } catch (e) { /* already closed */ }
+  }
+
+  async function ensure() {
+    if (reader && writer) return;
+    socket = connect({ hostname, port: 443 }, { secureTransport: 'on' });
+    reader = socket.readable.getReader();
+    writer = socket.writable.getWriter();
+    buffer = new Uint8Array(0);
+  }
+
+  async function pull(minLength) {
+    while (buffer.length < minLength) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error('Turso closed the connection');
+      if (value && value.length) buffer = concatBytes(buffer, value);
+    }
+  }
+
+  async function take(n) {
+    await pull(n);
+    const out = buffer.slice(0, n);
+    buffer = buffer.slice(n);
+    return out;
+  }
+
+  async function takeUntilHeader() {
+    while (indexOfBytes(buffer, headerMark) < 0) {
+      const { value, done } = await reader.read();
+      if (done) throw new Error('Turso closed the connection');
+      if (value && value.length) buffer = concatBytes(buffer, value);
+    }
+    const at = indexOfBytes(buffer, headerMark);
+    const head = decoder.decode(buffer.slice(0, at));
+    buffer = buffer.slice(at + headerMark.length);
+    return head;
+  }
+
+  async function sendNow(bodyText) {
+    await ensure();
+    const payload = encoder.encode(bodyText);
+    const header = encoder.encode(
+      `POST /v2/pipeline HTTP/1.1\r\nHost: ${hostname}\r\nAuthorization: Bearer ${authToken}\r\nContent-Type: application/json\r\nContent-Length: ${payload.length}\r\nConnection: keep-alive\r\n\r\n`,
+    );
+    await writer.write(concatBytes(header, payload));
+    const head = await takeUntilHeader();
+    const status = Number((head.match(/^HTTP\/1\.[01] (\d+)/) || [])[1] || 0);
+    let length = null;
+    for (const line of head.split('\r\n').slice(1)) {
+      const cut = line.indexOf(':');
+      if (cut < 0) continue;
+      if (line.slice(0, cut).trim().toLowerCase() === 'content-length') length = Number(line.slice(cut + 1).trim());
+    }
+    if (!Number.isFinite(length)) throw new Error('Turso answered without a content length');
+    const text = decoder.decode(await take(length));
+    if (status < 200 || status >= 300) {
+      throw Object.assign(new Error(`Turso refused the request (${status}): ${text.slice(0, 300)}`), { tursoStatus: status });
+    }
+    return text;
+  }
+
+  function send(bodyText, timeoutMs) {
+    const run = chain.then(() => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reset().catch(() => {});
+        reject(new Error('Turso did not answer in time'));
+      }, timeoutMs);
+      sendNow(bodyText).then((text) => {
+        clearTimeout(timer);
+        resolve(text);
+      }, async (err) => {
+        clearTimeout(timer);
+        if (err && err.tursoStatus) {
+          reject(err);
+          return;
+        }
+        await reset();
+        try {
+          resolve(await sendNow(bodyText));
+        } catch (again) {
+          await reset();
+          reject(again);
+        }
+      });
+    }));
+    chain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  return { send, close: reset };
+}
+
+function createTursoDatabase({ url, authToken, name = null, connect = null } = {}) {
   if (!url) throw new Error('createTursoDatabase() needs a database URL.');
   if (!authToken) throw new Error('createTursoDatabase() needs an auth token. Set it with wrangler secret put TURSO_AUTH_TOKEN — do not put it in wrangler.toml.');
   const endpoint = `${httpUrl(url)}/v2/pipeline`;
   const location = name || hostOf(url);
+  const lane = connect ? createSocketLane(hostOf(url), authToken, connect) : null;
 
   function requestBody(requests, baton) {
     const body = { requests };
@@ -253,14 +394,33 @@ function createTursoDatabase({ url, authToken, name = null } = {}) {
     return body;
   }
 
+  function parseAnswer(text, status) {
+    let json = null;
+    try { json = JSON.parse(text); } catch (e) { json = null; }
+    if (status != null && (status < 200 || status >= 300)) {
+      const message = (json && (json.error || json.message)) || String(text || '').slice(0, 300) || `HTTP ${status}`;
+      throw new Error(`Turso refused the request (${status}): ${typeof message === 'string' ? message : JSON.stringify(message).slice(0, 300)}`);
+    }
+    return json || { results: [] };
+  }
+
   async function post(requests, { timeoutMs = 30000, baton = null } = {}) {
+    const body = JSON.stringify(requestBody(requests, baton));
+    if (lane) {
+      try {
+        return parseAnswer(await lane.send(body, timeoutMs));
+      } catch (e) {
+        if (e && e.tursoStatus) throw new Error(e.message);
+        throw new Error(e && e.message && /Turso/.test(e.message) ? e.message : `Turso could not be reached: ${e && e.message ? e.message : e}`);
+      }
+    }
     const init = {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${authToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(requestBody(requests, baton)),
+      body,
     };
     if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
       init.signal = AbortSignal.timeout(timeoutMs);
@@ -271,14 +431,7 @@ function createTursoDatabase({ url, authToken, name = null } = {}) {
     } catch (e) {
       throw new Error(`Turso could not be reached: ${e.message}`);
     }
-    const text = await res.text();
-    let json = null;
-    try { json = JSON.parse(text); } catch (e) { json = null; }
-    if (!res.ok) {
-      const message = (json && (json.error || json.message)) || text.slice(0, 300) || `HTTP ${res.status}`;
-      throw new Error(`Turso refused the request (${res.status}): ${typeof message === 'string' ? message : JSON.stringify(message).slice(0, 300)}`);
-    }
-    return json || { results: [] };
+    return parseAnswer(await res.text(), res.status);
   }
 
   function statementRequest(statement) {
@@ -423,7 +576,9 @@ function createTursoDatabase({ url, authToken, name = null } = {}) {
     },
     pipeline,
     pragma() { return null; },
-    async close() { /* each pipeline closes its own connection */ },
+    async close() {
+      if (lane) await lane.close();
+    },
     get raw() { return null; },
     get location() { return location; },
     get stats() { return { hits: 0, misses: 0, cached: 0 }; },

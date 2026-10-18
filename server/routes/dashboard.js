@@ -209,9 +209,22 @@ function mount(app, base = '/api') {
       const worst = await db.all(`SELECT c.id, c.name, c.credit_balance FROM customers c
           WHERE ${dWhere.join(' AND ')} ORDER BY c.credit_balance DESC LIMIT 40`, dParams);
       let over90 = 0;
-      for (const w of worst) {
-        const entries = await db.all('SELECT * FROM debtor_ledger WHERE customer_id = ? AND is_deleted = 0 ORDER BY created_at, id', [String(w.id)]);
-        over90 = round2(over90 + ageBalance(entries, { today }).bucket_90_plus);
+      if (worst.length) {
+        // One read for every sampled debtor. A query per customer is a round
+        // trip each, and a Worker that opens a fresh call per query is capped.
+        const ids = worst.map((w) => String(w.id));
+        const entries = await db.all(
+          `SELECT * FROM debtor_ledger WHERE is_deleted = 0 AND customer_id IN (${ids.map(() => '?').join(', ')}) ORDER BY created_at, id`,
+          ids,
+        );
+        const byCustomer = new Map();
+        for (const entry of entries) {
+          const key = String(entry.customer_id);
+          const list = byCustomer.get(key) || [];
+          list.push(entry);
+          byCustomer.set(key, list);
+        }
+        for (const w of worst) over90 = round2(over90 + ageBalance(byCustomer.get(String(w.id)) || [], { today }).bucket_90_plus);
       }
       const overdueInvoices = await db.scalar(`SELECT COUNT(*) FROM sales s
           WHERE ${COUNTS} AND s.balance_due > 0 AND s.due_date IS NOT NULL AND s.due_date < ? ${sc.sql}`, [today, ...sc.params]);
@@ -248,16 +261,19 @@ function mount(app, base = '/api') {
     if (atLeast(user.role, 'MANAGER') && business) {
       const accountIds = await glService.loadAccountCodes(db, business.id);
       const codes = ['1000', '1010', '1020', '1030', '1040'];
+      const wanted = codes.map((code) => accountIds.get(code)).filter(Boolean);
       const accounts = [];
-      for (const code of codes) {
-        const accountId = accountIds.get(code);
-        if (!accountId) continue;
-        const row = await db.first(`SELECT a.code, a.name, COALESCE(SUM(l.debit - l.credit),0) AS balance
+      if (wanted.length) {
+        const rows = await db.all(`SELECT a.code, a.name, COALESCE(SUM(l.debit - l.credit),0) AS balance
             FROM gl_accounts a
             LEFT JOIN gl_journal_lines l ON l.account_id = a.id AND l.is_deleted = 0
             LEFT JOIN gl_journal_entries e ON e.id = l.journal_entry_id AND e.is_deleted = 0
-            WHERE a.id = ? GROUP BY a.id`, [accountId]);
-        if (row) accounts.push({ code: row.code, name: row.name, balance: round2(Number(row.balance)) });
+            WHERE a.id IN (${wanted.map(() => '?').join(', ')}) GROUP BY a.id`, wanted);
+        const byCode = new Map(rows.map((row) => [String(row.code), row]));
+        for (const code of codes) {
+          const row = byCode.get(code);
+          if (row) accounts.push({ code: row.code, name: row.name, balance: round2(Number(row.balance)) });
+        }
       }
       cash = { accounts, total: round2(accounts.reduce((a, x) => a + x.balance, 0)) };
     }
@@ -270,16 +286,18 @@ function mount(app, base = '/api') {
     let byBusiness = null;
     if (isGroup) {
         const businesses = await db.all('SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name');
-        byBusiness = [];
-        for (const biz of businesses) {
-          const r = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-              FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? AND s.business_id = ?`, [from, to, String(biz.id)]);
-          const branchCount = await db.scalar('SELECT COUNT(*) FROM branches WHERE business_id = ? AND is_deleted = 0 AND is_active = 1', [String(biz.id)]);
-          byBusiness.push({
-            ...biz, branchCount: Number(branchCount) || 0,
+        const periodRows = await db.all(`SELECT s.business_id, COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
+            FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? GROUP BY s.business_id`, [from, to]);
+        const branchRows = await db.all('SELECT business_id, COUNT(*) AS n FROM branches WHERE is_deleted = 0 AND is_active = 1 GROUP BY business_id');
+        const periodById = new Map(periodRows.map((row) => [String(row.business_id), row]));
+        const branchesById = new Map(branchRows.map((row) => [String(row.business_id), Number(row.n) || 0]));
+        byBusiness = businesses.map((biz) => {
+          const r = periodById.get(String(biz.id)) || { count: 0, gross: 0, vat: 0 };
+          return {
+            ...biz, branchCount: branchesById.get(String(biz.id)) || 0,
             period: { sales: Number(r.count) || 0, gross: round2(Number(r.gross)), net: round2(Number(r.gross) - Number(r.vat)) },
-          });
-        }
+          };
+        });
     }
 
     // ---- WHAT NEEDS DOING --------------------------------------------
