@@ -118,10 +118,10 @@ function mount(app, base = '/api') {
       theme_color: '#07290c',
       categories: ['business', 'productivity', 'finance'],
       icons: [
-        { src: '/icons/icon.svg?v=ridge-20261018-0845-ca40c99', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
-        { src: '/icons/icon-192.png?v=ridge-20261018-0845-ca40c99', sizes: '192x192', type: 'image/png', purpose: 'any' },
-        { src: '/icons/icon-512.png?v=ridge-20261018-0845-ca40c99', sizes: '512x512', type: 'image/png', purpose: 'any' },
-        { src: '/icons/icon-maskable-512.png?v=ridge-20261018-0845-ca40c99', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+        { src: '/icons/icon.svg?v=ridge-20261018-1920-f9a5db1', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
+        { src: '/icons/icon-192.png?v=ridge-20261018-1920-f9a5db1', sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: '/icons/icon-512.png?v=ridge-20261018-1920-f9a5db1', sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: '/icons/icon-maskable-512.png?v=ridge-20261018-1920-f9a5db1', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
       ],
       shortcuts: [
         { name: 'New sale', short_name: 'Sell', url: '/pos', description: 'Open the point of sale' },
