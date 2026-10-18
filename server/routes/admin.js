@@ -54,7 +54,7 @@ const provisioning = require('../services/provisioningService');
  * The first is the home row. The rest are grants. "All" is every business
  * that exists now, not a promise about one opened next week.
  */
-async function chosenBusinesses(db, ctx, body) {
+async function chosenBusinesses(db, ctx, body, { emptyMessage = null } = {}) {
   const raw = Array.isArray(body.business_ids) ? body.business_ids : [];
   const ids = [];
   const seen = new Set();
@@ -65,7 +65,7 @@ async function chosenBusinesses(db, ctx, body) {
     ids.push(id);
   }
   if (!ids.length) {
-    throw new HttpError('Choose the businesses this co-owner owns. That can be all of them, one, or a couple.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    throw new HttpError(emptyMessage || 'Choose the businesses this co-owner owns. That can be all of them, one, or a couple.', { status: 400, code: 'BUSINESS_REQUIRED' });
   }
   const rows = await db.all(
     `SELECT id, name FROM businesses WHERE is_deleted = 0 AND id IN (${ids.map(() => '?').join(',')})`,
@@ -570,7 +570,11 @@ function mount(app, base = '/api') {
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
     const where = ['u.is_deleted = 0']; const params = [];
-    const f = scopeFilter(scope, { alias: 'u' });
+    // The shell's working business must not hide the rest of the team. A
+    // general manager of BakeRidge has to be visible while AquaRidge is the
+    // business on screen, or the person who assigned them cannot find them
+    // to correct it. Security scope still applies. Focus does not.
+    const f = scopeFilter(scope, { alias: 'u', ignoreFocus: true });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
     // THE VENDOR IS NOT PART OF THE CLIENT'S TEAM — the same rule as the session list below.
     // The deployment administrator's account was listed among the shop's own staff: a row the
@@ -698,6 +702,23 @@ function mount(app, base = '/api') {
       ownedBusinesses = await chosenBusinesses(db, ctx, body);
       business = ownedBusinesses[0];
       effectiveBranch = null;
+    } else if (wantsGeneral) {
+      // THE NAMED BUSINESSES, not the oldest one on the deployment.
+      //
+      // A general manager covers every branch of the businesses they were
+      // given, and no other. Resolving a branch here used the creator's home
+      // shop, and a missing business id fell through to the oldest live
+      // business. On this deployment that is AquaRidge, so every general
+      // manager landed there no matter which business the form had ticked.
+      // A missing choice is a refusal, not a guess.
+      const named = Array.isArray(body.business_ids) && body.business_ids.length
+        ? body.business_ids
+        : (body.business_id ? [body.business_id] : []);
+      ownedBusinesses = await chosenBusinesses(db, ctx, { business_ids: named }, {
+        emptyMessage: 'Choose which business this general manager belongs to. They cover every branch of the businesses you tick, not every business on the deployment.',
+      });
+      business = ownedBusinesses[0];
+      effectiveBranch = null;
     } else {
       const branch = await resolveBranch(db, ctx, { required: false });
       business = await resolveBusiness(db, ctx, branch);
@@ -779,6 +800,15 @@ function mount(app, base = '/api') {
         extraBusinessIds: ownedBusinesses.map((b) => b.id),
         grantedBy: user.id,
       });
+    } else if (wantsGeneral && ownedBusinesses.length > 1) {
+      // The home business is the row. The others are grants. A grant for the
+      // home business would look like a second way in, and unticking it would
+      // not take them off the business on the row.
+      await syncCoOwnerGrants(db, {
+        userId: id,
+        extraBusinessIds: ownedBusinesses.slice(1).map((b) => b.id),
+        grantedBy: user.id,
+      });
     }
 
     const ownedNames = ownedBusinesses.map((b) => b.name).join(', ');
@@ -792,7 +822,7 @@ function mount(app, base = '/api') {
         ? `Created as co-owner of ${ownedNames}`
         : (role === 'OWNER'
           ? 'Created as proprietor — every business and every branch'
-          : (wantsGeneral ? 'Created as General Manager' : `Created as ${roleLabel(role)}`)),
+          : (wantsGeneral ? `Created as general manager of ${ownedBusinesses.map((b) => b.name).join(', ')}` : `Created as ${roleLabel(role)}`)),
       changedBy: user.id,
     });
 
@@ -801,7 +831,7 @@ function mount(app, base = '/api') {
       branchId: effectiveBranch ? effectiveBranch.id : null, businessId: business ? business.id : null,
       after: {
         fullName, username, role, coOwner,
-        businesses: coOwner ? ownedBusinesses.map((b) => b.id) : null,
+        businesses: (coOwner || wantsGeneral) ? ownedBusinesses.map((b) => b.id) : null,
         branch: effectiveBranch ? effectiveBranch.name : null,
         commissionRate,
       },
@@ -813,7 +843,7 @@ function mount(app, base = '/api') {
         : (role === 'OWNER'
           ? `${fullName} is the owner. They reach every business and every branch, including ones opened later. Their PIN is set and they can sign in now.`
           : (wantsGeneral
-            ? `${fullName} is a general manager of ${business.name}. They can sign in and work at every branch of that business. Their PIN is set.`
+            ? `${fullName} is a general manager of ${ownedBusinesses.map((b) => b.name).join(', ')}. They cover every branch of those businesses, and no other. Their PIN is set.`
             : `${fullName} created as ${roleLabel(role)}${effectiveBranch ? ` at ${effectiveBranch.name}` : ' with access to every branch'}. Their PIN is set and they can sign in now.`)),
       advisories,
     }, 201);
@@ -1224,6 +1254,10 @@ function mount(app, base = '/api') {
       // theirs. Both facts are reported rather than left for the screen to guess.
       reachesEverything: isAdminTarget,
       reachesEverythingBy,
+      // A general manager's home business is a tick, not a lock. Unticking it
+      // moves them onto another business they already reach, or refuses if it
+      // is the only one. An owner is not edited from these switches.
+      canMoveHome: targetRole === 'MANAGER' && !isAdminTarget,
       data: rows.map((b) => ({
         id: b.id, name: b.name, profile_code: b.profile_code, is_active: b.is_active,
         own: String(b.id) === String(target.business_id),
@@ -1316,6 +1350,56 @@ function mount(app, base = '/api') {
 
     const grant = await db.first(`SELECT * FROM user_business_access
       WHERE user_id = ? AND business_id = ? AND is_deleted = 0 AND revoked_at IS NULL`, [targetId, businessId]);
+    const isHome = String(target.business_id || '') === businessId;
+    const targetRoleNow = String(target.role || '').toUpperCase();
+    // UNTICKING THE HOME BUSINESS. A grant revoke cannot do this: the home
+    // business is the row, not a grant, so the switch used to be locked and
+    // AquaRidge stayed on after every attempt to take it off. A manager must
+    // keep at least one business — an empty pin would let them see every
+    // business on the deployment. Tick another one first, then untick this.
+    if (isHome && targetRoleNow === 'MANAGER') {
+      const business = await db.first('SELECT name FROM businesses WHERE id = ?', [businessId]);
+      const next = await db.first(`SELECT business_id FROM user_business_access
+        WHERE user_id = ? AND is_deleted = 0 AND revoked_at IS NULL AND business_id <> ?
+        ORDER BY granted_at, business_id LIMIT 1`, [targetId, businessId]);
+      if (!next) {
+        throw new HttpError(
+          `${target.full_name} has to belong to at least one business. Tick another business first, then untick ${business ? business.name : 'this one'}.`,
+          { status: 400, code: 'BUSINESS_REQUIRED' },
+        );
+      }
+      const nextBusiness = await db.first('SELECT id, name FROM businesses WHERE id = ? AND is_deleted = 0', [String(next.business_id)]);
+      if (!nextBusiness) {
+        throw new HttpError('The other business on their record no longer exists. Tick a live business first.', { status: 409, code: 'BUSINESS_NOT_FOUND' });
+      }
+      await db.run("UPDATE users SET business_id = ?, updated_at = datetime('now') WHERE id = ? AND is_deleted = 0", [String(nextBusiness.id), targetId]);
+      // The business they moved onto is now the row, not a grant. The one
+      // they left has no grant either, so the tick actually comes off.
+      await db.run(`UPDATE user_business_access
+          SET is_deleted = 1, revoked_at = datetime('now'), updated_at = datetime('now')
+        WHERE user_id = ? AND business_id IN (?, ?) AND is_deleted = 0 AND revoked_at IS NULL`,
+        [targetId, businessId, String(nextBusiness.id)]);
+      await assignments.recordAssignment(db, {
+        userId: targetId,
+        fromBranchId: target.branch_id,
+        toBranchId: target.branch_id,
+        fromBusinessId: target.business_id,
+        toBusinessId: nextBusiness.id,
+        reason: `Moved off ${business ? business.name : 'their home business'} onto ${nextBusiness.name}`,
+        changedBy: user.id,
+      });
+      await recordFromCtx(ctx, {
+        action: 'USER_BUSINESS_MOVED', entityType: 'USER', entityId: targetId,
+        businessId: String(nextBusiness.id), branchId: target.branch_id,
+        before: { business_id: target.business_id, business: business ? business.name : businessId },
+        after: { business_id: nextBusiness.id, business: nextBusiness.name },
+      });
+      ctx.json({
+        ok: true,
+        message: `${target.full_name} no longer reaches ${business ? business.name : 'that business'}. Their business is now ${nextBusiness.name}.`,
+      });
+      return;
+    }
     if (!grant) {
       throw new HttpError(`${target.full_name} has no grant for that business — removing nothing would report a change that did not happen.`, { status: 404, code: 'NO_GRANT' });
     }

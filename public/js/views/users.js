@@ -163,8 +163,10 @@
             { key: 'role', label: 'Role', render: (u) => ui.badge(u.roleLabel ? U.titleCase(u.roleLabel) : U.titleCase(u.role), u.role === 'STAFF' ? 'badge-mute' : 'badge-info') },
             { key: 'job_title', label: 'Job', render: (u) => u.job_title || '—' },
             { key: 'branch_name', label: 'Branch', render: (u) => {
-              if (u.branch_name) return u.branch_name;
-              if (u.role === 'MANAGER') return ui.badge('General Manager', 'badge-violet');
+              if (u.branch_name) return ui.h('div', {}, u.branch_name, u.business_name ? ui.h('div', { class: 'hint' }, u.business_name) : null);
+              if (u.role === 'MANAGER') return ui.h('div', {},
+                ui.badge('General Manager', 'badge-violet'),
+                ui.h('div', { class: 'hint' }, u.owned_businesses || u.business_name || 'No business'));
               if (u.role === 'OWNER' && Number(u.grant_count) > 0) return ui.badge(u.owned_businesses || u.business_name || 'chosen businesses', 'badge-violet');
               if (u.role === 'OWNER' || u.role === 'ADMIN') return ui.badge('all businesses', 'badge-violet');
               return '—';
@@ -627,6 +629,12 @@
       businessField.hidden = true;
       const ownerNote = ui.h('div', { class: 'hint', hidden: true },
         'An owner reaches every business and every branch, including a business or a branch opened later. They are not pinned to one set of books.');
+      const gmField = ui.h('div', { class: 'field', hidden: true });
+      const gmList = ui.h('div', { class: 'stack' });
+      gmField.appendChild(ui.h('div', { class: 'field-label' }, 'Businesses they manage'));
+      gmField.appendChild(gmList);
+      gmField.appendChild(ui.h('div', { class: 'hint' },
+        'Tick one, or a couple. A general manager covers every branch of those businesses, and no other. They are not put on AquaRidge unless you tick it.'));
       const ownField = ui.h('div', { class: 'field', hidden: true });
       const ownList = ui.h('div', { class: 'stack' });
       ownField.appendChild(ui.h('div', { class: 'field-label' }, 'Businesses they own'));
@@ -651,6 +659,7 @@
         ui.field({ label: 'Account number', name: 'bank_account_no', placeholder: '0123456789' }),
         ui.field({ label: 'Employed since', name: 'employment_started', type: 'date' })));
       form.appendChild(ownerNote);
+      form.appendChild(gmField);
       form.appendChild(ownField);
       form.appendChild(emptyNote);
       form.appendChild(ui.h('div', { class: 'hint' }, 'The PIN is stored hashed. Nobody — including you — can read it back. If it is forgotten, issue a new one.'));
@@ -669,6 +678,26 @@
       }
       function chosenBusinessIds() {
         return [...ownList.querySelectorAll('input[data-business]')].filter((el) => el.checked).map((el) => el.value);
+      }
+      function chosenGmIds() {
+        return [...gmList.querySelectorAll('input[data-gm]')].filter((el) => el.checked).map((el) => el.value);
+      }
+      function paintGm(branchId) {
+        const previous = new Set(chosenGmIds());
+        const branchRow = branchRows.find((b) => String(b.id) === String(branchId || ''));
+        const fromBranch = branchRow ? String(branchRow.business_id) : '';
+        gmList.replaceChildren();
+        if (!businessRows.length) {
+          gmList.appendChild(ui.h('div', { class: 'hint' }, 'No business yet.'));
+          return;
+        }
+        for (const b of businessRows) {
+          const checked = previous.size
+            ? previous.has(String(b.id))
+            : (fromBranch ? String(b.id) === fromBranch : businessRows.length === 1);
+          const box = ui.h('input', { type: 'checkbox', value: b.id, 'data-gm': '1', checked: checked });
+          gmList.appendChild(ui.h('label', { class: 'check' }, box, ui.h('span', {}, b.name)));
+        }
       }
       function paintOwnership() {
         const previous = new Set(chosenBusinessIds());
@@ -737,11 +766,20 @@
         const coSeat = role === 'CO_OWNER';
         // The business select is for a general manager when the branch cannot
         // name it. An owner is not asked. A co-owner uses the checklist.
-        businessField.hidden = needs || ownerSeat || coSeat || businessRows.length <= 1;
+        // A general manager is not assigned by a hidden branch. The checklist
+        // is the assignment. A stale branch value must not satisfy the form
+        // and then be dropped, which is how every general manager was saved
+        // against the oldest business. The branch they had picked still names
+        // the business to pre-tick, and is read before the select is cleared.
+        const branchBeforeClear = branchSel.value;
+        if (general) branchSel.value = '';
+        businessField.hidden = needs || ownerSeat || coSeat || general || businessRows.length <= 1;
         branchField.hidden = general || ownerSeat || coSeat;
+        gmField.hidden = !general;
         ownerNote.hidden = !ownerSeat;
         ownField.hidden = !coSeat;
         paintOwnership();
+        if (general) paintGm(branchBeforeClear);
 
         emptyNote.replaceChildren();
         if (coSeat && !businessRows.length) {
@@ -793,8 +831,15 @@
           return;
         }
         const general = v.role === 'MANAGER' && v.reach === 'all';
+        const gmIds = general ? chosenGmIds() : [];
         if (general && !SR.state.atLeast('OWNER')) {
           ui.warn('Only an owner can appoint a general manager.');
+          return;
+        }
+        if (general && !gmIds.length) {
+          ui.warn(businessRows.length
+            ? 'Choose which business this general manager belongs to. Tick one, or a couple. They cover every branch of those businesses, not every business on the deployment.'
+            : 'Create a business first. A general manager has to belong to one.');
           return;
         }
         if (SR.state.roleNeedsBranch(v.role, { generalManager: general }) && !v.branch_id) {
@@ -807,10 +852,8 @@
         const businessId = ownerSeat || coSeat ? null : ((chosenBranch && chosenBranch.business_id)
           || v.business_id
           || (businessRows.length === 1 ? businessRows[0].id : null));
-        if (!ownerSeat && !coSeat && !v.branch_id && !businessId) {
-          ui.warn(general
-            ? 'Choose which business this general manager belongs to. They cover every branch of that business, not every business on the deployment.'
-            : 'Choose which business this person belongs to.');
+        if (!ownerSeat && !coSeat && !general && !v.branch_id && !businessId) {
+          ui.warn('Choose which business this person belongs to.');
           return;
         }
         await ui.withBusy(form, async () => {
@@ -820,10 +863,10 @@
               username: v.username,
               role: coSeat ? 'OWNER' : v.role,
               co_owner: coSeat || undefined,
-              business_ids: coSeat ? ownedIds : undefined,
               general_manager: general || undefined,
               branch_id: (general || ownerSeat || coSeat) ? null : (v.branch_id || null),
-              business_id: businessId || undefined,
+              business_id: general ? gmIds[0] : (businessId || undefined),
+              business_ids: general ? gmIds : (coSeat ? ownedIds : undefined),
               job_title: v.job_title || undefined,
               phone: v.phone || undefined,
               pin: String(v.pin),
@@ -892,13 +935,18 @@
 
         list.appendChild(ui.h('p', { class: 'hint' },
           whyLocked
-            || `Reaching ${reached} of ${rows.length}. Their own business is theirs by being on their record; the others are grants. A grant widens what they can SEE, never what they may DO — the role above still decides that.`));
+            || (data.canMoveHome
+              ? `Reaching ${reached} of ${rows.length}. Tick the businesses they should cover, and untick the ones they should not — including the one already on their record. A general manager has to keep at least one.`
+              : `Reaching ${reached} of ${rows.length}. Their own business is theirs by being on their record; the others are grants. A grant widens what they can SEE, never what they may DO — the role above still decides that.`)));
 
         for (const b of rows) {
-          const locked = data.reachesEverything || b.own;
+          const locked = data.reachesEverything || (b.own && !data.canMoveHome);
           const box = ui.h('input', { type: 'checkbox', checked: b.own || b.viaGrant || data.reachesEverything, disabled: locked });
           const line = ui.h('div', { class: 'hint' },
-            b.own ? 'Their own business — not a grant, and not something to switch off here.'
+            b.own
+              ? (data.canMoveHome
+                ? 'On their record. Untick it to take them off this business. If it is the only one, tick another business first.'
+                : 'Their own business — not a grant, and not something to switch off here.')
               : byRole ? (byRole === 'NO_BUSINESS_PINNED' ? 'Reached — nothing pins them to one business.' : 'Reached by role.')
                 : b.viaGrant && b.grantedAt ? `Granted ${U.date(b.grantedAt)}.` : 'No access yet.');
           const rowEl = ui.h('label', { class: 'check', style: { marginBottom: '6px', alignItems: 'flex-start' } },
@@ -948,7 +996,13 @@
         ['Role', U.titleCase(u.roleLabel || u.role)],
         ['Reach', u.role === 'OWNER' && !Number(u.grant_count)
           ? 'Every business and every branch'
-          : (u.role === 'OWNER' ? (u.owned_businesses || u.business_name || 'Chosen businesses') : (u.branch_name || 'Every branch'))],
+          : (u.role === 'OWNER'
+            ? (u.owned_businesses || u.business_name || 'Chosen businesses')
+            : (u.branch_name
+              ? u.branch_name
+              : (u.role === 'MANAGER'
+                ? (u.owned_businesses || u.business_name || 'No business')
+                : 'Every branch')))],
         ['Role grants', (u.navigation || []).map((n) => U.titleCase(n)).join(', ') || '—'],
       ]));
       form.appendChild(ui.h('div', { class: 'form-grid' },

@@ -535,6 +535,7 @@
   }
 
   function showLogin() {
+    stopSessionWatch();
     ui.endPageNow();
     showBoot(false);
     document.getElementById('shell').hidden = true;
@@ -551,6 +552,7 @@
     showBoot(false);
     document.getElementById('login-screen').hidden = true;
     document.getElementById('shell').hidden = false;
+    startSessionWatch();
     // paintIdentity() is decoration: the header, the chips, the user menu. The
     // navigation is the way out of a screen. When a bug in a five-line header
     // update threw, this ran in order and the throw took the whole sidebar with
@@ -1111,6 +1113,49 @@
     }
   }
 
+  // ONE ACCOUNT, ONE DEVICE, IN THE APP — not only on the next click.
+  //
+  // A later sign-in already replaces the session row, and the next API call
+  // from the first device is refused. A till that is sitting on a screen
+  // makes no call, so it kept looking signed in. This asks, on a short
+  // timer and whenever the tab is visible again, and the refusal takes the
+  // shell down. Offline is not a refusal: the till keeps selling until the
+  // line can say the session is gone.
+  let sessionWatchTimer = null;
+  let sessionWatchBound = false;
+  let signingOut = false;
+
+  function onSessionVisible() {
+    if (document.visibilityState === 'hidden') return;
+    void watchSession();
+  }
+
+  function startSessionWatch() {
+    if (!SR.api.hasToken()) return;
+    if (sessionWatchTimer) clearInterval(sessionWatchTimer);
+    sessionWatchTimer = setInterval(() => { void watchSession(); }, 15000);
+    if (!sessionWatchBound) {
+      document.addEventListener('visibilitychange', onSessionVisible);
+      window.addEventListener('online', onSessionVisible);
+      sessionWatchBound = true;
+    }
+  }
+
+  function stopSessionWatch() {
+    if (sessionWatchTimer) { clearInterval(sessionWatchTimer); sessionWatchTimer = null; }
+  }
+
+  async function watchSession() {
+    if (signingOut || !SR.api.hasToken()) return;
+    try {
+      await SR.api.me();
+    } catch (err) {
+      if (err && err.isAuth) {
+        void handleAuthFailure({ reason: err.code, token: err.token || SR.api.loadToken(), message: err.message });
+      }
+    }
+  }
+
   function startBellPolling() {
     void updateBell();
     if (bellPollTimer) clearInterval(bellPollTimer);
@@ -1160,30 +1205,38 @@
   }
 
   async function handleAuthFailure(detail) {
+    if (signingOut) return;
+    signingOut = true;
+    stopSessionWatch();
     const failedToken = detail && detail.token;
     const current = SR.api.loadToken();
     // Another tab on this same device just signed in. Its token is the live one.
     // Signing out here would throw away the session the person just started.
     if (failedToken && current && failedToken !== current) {
+      signingOut = false;
       global.location.reload();
       return;
     }
     const superseded = detail && detail.reason === 'SESSION_SUPERSEDED';
-    if (superseded) {
-      try { sessionStorage.setItem('sr.displaced', '1'); } catch (e) { /* the login screen still says it */ }
-      await stampDisplacedQueue();
+    try {
+      if (superseded) {
+        try { sessionStorage.setItem('sr.displaced', '1'); } catch (e) { /* the login screen still says it */ }
+        await stampDisplacedQueue();
+      }
+    } finally {
+      SR.api.setToken(null);
+      SR.state.clear();
+      SR.sync.stop();
+      // No token, no alerts — and a poll that keeps running after sign-out is a poll that
+      // keeps 401-ing, which the API layer would report as the session having ended again.
+      if (bellPollTimer) { clearInterval(bellPollTimer); bellPollTimer = null; }
+      const badge = document.getElementById('bell-count');
+      if (badge) { badge.hidden = true; badge.textContent = '0'; }
+      closeBell();
+      showLogin();
+      ui.warn(superseded ? (detail.message || displacedNotice()) : 'Your session has ended. Sign in again to continue.');
+      signingOut = false;
     }
-    SR.api.setToken(null);
-    SR.state.clear();
-    SR.sync.stop();
-    // No token, no alerts — and a poll that keeps running after sign-out is a poll that
-    // keeps 401-ing, which the API layer would report as the session having ended again.
-    if (bellPollTimer) { clearInterval(bellPollTimer); bellPollTimer = null; }
-    const badge = document.getElementById('bell-count');
-    if (badge) { badge.hidden = true; badge.textContent = '0'; }
-    closeBell();
-    showLogin();
-    ui.warn(superseded ? (detail.message || displacedNotice()) : 'Your session has ended. Sign in again to continue.');
   }
 
   async function doLogin(ev) {
