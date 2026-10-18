@@ -25,7 +25,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
-const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
+const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, inScope } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, utcToWat, watToUtc, minutesBetween, utcNow, claimedWatToUtcSql } = require('../../domain/time');
@@ -62,6 +62,128 @@ async function resolveClockUtc(ctx, body) {
 function lagosTime(utcSql) {
   const wat = utcToWat(utcSql);
   return wat ? wat.slice(11, 16) : '';
+}
+
+
+async function loadAttendance(db, id) {
+  return db.first(`SELECT a.*, u.full_name, u.username, b.name AS branch_name
+      FROM staff_attendance a
+      JOIN users u ON u.id = a.user_id
+      LEFT JOIN branches b ON b.id = a.branch_id
+      WHERE a.id = ? AND a.is_deleted = 0`, [String(id)]);
+}
+
+function assertCanSeeAttendance(ctx, record) {
+  const user = ctx.get('user');
+  if (String(record.user_id) === String(user.id)) return;
+  if (!inScope(ctx.get('scope'), record)) {
+    throw new HttpError('That attendance record is outside your branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+  }
+}
+
+/**
+ * Close an open shift, or correct one that is already closed.
+ *
+ * `nowOnly` is the header button: the server clock, this person's own open
+ * row, no typed hours. The table sends the row id and, for a manager, the
+ * time they left and the hours to count. Either way the row gets a
+ * clock-out, so the one-open-shift rule releases and they can clock in again.
+ */
+async function applyClockOut(db, ctx, record, body, { nowOnly = false } = {}) {
+  const user = ctx.get('user');
+  const manager = atLeast(user.role, 'MANAGER');
+  const mine = String(record.user_id) === String(user.id);
+  const open = !record.clock_out_at;
+  const note = strField(body.note || body.notes || body.reason, { field: 'Reason', maxLength: 500 });
+  const hoursSent = !nowOnly && body.hours_worked != null && String(body.hours_worked).trim() !== '';
+  const timeSent = !nowOnly && body.clock_out_at != null && String(body.clock_out_at).trim() !== '';
+  const controlling = timeSent || hoursSent || !open;
+
+  if (!mine && !manager) {
+    throw new HttpError('You can only clock out your own shift.', { status: 403, code: 'ROLE_REQUIRED' });
+  }
+  if (!open && !manager) {
+    throw new HttpError('This shift is already closed. A manager can correct it from the attendance table.', { status: 409, code: 'ALREADY_CLOCKED_OUT' });
+  }
+  if (controlling && !manager) {
+    throw new HttpError('A manager sets the leaving time and the hours from the attendance table. You can clock out now.', { status: 403, code: 'ROLE_REQUIRED' });
+  }
+  if (controlling && (!note || note.length < 6)) {
+    throw new HttpError('Say why this shift is being closed or corrected, in a sentence. The hours are what they are paid, so the reason stays on the row.', { status: 400, code: 'REASON_REQUIRED' });
+  }
+
+  let outUtc;
+  if (timeSent) {
+    outUtc = claimedWatToUtcSql(body.clock_out_at);
+    if (!outUtc) throw new HttpError('That clock-out time is not a time.', { status: 400, code: 'CLOCK_OUT_TIME' });
+    const ahead = minutesBetween(outUtc, utcNow());
+    if (ahead != null && ahead < -CLOCK_SKEW_MINUTES) {
+      throw new HttpError('A clock-out cannot be in the future.', { status: 400, code: 'CLOCK_OUT_TIME' });
+    }
+  } else if (open) {
+    outUtc = await resolveClockUtc(ctx, nowOnly ? body : {});
+  } else {
+    outUtc = record.clock_out_at;
+  }
+  const gapMin = minutesBetween(record.clock_in_at, outUtc);
+  if (gapMin == null || gapMin < 0) {
+    throw new HttpError(`The clock-out has to be after the clock-in (${utcToWat(record.clock_in_at) || record.clock_in_at}). The row stays open until the times agree.`, { status: 400, code: 'CLOCK_OUT_BEFORE_IN' });
+  }
+  const span = hoursBetween(record.clock_in_at, outUtc) || 0;
+  const counted = hoursSent
+    ? numField(body.hours_worked, { field: 'Hours', min: 0, max: 36 })
+    : round2(span);
+  const flags = [];
+  if (counted > 16) {
+    flags.push(`This shift counts ${counted} hours, which usually means a missed clock-out rather than a real shift. Correct it from the attendance table.`);
+  }
+  if (hoursSent && Math.abs(counted - span) > 0.25) {
+    flags.push(`Hours counted (${counted}) are not the span from clock-in to clock-out (${round2(span)}).`);
+  }
+  if (Number(record.flagged) && record.flag_reason && !flags.includes(record.flag_reason)) flags.push(record.flag_reason);
+  const who = user.full_name || user.username;
+  const line = open
+    ? `\n| Clocked out ${watNow()} by ${who}${controlling ? ' from the attendance table' : ''} after ${counted}h${note ? ` — ${note}` : ''}`
+    : `\n| Corrected ${watNow()} by ${who}: clock-out ${utcToWat(record.clock_out_at) || record.clock_out_at} → ${utcToWat(outUtc) || outUtc}, hours ${record.hours_worked} → ${counted}${note ? ` — ${note}` : ''}`;
+  const reason = flags.length ? flags.join(' ').slice(0, 500) : record.flag_reason;
+
+  await db.run(`UPDATE staff_attendance SET clock_out_at = ?, hours_worked = ?, flagged = ?,
+      flag_reason = ?, override_by = ?, override_reason = ?,
+      notes = COALESCE(notes,'') || ?, updated_at = datetime('now')
+    WHERE id = ? AND is_deleted = 0`, [
+    outUtc, counted,
+    flags.length ? 1 : Number(record.flagged),
+    reason,
+    controlling ? String(user.id) : record.override_by,
+    controlling ? (note || null) : record.override_reason,
+    line,
+    String(record.id),
+  ]);
+
+  await recordFromCtx(ctx, {
+    action: open ? 'CLOCK_OUT' : 'ATTENDANCE_REVIEWED',
+    entityType: 'ATTENDANCE',
+    entityId: String(record.id),
+    branchId: record.branch_id,
+    businessId: record.business_id,
+    before: { clock_out_at: record.clock_out_at, hours_worked: record.hours_worked },
+    after: { clockOutAt: outUtc, hours: counted, flagged: flags.length > 0, note: note || null },
+  });
+
+  const name = record.full_name || 'This shift';
+  const flagged = flags.length ? ` Flagged: ${flags[0]}` : '';
+  return {
+    ok: true,
+    id: String(record.id),
+    hours: counted,
+    clockedOutAt: outUtc,
+    message: open && !controlling
+      ? `Clocked out at ${lagosTime(outUtc)} after ${counted} hour(s).${flagged}`
+      : (open
+        ? `${name} clocked out. ${counted} hour(s) counted.${flagged}`
+        : `${name}'s shift corrected to ${counted} hour(s). The earlier times stay in the notes.`),
+    warnings: flags,
+  };
 }
 
 function mount(app, base = '/api') {
@@ -101,7 +223,7 @@ function mount(app, base = '/api') {
       [String(user.id)]);
     if (open) {
       throw new HttpError(
-        `You are already clocked in at ${open.branch_id === String(branch.id) ? branch.name : 'another branch'} since ${utcToWat(open.clock_in_at) || open.clock_in_at}. Clock out first — two open shifts for one person makes neither countable.`,
+        `You are still clocked in since ${utcToWat(open.clock_in_at) || open.clock_in_at}. A new day does not close a shift. Clock it out from the attendance table — the row stays there until it is closed.`,
         { status: 409, code: 'ALREADY_CLOCKED_IN' },
       );
     }
@@ -227,51 +349,35 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     const body = await ctx.req.json();
-    const branch = await resolveBranch(db, ctx);
-
-    const open = await db.first('SELECT * FROM staff_attendance WHERE user_id = ? AND clock_in_at IS NOT NULL AND clock_out_at IS NULL AND is_deleted = 0 ORDER BY clock_in_at DESC LIMIT 1',
+    await resolveBranch(db, ctx);
+    const open = await db.first('SELECT id FROM staff_attendance WHERE user_id = ? AND clock_in_at IS NOT NULL AND clock_out_at IS NULL AND is_deleted = 0 ORDER BY clock_in_at DESC LIMIT 1',
       [String(user.id)]);
     if (!open) {
-      throw new HttpError('You are not clocked in, so there is no shift to close.', { status: 409, code: 'NOT_CLOCKED_IN' });
+      throw new HttpError('You are not clocked in, so there is no shift to close. If you clocked in on an earlier day, the row is still on the attendance table — close it there.', { status: 409, code: 'NOT_CLOCKED_IN' });
     }
-    const nowUtc = await resolveClockUtc(ctx, body);
-    const hours = round2(hoursBetween(open.clock_in_at, nowUtc));
-    if (hours < 0) {
-      // Can only happen if the clock-in was recorded with a future timestamp.
-      // Clamping at zero keeps the record usable and says what happened, rather
-      // than storing negative hours that make a payroll total wrong.
-      ctx.set('negativeHours', `The clock-in (${utcToWat(open.clock_in_at) || open.clock_in_at}) is later than now (${utcToWat(nowUtc) || nowUtc}), Lagos time; the device clock or the stored time is wrong. Recorded as 0 hours.`);
-    }
-    const safeHours = Math.max(0, hours);
+    const record = await loadAttendance(db, open.id);
+    ctx.json(await applyClockOut(db, ctx, record, body, { nowOnly: true }));
+  });
 
-    // A shift longer than a working day is flagged, not rejected: it is usually
-    // somebody who forgot to clock out, and the honest record is the long shift
-    // plus a flag, not a fabricated eight hours.
-    const flags = [];
-    if (safeHours > 16) flags.push(`This shift is ${safeHours} hours long, which usually means a missed clock-out rather than a real shift. A manager should correct it.`);
-    if (Number(open.flagged)) flags.push(open.flag_reason);
-
-    await db.run(`UPDATE staff_attendance SET clock_out_at = ?, hours_worked = ?, flagged = ?,
-        flag_reason = ?, notes = COALESCE(notes,'') || ?, updated_at = datetime('now')
-      WHERE id = ? AND is_deleted = 0`, [
-      nowUtc, safeHours,
-      flags.length ? 1 : Number(open.flagged),
-      flags.length ? flags.join(' ') : open.flag_reason,
-      `\n| Clocked out ${watNow()} after ${safeHours}h`,
-      String(open.id),
-    ]);
-
-    await recordFromCtx(ctx, {
-      action: 'CLOCK_OUT', entityType: 'ATTENDANCE', entityId: String(open.id), branchId: branch.id, businessId: open.business_id,
-      before: { clock_out_at: null, hours_worked: null },
-      after: { clockOutAt: nowUtc, hours: safeHours, flagged: flags.length > 0 },
-    });
-    ctx.json({
-      ok: true, id: String(open.id), hours: safeHours,
-      clockedOutAt: nowUtc,
-      message: `Clocked out at ${lagosTime(nowUtc)} after ${safeHours} hour(s).${flags.length ? ` Flagged: ${flags[0]}` : ''}`,
-      warnings: [ctx.get('negativeHours'), ...flags].filter(Boolean),
-    });
+  /**
+   * Close or correct one row from the attendance table.
+   *
+   * A shift does not end because the day did. After midnight it leaves Today,
+   * and the only clock-out button used to leave with it, while a new clock-in
+   * was refused because the old row was still open. The table is where that
+   * row is closed. The person can clock themselves out now. A manager can set
+   * the time they actually left and the hours to count, including on a row
+   * that is already closed, so a forgotten clock-out is not paid as a day and
+   * a night. The original times stay in the notes.
+   */
+  app.post(`${base}/attendance/:id/clock-out`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const id = String(ctx.req.param('id'));
+    const body = await ctx.req.json();
+    const record = await loadAttendance(db, id);
+    if (!record) throw new HttpError('That attendance record does not exist.', { status: 404, code: 'ATTENDANCE_NOT_FOUND' });
+    assertCanSeeAttendance(ctx, record);
+    ctx.json(await applyClockOut(db, ctx, record, body, { nowOnly: false }));
   });
 
   /** Today's attendance for the branches the caller may see. */
@@ -322,8 +428,34 @@ function mount(app, base = '/api') {
     const presentIds = new Set(rows.map((r) => String(r.user_id)));
     const absent = expected.filter((u) => !presentIds.has(String(u.id)));
 
+    const user = ctx.get('user');
+    const openWhere = ['a.is_deleted = 0', 'a.clock_out_at IS NULL', 'a.clock_in_at < ?'];
+    const openParams = [dayStartUtc];
+    if (branch) { openWhere.push('a.branch_id = ?'); openParams.push(String(branch.id)); }
+    else {
+      const openScope = scopeFilter(scope, { alias: 'a' });
+      if (openScope.sql) { openWhere.push(openScope.sql); openParams.push(...openScope.params); }
+    }
+    const stillOpen = await db.all(`SELECT a.*, u.full_name, u.username, u.role, u.job_title, b.name AS branch_name
+        FROM staff_attendance a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN branches b ON b.id = a.branch_id
+        WHERE ${openWhere.join(' AND ')}
+        ORDER BY a.clock_in_at ASC LIMIT 50`, openParams);
+    const myOpen = user
+      ? await db.first(`SELECT a.*, u.full_name, u.username, u.role, u.job_title, b.name AS branch_name
+          FROM staff_attendance a
+          JOIN users u ON u.id = a.user_id
+          LEFT JOIN branches b ON b.id = a.branch_id
+          WHERE a.user_id = ? AND a.clock_in_at IS NOT NULL AND a.clock_out_at IS NULL AND a.is_deleted = 0
+          ORDER BY a.clock_in_at DESC LIMIT 1`, [String(user.id)])
+      : null;
+    if (myOpen && String(myOpen.clock_in_at) < String(dayStartUtc) && !stillOpen.some((row) => String(row.id) === String(myOpen.id))) {
+      stillOpen.unshift(myOpen);
+    }
+
     ctx.json({
-      ok: true, date, records: rows,
+      ok: true, date, records: rows, myOpen: myOpen || null, stillOpen,
       summary: {
         clockedIn: rows.length,
         stillIn: rows.filter((r) => !r.clock_out_at).length,
@@ -368,8 +500,19 @@ function mount(app, base = '/api') {
           COALESCE(SUM(a.hours_worked),0) AS hours, COALESCE(SUM(a.flagged),0) AS flagged
         FROM staff_attendance a JOIN users u ON u.id = a.user_id
         WHERE ${whereSql} GROUP BY u.id ORDER BY hours DESC LIMIT 100`, params);
+    const openWhere = ['a.is_deleted = 0', 'a.clock_out_at IS NULL'];
+    const openParams = [];
+    const openScope = scopeFilter(scope, { alias: 'a' });
+    if (openScope.sql) { openWhere.push(openScope.sql); openParams.push(...openScope.params); }
+    const stillOpen = await db.all(`SELECT a.*, u.full_name, u.username, u.role, b.name AS branch_name
+        FROM staff_attendance a
+        JOIN users u ON u.id = a.user_id
+        LEFT JOIN branches b ON b.id = a.branch_id
+        WHERE ${openWhere.join(' AND ')}
+        ORDER BY a.clock_in_at ASC LIMIT 50`, openParams);
     ctx.json({
       ...listResponse(rows, { limit, offset }, total),
+      stillOpen,
       range: { from, to },
       summary: { shifts: Number(summary.shifts) || 0, hours: round2(Number(summary.hours)), flagged: Number(summary.flagged) || 0 },
       perUser: perUser.map((r) => ({ ...r, hours: round2(Number(r.hours)) })),

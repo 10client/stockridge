@@ -68,13 +68,12 @@
       try {
         const data = await SR.api.get('/api/attendance/today', { query: SR.state.query() });
         const rows = data.records || data.data || [];
-        const mine = rows.find((r) => String(r.user_id) === String(me.id));
+        const mine = data.myOpen || rows.find((r) => String(r.user_id) === String(me.id) && r.clock_in_at && !r.clock_out_at);
         known = Boolean(mine && mine.clock_in_at && !mine.clock_out_at);
       } catch (err) {
         try {
           const all = await SR.store.all('attendance', { where: (a) => !Number(a.is_deleted) });
-          const today = U.todayWat();
-          const mine = all.find((a) => String(a.user_id) === String(me.id) && String(a.work_date) === today);
+          const mine = all.find((a) => String(a.user_id) === String(me.id) && a.clock_in_at && !a.clock_out_at);
           known = Boolean(mine && mine.clock_in_at && !mine.clock_out_at);
         } catch (e) {
           known = false;
@@ -139,7 +138,10 @@
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — a clock-in is stamped with a location and a device, so it has to reach the server. If you are offline the entry is queued with its original time.'));
 
       const me = SR.state.user || {};
-      const myEntry = rows.find((r) => String(r.user_id) === String(me.id));
+      const todayMine = rows.find((r) => String(r.user_id) === String(me.id));
+      const myOpen = data.myOpen && data.myOpen.clock_in_at && !data.myOpen.clock_out_at ? data.myOpen : null;
+      const myEntry = (todayMine && todayMine.clock_in_at && !todayMine.clock_out_at) ? todayMine : (myOpen || todayMine);
+      const stillOpen = data.stillOpen || [];
       clockedIn = Boolean(myEntry && myEntry.clock_in_at && !myEntry.clock_out_at);
       try {
         const box = await SR.store.outboxAll();
@@ -149,20 +151,27 @@
       paintClockAction();
       const mine = ui.h('div', { class: 'card' });
       mine.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Your day'), ui.h('div', { class: 'spacer' }),
-        myEntry && !myEntry.clock_out_at ? ui.h('span', { class: 'badge badge-good' }, 'clocked in') : ui.h('span', { class: 'badge badge-mute' }, 'not clocked in')));
+        myEntry && !myEntry.clock_out_at ? ui.h('span', { class: 'badge badge-warn' }, openFor(myEntry) && openHours(myEntry) >= 16 ? 'still clocked in' : 'clocked in') : ui.h('span', { class: 'badge badge-mute' }, 'not clocked in')));
+      if (myOpen && (!todayMine || String(todayMine.id) !== String(myOpen.id))) {
+        mine.appendChild(ui.h('div', { class: 'alert alert-warn' }, `You clocked in ${U.watClock(myOpen.clock_in_at)} and have not clocked out. A new day does not close a shift. Clock it out here — the row stays on the table until you do.`));
+      }
       mine.appendChild(ui.h('div', { class: 'card-body row' },
         ui.kv([
           ['Clocked in at', myEntry && myEntry.clock_in_at ? U.watClock(myEntry.clock_in_at) : 'not yet today'],
           ['Clocked out at', myEntry && myEntry.clock_out_at ? U.watClock(myEntry.clock_out_at) : '—'],
-          ['Hours so far', myEntry && myEntry.hours_worked != null ? `${myEntry.hours_worked}` : '—'],
-          ['Location', myEntry ? (myEntry.location_status === 'INSIDE_FENCE' ? 'inside the branch fence' : (myEntry.location_status === 'OUTSIDE_FENCE' ? `outside the fence${myEntry.distance_meters != null ? ` by about ${Math.round(Number(myEntry.distance_meters))}m` : ''}` : U.humanise(myEntry.location_status || 'not recorded'))) : '—'],
+          ['Hours so far', myEntry && myEntry.hours_worked != null ? `${myEntry.hours_worked}` : (myEntry && !myEntry.clock_out_at && openFor(myEntry) ? `open ${openFor(myEntry)}` : '—')],
+          ['Location', myEntry ? (myEntry.location_status === 'ON_SITE' || myEntry.location_status === 'INSIDE_FENCE' ? 'inside the branch fence' : (myEntry.location_status === 'OFF_SITE' || myEntry.location_status === 'OUTSIDE_FENCE' ? `outside the fence${myEntry.distance_meters != null ? ` by about ${Math.round(Number(myEntry.distance_meters))}m` : ''}` : U.humanise(myEntry.location_status || 'not recorded'))) : '—'],
         ]),
         ui.h('div', { class: 'grow' }),
         ui.h('div', { class: 'btn-row' },
           !myEntry || !myEntry.clock_in_at ? ui.h('button', { class: 'btn btn-primary', onClick: () => clockIn() }, 'Clock in') : null,
-          myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn', onClick: () => clockOut() }, 'Clock out') : null,
+          myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn btn-primary', onClick: () => controlShift(myEntry) }, 'Clock out') : null,
           myEntry && myEntry.clock_in_at && !myEntry.clock_out_at ? ui.h('button', { class: 'btn', onClick: () => ui.info(`You came in at ${U.watTime(myEntry.clock_in_at)}.`) }, 'Status') : null)));
       host.appendChild(mine);
+      if (stillOpen.length) {
+        host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'A shift stays open until it is clocked out. After about a day it leaves Today, which is why there was no clock-out. Close it from this table. A manager can set the time they actually left and the hours to count.'));
+        host.appendChild(openShiftCard(stillOpen));
+      }
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'In the branch now', value: String(inNow.length), tone: 'good', foot: `${rows.length} clocked in today`, small: true }),
@@ -178,7 +187,7 @@
               ui.h('div', { style: { fontWeight: '600' } }, r.full_name || r.username || '—'),
               ui.h('div', { class: 'hint' }, r.role_label || r.job_title || '')) },
             { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.watTime(r.clock_in_at) : ui.badge('not in', 'badge-mute')) },
-            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watTime(r.clock_out_at) : (r.clock_in_at ? ui.badge('still in', 'badge-good') : '—')) },
+            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watTime(r.clock_out_at) : (r.clock_in_at ? ui.badge(openHours(r) >= 16 ? 'still open' : 'still in', openHours(r) >= 16 ? 'badge-warn' : 'badge-good') : '—')) },
             { key: 'hours_worked', label: 'Hours', align: 'right', render: (r) => (r.hours_worked != null ? String(r.hours_worked) : '—') },
             { key: 'within_geofence', label: 'Where', render: (r) => {
               if (!r.clock_in_at) return '—';
@@ -193,6 +202,8 @@
                 cell.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => review(r, true) }, 'Approve'));
                 cell.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => review(r, false) }, 'Flag'));
               }
+              const closeBtn = shiftAction(r);
+              if (closeBtn) cell.appendChild(closeBtn);
               if (r.clock_in_at && r.latitude && r.longitude) {
                 cell.appendChild(ui.h('button', {
                   class: 'btn btn-sm',
@@ -245,6 +256,11 @@
       host.replaceChildren();
       host.appendChild(controls);
       if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));
+      const stuck = data.stillOpen || [];
+      if (stuck.length) {
+        host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'These shifts are still open, including ones that started before this date range. Clock them out here. A new day does not close them.'));
+        host.appendChild(openShiftCard(stuck));
+      }
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
         ui.kpi({ label: 'Entries', value: String(s.entries || rows.length), foot: `${U.date(state.from)} → ${U.date(state.to)}`, small: true }),
         ui.kpi({ label: 'Hours recorded', value: String(U.round2(s.hours != null ? s.hours : U.sum(rows, (r) => r.hours_worked))), small: true }),
@@ -256,15 +272,16 @@
         table: ui.renderTable({
           exportable: false,
           columns: [
-            { key: 'work_date', label: 'Date', render: (r) => U.date(r.work_date) },
+            { key: 'work_date', label: 'Date', render: (r) => (r.clock_in_at ? U.watDate(r.clock_in_at) : U.date(r.work_date)) },
             { key: 'full_name', label: 'Staff', render: (r) => r.full_name || r.username },
-            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.watTime(r.clock_in_at) : '—') },
-            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watTime(r.clock_out_at) : '—') },
-            { key: 'hours_worked', label: 'Hours', align: 'right', render: (r) => (r.hours_worked != null ? String(r.hours_worked) : '—') },
-            { key: 'within_geofence', label: 'Fence', render: (r) => (Number(r.within_geofence) ? ui.badge('inside', 'badge-good') : ui.badge('outside', 'badge-bad')) },
-            { key: 'outside_reason', label: 'Reason', className: 'wrap' },
-            { key: 'status', label: '', render: (r) => ui.statusBadge(r.status) },
-            { key: 'reviewed_by_name', label: 'Reviewed', render: (r) => r.reviewed_by_name || '—' },
+            { key: 'clock_in_at', label: 'In', render: (r) => (r.clock_in_at ? U.watClock(r.clock_in_at) : '—') },
+            { key: 'clock_out_at', label: 'Out', render: (r) => (r.clock_out_at ? U.watClock(r.clock_out_at) : ui.badge('still open', 'badge-warn')) },
+            { key: 'hours_worked', label: 'Hours', align: 'right', render: (r) => (r.hours_worked != null ? String(r.hours_worked) : (r.clock_in_at && !r.clock_out_at ? openFor(r) || '—' : '—')) },
+            { key: 'within_geofence', label: 'Fence', render: (r) => (Number(r.within_geofence) || r.location_status === 'ON_SITE' ? ui.badge('inside', 'badge-good') : (r.location_status === 'OFF_SITE' ? ui.badge('outside', 'badge-bad') : '—')) },
+            { key: 'outside_reason', label: 'Reason', className: 'wrap', render: (r) => r.outside_reason || r.flag_reason || '—' },
+            { key: 'status', label: '', render: (r) => (r.status ? ui.statusBadge(r.status) : (r.clock_out_at ? ui.badge('closed', 'badge-mute') : ui.badge('open', 'badge-warn'))) },
+            { key: 'reviewed_by_name', label: 'Reviewed', render: (r) => r.reviewed_by_name || r.reviewer_name || '—' },
+            { key: 'x', label: '', render: (r) => shiftAction(r) },
           ],
           rows,
           emptyTitle: 'No attendance records',
@@ -389,6 +406,163 @@
     }
 
     // ---------------- ACTIONS ----------------
+
+    function openHours(row) {
+      if (!row || !row.clock_in_at || row.clock_out_at) return 0;
+      const start = Date.parse(String(row.clock_in_at).replace(' ', 'T') + (String(row.clock_in_at).endsWith('Z') ? '' : 'Z'));
+      if (!Number.isFinite(start)) return 0;
+      return (Date.now() - start) / 3600000;
+    }
+
+    function openFor(row) {
+      const hours = openHours(row);
+      if (!hours) return '';
+      if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} min`;
+      if (hours < 36) return `${Math.round(hours * 10) / 10} hours`;
+      const days = Math.floor(hours / 24);
+      return `${days} day${days === 1 ? '' : 's'}`;
+    }
+
+    function watLocalInput(utcSql) {
+      if (!utcSql) return '';
+      const raw = String(utcSql).trim().replace(' ', 'T');
+      const d = new Date(raw.endsWith('Z') ? raw : `${raw}Z`);
+      if (!Number.isFinite(d.getTime())) return '';
+      return new Date(d.getTime() + 60 * 60 * 1000).toISOString().slice(0, 16);
+    }
+
+    function shiftAction(row) {
+      if (!row || !row.id) return null;
+      const me = SR.state.user || {};
+      const mine = String(row.user_id) === String(me.id);
+      const manager = SR.state.atLeast('MANAGER');
+      const open = row.clock_in_at && !row.clock_out_at;
+      if (open && (mine || manager)) {
+        return ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => controlShift(row) }, 'Clock out');
+      }
+      if (!open && manager) {
+        return ui.h('button', { class: 'btn btn-sm', onClick: () => controlShift(row) }, 'Correct');
+      }
+      return null;
+    }
+
+    function openShiftCard(rows) {
+      return ui.dataCard({
+        title: 'Still open',
+        table: ui.renderTable({
+          columns: [
+            { key: 'full_name', label: 'Staff', render: (r) => ui.h('div', {},
+              ui.h('div', { style: { fontWeight: '600' } }, r.full_name || r.username || '—'),
+              ui.h('div', { class: 'hint' }, r.branch_name || '')) },
+            { key: 'clock_in_at', label: 'Clocked in', render: (r) => U.watClock(r.clock_in_at) },
+            { key: 'open', label: 'Open for', render: (r) => ui.badge(openFor(r) || 'open', openHours(r) >= 16 ? 'badge-warn' : 'badge-good') },
+            { key: 'x', label: '', render: (r) => shiftAction(r) },
+          ],
+          rows,
+          emptyMessage: 'No shift is waiting to be closed.',
+        }),
+      });
+    }
+
+    function controlShift(row) {
+      const me = SR.state.user || {};
+      const mine = String(row.user_id) === String(me.id);
+      const manager = SR.state.atLeast('MANAGER');
+      const open = row.clock_in_at && !row.clock_out_at;
+      if (open && mine && !manager) {
+        clockOut();
+        return;
+      }
+      if (!manager) {
+        ui.warn('You can only clock out your own shift.');
+        return;
+      }
+      const span = open ? openHours(row) : null;
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, open
+        ? `${row.full_name || 'This person'} clocked in ${U.watClock(row.clock_in_at)}${span >= 16 ? `, about ${openFor(row)} ago` : ''}. Closing now counts the whole span and flags it if it is longer than a working day. Set the time they actually left, or the hours to count, when that span is not the shift. The row stays on this table either way.`
+        : `${row.full_name || 'This person'} is already clocked out. Correcting the time or the hours does not erase the earlier record — it stays in the notes.`));
+      const timeField = ui.field({
+        label: 'Left at',
+        name: 'clock_out_at',
+        type: 'datetime-local',
+        value: watLocalInput(row.clock_out_at) || U.nowWatSql().slice(0, 16).replace(' ', 'T'),
+        hint: 'West Africa Time. It has to be after the clock-in, and not in the future.',
+      });
+      const modeField = ui.field({
+        label: open ? 'How to close it' : 'What to change',
+        name: 'close_mode',
+        value: open ? 'NOW' : 'SET',
+        options: open
+          ? [{ value: 'NOW', label: 'Clock out now' }, { value: 'SET', label: 'Set the time they left' }]
+          : [{ value: 'SET', label: 'Correct the clock-out' }],
+      });
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        modeField,
+        timeField,
+        ui.field({
+          label: 'Hours to count',
+          name: 'hours_worked',
+          type: 'number',
+          min: '0',
+          max: '36',
+          step: '0.25',
+          value: row.hours_worked != null ? String(row.hours_worked) : '',
+          placeholder: 'Leave blank to use the times',
+          hint: 'Optional. Use this when they forgot to clock out and the open span is not the shift. 0 to 36.',
+        }),
+        ui.field({
+          label: 'Reason',
+          name: 'note',
+          type: 'textarea',
+          span: true,
+          placeholder: 'Left at 6pm and the phone was off',
+          hint: 'Required when you set a time or the hours, and when you correct a closed row. It stays on the row.',
+        })));
+      function showTime() {
+        const mode = modeField.querySelector('[name="close_mode"]').value;
+        timeField.hidden = mode !== 'SET';
+      }
+      modeField.querySelector('select').addEventListener('change', showTime);
+      showTime();
+      const m = ui.openModal({
+        title: open ? `Clock out · ${row.full_name || 'shift'}` : `Correct · ${row.full_name || 'shift'}`,
+        body: wrapEl,
+        size: 'narrow',
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              const setTime = v.close_mode === 'SET';
+              const hours = v.hours_worked != null && String(v.hours_worked).trim() !== '' ? v.hours_worked : null;
+              const needsReason = setTime || hours != null || !open;
+              if (setTime && !v.clock_out_at) { ui.warn('Set the time they left.'); return; }
+              if (needsReason && (!v.note || String(v.note).trim().length < 6)) {
+                ui.warn('Say why, in a sentence. The hours are what they are paid.');
+                return;
+              }
+              ev.currentTarget.disabled = true;
+              try {
+                const result = await SR.api.post(`/api/attendance/${encodeURIComponent(row.id)}/clock-out`, {
+                  clock_out_at: setTime ? String(v.clock_out_at).replace('T', ' ') + (String(v.clock_out_at).length === 16 ? ':00' : '') : null,
+                  hours_worked: hours,
+                  note: v.note || null,
+                });
+                ui.ok(result && result.message ? result.message : 'Shift closed.');
+                m.close();
+                load();
+              } catch (err) {
+                ui.apiError(err);
+                ev.currentTarget.disabled = false;
+              }
+            },
+          }, open ? 'Close this shift' : 'Save the correction'),
+        ],
+      });
+    }
+
     function clockIn() {
       const branch = SR.state.activeBranch();
       const wrapEl = ui.h('div', {});
@@ -453,7 +627,7 @@
     function clockOut() {
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
-        ui.field({ label: 'Note', name: 'notes', span: true, placeholder: 'Optional', hint: 'The hours are worked out from your clock-in time. If the clock is wrong, a manager corrects the shift through Review, and the correction is stamped beside the original times rather than replacing them.' })));
+        ui.field({ label: 'Note', name: 'notes', span: true, placeholder: 'Optional', hint: 'The hours are worked out from your clock-in time. If this shift was left open, a manager sets the time you actually left from the attendance table. The earlier time stays in the notes.' })));
       const m = ui.openModal({
         title: 'Clock out',
         body: wrapEl,
