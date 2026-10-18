@@ -163,8 +163,8 @@
               ? 'Sell bags and bottles on the plant floor, or from the vehicle assigned to the person at the counter. Open a vehicle for its sales, fuel, repairs, customers and driver.'
               : 'Sell at the plant, or from the vehicle assigned to the person at the counter. Open a vehicle for its sales, fuel, repairs, customers and driver.'),
             ui.h('div', { class: 'actions' },
-              ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', onClick: () => SR.navigate('/pos') }, 'Sell'),
-              SR.state.moduleOn('dispatch') ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => SR.navigate('/fleet') }, 'Vehicles') : null))));
+              ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', onClick: () => SR.app.navigate('/pos') }, 'Sell'),
+              SR.state.moduleOn('dispatch') ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => SR.app.navigate('/fleet') }, 'Vehicles') : null))));
       }
       if (offline) {
         todayNodes.push(ui.h('div', { class: 'alert alert-warn' },

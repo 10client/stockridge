@@ -1775,6 +1775,9 @@
     get query() { return currentQuery; },
     onCleanup: (fn) => cleanupFns.push(fn),
   };
+  // Vehicle screens called this directly. The function is navigate(); the
+  // short name has to exist or Open and Vehicles throw before the page moves.
+  SR.navigate = navigate;
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => boot().catch((e) => bootError('StockRidge failed to start.', e.message)));
   else boot().catch((e) => bootError('StockRidge failed to start.', e.message));

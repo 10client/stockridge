@@ -194,7 +194,7 @@
     cart.salePlace = 'VEHICLE';
     cart.vehicleId = vehicle.id;
     SR.state.saveCart(cart);
-    SR.navigate('/pos');
+    SR.app.navigate('/pos');
   }
 
   async function renderList(ctx) {
@@ -244,7 +244,7 @@
             Number(row.is_active) === 0 ? ui.badge('off', 'badge-mute') : null),
           ui.h('p', { class: 'hint' }, [U.humanise(String(row.vehicle_class || '').toLowerCase()), row.plate_no, row.arrangement === 'PARTNER' ? 'partner' : 'ours', row.driver_name ? `usual driver ${row.driver_name}` : null].filter(Boolean).join(' · ')),
           ui.h('div', { class: 'actions' },
-            ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.navigate(`/fleet/${encodeURIComponent(row.id)}`) }, 'Open'),
+            ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.app.navigate(`/fleet/${encodeURIComponent(row.id)}`) }, 'Open'),
             manager() ? ui.h('button', { class: 'btn btn-sm', onClick: () => assignDuty(row, load) }, 'Assign') : null))));
       host.replaceChildren(
         actions,
@@ -306,7 +306,7 @@
     try {
       data = await SR.api.get(`/api/dispatch/vehicles/${encodeURIComponent(ctx.params.id)}/record`, { query: SR.state.query({}) });
     } catch (err) {
-      return ui.h('div', { class: 'stack' }, ui.errorBlock(err, { retry: { label: 'Back', run: () => SR.navigate('/fleet') } }));
+      return ui.h('div', { class: 'stack' }, ui.errorBlock(err, { retry: { label: 'Back', run: () => SR.app.navigate('/fleet') } }));
     }
     const vehicle = data.vehicle || {};
     const driver = data.driver;
@@ -317,10 +317,10 @@
         ui.h('h1', {}, vehicle.name || 'Vehicle'),
         ui.h('p', { class: 'sub' }, [vehicle.plate_no, U.humanise(String(vehicle.vehicle_class || '').toLowerCase()), vehicle.arrangement === 'PARTNER' ? 'partner' : 'ours'].filter(Boolean).join(' · '))),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.navigate('/fleet') }, 'All vehicles'),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/fleet') }, 'All vehicles'),
         mine ? ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => sellFrom(vehicle) }, 'Sell from this vehicle') : null,
-        manager() ? ui.h('button', { class: 'btn btn-sm', onClick: () => assignDuty(vehicle, () => SR.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`)) }, 'Assign') : null,
-        manager() ? ui.h('button', { class: 'btn btn-sm', onClick: () => recordExpense(vehicle, () => SR.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`)) }, 'Record a cost') : null)));
+        manager() ? ui.h('button', { class: 'btn btn-sm', onClick: () => assignDuty(vehicle, () => SR.app.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`)) }, 'Assign') : null,
+        manager() ? ui.h('button', { class: 'btn btn-sm', onClick: () => recordExpense(vehicle, () => SR.app.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`)) }, 'Record a cost') : null)));
 
     wrap.appendChild(ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
@@ -337,7 +337,7 @@
                 try {
                   const res = await SR.api.post(`/api/dispatch/duties/${encodeURIComponent(driver.id)}/end`, {}, { query: SR.state.query({}) });
                   ui.ok(res.message || 'Assignment ended.');
-                  SR.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`);
+                  SR.app.navigate(`/fleet/${encodeURIComponent(vehicle.id)}`);
                 } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
               },
             }, 'End this assignment') : null)
