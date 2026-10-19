@@ -284,8 +284,17 @@ button, input, select, textarea { font: inherit; color: inherit; }
 }
 button.chip { cursor: pointer; }
 button.chip:hover { background: var(--surface-3); }
+/* A disabled chip is a pin, not a hidden label. The browser's disabled colour
+   can wash the shop name out of the dark bar, which reads as a blank control. */
+button.chip:disabled {
+  opacity: 1;
+  color: var(--ink-700);
+  -webkit-text-fill-color: var(--ink-700);
+  cursor: default;
+}
 .chip-branch, .chip-business { max-width: 190px; }
-.chip-branch span:last-child, .chip-business span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.chip-branch svg, .chip-business svg { flex: none; }
+.chip-branch span:last-child, .chip-business span:last-child { min-width: 2ch; overflow: hidden; text-overflow: ellipsis; }
 .net-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink-400); flex: none; }
 .chip-net[data-state="online"] .net-dot { background: #18a06f; box-shadow: 0 0 0 3px rgba(24,160,111,.18); }
 .chip-net[data-state="offline"] .net-dot { background: var(--red-600); box-shadow: 0 0 0 3px rgba(194,46,28,.18); }

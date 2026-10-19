@@ -92,10 +92,10 @@
     }
 
     function shopRequired() {
-      if (SR.state.activeBranchId || !SR.state.canSeeAllBranches()) return false;
+      if (SR.state.activeBranchId || !SR.state.canSwitchBranch()) return false;
       filtersHost.replaceChildren();
       host.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body stack' },
-        ui.h('p', {}, 'Stock belongs to a shop. Switching business does not guess one.'),
+        ui.h('p', {}, 'Stock belongs to a shop. Pick one before you count or receive. All shops is the group, and a receipt has to land in one shop.'),
         ui.h('button', { class: 'btn btn-primary', type: 'button', onClick: () => { if (SR.app.openBranchPicker) SR.app.openBranchPicker(); } }, 'Choose a shop'))));
       return true;
     }

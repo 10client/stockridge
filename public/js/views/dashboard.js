@@ -189,6 +189,8 @@
         if (onABranch) hint = `These figures are ${scopeBranch} only.`;
         else if (onABusiness) hint = `These figures are ${scopeBusiness}, every shop together. Switch business for another, or pick a shop for that shop's totals.`;
         todayNodes.push(ui.h('p', { class: 'hint' }, hint));
+      } else if (!SR.state.activeBranchId && SR.state.branches().length > 1) {
+        todayNodes.push(ui.h('p', { class: 'hint' }, 'These figures are every shop you reach, not every shop on this deployment. Pick a shop in the top bar for that shop’s totals.'));
       }
 
       const today = data.today || {};

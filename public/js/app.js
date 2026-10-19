@@ -614,11 +614,16 @@
       const role = String((user && user.role) || '').toUpperCase();
       sendMsg.hidden = role !== 'OWNER' && role !== 'ADMIN';
     }
-    // The branch chip is only a control when there is a choice to make.
+    // The branch chip is a control when there is a shop to choose. A disabled
+    // button does not fire its click, so a general manager whose chip was
+    // disabled could not select a shop at all. Only a real pin is disabled.
     const chip = document.getElementById('branch-chip');
     if (chip) {
+      const shopName = SR.state.activeBranchName();
+      const pinned = SR.state.lockedToOneShop && SR.state.lockedToOneShop();
       chip.disabled = !canBranch;
-      chip.title = canBranch ? 'Switch branch' : 'You are pinned to this branch';
+      chip.title = canBranch ? 'Switch shop' : (pinned ? 'You are pinned to this shop' : shopName);
+      chip.setAttribute('aria-label', canBranch ? `Shop: ${shopName}. Switch shop.` : `Shop: ${shopName}`);
       chip.style.cursor = canBranch ? 'pointer' : 'default';
     }
   }
@@ -1410,18 +1415,27 @@
   }
 
   function openBranchPicker() {
+    if (SR.state.lockedToOneShop && SR.state.lockedToOneShop()) {
+      ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another shop.`);
+      return;
+    }
     const body = ui.h('div', {});
     const inOne = SR.state.activeBusiness();
     body.appendChild(ui.h('p', { class: 'hint' }, inOne
       ? `Shops of ${inOne.name}. Stock, cash and a sale belong to one shop. Another business is on the business switch.`
       : 'Picking a shop also enters that shop\'s business, so the two cannot disagree.'));
     const list = ui.h('div', { class: 'stack' });
-    const pinned = SR.state.user && SR.state.user.branch && SR.state.user.branch.id;
-    const choices = inOne ? SR.state.branchesFor(inOne.id) : SR.state.branches();
-    if (SR.state.canSeeAllBranches() && !pinned) {
+    const inBiz = inOne ? SR.state.branchesFor(inOne.id) : [];
+    // A business with no shop must not open an empty picker. List the shops this
+    // account reaches so choosing one also enters that shop's business.
+    const choices = inBiz.length ? inBiz : SR.state.branches();
+    const groupLabel = SR.state.canSeeAllBranches() ? 'All branches' : 'All shops';
+    const canStandOnGroup = choices.length > 1 || (SR.state.canSeeAllBranches() && SR.state.branches().length > 1);
+    if (canStandOnGroup) {
       const onAll = !SR.state.activeBranchId;
       const all = ui.h('button', {
         class: `nav-item ${onAll ? 'is-active' : ''}`,
+        type: 'button',
         style: { justifyContent: 'flex-start' },
         onClick: () => {
           const res = SR.state.setBranch(null);
@@ -1429,32 +1443,40 @@
           m.close();
           paintIdentity();
           const bizNow = SR.state.activeBusiness();
-          ui.ok(bizNow ? `Now working across every shop of ${bizNow.name}.` : 'Now working across all branches.');
+          ui.ok(SR.state.canSeeAllBranches()
+            ? (bizNow ? `Now working across every shop of ${bizNow.name}.` : 'Now working across all branches.')
+            : (bizNow ? `Now working across every shop of ${bizNow.name} that you reach.` : 'Now working across the shops you reach.'));
           render();
         },
       });
       all.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
-        ui.h('strong', {}, 'All branches'),
-        ui.h('div', { class: 'hint' }, 'Group totals. Pick a shop below to see that branch\'s totals.')));
+        ui.h('strong', {}, groupLabel),
+        ui.h('div', { class: 'hint' }, SR.state.canSeeAllBranches()
+          ? 'Group totals. Pick a shop below to see that branch\'s totals.'
+          : 'The shops you reach, together. Not every shop on this deployment. Pick one below for that shop\'s totals.')));
       if (onAll) all.appendChild(ui.badge('Current', 'badge-good'));
       list.appendChild(all);
+    }
+    if (!choices.length) {
+      list.appendChild(ui.h('p', { class: 'hint' }, 'No shop is assigned to this account yet.'));
     }
     for (const branch of choices) {
       const isActive = String(branch.id) === String(SR.state.activeBranchId);
       const row = ui.h('button', {
         class: `nav-item ${isActive ? 'is-active' : ''}`,
+        type: 'button',
         style: { justifyContent: 'flex-start' },
         onClick: () => {
           const res = SR.state.setBranch(branch.id);
           if (!res.ok) { ui.warn(res.reason); return; }
           m.close();
           paintIdentity();
-          ui.ok(`Now working in ${branch.name}.`);
+          ui.ok(`Now working in ${branch.name || branch.code || 'that shop'}.`);
           render();
         },
       });
       row.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },
-        ui.h('strong', {}, branch.name),
+        ui.h('strong', {}, branch.name || branch.code || 'Shop'),
         ui.h('div', { class: 'hint' }, branchLabel(branch))));
       if (isActive) row.appendChild(ui.badge('Current', 'badge-good'));
       list.appendChild(row);
@@ -1482,10 +1504,10 @@
       return;
     }
     const body = ui.h('div', {});
-    body.appendChild(ui.h('p', { class: 'hint' }, 'Switching business changes the books on every screen: sales, customers, stock and the dashboard. It does not guess a shop. If the shop you were in belongs to another business, you pick the next shop yourself. All businesses is the group, with no shop chosen.'));
+    body.appendChild(ui.h('p', { class: 'hint' }, 'Switching business changes the books on every screen. A shop of the old business does not come with you. If you only reach one shop of the new business, that shop stays selected. If you reach several, the branch control names the group until you pick one — All branches if you can see every shop, All shops if you reach only yours. It does not guess, and it is not left blank.'));
     const list = ui.h('div', { class: 'stack' });
     const onAll = !SR.state.activeBusinessId;
-    const pinned = SR.state.user && SR.state.user.branch && SR.state.user.branch.id;
+    const pinned = SR.state.lockedToOneShop && SR.state.lockedToOneShop();
     if (!pinned) {
       const all = ui.h('button', {
         class: `nav-item ${onAll ? 'is-active' : ''}`,
@@ -1670,7 +1692,8 @@
     document.getElementById('login-theme').addEventListener('click', () => SR.theme.toggle());
     document.getElementById('branch-chip').addEventListener('click', () => {
       if (SR.state.canSwitchBranch()) openBranchPicker();
-      else ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another branch.`);
+      else if (SR.state.lockedToOneShop()) ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another shop.`);
+      else ui.info(`${SR.state.activeBranchName()} is the only shop here.`);
     });
     const businessChip = document.getElementById('business-chip');
     if (businessChip) businessChip.addEventListener('click', () => openBusinessPicker());

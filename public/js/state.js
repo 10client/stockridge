@@ -112,6 +112,25 @@
   function isGeneralManager() { return isManager() && !(state.user && state.user.branch && state.user.branch.id); }
   function canSeeAllBranches() { return Boolean(state.scope && state.scope.allBranches); }
 
+  /**
+   * A cashier or a branch manager is locked to the shop on the account.
+   * A general manager has no shop on the account: they cover every shop of
+   * their business. A co-owner has no shop on the account either: they cover
+   * the shops of the businesses they were given, not every shop on the deployment.
+   * An owner who can see every shop is not locked to a home shop.
+   */
+  function lockedToOneShop() {
+    if (canSeeAllBranches()) return false;
+    const pinned = state.user && state.user.branch && state.user.branch.id;
+    if (!pinned) return false;
+    return branches().some((b) => String(b.id) === String(pinned));
+  }
+
+  /** Shops of the business in view, or every shop this account reaches. */
+  function shopsInView() {
+    return state.activeBusinessId ? branchesFor(state.activeBusinessId) : branches();
+  }
+
   /** May this user act on a screen? `min` is a role name. */
   function can(min) { return atLeast(min); }
 
@@ -242,7 +261,24 @@
   }
   function activeBranchName() {
     const b = activeBranch();
-    return b ? b.name : (canSeeAllBranches() ? 'All branches' : '—');
+    if (b) {
+      const named = String(b.name || b.code || '').trim();
+      if (named) return named;
+    }
+    // No shop chosen. A dash is what the chip showed for a general manager or
+    // co-owner who reaches several shops: the control looked empty, and because
+    // it was also treated as pinned it would not open. Name the group they
+    // actually reach. All branches stays the owner's word for the whole deployment.
+    // All branches is the owner's place to stand, including when the business
+    // in view has only one shop. Naming that shop here would make the chip lie:
+    // the figures would still be the group, because no shop was chosen.
+    if (canSeeAllBranches()) return 'All branches';
+    const choices = shopsInView();
+    const namedChoice = (row) => String((row && (row.name || row.code)) || '').trim() || 'Shop';
+    if (choices.length === 1) return namedChoice(choices[0]);
+    if (choices.length > 1 || branches().length > 1) return 'All shops';
+    if (branches().length === 1) return namedChoice(branches()[0]);
+    return '—';
   }
   /**
    * The active business's NAME, or a phrase that is still true when there is none.
@@ -271,18 +307,22 @@
   }
 
   /**
-   * The branch chip is a control when there is a shop to choose, and also when
-   * a business switch cleared the shop and refused to guess one. A pinned user
-   * has no choice. A business with one shop that is already selected does not
-   * pretend there is a second.
+   * The branch chip is a control when there is a shop to choose.
+   *
+   * Seeing every shop on the deployment is not the test. A general manager
+   * and a co-owner have `allBranches` false and still reach more than one shop.
+   * Treating that as a pin left the chip disabled, so a click did nothing and
+   * the label stayed a dash. A cashier or a branch manager is the pin. A
+   * business with one shop that is already selected does not pretend there is
+   * a second. An owner who can see every shop can still move, including back
+   * to All branches, after they have stood on one shop.
    */
   function canSwitchBranch() {
-    if (!canSeeAllBranches()) return false;
-    const pinned = state.user && state.user.branch && state.user.branch.id;
-    if (pinned && branches().some((b) => String(b.id) === String(pinned))) return false;
-    const choices = state.activeBusinessId ? branchesFor(state.activeBusinessId) : branches();
-    if (!state.activeBranchId && choices.length >= 1) return true;
-    return choices.length > 1;
+    if (lockedToOneShop()) return false;
+    const choices = shopsInView();
+    if (!state.activeBranchId && (choices.length >= 1 || branches().length >= 1)) return true;
+    if (choices.length > 1) return true;
+    return canSeeAllBranches() && branches().length > 1;
   }
 
   /**
@@ -326,8 +366,7 @@
       if (businesses().length < 2) {
         return { ok: false, reason: 'There is only one business to work in.' };
       }
-      const pinned = state.user && state.user.branch && state.user.branch.id;
-      if (pinned && branches().some((b) => String(b.id) === String(pinned))) {
+      if (lockedToOneShop()) {
         return { ok: false, reason: 'You are pinned to one shop, so the books stay with that business.' };
       }
       state.activeBusinessId = null;
@@ -346,18 +385,29 @@
     if (id && !businesses().some((b) => String(b.id) === id)) {
       return { ok: false, reason: 'That business is not one you have access to.' };
     }
+    if (lockedToOneShop()) {
+      const pinned = state.user && state.user.branch && state.user.branch.id;
+      const pinBranch = branches().find((b) => String(b.id) === String(pinned));
+      if (pinBranch && pinBranch.business_id && String(id) !== String(pinBranch.business_id)) {
+        return { ok: false, reason: 'You are pinned to one shop, so the books stay with that business.' };
+      }
+    }
     state.activeBusinessId = id;
     if (persist) writeLocal(ACTIVE_BUSINESS_KEY, id);
     // The branch belongs to a business. Switching legal entity must not leave
-    // the app pointing at a shop of the old one, and it must not guess a shop
-    // of the new one — including the case where the new one has only one.
+    // the app pointing at a shop of the old one. An owner who can see every
+    // shop is not guessed onto one — All branches is a place they can stand.
+    // Somebody who is not in that view, and who only reaches one shop of the
+    // new business, is put on that shop. Leaving it unset made the chip a dash
+    // again after the switch. Several shops are still not guessed.
     const forBiz = branchesFor(id);
     const stillValid = id && forBiz.some((b) => String(b.id) === String(state.activeBranchId));
     let branchCleared = false;
     if (!stillValid) {
       const pinned = state.user && state.user.branch && state.user.branch.id;
-      const pinFits = pinned && forBiz.some((b) => String(b.id) === String(pinned));
-      const next = pinFits ? String(pinned) : null;
+      const pinFits = lockedToOneShop() && pinned && forBiz.some((b) => String(b.id) === String(pinned));
+      let next = pinFits ? String(pinned) : null;
+      if (!next && !canSeeAllBranches() && forBiz.length === 1) next = String(forBiz[0].id);
       branchCleared = Boolean(state.activeBranchId) && !next;
       state.activeBranchId = next;
       if (persist) writeLocal(ACTIVE_BRANCH_KEY, state.activeBranchId);
@@ -418,16 +468,15 @@
     const pinned = state.user && state.user.branch && state.user.branch.id;
     const rememberedBusiness = readLocal(ACTIVE_BUSINESS_KEY);
     const rememberedBranch = readLocal(ACTIVE_BRANCH_KEY);
-    const pinHolds = pinned && branches().some((b) => String(b.id) === String(pinned));
     const bizIds = businesses().map((b) => String(b.id));
 
     // All businesses is a choice, not a missing one. A remembered shop must not
     // pull them back into that shop's business on the next load, or the group
     // view can never survive a reload. A pin still wins: a pinned user has no
-    // group to stand in.
-    if (rememberedBusiness === ALL_BUSINESSES && bizIds.length > 1 && !pinHolds) {
+    // group to stand in. An owner who can see every shop is not that pin.
+    if (rememberedBusiness === ALL_BUSINESSES && bizIds.length > 1 && !lockedToOneShop()) {
       state.activeBusinessId = null;
-      state.activeBranchId = null;
+      state.activeBranchId = branches().length === 1 ? String(branches()[0].id) : null;
       return;
     }
     const rememberedBiz = rememberedBusiness === ALL_BUSINESSES ? null : rememberedBusiness;
@@ -471,6 +520,9 @@
     } else if (branches().length === 1) {
       state.activeBranchId = String(branches()[0].id);
     } else {
+      // Several shops, and this person is not standing on the whole deployment.
+      // Do not guess which shop. The chip says All shops and the picker lists
+      // the shops they reach — not every shop on the deployment.
       state.activeBranchId = null;
     }
 
@@ -529,7 +581,7 @@
     rank, atLeast, isRole, isAdmin, isOwner, isProprietor, canAppointCoOwner, canChangeDeployment,
     isManager, isStaff, isGeneralManager, canManageUser,
     canCreateRole, roleNeedsBranch,
-    canSeeAllBranches, can, usesSerialNumbers,
+    canSeeAllBranches, lockedToOneShop, can, usesSerialNumbers,
     feature, featureLabel, moduleOn,
     businesses, branches, branchesFor, activeBusiness, activeBranch, activeBranchName, activeBusinessName,
     canSwitchBusiness, canSwitchBranch,

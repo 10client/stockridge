@@ -254,7 +254,7 @@
           ui.h('h2', {}, 'Plant premises'),
           ui.h('p', { class: 'hint' }, 'This counter is the plant floor. Stock leaves the plant when the sale is recorded.'))));
     }
-    if (!SR.state.activeBranchId && SR.state.canSeeAllBranches()) {
+    if (!SR.state.activeBranchId && SR.state.canSwitchBranch()) {
       wrap.appendChild(ui.h('div', { class: 'alert alert-warn' },
         ui.h('strong', {}, 'Pick a shop before you sell. '),
         'Switching business does not guess one, and a sale has to belong to a shop.',
