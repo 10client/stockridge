@@ -79,6 +79,7 @@ function mount(app, base = '/api') {
       SELECT p.id AS product_id, ? AS branch_id, p.sku, p.name, p.base_unit_name, p.reorder_level, p.selling_price,
              p.cost_price AS book_cost, p.requires_serial, p.tracks_variants, p.has_expiry,
              c.name AS category_name, c.code AS category_code, p.nafdac_catalog_id,
+             (SELECT parent.code FROM product_categories parent WHERE parent.id = c.parent_id AND parent.is_deleted = 0) AS category_parent_code,
              COALESCE(SUM(sb.quantity), 0) AS on_shelf,
              COALESCE(SUM(sb.quantity_reserved), 0) AS reserved,
              COALESCE(SUM(sb.quantity - sb.quantity_reserved), 0) AS available,
@@ -144,6 +145,11 @@ function mount(app, base = '/api') {
     const where = ['sb.is_deleted = 0']; const params = [];
     const f = scopeFilter(scope, { alias: 'sb' });
     if (f.sql) { where.push(f.sql); params.push(...f.params); }
+    // The rows are branches. Their own column is `id`, not `branch_id`. The
+    // batch clause above decides which stock counts. This one decides which
+    // shops appear, so a general manager does not see every other business's
+    // empty shelves.
+    const branchRows = scopeFilter(scope, { alias: 'b', branchColumn: 'id', allowNullBranch: false, ignoreFocus: true });
 
     // A BRANCH THE CALLER NAMED NARROWS THIS REPORT TO THAT BRANCH — and on THIS
     // endpoint the filter lands on `b.id`, not on `sb.`, because the rows being
@@ -167,8 +173,8 @@ function mount(app, base = '/api') {
       FROM branches b
       LEFT JOIN stock_batches sb ON sb.branch_id = b.id AND sb.is_deleted = 0
            AND sb.status NOT IN ('QUARANTINED','EXPIRED')
-      WHERE b.is_deleted = 0 AND b.is_active = 1 ${f.sql ? `AND ${f.sql}` : ''} ${named.branchId ? 'AND b.id = ?' : ''}
-      GROUP BY b.id ORDER BY b.name`, named.branchId ? [...params, named.branchId] : params);
+      WHERE b.is_deleted = 0 AND b.is_active = 1 ${branchRows.sql ? `AND ${branchRows.sql}` : ''} ${f.sql ? `AND ${f.sql}` : ''} ${named.branchId ? 'AND b.id = ?' : ''}
+      GROUP BY b.id ORDER BY b.name`, named.branchId ? [...branchRows.params, ...params, named.branchId] : [...branchRows.params, ...params]);
 
     const shelfMarks = selling.PHARMACEUTICAL_CODES.map(() => '?').join(',');
     const shelfParams = named.branchId
@@ -182,8 +188,8 @@ function mount(app, base = '/api') {
              COALESCE(SUM(sb.quantity * COALESCE(sb.selling_price_per_unit, 0)),0) AS at_retail
       FROM stock_batches sb JOIN products p ON p.id = sb.product_id
       LEFT JOIN product_categories c ON c.id = p.category_id
-      WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''}
-      GROUP BY c.id, side ORDER BY at_cost DESC`, shelfParams);
+      WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''} ${f.sql ? `AND ${f.sql}` : ''}
+      GROUP BY c.id, side ORDER BY at_cost DESC`, f.sql ? [...shelfParams, ...params] : shelfParams);
     const byCategory = shelfRows.slice(0, 20).map((row) => ({
       name: row.category_name,
       category_code: row.category_code,

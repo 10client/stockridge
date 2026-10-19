@@ -36,6 +36,7 @@ const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
 const { fileGreenbook, syntheticBarcode } = require('../services/provisioningService');
+const { ensureMajors, isMajorCode } = require('../services/categorySides');
 
 async function saveProductMeasure(db, productId, axisCode) {
   const key = String(axisCode || '').trim().toUpperCase();
@@ -162,6 +163,7 @@ async function fileCategoriesAlphabetically(db, businessId) {
   const rows = await db.all(
     `SELECT id, name FROM product_categories
       WHERE business_id = ? AND is_deleted = 0
+        AND code NOT IN ('PHARMACEUTICALS', 'NON_PHARMACEUTICALS')
       ORDER BY name COLLATE NOCASE, code`,
     [String(businessId)],
   );
@@ -405,6 +407,7 @@ function mount(app, base = '/api') {
              p.hire_price_per_day, p.hire_deposit, p.lease_price_per_month, p.lease_deposit,
              p.dispensing_class, p.is_controlled, p.nafdac_catalog_id, p.registration_no,
              c.name AS category_name, c.code AS category_code,
+             (SELECT parent.code FROM product_categories parent WHERE parent.id = c.parent_id AND parent.is_deleted = 0) AS category_parent_code,
              -- The unit a screen should sell or buy in, as a CODE. base_unit_name
              -- is the WORD a receipt prints (unit, piece, metre), which is not
              -- always the same as the ladder's code for that level: the appliance
@@ -961,7 +964,7 @@ function mount(app, base = '/api') {
       return ctx.json({ ok: true, matchedBy: 'SKU', ...(await productPayload(db, bySku, branch, scope, null, null, { sellableOnly: forSale })) });
     }
 
-    const scopeCheck = scopeFilter(scope, { alias: 'p' });
+    const scopeCheck = scopeFilter(scope, { alias: 'p', branchColumn: null });
     if (scopeCheck.sql) {
       const allowed = await db.first(`SELECT p.id FROM products p WHERE p.id = ? AND ${scopeCheck.sql}`, [hit.id, ...scopeCheck.params]);
       if (!allowed) throw new HttpError('That product belongs to a different business.', { status: 403, code: 'SCOPE_VIOLATION' });
@@ -977,6 +980,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const businessId = ctx.req.queryParam('business_id');
+    if (businessId) await ensureMajors(db, businessId);
     const where = ['c.is_deleted = 0']; const params = [];
     if (businessId) { where.push('(c.business_id = ? OR c.business_id IS NULL)'); params.push(String(businessId)); }
     else if (scope.businessIds) { where.push('(c.business_id IS NULL OR c.business_id IN (' + [...scope.businessIds].map(() => '?').join(',') + '))'); params.push(...scope.businessIds); }
@@ -1050,12 +1054,20 @@ function mount(app, base = '/api') {
     }
     ctx.json({
       ok: true,
-      data: rows.map((row) => {
-        const pharma = Number(row.nafdac_count) > 0 || selling.sellingGroup({ code: row.code }).code === 'PHARMACEUTICALS';
+      majors: rows.filter((row) => isMajorCode(row.code) && String(row.business_id || '') === String(businessId || '')).map((row) => ({
+        id: row.id, code: row.code, name: row.name, business_id: row.business_id,
+      })),
+      data: rows.filter((row) => !isMajorCode(row.code)).map((row) => {
+        const parent = rows.find((item) => String(item.id) === String(row.parent_id));
+        const side = selling.sellingGroup({
+          code: row.code,
+          parent_code: parent && parent.code,
+        }).code;
         return {
           ...row,
           product_count: Number(row.product_count) || 0,
-          selling_group: pharma ? 'PHARMACEUTICALS' : 'NON_PHARMACEUTICALS',
+          selling_group: side,
+          is_major: false,
           products: previews.get(String(row.id)) || [],
         };
       }),
@@ -1067,7 +1079,7 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!canOrganizeCatalogue(user)) {
-      throw new HttpError('Only the owner or a general manager can rename a category.', { status: 403, code: 'ROLE_REQUIRED' });
+      throw new HttpError('Only the owner or a general manager can edit a category.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const id = String(ctx.req.param('id'));
     const before = await db.first('SELECT * FROM product_categories WHERE id = ? AND is_deleted = 0', [id]);
@@ -1076,39 +1088,59 @@ function mount(app, base = '/api') {
       throw new HttpError('The shared market categories are not renamed from a shop. Add a category on this business instead.', { status: 400, code: 'SHARED_CATEGORY' });
     }
     const body = await ctx.req.json();
-    const name = strField(requireField(body, 'name', 'Category name'), { field: 'Category name', maxLength: 120, required: true });
+    const name = strField(body.name != null ? body.name : before.name, { field: 'Category name', maxLength: 120, required: true });
     if (!name || name.length < 2) throw new HttpError('A category needs a name of at least two characters.', { status: 400, code: 'CATEGORY_NAME' });
-    if (String(name).toLowerCase() === String(before.name).toLowerCase()) {
-      ctx.json({ ok: true, id, name: before.name, message: `“${before.name}” is already called that.` });
+    const side = body.selling_group != null ? String(body.selling_group).toUpperCase() : null;
+    if (side && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(side)) {
+      throw new HttpError('A shelf sits under Pharmaceuticals or Non-pharmaceuticals.', { status: 400, code: 'SELLING_GROUP' });
+    }
+    if (isMajorCode(before.code) && side && side !== before.code) {
+      throw new HttpError('Those two categories are the sides. A shelf moves under one of them. The side itself does not move.', { status: 400, code: 'MAJOR_CATEGORY' });
+    }
+    const majors = await ensureMajors(db, before.business_id);
+    const parentId = !isMajorCode(before.code) && side ? majors.byCode[side] : before.parent_id;
+    const nameChanged = String(name).toLowerCase() !== String(before.name).toLowerCase();
+    const sideChanged = parentId && String(parentId) !== String(before.parent_id || '');
+    if (!nameChanged && !sideChanged) {
+      ctx.json({ ok: true, id, name: before.name, selling_group: side || before.code, message: `“${before.name}” is already set that way.` });
       return;
     }
-    const dupe = await db.first(
-      `SELECT id FROM product_categories
-        WHERE business_id = ? AND is_deleted = 0 AND id <> ? AND lower(name) = lower(?)`,
-      [String(before.business_id), id, name],
-    );
-    if (dupe) throw new HttpError(`“${name}” is already a category on this business. Move products into that one instead of giving two categories the same name.`, { status: 409, code: 'DUPLICATE_CATEGORY' });
+    if (nameChanged) {
+      const dupe = await db.first(
+        `SELECT id FROM product_categories
+          WHERE business_id = ? AND is_deleted = 0 AND id <> ? AND lower(name) = lower(?)`,
+        [String(before.business_id), id, name],
+      );
+      if (dupe) throw new HttpError(`“${name}” is already a category on this business. Move products into that one instead of giving two categories the same name.`, { status: 409, code: 'DUPLICATE_CATEGORY' });
+    }
     const held = await db.scalar(
       'SELECT COUNT(*) FROM products WHERE category_id = ? AND is_deleted = 0',
       [id],
     );
     await db.run(
-      `UPDATE product_categories SET name = ?, updated_at = datetime('now') WHERE id = ? AND is_deleted = 0`,
-      [name, id],
+      `UPDATE product_categories SET name = ?, parent_id = ?, updated_at = datetime('now') WHERE id = ? AND is_deleted = 0`,
+      [name, isMajorCode(before.code) ? null : parentId, id],
     );
     await fileCategoriesAlphabetically(db, before.business_id);
     await recordFromCtx(ctx, {
       action: 'CATEGORY_UPDATED', entityType: 'CATEGORY', entityId: id, businessId: before.business_id,
-      before: { name: before.name }, after: { name, products: Number(held) || 0 },
+      before: { name: before.name, parent_id: before.parent_id },
+      after: { name, parent_id: isMajorCode(before.code) ? null : parentId, products: Number(held) || 0 },
     });
+    const sideLabel = side === 'PHARMACEUTICALS' || before.code === 'PHARMACEUTICALS'
+      ? 'Pharmaceuticals'
+      : 'Non-pharmaceuticals';
     ctx.json({
       ok: true,
       id,
       name,
+      selling_group: isMajorCode(before.code) ? before.code : side,
       product_count: Number(held) || 0,
-      message: Number(held)
-        ? `“${before.name}” is now “${name}”. ${Number(held)} product${Number(held) === 1 ? '' : 's'} stay in it.`
-        : `“${before.name}” is now “${name}”.`,
+      message: sideChanged
+        ? `“${name}” is now under ${sideLabel}. ${Number(held) || 0} product${Number(held) === 1 ? '' : 's'} on that shelf follow it. A Greenbook medicine stays pharmaceutical.`
+        : (Number(held)
+          ? `“${before.name}” is now “${name}”. ${Number(held)} product${Number(held) === 1 ? '' : 's'} stay in it.`
+          : `“${before.name}” is now “${name}”.`),
     });
   });
 
@@ -1120,16 +1152,25 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx, { required: false });
     const business = await resolveBusiness(db, ctx, branch || undefined);
     const name = requireField(body, 'name', 'Category name');
+    const side = String(body.selling_group || body.sellingGroup || '').toUpperCase();
+    if (!['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(side)) {
+      throw new HttpError('Say whether this shelf is under Pharmaceuticals or Non-pharmaceuticals.', { status: 400, code: 'SELLING_GROUP' });
+    }
     const code = String(body.code || String(name).toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 40));
+    if (isMajorCode(code)) {
+      throw new HttpError('That name is one of the two major categories. Add a shelf under it instead.', { status: 409, code: 'MAJOR_CATEGORY' });
+    }
 
     const dupe = await db.first('SELECT id FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0', [String(business.id), code]);
     if (dupe) throw new HttpError(`A category coded “${code}” already exists for this business.`, { status: 409, code: 'DUPLICATE_CATEGORY' });
+    const majors = await ensureMajors(db, business.id);
+    const parentId = majors.byCode[side];
 
     const id = newId();
     const cleanName = String(name).slice(0, 120);
     await db.run(`INSERT INTO product_categories (id, business_id, code, name, parent_id, sort_order, is_active, created_at, updated_at)
                   VALUES (?,?,?,?,?,0,1, datetime('now'), datetime('now'))`,
-    [id, String(business.id), code, cleanName, body.parent_id ? String(body.parent_id) : null]);
+    [id, String(business.id), code, cleanName, parentId]);
     const filed = await fileCategoriesAlphabetically(db, business.id);
     const index = filed.findIndex((row) => row.id === id);
     const before = index > 0 ? filed[index - 1].name : null;
@@ -1142,7 +1183,7 @@ function mount(app, base = '/api') {
           ? `“${cleanName}” filed alphabetically, before ${after}.`
           : `“${cleanName}” is the first category on this business.`;
     await recordFromCtx(ctx, { action: 'CATEGORY_CREATED', entityType: 'CATEGORY', entityId: id, businessId: business.id, after: { code, name: cleanName } });
-    ctx.json({ ok: true, id, code, name: cleanName, before, after, message }, 201);
+    ctx.json({ ok: true, id, code, name: cleanName, selling_group: side, before, after, message }, 201);
   });
 
   // -------------------------------------------------------------------

@@ -148,8 +148,10 @@ async function queueDispense(tx, { line, saleId, itemId, user, branch, business,
 async function loadCatalogue(db, ids) {
   if (!ids.length) return new Map();
   const rows = await db.all(
-    `SELECT p.*, pc.code AS category_code, pc.name AS category_name
-     FROM products p LEFT JOIN product_categories pc ON pc.id = p.category_id
+    `SELECT p.*, pc.code AS category_code, pc.name AS category_name, parent.code AS category_parent_code
+     FROM products p
+     LEFT JOIN product_categories pc ON pc.id = p.category_id
+     LEFT JOIN product_categories parent ON parent.id = pc.parent_id AND parent.is_deleted = 0
      WHERE p.id IN (${ids.map(() => '?').join(',')}) AND p.is_deleted = 0`,
     ids,
   );
@@ -1925,6 +1927,7 @@ function receiptLines(lines) {
     const group = selling.sellingGroup({
       code: line.product && line.product.category_code,
       name: line.product && line.product.category_name,
+      category_parent_code: line.product && line.product.category_parent_code,
       nafdac_catalog_id: line.product && line.product.nafdac_catalog_id,
     });
     return {

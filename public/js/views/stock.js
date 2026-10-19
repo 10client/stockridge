@@ -219,8 +219,18 @@
             category_name: (catById.get(String(p.category_id)) || {}).name || null,
             category_code: (catById.get(String(p.category_id)) || {}).code || null,
             nafdac_catalog_id: p.nafdac_catalog_id || null,
+            category_parent_code: (() => {
+              const cat = catById.get(String(p.category_id)) || {};
+              const parent = cat.parent_id ? catById.get(String(cat.parent_id)) : null;
+              return (parent && parent.code) || cat.selling_group || null;
+            })(),
             selling_group_label: U.sellingGroup({
               code: (catById.get(String(p.category_id)) || {}).code,
+              parent_code: (() => {
+                const cat = catById.get(String(p.category_id)) || {};
+                const parent = cat.parent_id ? catById.get(String(cat.parent_id)) : null;
+                return parent && parent.code;
+              })(),
               nafdac_catalog_id: p.nafdac_catalog_id,
             }).label,
             base_unit_name: p.base_unit_name, reorder_level: p.reorder_level,

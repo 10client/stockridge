@@ -1937,9 +1937,13 @@ function mount(app, base = '/api') {
    * marking it read clears it for that person only.
    *
    * Who may send, and to whom, is the whole of the rule:
-   *   ADMIN  → the owners of the business named on the request, or one of them.
-   *   OWNER  → one staff member or manager of that business, all staff, all
-   *            managers, or staff and managers together.
+   *   ADMIN       → the owners of the business named on the request, or one of them.
+   *   PROPRIETOR  → one person, one business, or every business at once. A
+   *                 co-owner is a person they may write to. Staff of a bakery
+   *                 and staff of a pharmacy can be one send.
+   *   CO-OWNER    → the same, but only the businesses they own. They do not
+   *                 write to other co-owners, and they do not reach a business
+   *                 that was not granted.
    * A manager and a cashier cannot send. The sender is never a recipient.
    */
   app.post(`${base}/notifications`, async (ctx) => {
@@ -1954,26 +1958,38 @@ function mount(app, base = '/api') {
     const text = strField(requireVal(body, 'body'), { field: 'Message', maxLength: 1000, required: true });
     const audience = String(body.audience || '').trim().toUpperCase();
     const isAdmin = role === 'ADMIN';
+    const proprietor = isProprietor(user);
+    const spansBusinesses = ['ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS', 'CO_OWNERS'].includes(audience);
     const allowed = isAdmin
       ? ['OWNERS', 'USER']
-      : ['USER', 'STAFF', 'MANAGERS', 'STAFF_AND_MANAGERS'];
+      : (proprietor
+        ? ['USER', 'STAFF', 'MANAGERS', 'STAFF_AND_MANAGERS', 'ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS', 'CO_OWNERS']
+        : ['USER', 'STAFF', 'MANAGERS', 'STAFF_AND_MANAGERS', 'ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS']);
     if (!allowed.includes(audience)) {
       throw new HttpError(
         isAdmin
           ? 'An administrator sends a message to the owners of this business, or to one owner.'
-          : 'Choose one person, all staff, all managers, or staff and managers.',
+          : (proprietor
+            ? 'Choose one person, one business, every business, or the co-owners.'
+            : 'Choose one person, this business, or every business you own.'),
         { status: 400, code: 'AUDIENCE_NOT_ALLOWED' },
       );
     }
-    // A write that names no business must not guess the oldest one and message
-    // those owners. The shell always knows which business it is showing.
-    const requested = body.business_id || ctx.req.queryParam('business_id');
-    if (!requested) {
-      throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    if (audience === 'CO_OWNERS' && !proprietor) {
+      throw new HttpError('Only the proprietor writes to the co-owners. A co-owner does not message the other owners.', { status: 403, code: 'ROLE_REQUIRED' });
     }
-    const business = await resolveBusiness(db, ctx, null, { required: true });
-    if (!business || String(business.id) !== String(requested)) {
-      throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+    // A write that names no business must not guess the oldest one and message
+    // those owners. A send that already says every business does not name one.
+    let business = null;
+    if (!spansBusinesses) {
+      const requested = body.business_id || ctx.req.queryParam('business_id');
+      if (!requested) {
+        throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+      }
+      business = await resolveBusiness(db, ctx, null, { required: true });
+      if (!business || String(business.id) !== String(requested)) {
+        throw new HttpError('Choose which business this message is for.', { status: 400, code: 'BUSINESS_REQUIRED' });
+      }
     }
 
     const where = ['u.is_deleted = 0', 'u.is_active = 1', 'u.id <> ?'];
@@ -1983,7 +1999,40 @@ function mount(app, base = '/api') {
     // a second company is reachable through the access grant as well, because that
     // grant is what makes them an owner of it.
     const home = `COALESCE(u.business_id, (SELECT b.business_id FROM branches b WHERE b.id = u.branch_id)) = ?`;
-    if (audience === 'OWNERS' || (audience === 'USER' && isAdmin)) {
+    const coOwnerSql = `u.role = 'OWNER' AND EXISTS (
+      SELECT 1 FROM user_business_access uba
+      WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL
+    )`;
+    if (audience === 'CO_OWNERS') {
+      where.push(coOwnerSql);
+    } else if (spansBusinesses) {
+      const roles = audience === 'ALL_STAFF' ? ['STAFF'] : (audience === 'ALL_MANAGERS' ? ['MANAGER'] : ['STAFF', 'MANAGER']);
+      where.push(`u.role IN (${roles.map(() => '?').join(',')})`);
+      params.push(...roles);
+      // The proprietor reaches every vertical, including one opened tomorrow.
+      // A co-owner reaches only the businesses they were given.
+      if (!proprietor) {
+        const scope = ctx.get('scope');
+        const ids = scope && scope.businessIds ? [...scope.businessIds].map(String) : [];
+        if (!ids.length) {
+          throw new HttpError('You do not own a business to send this to.', { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
+        }
+        const marks = ids.map(() => '?').join(',');
+        where.push(`(
+          u.business_id IN (${marks})
+          OR EXISTS (
+            SELECT 1 FROM branches b
+            WHERE b.id = u.branch_id AND b.is_deleted = 0 AND b.business_id IN (${marks})
+          )
+          OR EXISTS (
+            SELECT 1 FROM user_business_access uba
+            WHERE uba.user_id = u.id AND uba.is_deleted = 0 AND uba.revoked_at IS NULL
+              AND uba.business_id IN (${marks})
+          )
+        )`);
+        params.push(...ids, ...ids, ...ids);
+      }
+    } else if (audience === 'OWNERS' || (audience === 'USER' && isAdmin)) {
       // The proprietor has no business on the row, so a filter on that column
       // found nobody. A co-owner is included only when this business is their
       // home or a grant. The message still names the business.
@@ -1997,6 +2046,9 @@ function mount(app, base = '/api') {
         )
       )`);
       params.push(String(business.id), String(business.id));
+    } else if (audience === 'USER' && proprietor) {
+      // One person, in any business: a cashier, a manager, or a co-owner.
+      where.push(`(u.role IN ('STAFF', 'MANAGER') OR (${coOwnerSql}))`);
     } else {
       where.push(home);
       params.push(String(business.id));
@@ -2011,7 +2063,9 @@ function mount(app, base = '/api') {
     }
 
     const people = await db.all(
-      `SELECT u.id, u.full_name, u.username, u.role, u.branch_id FROM users u WHERE ${where.join(' AND ')}`,
+      `SELECT u.id, u.full_name, u.username, u.role, u.branch_id,
+              COALESCE(u.business_id, (SELECT b.business_id FROM branches b WHERE b.id = u.branch_id AND b.is_deleted = 0)) AS home_business_id
+         FROM users u WHERE ${where.join(' AND ')}`,
       params,
     );
     if (!people.length) {
@@ -2034,7 +2088,13 @@ function mount(app, base = '/api') {
     }
 
     const from = user.full_name || user.username || 'StockRidge';
-    const storedBody = `From ${from}, about ${business.name}: ${text}`;
+    const storedBody = spansBusinesses
+      ? (audience === 'CO_OWNERS'
+        ? `From ${from}, to the co-owners: ${text}`
+        : (proprietor
+          ? `From ${from}, to every business: ${text}`
+          : `From ${from}, to every business you own: ${text}`))
+      : `From ${from}, about ${business.name}: ${text}`;
     const ids = [];
     await db.transaction(async (tx) => {
       for (const person of people) {
@@ -2045,7 +2105,7 @@ function mount(app, base = '/api') {
             id, business_id, branch_id, user_id, type, severity, title, body,
             reference_type, reference_id, is_read, created_at, updated_at
           ) VALUES (?, ?, ?, ?, 'MESSAGE', 'INFO', ?, ?, 'USER', ?, 0, datetime('now'), datetime('now'))`,
-          [id, String(business.id), person.branch_id || null, String(person.id), title, storedBody, String(user.id)],
+          [id, person.home_business_id || (business && String(business.id)) || null, person.branch_id || null, String(person.id), title, storedBody, String(user.id)],
         );
       }
     });
@@ -2054,7 +2114,7 @@ function mount(app, base = '/api') {
       action: 'NOTIFICATION_SENT',
       entityType: 'NOTIFICATION',
       entityId: ids[0],
-      businessId: business.id,
+      businessId: business ? business.id : (people[0].home_business_id || null),
       after: {
         audience,
         count: people.length,
@@ -2064,12 +2124,17 @@ function mount(app, base = '/api') {
     });
 
     const names = people.length === 1 ? (people[0].full_name || people[0].username || 'them') : `${people.length} people`;
+    const reach = audience === 'CO_OWNERS'
+      ? 'the co-owners'
+      : (spansBusinesses ? (proprietor ? 'every business' : 'every business you own') : null);
     ctx.json({
       ok: true,
       sent: people.length,
-      message: people.length === 1
-        ? `Sent to ${names}. It will show in their notifications.`
-        : `Sent to ${names}. Each of them will see it in their notifications.`,
+      message: reach
+        ? `Sent to ${names}, across ${reach}. Each of them will see it in their notifications.`
+        : (people.length === 1
+          ? `Sent to ${names}. It will show in their notifications.`
+          : `Sent to ${names}. Each of them will see it in their notifications.`),
     }, 201);
   });
 

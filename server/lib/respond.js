@@ -176,7 +176,11 @@ async function resolveBranch(db, ctx, { required = true, param = 'branch_id', fa
     // they can reach. Counting with it on would treat "this business has one
     // shop" as "you only have one shop" and post the sale there without them
     // naming it — the guess the business switch is written not to make.
-    const f = scopeFilter(scope, { alias: 'b', ignoreFocus: true });
+    // `branches` identifies itself as `id`. Asking it for `branch_id` is the
+    // sign-in failure a general manager of more than one shop hits, and a
+    // one-shop manager never reaches, because the single shop was already
+    // chosen above.
+    const f = scopeFilter(scope, { alias: 'b', branchColumn: 'id', allowNullBranch: false, ignoreFocus: true });
     const reachable = await db.all(
       `SELECT b.id FROM branches b WHERE b.is_deleted = 0 AND b.is_active = 1${f.sql ? ` AND ${f.sql}` : ''} LIMIT 2`,
       f.params,
@@ -410,15 +414,26 @@ function assertRowAccess(scope, row, label = 'That record') {
  * product or a vendor-level setting has no branch and must not vanish from a
  * cashier's product search. That is the same reasoning the audit log uses.
  */
-function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '', businessViaBranches = false, ignoreFocus = false } = {}) {
-  const b = alias ? `${alias}.${branchColumn}` : branchColumn;
+function scopeFilter(scope, { branchColumn = 'branch_id', businessColumn = 'business_id', alias = '', businessViaBranches = false, ignoreFocus = false, allowNullBranch = true } = {}) {
+  // A table that has no branch of its own — products, and the branches table
+  // itself — must not be asked for `branch_id`. That column does not exist
+  // there. A general manager is the caller who hits it: their scope names the
+  // shops they cover, so the clause is written, and the first screen after
+  // sign-in dies with "no such column: branch_id". An owner never sees the
+  // clause, because their scope covers every shop and adds nothing.
+  const skipBranch = branchColumn == null || branchColumn === false;
+  const b = !skipBranch && alias ? `${alias}.${branchColumn}` : branchColumn;
   const s = alias ? `${alias}.${businessColumn}` : businessColumn;
   const clauses = [];
   const params = [];
 
-  if (!scope.allBranches && scope.branchIds && scope.branchIds.size) {
+  if (!skipBranch && !scope.allBranches && scope.branchIds && scope.branchIds.size) {
     const ids = [...scope.branchIds];
-    clauses.push(`(${b} IS NULL OR ${b} IN (${ids.map(() => '?').join(',')}))`);
+    const marks = ids.map(() => '?').join(',');
+    // A branch row's own id is never null. Treating null as "shared" is right
+    // for a catalogue line and wrong for the branches table: there is no
+    // shared branch, and `b.id IS NULL` would not mean what it means on a sale.
+    clauses.push(allowNullBranch ? `(${b} IS NULL OR ${b} IN (${marks}))` : `${b} IN (${marks})`);
     params.push(...ids);
   }
   if (!scope.allBusinesses && scope.businessIds && scope.businessIds.size) {

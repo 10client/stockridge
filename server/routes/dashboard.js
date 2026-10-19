@@ -314,7 +314,23 @@ function mount(app, base = '/api') {
     if (Number(pendingExpenses) > 0) actions.push({ key: 'expenses', severity: 'INFO', count: Number(pendingExpenses), label: `${pendingExpenses} expense(s) awaiting approval`, route: '/expenses?status=PENDING_APPROVAL' });
     const pendingDeliveries = await db.scalar(`SELECT COUNT(*) FROM delivery_jobs d WHERE d.is_deleted = 0 AND d.status IN ('PENDING','SCHEDULED','PICKED','IN_TRANSIT') ${useBranch ? 'AND d.branch_id = ?' : (business ? 'AND d.business_id = ?' : '')}`, useBranch ? [useBranch] : (business ? [String(business.id)] : []));
     if (Number(pendingDeliveries) > 0) actions.push({ key: 'deliveries', severity: 'INFO', count: Number(pendingDeliveries), label: `${pendingDeliveries} delivery job(s) outstanding`, route: '/sales?tab=deliveries' });
-    const pendingDevices = await db.scalar(`SELECT COUNT(*) FROM branch_devices WHERE is_deleted = 0 AND registered_by IS NULL AND revoked_at IS NULL ${useBranch ? 'AND branch_id = ?' : ''}`, useBranch ? [useBranch] : []);
+    const deviceWhere = [];
+    const deviceParams = [];
+    if (useBranch) {
+      deviceWhere.push('branch_id = ?');
+      deviceParams.push(useBranch);
+    } else if (!scope.allBranches && scope.branchIds && scope.branchIds.size) {
+      const ids = [...scope.branchIds];
+      deviceWhere.push(`branch_id IN (${ids.map(() => '?').join(',')})`);
+      deviceParams.push(...ids);
+    } else if (business) {
+      deviceWhere.push('branch_id IN (SELECT id FROM branches WHERE business_id = ? AND is_deleted = 0)');
+      deviceParams.push(String(business.id));
+    }
+    const pendingDevices = await db.scalar(
+      `SELECT COUNT(*) FROM branch_devices WHERE is_deleted = 0 AND registered_by IS NULL AND revoked_at IS NULL ${deviceWhere.length ? `AND ${deviceWhere.join(' AND ')}` : ''}`,
+      deviceParams,
+    );
     if (Number(pendingDevices) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'devices', severity: 'INFO', count: Number(pendingDevices), label: `${pendingDevices} device(s) awaiting approval`, route: '/attendance?tab=devices' });
     const flaggedAttendance = await db.scalar(`SELECT COUNT(*) FROM staff_attendance a WHERE a.is_deleted = 0 AND a.flagged = 1 AND a.reviewed_by IS NULL ${useBranch ? 'AND a.branch_id = ?' : (business ? 'AND a.business_id = ?' : '')}`, useBranch ? [useBranch] : (business ? [String(business.id)] : []));
     if (Number(flaggedAttendance) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'attendance', severity: 'WARN', count: Number(flaggedAttendance), label: `${flaggedAttendance} clock-in(s) flagged for review`, route: '/attendance?filter=unreviewed' });

@@ -302,6 +302,8 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
   if (withCatalogue && profile.code === 'PHARMACEUTICAL') {
     summary.greenbook = await fileGreenbook(db, businessId);
   }
+  const { ensureMajors } = require('./categorySides');
+  await ensureMajors(db, businessId);
 
   return summary;
 }
@@ -397,6 +399,8 @@ async function fileNafdacShelves(db, businessId) {
     [id],
   );
   if (!Number(unfiled)) return 0;
+  const { ensureMajors } = require('./categorySides');
+  const majors = await ensureMajors(db, id);
   const names = await db.all(
     `SELECT DISTINCT n.category AS category
        FROM nafdac_catalog n
@@ -414,9 +418,9 @@ async function fileNafdacShelves(db, businessId) {
     if (!category) {
       const categoryId = newId();
       await db.run(
-        `INSERT INTO product_categories (id, business_id, code, name, sort_order, is_active, created_at, updated_at)
-         VALUES (?,?,?,?, 0, 1, datetime('now'), datetime('now'))`,
-        [categoryId, id, shelf.code, shelf.name],
+        `INSERT INTO product_categories (id, business_id, code, name, parent_id, sort_order, is_active, created_at, updated_at)
+         VALUES (?,?,?,?,?, 0, 1, datetime('now'), datetime('now'))`,
+        [categoryId, id, shelf.code, shelf.name, majors.byCode.PHARMACEUTICALS],
       );
       category = { id: categoryId };
     }

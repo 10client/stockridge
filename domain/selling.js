@@ -77,11 +77,25 @@ function fromNafdacCatalogue(item) {
  * or when the shop added it under a pharmaceutical category. A registration
  * number on soap or rice is not the catalogue, and does not move the side.
  */
-function sellingGroup(item) {
-  if (fromNafdacCatalogue(item) || DRUGS.has(categoryCode(item))) {
-    return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
+function explicitSide(item) {
+  const code = String((item && (
+    item.selling_group || item.sellingGroup || item.parent_code || item.category_parent_code || item.parentCode
+  )) || '').trim().toUpperCase();
+  if (code === 'PHARMACEUTICALS' || code === 'NON_PHARMACEUTICALS') {
+    return GROUPS.find((group) => group.code === code);
   }
-  return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
+  return null;
+}
+
+function sellingGroup(item) {
+  // A Greenbook copy stays pharmaceutical. Moving its shelf does not make
+  // a registered medicine into provisions. A shop-added product follows the
+  // major its shelf was assigned to, and that assignment can be edited.
+  if (fromNafdacCatalogue(item)) return GROUPS[0];
+  const assigned = explicitSide(item);
+  if (assigned) return assigned;
+  if (DRUGS.has(categoryCode(item))) return GROUPS[0];
+  return GROUPS[1];
 }
 
 function codesFor(groupCode) {
@@ -116,10 +130,20 @@ function codeClause(column, groupCode) {
 }
 
 /** A predicate on a products alias `p`. */
+function pharmaShelf(alias) {
+  return `(
+    EXISTS (
+      SELECT 1 FROM product_categories parent
+      WHERE parent.id = ${alias}.parent_id AND parent.is_deleted = 0 AND parent.code = 'PHARMACEUTICALS'
+    )
+    OR (${alias}.parent_id IS NULL AND ${alias}.code IN (${marks()}))
+  )`;
+}
+
 function productWhere(groupCode) {
   const key = String(groupCode || '').trim().toUpperCase();
   const params = PHARMACEUTICAL_CODES.slice();
-  const filedUnder = `EXISTS (SELECT 1 FROM product_categories pcg WHERE pcg.id = p.category_id AND pcg.is_deleted = 0 AND pcg.code IN (${marks()}))`;
+  const filedUnder = `EXISTS (SELECT 1 FROM product_categories pcg WHERE pcg.id = p.category_id AND pcg.is_deleted = 0 AND ${pharmaShelf('pcg')})`;
   if (key === 'PHARMACEUTICALS') {
     return { sql: `(p.nafdac_catalog_id IS NOT NULL OR ${filedUnder})`, params };
   }
@@ -137,9 +161,9 @@ function productWhere(groupCode) {
 function saleLineWhere(groupCode) {
   const key = String(groupCode || '').trim().toUpperCase();
   const params = PHARMACEUTICAL_CODES.slice();
-  const pharma = `(p.nafdac_catalog_id IS NOT NULL OR pc.code IN (${marks()}))`;
+  const pharma = `(p.nafdac_catalog_id IS NOT NULL OR ${pharmaShelf('pc')})`;
   if (key === 'PHARMACEUTICALS') return { sql: pharma, params };
-  if (key === 'NON_PHARMACEUTICALS') return { sql: `(p.nafdac_catalog_id IS NULL AND (pc.code IS NULL OR pc.code NOT IN (${marks()})))`, params };
+  if (key === 'NON_PHARMACEUTICALS') return { sql: `(p.nafdac_catalog_id IS NULL AND NOT ${pharmaShelf('pc')})`, params };
   return { sql: '1 = 1', params: [] };
 }
 

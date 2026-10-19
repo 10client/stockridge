@@ -359,6 +359,10 @@
     if (catalogId != null && catalogId !== '' && Number(catalogId) !== 0) {
       return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
     }
+    const assigned = String((item && (item.selling_group || item.parent_code || item.category_parent_code)) || '').trim().toUpperCase();
+    if (assigned === 'PHARMACEUTICALS' || assigned === 'NON_PHARMACEUTICALS') {
+      return SELLING_GROUPS.find((group) => group.code === assigned);
+    }
     const code = String((item && (item.code || item.category_code || item.categoryCode || item.product_category_code)) || '').trim().toUpperCase();
     if (PHARMACEUTICAL_CODES.has(code)) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
     return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };

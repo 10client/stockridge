@@ -362,6 +362,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
     const group = selling.sellingGroup({
       code: line.product && line.product.category_code,
       name: line.product && line.product.category_name,
+      category_parent_code: line.product && line.product.category_parent_code,
       nafdac_catalog_id: line.product && line.product.nafdac_catalog_id,
     });
     cogsLines.push({
@@ -1074,6 +1075,10 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
  */
 async function booksBySellingGroup(db, { businessId = null, branchId = null, startDate, endDate } = {}) {
   const selling = require('../../domain/selling');
+  if (businessId) {
+    const { ensureMajors } = require('./categorySides');
+    await ensureMajors(db, businessId);
+  }
   const where = ["e.is_deleted = 0", "l.is_deleted = 0", "a.code IN ('4000','4010','4020','4030','5000')"];
   const params = [];
   if (businessId) { where.push('e.business_id = ?'); params.push(String(businessId)); }
@@ -1081,22 +1086,25 @@ async function booksBySellingGroup(db, { businessId = null, branchId = null, sta
   if (startDate) { where.push('e.entry_date >= ?'); params.push(String(startDate)); }
   if (endDate) { where.push('e.entry_date <= ?'); params.push(String(endDate)); }
   const rows = await db.all(`
-    SELECT e.source_type, e.source_id, l.description, l.category_id, c.code AS category_code, a.code AS account_code,
+    SELECT e.source_type, e.source_id, l.description, l.category_id, c.code AS category_code,
+           parent.code AS category_parent_code, a.code AS account_code,
            l.credit AS credit, l.debit AS debit
     FROM gl_journal_lines l
     JOIN gl_journal_entries e ON e.id = l.journal_entry_id
     JOIN gl_accounts a ON a.id = l.account_id
     LEFT JOIN product_categories c ON c.id = l.category_id
+    LEFT JOIN product_categories parent ON parent.id = c.parent_id AND parent.is_deleted = 0
     WHERE ${where.join(' AND ')}`, params);
   const saleIds = [...new Set((rows || []).filter((row) => row.source_type === 'SALE' && row.source_id).map((row) => String(row.source_id)))];
   const itemSides = new Map();
   for (let i = 0; i < saleIds.length; i += 80) {
     const chunk = saleIds.slice(i, i + 80);
     const items = await db.all(`
-      SELECT si.sale_id, si.category_id, p.nafdac_catalog_id, pc.code AS category_code
+      SELECT si.sale_id, si.category_id, p.nafdac_catalog_id, pc.code AS category_code, parent.code AS category_parent_code
       FROM sale_items si
       JOIN products p ON p.id = si.product_id
       LEFT JOIN product_categories pc ON pc.id = si.category_id
+      LEFT JOIN product_categories parent ON parent.id = pc.parent_id AND parent.is_deleted = 0
       WHERE si.is_deleted = 0 AND si.sale_id IN (${chunk.map(() => '?').join(',')})`, chunk);
     for (const item of items || []) {
       const key = `${item.sale_id}|${item.category_id || ''}`;

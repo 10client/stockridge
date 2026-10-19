@@ -455,6 +455,7 @@
         if (!needle && !groupCode) continue;
         if (groupCode && U.sellingGroup({
           code: categoryCode, name: categoryName,
+          parent_code: cat && cat.parent_id ? ((categoryById.get(String(cat.parent_id)) || {}).code) : null,
           nafdac_catalog_id: (product && product.nafdac_catalog_id) || info.nafdacCatalogId,
         }).code !== groupCode) continue;
         const price = product && Number(product.selling_price) > 0
@@ -2424,6 +2425,8 @@
       const group = U.sellingGroup({
         code: line.categoryCode || line.category_code,
         name: line.categoryName || line.category_name,
+        selling_group: line.selling_group,
+        category_parent_code: line.category_parent_code || line.categoryParentCode,
         nafdac_catalog_id: line.nafdacCatalogId || line.nafdac_catalog_id,
       });
       const unitPrice = line.unit_price != null ? line.unit_price : line.unitPrice;

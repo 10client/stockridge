@@ -147,21 +147,45 @@
       const table = document.getElementById('catalogue-products');
       if (table && table.scrollIntoView) table.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-    async function renameCategory(category) {
-      const name = await ui.promptDialog({
-        title: `Rename ${category.name}`,
-        label: 'Category name',
-        value: category.name,
-        required: true,
-        hint: 'Products already in this category stay in it. The new name is what the catalogue shows.',
+    async function editCategory(category) {
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The name is what the catalogue shows. The side is which major category this shelf sits under. Products already on the shelf stay on it. A NAFDAC catalogue medicine stays pharmaceutical even if the shelf moves.'));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'Category name', name: 'name', value: category.name, required: true }),
+        ui.field({
+          label: 'Sits under',
+          name: 'selling_group',
+          value: sideOf(category),
+          options: [
+            { value: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
+            { value: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+          ],
+        })));
+      const m = ui.openModal({
+        title: `Edit ${category.name}`,
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              if (!v.name || v.name.trim().length < 2) { ui.warn('A category needs a name of at least two characters.'); return; }
+              ev.currentTarget.disabled = true;
+              try {
+                const res = await SR.api.put(`/api/categories/${encodeURIComponent(category.id)}`, {
+                  name: v.name.trim(),
+                  selling_group: v.selling_group,
+                }, { query: SR.state.query() });
+                ui.ok(res.message || `“${v.name.trim()}” saved.`);
+                m.close();
+                await fillCategories();
+                load();
+              } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+            },
+          }, 'Save'),
+        ],
       });
-      if (!name || name === category.name) return;
-      try {
-        const res = await SR.api.put(`/api/categories/${encodeURIComponent(category.id)}`, { name }, { query: SR.state.query() });
-        ui.ok(res.message || `“${name}” saved.`);
-        await fillCategories();
-        load();
-      } catch (err) { ui.apiError(err); }
     }
     async function moveProduct(product) {
       const choices = byName((shelfPayload.data || []).slice());
@@ -217,45 +241,87 @@
             ui.h('h2', {}, category.name),
             ui.h('span', { class: 'badge' }, `${count} product${count === 1 ? '' : 's'}`),
             side === 'PHARMACEUTICALS' ? ui.badge('Pharmaceuticals', 'badge-info') : (side ? ui.badge('Non-pharmaceuticals', 'badge-mute') : null)),
+          Number(category.nafdac_count) > 0
+            ? ui.h('p', { class: 'hint' }, 'Products copied from the NAFDAC catalogue stay pharmaceutical, even if this shelf moves.')
+            : null,
           shown.length
             ? ui.h('div', { class: 'stack' }, ...shown.map(productLine))
             : ui.h('p', { class: 'hint' }, 'No product is in this category yet.'),
           ui.h('div', { class: 'actions' },
             category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => openCategory(category.id) }, more ? `Show all ${count}` : 'Show in the list') : null,
-            canOrganize() && category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => renameCategory(category) }, 'Rename') : null)));
+            canOrganize() && category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => editCategory(category) }, 'Edit') : null)));
+    }
+    function majorSection(code, label, rows) {
+      const cards = rows.map((row) => shelfCard(row, row.products || [], Number(row.product_count) || 0));
+      const count = rows.reduce((sum, row) => sum + (Number(row.product_count) || 0), 0);
+      return ui.h('section', { class: 'stack' },
+        ui.h('div', { class: 'card-head' },
+          ui.h('h2', {}, label),
+          ui.h('span', { class: 'badge' }, `${rows.length} categor${rows.length === 1 ? 'y' : 'ies'} · ${count} product${count === 1 ? '' : 's'}`)),
+        cards.length
+          ? ui.h('div', { class: 'stack' }, ...cards)
+          : ui.h('p', { class: 'hint' }, `No category sits under ${label} yet.`));
     }
     function paintShelves(rows, unfiled) {
-      const cards = rows.map((row) => shelfCard(row, row.products || [], Number(row.product_count) || 0));
-      if (unfiled && Number(unfiled.product_count)) {
-        cards.push(shelfCard({ id: '', name: 'Not in a category' }, unfiled.products || [], Number(unfiled.product_count) || 0));
-      }
+      const pharma = rows.filter((row) => sideOf(row) === 'PHARMACEUTICALS');
+      const other = rows.filter((row) => sideOf(row) !== 'PHARMACEUTICALS');
+      const loose = unfiled && Number(unfiled.product_count)
+        ? shelfCard({ id: '', name: 'Not in a category' }, unfiled.products || [], Number(unfiled.product_count) || 0)
+        : null;
+      const sections = [];
+      if (!state.sellingGroup || state.sellingGroup === 'PHARMACEUTICALS') sections.push(majorSection('PHARMACEUTICALS', 'Pharmaceuticals', pharma));
+      if (!state.sellingGroup || state.sellingGroup === 'NON_PHARMACEUTICALS') sections.push(majorSection('NON_PHARMACEUTICALS', 'Non-pharmaceuticals', other));
       shelvesHost.replaceChildren(
         ui.h('div', { class: 'card' },
           ui.h('div', { class: 'card-body' },
             ui.h('h2', {}, 'Categories'),
             ui.h('p', { class: 'hint' }, canOrganize()
-              ? 'Each category lists the products in it, and the number. Pharmaceutical categories are shown the same way. Rename a category and the products stay in it. Move a product when it belongs on another shelf.'
-              : 'Each category lists the products in it, and the number. Pharmaceutical categories are shown the same way.'))),
-        cards.length ? ui.h('div', { class: 'stack' }, ...cards) : ui.empty({ title: 'No categories yet', message: 'Add a category, then move products into it.' }));
+              ? 'Pharmaceuticals and non-pharmaceuticals are the two major categories. Every other category sits under one of them. Edit a category to rename it or move it to the other side. The products stay on that shelf. A NAFDAC catalogue medicine stays pharmaceutical.'
+              : 'Pharmaceuticals and non-pharmaceuticals are the two major categories. Every other category sits under one of them.'))),
+        ...sections,
+        loose || null);
     }
     fillCategories();
 
     async function addCategory() {
-      const name = await ui.promptDialog({
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A category sits under one of the two major categories. Provisions, fabrics and drinks go under non-pharmaceuticals. Analgesics, vitamins and injections go under pharmaceuticals.'));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'Category name', name: 'name', required: true }),
+        ui.field({
+          label: 'Sits under',
+          name: 'selling_group',
+          value: 'NON_PHARMACEUTICALS',
+          options: [
+            { value: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
+            { value: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+          ],
+        })));
+      const m = ui.openModal({
         title: 'Add a category',
-        label: 'Category name',
-        required: true,
-        hint: 'It is filed alphabetically with the categories this shop already has. Provisions, fabrics, drinks — each keeps its place.',
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              if (!v.name || v.name.trim().length < 2) { ui.warn('A category needs a name of at least two characters.'); return; }
+              ev.currentTarget.disabled = true;
+              try {
+                const created = await SR.api.post('/api/categories', {
+                  name: v.name.trim(),
+                  selling_group: v.selling_group,
+                  business_id: SR.state.activeBusinessId,
+                });
+                m.close();
+                await fillCategories();
+                ui.ok(created.message || `“${created.name}” added.`);
+              } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+            },
+          }, 'Add'),
+        ],
       });
-      if (!name) return;
-      try {
-        const created = await SR.api.post('/api/categories', {
-          name,
-          business_id: SR.state.activeBusinessId,
-        });
-        await fillCategories();
-        ui.ok(created.message || `“${created.name}” added.`);
-      } catch (err) { ui.apiError(err); }
     }
 
     qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; state.highlightId = null; load(); }, 320));
@@ -267,7 +333,11 @@
       const catById = new Map(cats.map((c) => [String(c.id), c]));
       const catName = new Map(cats.map((c) => [String(c.id), c.name]));
       if (state.sellingGroup) {
-        rows = rows.filter((p) => U.sellingGroup(Object.assign({}, catById.get(String(p.category_id)) || {}, { nafdac_catalog_id: p.nafdac_catalog_id })).code === state.sellingGroup);
+        rows = rows.filter((p) => {
+          const cat = catById.get(String(p.category_id)) || {};
+          const parent = cat.parent_id ? catById.get(String(cat.parent_id)) : null;
+          return U.sellingGroup(Object.assign({}, cat, { parent_code: parent && parent.code, nafdac_catalog_id: p.nafdac_catalog_id })).code === state.sellingGroup;
+        });
       }
       if (state.category) rows = rows.filter((p) => String(p.category_id) === String(state.category));
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
@@ -537,7 +607,7 @@
     }
     const fields = [
       ui.field({ label: 'Name', name: 'name', value: base.name || '', required: true, span: true, placeholder: 'e.g. Hisense 1.5HP Split Air Conditioner' }),
-      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', hint: greenbook ? 'Optional. The NAFDAC catalogue link already makes this pharmaceutical.' : 'A new product is pharmaceutical only when you file it under a medicine shelf — Analgesics, Vitamins, Injections and the rest. Provisions, drinks and other shelves are not.', options: [{ value: '', label: '— none —' }].concat(categories.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: `${U.sellingGroup(c).code === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} · ${c.name}` }))) }),
+      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', hint: greenbook ? 'Optional. The NAFDAC catalogue link already makes this pharmaceutical, whichever shelf you file it under.' : 'File it under a category. The category’s side — pharmaceuticals or non-pharmaceuticals — is what the books use. A NAFDAC catalogue medicine stays pharmaceutical.', options: [{ value: '', label: '— none —' }].concat(categories.filter((c) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(c.code || '').toUpperCase())).slice().sort((a, b) => String(U.sellingGroup(a).label).localeCompare(String(U.sellingGroup(b).label)) || String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: `${U.sellingGroup(c).code === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} · ${c.name}` }))) }),
       ui.field({ label: 'Brand', name: 'brand', value: base.brand || '' }),
       ui.field({ label: 'Model number', name: 'model_no', value: base.model_no || '' }),
       ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: greenbook ? 'Left blank, one is taken from the NAFDAC number.' : 'Left blank, one is suggested from the name.' }),

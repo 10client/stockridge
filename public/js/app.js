@@ -986,10 +986,11 @@
    * A message is a notification, not a chat.
    *
    * An administrator writes to the owners of the business they are working in.
-   * An owner writes to one staff member or manager, or to all staff, all managers,
-   * or both. Each recipient gets their own unread row, so marking it read does not
-   * clear it for anyone else, and the sender does not see their own message as an
-   * alert.
+   * The proprietor writes to one person, to one business, or to every business
+   * at once — including the co-owners. A co-owner writes only to the businesses
+   * they own. Each recipient gets their own unread row, so marking it read does
+   * not clear it for anyone else, and the sender does not see their own message
+   * as an alert.
    */
   async function openMessageComposer() {
     const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
@@ -1002,22 +1003,44 @@
       ui.warn('Sending a message needs a connection. It appears in their notifications once it is sent.');
       return;
     }
-    if (!SR.state.activeBusinessId) {
+    const proprietor = Boolean(SR.state.isProprietor && SR.state.isProprietor());
+    const ownedCount = (SR.state.businesses && SR.state.businesses() || []).length;
+    if (!SR.state.activeBusinessId && isAdmin) {
       ui.warn('Choose the business first, so the message goes to the right people.');
       openBusinessPicker();
       return;
     }
     closeBell();
-    const bizName = SR.state.activeBusinessName();
+    const bizName = SR.state.activeBusinessName() || 'this business';
     const body = ui.h('div', { class: 'stack' });
-    body.appendChild(ui.h('p', { class: 'hint' }, isAdmin
+    body.appendChild(ui.h('p', { class: 'hint', id: 'message-hint' }, isAdmin
       ? `This goes to the owners of ${bizName}, and each of them sees it in their notifications.`
-      : `This appears in the notifications of the people you choose at ${bizName}.`));
+      : `Each person gets their own copy. Marking it read does not clear it for anyone else.`));
 
     const audience = ui.h('select', { name: 'audience' });
     const choices = isAdmin
       ? [['OWNERS', 'All owners of this business'], ['USER', 'One owner']]
-      : [['USER', 'One person'], ['STAFF', 'All staff'], ['MANAGERS', 'All managers'], ['STAFF_AND_MANAGERS', 'Staff and managers']];
+      : (proprietor
+        ? [
+          ['USER', 'One person'],
+          ['STAFF', `All staff at ${bizName}`],
+          ['MANAGERS', `All managers at ${bizName}`],
+          ['STAFF_AND_MANAGERS', `Staff and managers at ${bizName}`],
+          ['ALL_STAFF', 'All staff, every business'],
+          ['ALL_MANAGERS', 'All managers, every business'],
+          ['ALL_STAFF_AND_MANAGERS', 'Everyone who works there, every business'],
+          ['CO_OWNERS', 'All co-owners'],
+        ]
+        : [
+          ['USER', 'One person'],
+          ['STAFF', `All staff at ${bizName}`],
+          ['MANAGERS', `All managers at ${bizName}`],
+          ['STAFF_AND_MANAGERS', `Staff and managers at ${bizName}`],
+        ].concat(ownedCount > 1 ? [
+          ['ALL_STAFF', 'All staff, every business you own'],
+          ['ALL_MANAGERS', 'All managers, every business you own'],
+          ['ALL_STAFF_AND_MANAGERS', 'Everyone who works there, every business you own'],
+        ] : []));
     for (const [value, label] of choices) audience.appendChild(ui.h('option', { value }, label));
 
     const personWrap = ui.h('div', { class: 'span-2' });
@@ -1043,6 +1066,20 @@
       const one = audience.value === 'USER';
       personWrap.hidden = !one;
       person.required = one;
+      const hint = document.getElementById('message-hint');
+      if (!hint || isAdmin) return;
+      const every = ['ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS'].includes(audience.value);
+      if (audience.value === 'CO_OWNERS') {
+        hint.textContent = 'One message to every co-owner, whichever businesses they own. You are not included. Each of them sees their own copy.';
+      } else if (every && proprietor) {
+        hint.textContent = 'One message. It goes to every business at the same time — bakery, pharmacy, rental and the rest. Each person sees their own copy.';
+      } else if (every) {
+        hint.textContent = 'One message to the people in every business you own. It does not go to a business that was not granted to you.';
+      } else if (audience.value === 'USER' && proprietor) {
+        hint.textContent = 'A cashier, a manager, or a co-owner, in any business.';
+      } else {
+        hint.textContent = `This stays with ${bizName}. Choose every business if the same message should reach the other verticals too.`;
+      }
     }
     audience.addEventListener('change', syncPerson);
     syncPerson();
@@ -1063,6 +1100,7 @@
       const rows = ((res && (res.data || res.rows)) || []).filter((u) => {
         if (!u || String(u.id) === String(SR.state.user && SR.state.user.id)) return false;
         const r = String(u.role || '').toUpperCase();
+        if (proprietor) return r === 'STAFF' || r === 'MANAGER' || (r === 'OWNER' && Number(u.grant_count) > 0);
         if (!isAdmin) return r === 'STAFF' || r === 'MANAGER';
         if (r !== 'OWNER') return false;
         // No grant means the proprietor, even if an older row still names one business.
@@ -1073,7 +1111,7 @@
       });
       person.replaceChildren();
       if (!rows.length) {
-        person.appendChild(ui.h('option', { value: '' }, isAdmin ? 'No owner account yet' : 'No staff or managers'));
+        person.appendChild(ui.h('option', { value: '' }, isAdmin ? 'No owner account yet' : (proprietor ? 'No staff, managers or co-owners' : 'No staff or managers')));
       } else {
         person.appendChild(ui.h('option', { value: '' }, 'Choose someone'));
         for (const u of rows) {
@@ -1096,12 +1134,17 @@
         ui.warn(isAdmin ? 'Choose which owner should receive it.' : 'Choose who should receive it.');
         return;
       }
+      const spans = ['ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS', 'CO_OWNERS'].includes(audience.value);
+      if (!spans && !SR.state.activeBusinessId) {
+        ui.warn('Choose the business first, so the message goes to the right people.');
+        return;
+      }
       const payload = {
         title,
         body: text,
         audience: audience.value,
-        business_id: SR.state.activeBusinessId,
       };
+      if (!spans) payload.business_id = SR.state.activeBusinessId;
       if (audience.value === 'USER') payload.user_id = person.value;
       try {
         const res = await SR.api.post('/api/notifications', payload);
