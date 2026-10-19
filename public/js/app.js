@@ -1009,44 +1009,78 @@
       return;
     }
     const proprietor = Boolean(SR.state.isProprietor && SR.state.isProprietor());
-    const ownedCount = (SR.state.businesses && SR.state.businesses() || []).length;
     if (!SR.state.activeBusinessId && isAdmin) {
       ui.warn('Choose the business first, so the message goes to the right people.');
       openBusinessPicker();
       return;
     }
     closeBell();
-    const bizName = SR.state.activeBusinessName() || 'this business';
+    const businessRows = (SR.state.businesses && SR.state.businesses() || []).filter((b) => b && b.id);
+    const namedBusiness = (id) => {
+      const row = businessRows.find((b) => String(b.id) === String(id));
+      return (row && row.name) || 'this business';
+    };
+    // The top bar says "All businesses" when none is focused. That phrase must
+    // not be pasted into "All staff at …". That option looked like a send to
+    // every shop, then refused because no single business was chosen.
+    const soleBusinessId = businessRows.length === 1 ? businessRows[0].id : null;
     const body = ui.h('div', { class: 'stack' });
     body.appendChild(ui.h('p', { class: 'hint', id: 'message-hint' }, isAdmin
-      ? `This goes to the owners of ${bizName}, and each of them sees it in their notifications.`
-      : `Each person gets their own copy. Marking it read does not clear it for anyone else.`));
+      ? `This goes to the owners of ${namedBusiness(SR.state.activeBusinessId)}, and each of them sees it in their notifications.`
+      : 'Each person gets their own copy. Marking it read does not clear it for anyone else.'));
+
+    const businessPick = (!isAdmin && businessRows.length > 1)
+      ? ui.h('select', { name: 'message_business' })
+      : null;
+    if (businessPick) {
+      businessPick.appendChild(ui.h('option', { value: '' }, proprietor ? 'All businesses' : 'Every business you own'));
+      for (const b of businessRows) {
+        businessPick.appendChild(ui.h('option', {
+          value: b.id,
+          selected: String(b.id) === String(SR.state.activeBusinessId || ''),
+        }, b.name || 'Business'));
+      }
+    }
 
     const audience = ui.h('select', { name: 'audience' });
-    const choices = isAdmin
-      ? [['OWNERS', 'All owners of this business'], ['USER', 'One owner']]
-      : (proprietor
-        ? [
-          ['USER', 'One person'],
-          ['STAFF', `All staff at ${bizName}`],
-          ['MANAGERS', `All managers at ${bizName}`],
-          ['STAFF_AND_MANAGERS', `Staff and managers at ${bizName}`],
-          ['ALL_STAFF', 'All staff, every business'],
-          ['ALL_MANAGERS', 'All managers, every business'],
-          ['ALL_STAFF_AND_MANAGERS', 'Everyone who works there, every business'],
-          ['CO_OWNERS', 'All co-owners'],
-        ]
+    function chosenBusinessId() {
+      if (isAdmin) return SR.state.activeBusinessId || null;
+      if (businessPick) return businessPick.value || null;
+      return soleBusinessId || SR.state.activeBusinessId || null;
+    }
+    function peopleKind() {
+      const value = audience.value;
+      if (value === 'STAFF' || value === 'ALL_STAFF') return 'STAFF';
+      if (value === 'MANAGERS' || value === 'ALL_MANAGERS') return 'MANAGERS';
+      if (value === 'STAFF_AND_MANAGERS' || value === 'ALL_STAFF_AND_MANAGERS') return 'BOTH';
+      if (value === 'CO_OWNERS') return 'CO_OWNERS';
+      return 'USER';
+    }
+    function fillAudience() {
+      const bizId = chosenBusinessId();
+      const all = !isAdmin && !bizId;
+      const place = bizId ? namedBusiness(bizId) : '';
+      const kind = audience.options.length ? peopleKind() : 'USER';
+      const choices = isAdmin
+        ? [['OWNERS', 'All owners of this business'], ['USER', 'One owner']]
         : [
           ['USER', 'One person'],
-          ['STAFF', `All staff at ${bizName}`],
-          ['MANAGERS', `All managers at ${bizName}`],
-          ['STAFF_AND_MANAGERS', `Staff and managers at ${bizName}`],
-        ].concat(ownedCount > 1 ? [
-          ['ALL_STAFF', 'All staff, every business you own'],
-          ['ALL_MANAGERS', 'All managers, every business you own'],
-          ['ALL_STAFF_AND_MANAGERS', 'Everyone who works there, every business you own'],
-        ] : []));
-    for (const [value, label] of choices) audience.appendChild(ui.h('option', { value }, label));
+          [all ? 'ALL_STAFF' : 'STAFF', all ? 'All staff' : `All staff at ${place}`],
+          [all ? 'ALL_MANAGERS' : 'MANAGERS', all ? 'All managers' : `All managers at ${place}`],
+          [all ? 'ALL_STAFF_AND_MANAGERS' : 'STAFF_AND_MANAGERS', all ? 'Staff and managers' : `Staff and managers at ${place}`],
+        ];
+      if (proprietor) choices.push(['CO_OWNERS', 'All co-owners']);
+      const keep = kind === 'STAFF' ? (all ? 'ALL_STAFF' : 'STAFF')
+        : kind === 'MANAGERS' ? (all ? 'ALL_MANAGERS' : 'MANAGERS')
+          : kind === 'BOTH' ? (all ? 'ALL_STAFF_AND_MANAGERS' : 'STAFF_AND_MANAGERS')
+            : kind === 'CO_OWNERS' ? 'CO_OWNERS'
+              : (isAdmin ? 'OWNERS' : 'USER');
+      audience.replaceChildren();
+      for (const [value, label] of choices) {
+        audience.appendChild(ui.h('option', { value, selected: value === keep }, label));
+      }
+    }
+    fillAudience();
 
     const personWrap = ui.h('div', { class: 'span-2' });
     const person = ui.h('select', { name: 'user_id' });
@@ -1055,6 +1089,9 @@
     personWrap.appendChild(person);
 
     const form = ui.h('div', { class: 'form-grid' },
+      businessPick ? ui.h('div', { class: 'span-2' },
+        ui.h('label', { class: 'ctl' }, 'Businesses'),
+        businessPick) : null,
       ui.h('div', { class: 'span-2' },
         ui.h('label', { class: 'ctl' }, 'Send to'),
         audience),
@@ -1083,10 +1120,19 @@
       } else if (audience.value === 'USER' && proprietor) {
         hint.textContent = 'A cashier, a manager, or a co-owner, in any business.';
       } else {
-        hint.textContent = `This stays with ${bizName}. Choose every business if the same message should reach the other verticals too.`;
+        const place = namedBusiness(chosenBusinessId());
+        hint.textContent = businessPick
+          ? `This stays with ${place}. Choose All businesses if the same message should reach the other verticals too.`
+          : `This stays with ${place}.`;
       }
     }
     audience.addEventListener('change', syncPerson);
+    if (businessPick) {
+      businessPick.addEventListener('change', () => {
+        fillAudience();
+        syncPerson();
+      });
+    }
     syncPerson();
 
     const cancel = ui.h('button', { class: 'btn', type: 'button' }, 'Cancel');
@@ -1139,18 +1185,27 @@
         ui.warn(isAdmin ? 'Choose which owner should receive it.' : 'Choose who should receive it.');
         return;
       }
-      const spans = ['ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS', 'CO_OWNERS'].includes(audience.value);
-      if (!spans && !SR.state.activeBusinessId) {
-        ui.warn('Choose the business first, so the message goes to the right people.');
+      // All businesses + all staff is a span. It must not be sent as the
+      // per-shop audience, and it must not be refused for having no shop.
+      const lift = { STAFF: 'ALL_STAFF', MANAGERS: 'ALL_MANAGERS', STAFF_AND_MANAGERS: 'ALL_STAFF_AND_MANAGERS' };
+      const bizId = chosenBusinessId();
+      let chosen = audience.value;
+      if (!bizId && lift[chosen]) chosen = lift[chosen];
+      const spans = ['ALL_STAFF', 'ALL_MANAGERS', 'ALL_STAFF_AND_MANAGERS', 'CO_OWNERS'].includes(chosen);
+      const oneAnywhere = chosen === 'USER' && proprietor;
+      if (!spans && !oneAnywhere && !bizId) {
+        ui.warn(chosen === 'USER'
+          ? 'Choose which business that person works in.'
+          : 'Choose the business first, so the message goes to the right people.');
         return;
       }
       const payload = {
         title,
         body: text,
-        audience: audience.value,
+        audience: chosen,
       };
-      if (!spans) payload.business_id = SR.state.activeBusinessId;
-      if (audience.value === 'USER') payload.user_id = person.value;
+      if (!spans && !oneAnywhere) payload.business_id = bizId;
+      if (chosen === 'USER') payload.user_id = person.value;
       try {
         const res = await SR.api.post('/api/notifications', payload);
         ui.ok((res && res.message) || 'Sent. They will see it in their notifications.');
