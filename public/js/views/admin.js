@@ -28,6 +28,81 @@
     { value: 'REGISTERED_DEVICE', label: 'Registered device — only known devices' },
   ];
 
+  /**
+   * THE SAME BRANCH FEATURES, in the same pairs, on every screen that writes a branch.
+   *
+   * Creating a business opens the first branch. Opening a branch later, and editing
+   * one after that, must ask for the same things in the same places. A third column
+   * that appears only when the modal is wide is how a field looked "out of line".
+   */
+  function appendBranchFeatures(parent, { prefix = '', values = {}, businessNode = null, lockIdentity = false, showActive = false } = {}) {
+    const v = values || {};
+    const n = (key) => (prefix ? `${prefix}${key}` : key);
+    const note = ui.h('p', { class: 'sub' },
+      'Name, code, type, address, phone, the opening float and the clock-in fence. The same details are here when the branch is opened with the business and when it is edited later.');
+    parent.appendChild(note);
+    if (businessNode) parent.appendChild(businessNode);
+    const identity = ui.h('div', { class: 'form-pairs' });
+    identity.appendChild(ui.field({ label: 'Branch name', name: n('name'), value: v.name || '', required: !prefix, placeholder: 'Ikeja Showroom', disabled: lockIdentity }));
+    identity.appendChild(ui.field({ label: 'Code', name: n('code'), value: v.code || '', disabled: lockIdentity, hint: 'Appears on receipt numbers and transfer references. Generated from the name if left blank.' }));
+    identity.appendChild(ui.field({ label: 'Type', name: n('branch_type'), options: BRANCH_TYPES.map((t) => ({ value: t, label: U.humanise(t) })), value: v.branch_type || 'RETAIL', disabled: lockIdentity }));
+    identity.appendChild(ui.field({
+      label: 'Opening float (₦)',
+      name: n('opening_cash'),
+      type: 'number', step: '0.01', min: '0',
+      value: v.opening_cash == null || v.opening_cash === '' ? '' : String(v.opening_cash),
+      disabled: lockIdentity,
+      hint: 'Recorded as the safe\'s opening entry, so the safe balance is a real derivation rather than a number that appears the first time somebody deposits.',
+    }));
+    identity.appendChild(ui.field({ label: 'Address', name: n('address'), span: true, value: v.address || '', disabled: lockIdentity }));
+    identity.appendChild(ui.field({ label: 'City', name: n('city'), value: v.city || '' }));
+    identity.appendChild(ui.field({ label: 'State', name: n('state'), value: v.state || '', disabled: lockIdentity }));
+    identity.appendChild(ui.field({ label: 'LGA', name: n('lga'), value: v.lga || '', disabled: lockIdentity }));
+    identity.appendChild(ui.field({ label: 'Phone', name: n('phone'), value: v.phone || '' }));
+    identity.appendChild(ui.field({ label: 'Email', name: n('email'), span: true, value: v.email || '' }));
+    parent.appendChild(identity);
+
+    parent.appendChild(ui.h('h2', {}, 'Clock-in fence'));
+    parent.appendChild(ui.h('p', { class: 'sub' }, 'The fence does not block a clock-in. It records the distance and flags anything outside. Location is evidence for a manager to read, never a reason to stop somebody recording that they came to work.'));
+    const fence = ui.h('div', { class: 'form-pairs' });
+    fence.appendChild(ui.field({ label: 'Latitude', name: n('latitude'), value: v.latitude == null ? '' : String(v.latitude), disabled: lockIdentity, hint: 'Between -90 and 90.' }));
+    fence.appendChild(ui.field({ label: 'Longitude', name: n('longitude'), value: v.longitude == null ? '' : String(v.longitude), disabled: lockIdentity, hint: 'Between -180 and 180. Swapping the two is the most common mistake and the server refuses it.' }));
+    fence.appendChild(ui.field({ label: 'Fence radius (m)', name: n('geofence_radius_meters'), type: 'number', step: '1', min: '0', max: '50000', value: v.geofence_radius_meters == null ? '150' : String(v.geofence_radius_meters), disabled: lockIdentity, hint: 'Phone GPS is accurate to about 10–50m outdoors and much worse indoors. 150–300m is realistic for a shop.' }));
+    fence.appendChild(ui.field({ label: 'Attendance mode', name: n('attendance_mode'), options: ATTENDANCE_MODES, value: v.attendance_mode || 'GEOLOCATION', disabled: lockIdentity }));
+    const useHere = ui.h('button', { class: 'btn btn-sm', type: 'button', disabled: lockIdentity }, 'Use where I am now');
+    useHere.addEventListener('click', () => {
+      if (!global.navigator || !global.navigator.geolocation) { ui.warn('This device will not share a location.'); return; }
+      useHere.disabled = true;
+      useHere.textContent = 'Finding you…';
+      global.navigator.geolocation.getCurrentPosition((pos) => {
+        const lat = parent.querySelector(`[name="${n('latitude')}"]`);
+        const lng = parent.querySelector(`[name="${n('longitude')}"]`);
+        if (lat) lat.value = String(U.round2(pos.coords.latitude * 1000000) / 1000000);
+        if (lng) lng.value = String(U.round2(pos.coords.longitude * 1000000) / 1000000);
+        useHere.disabled = false;
+        useHere.textContent = 'Use where I am now';
+        ui.ok(`Set to within about ${U.numInput(pos.coords.accuracy || 0)}m of here. Step outside and try again if that looks too far out.`);
+      }, (err) => {
+        useHere.disabled = false;
+        useHere.textContent = 'Use where I am now';
+        ui.warn(err && err.message ? err.message : 'Could not get a location.');
+      }, { enableHighAccuracy: true, timeout: 12000 });
+    });
+    fence.appendChild(ui.h('div', { class: 'span-all' }, useHere));
+    parent.appendChild(fence);
+    if (showActive) {
+      parent.appendChild(ui.h('div', { class: 'form-pairs' }, ui.field({
+        label: 'Branch is open',
+        name: n('is_active'),
+        type: 'checkbox',
+        value: v.is_active == null ? 1 : (Number(v.is_active) ? 1 : 0),
+        span: true,
+        disabled: lockIdentity,
+        hint: 'The branch list shows this as open or closed. Closing it stops new tills. Staff still assigned to it have to be confirmed.',
+      })));
+    }
+  }
+
   // Which settings are switches, which are numbers, and how they pair up. The
   // grouping is the point: "staff may void sales" means nothing without the
   // window beside it.
@@ -269,87 +344,65 @@
       // a real branch in the wrong set of books, with nothing on the screen that had said so.
       const reachableBusinesses = SR.state.businesses() || [];
       const businessField = isNew
-        ? (reachableBusinesses.length > 1
-          ? ui.field({
-            label: 'Business', name: 'business_id', required: true,
-            options: reachableBusinesses.map((biz) => ({
-              value: biz.id,
-              label: biz.name + (String(biz.id) === String(SR.state.activeBusinessId) ? ' — the one you are in' : ''),
-            })),
-            value: SR.state.activeBusinessId || (reachableBusinesses[0] || {}).id || '',
-            hint: 'Each business keeps its own books, catalogue and staff. A branch cannot be moved between businesses later.',
-          })
-          : ui.field({
-            label: 'Business', name: 'business_id', required: true,
-            options: reachableBusinesses.map((biz) => ({ value: biz.id, label: biz.name })),
-            value: (reachableBusinesses[0] || {}).id || '',
-            hint: 'The branch opens under this business. It cannot be moved to another one later.',
-          }))
-        : ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Business'),
-          ui.h('div', { class: 'hint' }, `This branch belongs to ${b.business_name || 'its business'} and cannot be moved to another one.`));
-      form.appendChild(ui.h('div', { class: 'form-grid' },
-        businessField,
-        ui.field({ label: 'Branch name', name: 'name', value: b.name || '', required: true, placeholder: 'Ikeja Showroom' }),
-        ui.field({ label: 'Code', name: 'code', value: b.code || '', hint: 'Appears on receipt numbers and transfer references. Generated from the name if left blank.' }),
-        ui.field({ label: 'Type', name: 'branch_type', options: BRANCH_TYPES.map((t) => ({ value: t, label: U.humanise(t) })), value: b.branch_type || 'RETAIL' }),
-        ui.field({ label: 'Address', name: 'address', span: true, value: b.address || '' }),
-        ui.field({ label: 'City', name: 'city', value: b.city || '' }),
-        ui.field({ label: 'State', name: 'state', value: b.state || '' }),
-        ui.field({ label: 'LGA', name: 'lga', value: b.lga || '' }),
-        ui.field({ label: 'Phone', name: 'phone', value: b.phone || '' }),
-        ui.field({ label: 'Email', name: 'email', value: b.email || '' }),
-        ui.field({
-          label: 'Opening float (₦)',
-          name: 'opening_cash',
-          type: 'number', step: '0.01', min: '0',
-          value: b.opening_cash == null ? '' : String(b.opening_cash),
-          hint: 'Recorded as the safe\'s opening entry, so the safe balance is a real derivation rather than a number that appears the first time somebody deposits.',
-        })));
-
-      form.appendChild(ui.h('h2', {}, 'Clock-in fence'));
-      form.appendChild(ui.h('p', { class: 'sub' }, 'The fence does not BLOCK a clock-in — it records the distance and flags anything outside. Location is evidence for a manager to read, never a reason to stop somebody recording that they came to work.'));
-      form.appendChild(ui.h('div', { class: 'form-grid' },
-        ui.field({ label: 'Latitude', name: 'latitude', value: b.latitude == null ? '' : String(b.latitude), hint: 'Between -90 and 90.' }),
-        ui.field({ label: 'Longitude', name: 'longitude', value: b.longitude == null ? '' : String(b.longitude), hint: 'Between -180 and 180. Swapping the two is the most common mistake and the server refuses it.' }),
-        ui.field({ label: 'Fence radius (m)', name: 'geofence_radius_meters', type: 'number', step: '1', min: '0', max: '50000', value: b.geofence_radius_meters == null ? '150' : String(b.geofence_radius_meters), hint: 'Phone GPS is accurate to about 10–50m outdoors and much worse indoors. 150–300m is realistic for a shop.' }),
-        ui.field({ label: 'Attendance mode', name: 'attendance_mode', options: ATTENDANCE_MODES, value: b.attendance_mode || 'GEOLOCATION' })));
-      const useHere = ui.h('button', { class: 'btn btn-sm' }, 'Use where I am now');
-      useHere.addEventListener('click', () => {
-        if (!global.navigator || !global.navigator.geolocation) { ui.warn('This device will not share a location.'); return; }
-        useHere.disabled = true;
-        useHere.textContent = 'Finding you…';
-        global.navigator.geolocation.getCurrentPosition((pos) => {
-          form.querySelector('[name="latitude"]').value = String(U.round2(pos.coords.latitude * 1000000) / 1000000);
-          form.querySelector('[name="longitude"]').value = String(U.round2(pos.coords.longitude * 1000000) / 1000000);
-          useHere.disabled = false;
-          useHere.textContent = 'Use where I am now';
-          ui.ok(`Set to within about ${U.numInput(pos.coords.accuracy || 0)}m of here. Step outside and try again if that looks too far out.`);
-        }, (err) => {
-          useHere.disabled = false;
-          useHere.textContent = 'Use where I am now';
-          ui.warn(err && err.message ? err.message : 'Could not get a location.');
-        }, { enableHighAccuracy: true, timeout: 12000 });
+        ? ui.h('div', { class: 'form-pairs' }, ui.field({
+          label: 'Business', name: 'business_id', required: true, span: true,
+          options: reachableBusinesses.map((biz) => ({
+            value: biz.id,
+            label: biz.name + (String(biz.id) === String(SR.state.activeBusinessId) ? ' — the one you are in' : ''),
+          })),
+          value: SR.state.activeBusinessId || (reachableBusinesses[0] || {}).id || '',
+          hint: 'Each business keeps its own books, catalogue and staff. A branch cannot be moved between businesses later.',
+        }))
+        : ui.h('div', { class: 'form-pairs' }, ui.field({
+          label: 'Business', name: 'business_label', span: true, disabled: true,
+          value: b.business_name || 'Its business',
+          hint: 'This branch belongs to that business and cannot be moved to another one.',
+        }));
+      appendBranchFeatures(form, {
+        values: b,
+        businessNode: businessField,
+        lockIdentity: !isNew && !SR.state.atLeast('OWNER'),
+        showActive: !isNew,
       });
-      form.appendChild(useHere);
 
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
       const go = ui.h('button', { class: 'btn btn-primary' }, isNew ? 'Open the branch' : 'Save changes');
       const m = ui.openModal({ title: isNew ? 'Open a branch' : b.name, body: form, footer: [cancel, go], size: 'wide' });
 
       go.addEventListener('click', async () => {
-        const v = ui.readFormStrings(form);
+        const v = ui.readForm(form);
         const payload = {};
         for (const [k, val] of Object.entries(v)) {
-          if (val === null) continue;
-          if (['latitude', 'longitude'].includes(k)) { payload[k] = Number(val); continue; }
-          if (['geofence_radius_meters', 'opening_cash'].includes(k)) { payload[k] = Number(val); continue; }
+          if (k === 'business_label') continue;
+          if (k === 'code' && (val === null || val === '')) continue;
+          if (k === 'is_active') { payload[k] = Boolean(Number(val)); continue; }
+          if (['latitude', 'longitude', 'geofence_radius_meters', 'opening_cash'].includes(k)) {
+            payload[k] = val === null ? null : Number(val);
+            continue;
+          }
           payload[k] = val;
         }
         await ui.withBusy(form, async () => {
           try {
-            const res = isNew
-              ? await SR.api.post('/api/branches', payload)
-              : await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, payload);
+            let res;
+            try {
+              res = isNew
+                ? await SR.api.post('/api/branches', payload)
+                : await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, payload);
+            } catch (err) {
+              if (!isNew && err && err.code === 'BRANCH_HAS_STAFF') {
+                const ok = await ui.confirmDialog({
+                  title: 'Close this branch?',
+                  message: err.message || 'Staff are still assigned here.',
+                  confirmLabel: 'Close the branch',
+                  danger: true,
+                });
+                if (!ok) return;
+                res = await SR.api.put(`/api/branches/${encodeURIComponent(b.id)}`, { ...payload, confirm_deactivate: true });
+              } else {
+                throw err;
+              }
+            }
             m.close();
             ui.ok(res.message || 'Saved.');
             // THE SHELL CACHES BRANCHES FOR FIVE MINUTES. Without this, Add someone — opened
@@ -423,7 +476,7 @@
       const isNew = !business;
       const b = business || {};
       const form = ui.h('div', {});
-      form.appendChild(ui.h('div', { class: 'form-grid' },
+      form.appendChild(ui.h('div', { class: 'form-pairs' },
         ui.field({ label: 'Trading name', name: 'name', value: b.name || '', required: true, placeholder: 'Emeka Electronics' }),
         ui.field({ label: 'Registered (legal) name', name: 'legal_name', value: b.legal_name || '', hint: 'The name on the CAC certificate. Appears on invoices and returns.' }),
         ui.field({ label: 'CAC number', name: 'cac_reg_no', value: b.cac_reg_no || '', placeholder: 'RC 1234567' }),
@@ -441,7 +494,7 @@
       if (!isNew) {
         const billed = Boolean(b.profile && b.profile.features && b.profile.features.billBeforeReceipt);
         form.appendChild(ui.h('h2', {}, 'How goods leave'));
-        form.appendChild(ui.h('div', { class: 'form-grid' }, ui.field({
+        form.appendChild(ui.h('div', { class: 'form-pairs' }, ui.field({
           label: 'Bill, then receipt, then release',
           name: 'bill_before_receipt',
           type: 'checkbox',
@@ -486,8 +539,9 @@
       if (isNew) {
         form.appendChild(ui.h('h2', {}, 'Vertical'));
         form.appendChild(ui.h('p', { class: 'sub' }, 'The vertical decides the categories, the unit ladders, the compliance records (SONCAP / SON) and the warranty rules the starter catalogue is built from. It cannot be changed once the business has products.'));
-        form.appendChild(ui.h('div', { class: 'form-grid' }, ui.field({
+        form.appendChild(ui.h('div', { class: 'form-pairs' }, ui.field({
           label: 'What kind of business is it',
+          span: true,
           name: 'profile_code',
           required: true,
           options: [{ value: '', label: 'Loading the verticals…' }],
@@ -496,11 +550,9 @@
         form.appendChild(dispatchHost);
         form._paintDispatch = (row) => paintDispatch(dispatchHost, row && row.dispatchModes);
         form.appendChild(ui.h('h2', {}, 'First branch'));
-        form.appendChild(ui.h('div', { class: 'form-grid' },
-          ui.field({ label: 'Branch name', name: 'branch_name', placeholder: 'Main shop' }),
-          ui.field({ label: 'City', name: 'branch_city' }),
-          ui.field({ label: 'State', name: 'branch_state' }),
-          ui.field({ label: 'Opening float (₦)', name: 'opening_cash', type: 'number', step: '0.01', min: '0' }),
+        form.appendChild(ui.h('p', { class: 'sub' }, 'Left blank, the address, phone and email follow the business above. You can change any of them later, in the same places, when you edit the branch.'));
+        appendBranchFeatures(form, { prefix: 'branch_', values: { name: '', geofence_radius_meters: 150, attendance_mode: 'GEOLOCATION', branch_type: 'RETAIL' } });
+        form.appendChild(ui.h('div', { class: 'form-pairs' },
           ui.field({ label: 'Build the starter catalogue', name: 'seed_catalogue', type: 'checkbox', value: 1, span: true, hint: 'Takes the profile\'s sample products, ladders and barcodes. Turn it off for an empty catalogue you fill yourself.' })));
       }
 
@@ -535,9 +587,19 @@
                 dispatch_modes: form.querySelector('[name="dispatch_class_1"]') ? readDispatch(v) : undefined,
                 branch: {
                   name: v.branch_name || undefined,
+                  code: v.branch_code || undefined,
+                  branch_type: v.branch_branch_type || undefined,
+                  address: v.branch_address || v.address || undefined,
                   city: v.branch_city || undefined,
                   state: v.branch_state || undefined,
-                  opening_cash: v.opening_cash === null ? 0 : Number(v.opening_cash),
+                  lga: v.branch_lga || undefined,
+                  phone: v.branch_phone || v.contact_phone || undefined,
+                  email: v.branch_email || v.contact_email || undefined,
+                  opening_cash: v.branch_opening_cash === null ? 0 : Number(v.branch_opening_cash),
+                  latitude: v.branch_latitude,
+                  longitude: v.branch_longitude,
+                  geofence_radius_meters: v.branch_geofence_radius_meters === null ? 150 : Number(v.branch_geofence_radius_meters),
+                  attendance_mode: v.branch_attendance_mode || undefined,
                 },
               });
               m.close();

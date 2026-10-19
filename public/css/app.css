@@ -565,6 +565,14 @@ table.data tr.row-bad td { background: var(--red-100); }
 .form-grid .span-2 { grid-column: span 2; }
 .form-grid .span-all { grid-column: 1 / -1; }
 @media (max-width: 560px) { .form-grid .span-2 { grid-column: span 1; } }
+/* Two columns, same order on create and edit, so a field does not jump
+   sideways when the modal is wide enough for a third column. */
+.form-pairs { display: grid; gap: 13px 16px; grid-template-columns: 1fr 1fr; align-items: start; }
+.form-pairs > .span-2, .form-pairs > .span-all { grid-column: 1 / -1; }
+@media (max-width: 560px) {
+  .form-pairs { grid-template-columns: 1fr; }
+  .form-pairs > .span-2 { grid-column: auto; }
+}
 input[type="text"], input[type="number"], input[type="date"], input[type="search"], input[type="tel"], input[type="email"], input[type="password"], input[type="datetime-local"], select, textarea {
   width: 100%; padding: 9px 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
   background: var(--surface); font-size: .9rem; min-height: 40px;

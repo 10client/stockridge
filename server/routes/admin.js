@@ -47,6 +47,95 @@ const { sellingPolicy } = require('../../domain/settlement');
 const { normaliseModes, modesFromOverrides } = require('../../domain/dispatch');
 const { ensureFleet } = require('./dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
+const { coordinatesArePlausible } = require('../../domain/geofence');
+
+const BRANCH_TYPES = ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'];
+const ATTENDANCE_MODES = ['GEOLOCATION', 'REGISTERED_DEVICE'];
+
+function branchCodeFromName(name) {
+  return (String(name || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'BR').toUpperCase();
+}
+
+/**
+ * The same coordinate rule on the first branch and on a later edit.
+ * Both blank is "not placed". One blank is not a place. (0, 0) is an unset GPS.
+ */
+function readCoordinates(body) {
+  const latRaw = body.latitude;
+  const lngRaw = body.longitude;
+  const latBlank = latRaw == null || String(latRaw).trim() === '';
+  const lngBlank = lngRaw == null || String(lngRaw).trim() === '';
+  if (latBlank && lngBlank) return { lat: null, lng: null };
+  if (latBlank || lngBlank) {
+    throw new HttpError('A branch needs BOTH a latitude and a longitude, or neither. One without the other cannot place it.', { status: 400, code: 'INCOMPLETE_COORDINATES' });
+  }
+  const lat = Number(latRaw);
+  const lng = Number(lngRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    throw new HttpError('A branch needs BOTH a latitude and a longitude, or neither. One without the other cannot place it.', { status: 400, code: 'INCOMPLETE_COORDINATES' });
+  }
+  if (lat === 0 && lng === 0) {
+    throw new HttpError('(0, 0) is where an unset GPS reports, not where a branch is. Leave both blank, or send both as null, to leave the pin unset.', { status: 400, code: 'IMPLAUSIBLE_COORDINATES' });
+  }
+  const plausibility = coordinatesArePlausible(lat, lng);
+  if (!plausibility.plausible) {
+    throw new HttpError(`(${lat}, ${lng}) is not a plausible position: ${plausibility.reason} Latitude is -90..90, longitude -180..180 — check they are not swapped.`, { status: 400, code: 'IMPLAUSIBLE_COORDINATES' });
+  }
+  return { lat, lng };
+}
+
+async function branchCodeTaken(db, code, exceptId = null) {
+  return exceptId
+    ? db.first('SELECT id, name FROM branches WHERE code = ? AND is_deleted = 0 AND id <> ?', [code, exceptId])
+    : db.first('SELECT id, name FROM branches WHERE code = ? AND is_deleted = 0', [code]);
+}
+
+/**
+ * ONE reading of a branch, used when a business is created and when a branch
+ * is opened on its own. The columns, the defaults and the refusals match.
+ */
+async function readBranchColumns(db, body, { nameFallback = null, exceptId = null, suffixIfTaken = false } = {}) {
+  const name = strField(body.name, { field: 'Branch name', maxLength: 120, required: !nameFallback }) || nameFallback;
+  if (!name) throw new HttpError('Branch name is required.', { status: 400, code: 'MISSING_FIELD', fields: { name: 'Branch name is required.' } });
+  const typedCode = strField(body.code, { field: 'Branch code', maxLength: 20 });
+  let code = (typedCode || branchCodeFromName(name)).toUpperCase();
+  const taken = await branchCodeTaken(db, code, exceptId);
+  if (taken && typedCode) {
+    throw new HttpError(`Branch code ${code} is already used by ${taken.name}. Codes appear on receipt numbers and transfer references, so they must be unique.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
+  }
+  if (taken && !suffixIfTaken) {
+    throw new HttpError(`Branch code ${code} is already used by ${taken.name}. Codes appear on receipt numbers and transfer references, so they must be unique.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
+  }
+  if (taken && suffixIfTaken) {
+    let n = 2;
+    let candidate = code;
+    while (await branchCodeTaken(db, candidate, exceptId)) {
+      const suffix = String(n);
+      candidate = (code.slice(0, Math.max(1, 20 - suffix.length)) + suffix).toUpperCase();
+      n += 1;
+      if (n > 40) {
+        throw new HttpError(`Branch code ${code} is already used. Give this branch its own code.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
+      }
+    }
+    code = candidate;
+  }
+  const coords = readCoordinates(body);
+  return {
+    name, code,
+    branch_type: valid(oneOf(body.branch_type || 'RETAIL', BRANCH_TYPES, { field: 'Branch type' }), 'branch_type'),
+    address: strField(body.address, { field: 'Address', maxLength: 300 }),
+    city: strField(body.city, { field: 'City', maxLength: 80 }),
+    state: strField(body.state, { field: 'State', maxLength: 80 }),
+    lga: strField(body.lga, { field: 'LGA', maxLength: 80 }),
+    phone: strField(body.phone, { field: 'Phone', maxLength: 40 }),
+    email: strField(body.email, { field: 'Email', maxLength: 160 }),
+    latitude: coords.lat,
+    longitude: coords.lng,
+    geofence_radius_meters: numField(body.geofence_radius_meters ?? 150, { field: 'Fence radius', min: 0, max: 50000, whole: true }),
+    attendance_mode: valid(oneOf(body.attendance_mode || 'GEOLOCATION', ATTENDANCE_MODES, { field: 'Attendance mode' }), 'attendance_mode'),
+    opening_cash: numField(body.opening_cash, { field: 'Opening float', min: 0 }),
+  };
+}
 const provisioning = require('../services/provisioningService');
 
 
@@ -235,29 +324,27 @@ function mount(app, base = '/api') {
     // branch-scoped. So the first branch is created with the business, in the
     // same request, unless the caller explicitly says not to.
     let branchId = null;
+    let branchRow = null;
     if (body.branch !== false) {
-      const b = body.branch || {};
+      const b = { ...(body.branch || {}) };
+      // Left blank, the first branch follows the business just typed, so the
+      // shop and the books do not open with two different addresses.
+      if (!b.address) b.address = body.address;
+      if (!b.phone) b.phone = body.contact_phone;
+      if (!b.email) b.email = body.contact_email;
+      branchRow = await readBranchColumns(db, b, {
+        nameFallback: `${name} — Main`,
+        suffixIfTaken: !strField(b.code, { field: 'Branch code', maxLength: 20 }),
+      });
       branchId = newId();
-      const bLat = b.latitude != null && String(b.latitude) !== '' ? Number(b.latitude) : null;
-      const bLng = b.longitude != null && String(b.longitude) !== '' ? Number(b.longitude) : null;
-      const bCode = (strField(b.code, { field: 'Branch code', maxLength: 20 }) || 'MAIN').toUpperCase();
       await db.run(`INSERT INTO branches (
-          id, business_id, name, code, branch_type, address, city, state, lga, phone,
+          id, business_id, name, code, branch_type, address, city, state, lga, phone, email,
           latitude, longitude, geofence_radius_meters, attendance_mode, opening_cash, is_active, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
         branchId, id,
-        strField(b.name, { field: 'Branch name', maxLength: 120 }) || `${name} — Main`,
-        bCode,
-        valid(oneOf(b.branch_type || 'RETAIL', ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'], { field: 'Branch type' }), 'branch_type'),
-        strField(b.address, { field: 'Branch address', maxLength: 300 }),
-        strField(b.city, { field: 'City', maxLength: 80 }),
-        strField(b.state, { field: 'State', maxLength: 80 }),
-        strField(b.lga, { field: 'LGA', maxLength: 80 }),
-        strField(b.phone, { field: 'Branch phone', maxLength: 40 }),
-        bLat, bLng,
-        numField(b.geofence_radius_meters ?? 150, { field: 'Fence radius', min: 0, max: 50000, whole: true }),
-        valid(oneOf(b.attendance_mode || 'GEOLOCATION', ['GEOLOCATION', 'REGISTERED_DEVICE'], { field: 'Attendance mode' }), 'attendance_mode'),
-        numField(b.opening_cash, { field: 'Opening float', min: 0 }),
+        branchRow.name, branchRow.code, branchRow.branch_type, branchRow.address, branchRow.city, branchRow.state, branchRow.lga,
+        branchRow.phone, branchRow.email, branchRow.latitude, branchRow.longitude, branchRow.geofence_radius_meters,
+        branchRow.attendance_mode, branchRow.opening_cash,
       ]);
     } else {
       branchId = body.branch_id ? String(body.branch_id) : null;
@@ -434,45 +521,19 @@ function mount(app, base = '/api') {
     }
     await assertCanCreateBranch(db, settings, business.id);
 
-    const name = strField(requireVal(body, 'name'), { field: 'Branch name', maxLength: 120, required: true });
-    const code = (strField(body.code, { field: 'Branch code', maxLength: 20 }) || name.replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'BR').toUpperCase();
-    const dupe = await db.first('SELECT id, name FROM branches WHERE code = ? AND is_deleted = 0', [code]);
-    if (dupe) throw new HttpError(`Branch code ${code} is already used by ${dupe.name}. Codes appear on receipt numbers and transfer references, so they must be unique.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
-
-    const lat = body.latitude != null ? Number(body.latitude) : null;
-    const lng = body.longitude != null ? Number(body.longitude) : null;
-    const { coordinatesArePlausible } = require('../../domain/geofence');
-    // `coordinatesArePlausible` returns an OBJECT ({ plausible, suspect, reason }).
-    // Testing it directly — `if (!coordinatesArePlausible(...))` — is always
-    // false, so this guard accepted every value it was ever given, including the
-    // swapped pairs and unset-GPS (0,0) readings it exists to reject. Three call
-    // sites had the same mistake; all four are now checked by tests.
-    if (lat !== null || lng !== null) {
-      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-        throw new HttpError('A branch needs BOTH a latitude and a longitude, or neither. One without the other cannot place it.', { status: 400, code: 'INCOMPLETE_COORDINATES' });
-      }
-      const plausibility = coordinatesArePlausible(lat, lng);
-      if (!plausibility.plausible) {
-        throw new HttpError(`(${lat}, ${lng}) is not a plausible position: ${plausibility.reason} Latitude is -90..90, longitude -180..180 — check they are not swapped.`, { status: 400, code: 'IMPLAUSIBLE_COORDINATES' });
-      }
-    }
-    const radius = numField(body.geofence_radius_meters ?? 150, { field: 'Fence radius', min: 0, max: 50000, whole: true });
+    const row = await readBranchColumns(db, body, { nameFallback: null, suffixIfTaken: false });
     const id = newId();
+    const { name, code } = row;
+    const lat = row.latitude;
+    const radius = row.geofence_radius_meters;
     await db.run(`INSERT INTO branches (
         id, business_id, name, code, branch_type, address, city, state, lga, phone, email,
         latitude, longitude, geofence_radius_meters, attendance_mode, opening_cash, is_active, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, ?, 1, datetime('now'), datetime('now'))`, [
-      id, String(business.id), name, code,
-      valid(oneOf(body.branch_type || 'RETAIL', ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'], { field: 'Branch type' }), 'branch_type'),
-      strField(body.address, { field: 'Address', maxLength: 300 }),
-      strField(body.city, { field: 'City', maxLength: 80 }),
-      strField(body.state, { field: 'State', maxLength: 80 }),
-      strField(body.lga, { field: 'LGA', maxLength: 80 }),
-      strField(body.phone, { field: 'Phone', maxLength: 40 }),
-      strField(body.email, { field: 'Email', maxLength: 160 }),
-      lat, lng, radius,
-      valid(oneOf(body.attendance_mode || 'GEOLOCATION', ['GEOLOCATION', 'REGISTERED_DEVICE'], { field: 'Attendance mode' }), 'attendance_mode'),
-      numField(body.opening_cash, { field: 'Opening float', min: 0 }),
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 1, datetime('now'), datetime('now'))`, [
+      id, String(business.id),
+      row.name, row.code, row.branch_type, row.address, row.city, row.state, row.lga,
+      row.phone, row.email, row.latitude, row.longitude, row.geofence_radius_meters,
+      row.attendance_mode, row.opening_cash,
     ]);
 
     // A new branch starts with NO stock: it does not inherit another branch's
@@ -520,27 +581,16 @@ function mount(app, base = '/api') {
     }
     if (isOwner) {
       if (body.latitude !== undefined || body.longitude !== undefined) {
-        const { coordinatesArePlausible } = require('../../domain/geofence');
-        const lat = body.latitude != null ? Number(body.latitude) : Number(branch.latitude);
-        const lng = body.longitude != null ? Number(body.longitude) : Number(branch.longitude);
-        // Same object-vs-boolean mistake as the create route: read `.plausible`.
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
-          throw new HttpError('A branch needs BOTH a latitude and a longitude, or neither. Clearing the pin is done by sending both as null.', { status: 400, code: 'INCOMPLETE_COORDINATES' });
-        }
-        if (lat !== 0 || lng !== 0) {
-          const plausibility = coordinatesArePlausible(lat, lng);
-          if (!plausibility.plausible) {
-            throw new HttpError(`(${lat}, ${lng}) is not a plausible position: ${plausibility.reason}`, { status: 400, code: 'IMPLAUSIBLE_COORDINATES' });
-          }
-        } else {
-          throw new HttpError('(0, 0) is where an unset GPS reports, not where a branch is. Send both coordinates as null to clear the pin.', { status: 400, code: 'IMPLAUSIBLE_COORDINATES' });
-        }
-        sets.push('latitude = ?', 'longitude = ?'); params.push(lat || null, lng || null);
+        const coords = readCoordinates({
+          latitude: body.latitude !== undefined ? body.latitude : branch.latitude,
+          longitude: body.longitude !== undefined ? body.longitude : branch.longitude,
+        });
+        sets.push('latitude = ?', 'longitude = ?'); params.push(coords.lat, coords.lng);
       }
       if (body.geofence_radius_meters !== undefined) { sets.push('geofence_radius_meters = ?'); params.push(numField(body.geofence_radius_meters, { field: 'Fence radius', min: 0, max: 50000, whole: true })); }
-      if (body.attendance_mode !== undefined) { sets.push('attendance_mode = ?'); params.push(valid(oneOf(body.attendance_mode, ['GEOLOCATION', 'REGISTERED_DEVICE'], { field: 'Attendance mode' }), 'attendance_mode')); }
+      if (body.attendance_mode !== undefined) { sets.push('attendance_mode = ?'); params.push(valid(oneOf(body.attendance_mode, ATTENDANCE_MODES, { field: 'Attendance mode' }), 'attendance_mode')); }
       if (body.opening_cash !== undefined) { sets.push('opening_cash = ?'); params.push(numField(body.opening_cash, { field: 'Opening float', min: 0 })); }
-      if (body.branch_type !== undefined) { sets.push('branch_type = ?'); params.push(valid(oneOf(body.branch_type, ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'], { field: 'Branch type' }), 'branch_type')); }
+      if (body.branch_type !== undefined) { sets.push('branch_type = ?'); params.push(valid(oneOf(body.branch_type, BRANCH_TYPES, { field: 'Branch type' }), 'branch_type')); }
       if (body.is_active !== undefined) {
         const active = boolField(body.is_active, 1);
         if (!active) {
