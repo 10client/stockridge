@@ -676,23 +676,49 @@ function mount(app, base = '/api') {
     }
     const acquiredAt = dateField(body.acquired_at || body.acquiredAt, 'Date gotten');
     const price = numField(body.purchase_price != null ? body.purchase_price : body.price, { field: 'Price', min: 0 });
+    const paidNow = Boolean(body.paid_now || body.paidNow);
+    const payMethod = String(body.payment_method || body.paymentMethod || 'BANK_TRANSFER').toUpperCase();
+    if (paidNow && price > 0 && !branch) {
+      throw new HttpError('Pick the branch whose money paid for this machine. The price has to land on that set of books.', { status: 400, code: 'BRANCH_REQUIRED' });
+    }
+    if (paidNow && !['CASH', 'BANK_TRANSFER', 'POS_TERMINAL', 'MOBILE_MONEY'].includes(payMethod)) {
+      throw new HttpError('Say how the machine was paid for.', { status: 400, code: 'PAYMENT_METHOD' });
+    }
     const id = newId();
-    await db.run(`INSERT INTO plant_assets (
-        id, business_id, branch_id, name, kind, acquired_at, purchase_price, supplier_name, serial_no, notes, created_by, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
-      id, String(business.id), branch ? String(branch.id) : null, name, kind, acquiredAt, price,
-      strField(body.supplier_name, { field: 'Where it was gotten', maxLength: 160 }),
-      strField(body.serial_no, { field: 'Serial number', maxLength: 80 }),
-      strField(body.notes, { field: 'Notes', maxLength: 500 }),
-      String(user.id),
-    ]);
+    await db.transaction(async (tx) => {
+      tx.queue(`INSERT INTO plant_assets (
+          id, business_id, branch_id, name, kind, acquired_at, purchase_price, supplier_name, serial_no, notes, created_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`, [
+        id, String(business.id), branch ? String(branch.id) : null, name, kind, acquiredAt, price,
+        strField(body.supplier_name, { field: 'Where it was gotten', maxLength: 160 }),
+        strField(body.serial_no, { field: 'Serial number', maxLength: 80 }),
+        strField(body.notes, { field: 'Notes', maxLength: 500 }),
+        String(user.id),
+      ]);
+      if (paidNow && price > 0) {
+        const accountIds = await glService.loadAccountCodes(db, business.id);
+        const cash = payMethod === 'CASH' ? '1000' : payMethod === 'POS_TERMINAL' ? '1030' : payMethod === 'MOBILE_MONEY' ? '1040' : '1020';
+        for (const statement of glService.buildEntry({
+          businessId: business.id, branchId: branch.id, entryDate: watToday(),
+          sourceType: 'PURCHASE', sourceId: id,
+          description: `${name} gotten ${acquiredAt}. The money left today.`,
+          postedBy: user.id, accountIds,
+          lines: [
+            { accountCode: '1500', debit: price, description: name },
+            { accountCode: cash, credit: price, description: 'Paid for the machine or tool' },
+          ],
+        })) tx.queue(statement.sql, statement.params);
+      }
+    });
     await recordFromCtx(ctx, {
       action: 'PLANT_ASSET_ADDED', entityType: 'PLANT_ASSET', entityId: id, businessId: business.id,
       after: { name, kind, acquiredAt, price },
     });
     ctx.json({
       ok: true, id,
-      message: `${name} is on the plant. Gotten ${acquiredAt} for ₦${price.toLocaleString('en-NG')}. Repairs you record against it add up on this machine, not in a separate book.`,
+      message: paidNow && price > 0
+        ? `${name} is on the plant, and ₦${price.toLocaleString('en-NG')} is on the books as equipment. Repairs add to this machine, on the same ledger.`
+        : `${name} is on the plant. Gotten ${acquiredAt} for ₦${price.toLocaleString('en-NG')}. That price stays on the register. It is not posted again, because the money did not leave today. Repairs you record against it do.`,
     }, 201);
   }));
 
@@ -926,6 +952,7 @@ function mount(app, base = '/api') {
         for (const st of glService.postAdjustmentStatements({
           adjustment: { id, adjustment_type: 'OTHER', quantity: -take.take, total_value: -value, reason },
           business: { id: business.id }, branch: { id: branch.id }, accountIds, user,
+          accountCode: '5000',
         })) tx.queue(st.sql, st.params);
       }
     });
@@ -935,7 +962,7 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true,
-      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} taken for production at ${branch.name}. The oldest stock went first. It is the same stock book, not a recipe.`,
+      message: `${quantity.toLocaleString('en-NG')} ${product.base_unit_name || ''} of ${product.name} taken for production at ${branch.name}. The oldest stock went first. The cost is on cost of goods, not a sundry write-off, and it is the same stock book.`,
     });
   }));
 

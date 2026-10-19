@@ -815,14 +815,21 @@
 
   function addAsset(after) {
     const wrapEl = ui.h('div', {});
-    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Name the machine or tool this plant has. The date and the price are what was paid when it was gotten. That price stays on the register. It is not posted as a purchase today. Do not guess a market price.'));
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Name the machine or tool. The date and the price are what was paid when it was gotten. Do not guess a market price. Tick the money only if it is leaving today — an old machine stays on the register and is not posted again into this month.'));
     wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
       ui.field({ label: 'Name', name: 'name', required: true, placeholder: 'Sachet filler, oven, UV lamp' }),
       ui.field({ label: 'Kind', name: 'kind', value: 'MACHINE', options: [{ value: 'MACHINE', label: 'Machine' }, { value: 'TOOL', label: 'Tool' }] }),
       ui.field({ label: 'Date gotten', name: 'acquired_at', type: 'date', required: true }),
       ui.field({ label: 'Price paid (₦)', name: 'purchase_price', type: 'number', step: '0.01', min: '0', required: true }),
       ui.field({ label: 'Where it was gotten', name: 'supplier_name', placeholder: 'Optional' }),
-      ui.field({ label: 'Serial number', name: 'serial_no', placeholder: 'Optional' })));
+      ui.field({ label: 'Serial number', name: 'serial_no', placeholder: 'Optional' }),
+      ui.field({ label: 'The money is leaving today', name: 'paid_now', type: 'checkbox', value: 0, hint: 'Posts the price to equipment on these books. Leave it off for a machine gotten earlier.' }),
+      ui.field({ label: 'Paid from', name: 'payment_method', value: 'BANK_TRANSFER', options: [
+        { value: 'BANK_TRANSFER', label: 'Bank' },
+        { value: 'CASH', label: 'Cash' },
+        { value: 'POS_TERMINAL', label: 'POS' },
+        { value: 'MOBILE_MONEY', label: 'Mobile money' },
+      ] })));
     const m = ui.openModal({
       title: 'Add a machine or tool',
       body: wrapEl,
@@ -844,6 +851,8 @@
                 purchase_price: Number(v.purchase_price),
                 supplier_name: v.supplier_name || null,
                 serial_no: v.serial_no || null,
+                paid_now: Number(v.paid_now) ? true : false,
+                payment_method: v.payment_method || 'BANK_TRANSFER',
                 branch_id: SR.state.activeBranchId,
               }, { query: SR.state.query({}) });
               ui.ok(res.message || 'Recorded.');

@@ -595,7 +595,7 @@ async function prepare(db, {
     }
 
     // ---- authority to charge a manual price
-    if (pricing.source === 'MANUAL') {
+    if (pricing.source === 'MANUAL' && !line.buyout) {
       const priceCheck = canDiscount(settings, user, { discountPct: 0 });
       if (!priceCheck.allowed && String(user.role).toUpperCase() !== 'MANAGER' && String(user.role).toUpperCase() !== 'OWNER') {
         problems.push({ line: i, code: 'MANUAL_PRICE_NOT_ALLOWED', message: `${position}: only a manager or the owner can type a price at the counter. ${priceCheck.reason || ''}` });
@@ -807,7 +807,7 @@ async function prepare(db, {
  * three places (prepare, complete, and the offline-queue replay validation),
  * and three copies of fiddly rules is three chances to get one wrong.
  */
-function validatePayments({ payments, totals, saleType, isCredit, settings, user, customer, creditInfo, changeOwed = 0, depositHeld = 0 }) {
+function validatePayments({ payments, totals, saleType, isCredit, settings, user, customer, creditInfo, changeOwed = 0, depositHeld = 0, depositApplied = 0 }) {
   const legs = Array.isArray(payments) ? payments.filter((p) => p && Number(p.amount) > 0) : [];
   const out = [];
   let sum = 0;
@@ -929,7 +929,8 @@ function validatePayments({ payments, totals, saleType, isCredit, settings, user
     // A non-credit sale may not carry a credit leg at all (enforced above), so
     // everything received is real money and must cover the total plus whatever
     // change the till owes back.
-    const expected = round2(totals.total + held + owed);
+    const appliedDeposit = round2(Math.max(0, Number(depositApplied) || 0));
+    const expected = round2(totals.total + held + owed - appliedDeposit);
     if (cashSum + tolerance < expected) {
       throw err(
         `This sale totals \u20a6${totals.total.toLocaleString('en-NG')}${owed > 0 ? ` plus \u20a6${owed.toLocaleString('en-NG')} change owed` : ''} but only \u20a6${cashSum.toLocaleString('en-NG')} of payment is recorded \u2014 \u20a6${round2(expected - cashSum).toLocaleString('en-NG')} short. Add the remaining payment, or record it as a credit sale if the customer is paying later.`,
@@ -1217,9 +1218,34 @@ async function complete(db, params) {
   const claimRedeemed = changeOwed > 0 && Boolean(claimAlreadyRedeemed);
 
 
+  // A buyout is a sale of a unit that is already out. The deposit was credited
+  // to 2220 when it was taken. It has to leave that liability now, or the
+  // books still say the customer’s money is held after they have bought the unit.
+  const buyoutIds = [...new Set(prepared.lines.filter((line) => line.buyout && line.agreementId).map((line) => String(line.agreementId)))];
+  let depositApplied = 0;
+  let buyoutDeposits = [];
+  if (buyoutIds.length) {
+    buyoutDeposits = await db.all(
+      `SELECT id, deposit_held, deposit_method FROM asset_agreements
+        WHERE is_deleted = 0 AND status = 'OUT' AND id IN (${buyoutIds.map(() => '?').join(',')})`,
+      buyoutIds,
+    );
+    const held = round2(buyoutDeposits.reduce((sum, row) => sum + Number(row.deposit_held || 0), 0));
+    const total = round2(prepared.totals.total);
+    depositApplied = round2(Math.min(held, total));
+    const dueNow = round2(Math.max(0, total - depositApplied));
+    if (held > 0 && Math.abs(tenderedPreview - dueNow) > 0.05) {
+      throw err(
+        `This buyout is ₦${total.toLocaleString('en-NG')}. ₦${held.toLocaleString('en-NG')} is already held as a deposit, so take ₦${dueNow.toLocaleString('en-NG')} now. The deposit comes off the liability and is not taken again.`,
+        'BUYOUT_DEPOSIT',
+      );
+    }
+  }
+
   const paymentResult = validatePayments({
     payments, totals, saleType: prepared.saleType, isCredit, settings, user, customer, creditInfo, changeOwed,
     depositHeld: prepared.depositDue || 0,
+    depositApplied,
   });
 
   // ---- till check
@@ -1577,8 +1603,21 @@ async function complete(db, params) {
     }
     for (const line of prepared.lines) {
       if (!line.buyout || !line.agreementId) continue;
-      tx.queue(`UPDATE asset_agreements SET status = 'BOUGHT_OUT', bought_out_sale_id = ?, updated_at = datetime('now')
+      tx.queue(`UPDATE asset_agreements SET status = 'BOUGHT_OUT', bought_out_sale_id = ?, deposit_held = 0, updated_at = datetime('now')
                 WHERE id = ? AND status = 'OUT' AND is_deleted = 0`, [saleId, String(line.agreementId)]);
+    }
+    const heldOnBuyout = round2(buyoutDeposits.reduce((sum, row) => sum + Number(row.deposit_held || 0), 0));
+    let refundLeft = round2(heldOnBuyout - depositApplied);
+    for (const row of buyoutDeposits) {
+      if (refundLeft <= 0) break;
+      const give = round2(Math.min(Number(row.deposit_held) || 0, refundLeft));
+      if (give <= 0) continue;
+      for (const statement of glService.postHeldDeposit({
+        business, branch, agreementId: row.id, amount: give,
+        method: row.deposit_method || 'CASH', user, accountIds, releasing: true,
+        description: 'Deposit paid back. The buyout price was less than the deposit held.',
+      })) tx.queue(statement.sql, statement.params);
+      refundLeft = round2(refundLeft - give);
     }
 
     // ---- payment legs
@@ -1717,6 +1756,7 @@ async function complete(db, params) {
       saleId, business, branch, totals, vat, payments: revenueLegs,
       lines: prepared.lines, isCredit, balanceDue: paymentResult.balanceDue,
       changeOwed, user, receiptNo, customer, accountIds,
+      depositApplied,
     });
     for (const s of glStatements) tx.queue(s.sql, s.params);
 

@@ -310,10 +310,19 @@
     }
 
     // --------------------------------------------------------- commission
+    async function postCommission() {
+      try {
+        const result = await SR.api.post('/api/reports/commission/post', {}, { query: scoped({}) });
+        ui.ok(result.message || 'Commission is on the books.');
+      } catch (err) { ui.apiError(err); }
+    }
+
     function renderCommission(data) {
       host.replaceChildren(ui.h('div', { class: 'stack' },
         ui.h('div', { class: 'alert alert-info' },
           'Commission is calculated on NET revenue — the money the business actually earned. Paying a percentage of the gross figure would be paying staff out of VAT that was never the business\'s to keep.'),
+        SR.state.atLeast('OWNER') ? ui.h('div', { class: 'btn-row' },
+          ui.h('button', { class: 'btn btn-sm', onClick: () => postCommission() }, 'Put this commission on the books')) : null,
         ui.h('div', { class: 'kpis' },
           ui.kpi({ label: 'Commission earned', value: U.money((data.totals || {}).commission) }),
           ui.kpi({ label: 'Net revenue', value: U.money((data.totals || {}).revenue) })),

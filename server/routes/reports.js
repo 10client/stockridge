@@ -499,6 +499,61 @@ function mount(app, base = '/api') {
     });
   });
 
+  /**
+   * Put a period's commission on the books.
+   * The report is the calculation. This is the entry: wages expense, and
+   * wages payable, until it is paid. Posting it twice for the same period
+   * is refused.
+   */
+  app.post(`${base}/reports/commission/post`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'OWNER')) {
+      throw new HttpError('Only an owner puts commission on the books. It is a wage the business now owes.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    const business = await resolveBusiness(db, ctx);
+    const branch = await resolveBranch(db, ctx, { required: false });
+    const { from, to } = dateRange(ctx, { defaultDays: 30 });
+    const sourceId = `commission:${business.id}:${from}:${to}`;
+    const already = await db.first(
+      `SELECT id, total_debit FROM gl_journal_entries WHERE business_id = ? AND source_type = 'PAYROLL' AND source_id = ? AND is_deleted = 0`,
+      [String(business.id), sourceId],
+    );
+    if (already) {
+      throw new HttpError(`Commission for ${from} to ${to} is already on the books, ₦${Number(already.total_debit || 0).toLocaleString('en-NG')}. Paying it is a cash movement, not a second wage.`, { status: 409, code: 'ALREADY_POSTED' });
+    }
+    const rows = await db.all(`SELECT u.commission_rate_pct, COALESCE(SUM(s.total - s.vat_amount),0) AS net_revenue
+        FROM users u
+        LEFT JOIN sales s ON s.salesperson_id = u.id AND s.is_deleted = 0 AND s.status <> 'VOIDED' AND date(s.sold_at) BETWEEN ? AND ? AND s.business_id = ?
+        WHERE u.is_deleted = 0 AND u.business_id = ? AND u.role IN ('STAFF','MANAGER')
+        GROUP BY u.id`, [from, to, String(business.id), String(business.id)]);
+    const amount = round2(rows.reduce((sum, row) => sum + round2(Number(row.net_revenue) * (Number(row.commission_rate_pct) || 0) / 100), 0));
+    if (!(amount > 0)) {
+      throw new HttpError('There is no commission to post for this period. A rate of zero, or no sales, is not a wage.', { status: 409, code: 'NOTHING_TO_POST' });
+    }
+    const accountIds = await glService.loadAccountCodes(db, business.id);
+    await db.transaction(async (tx) => {
+      for (const statement of glService.buildEntry({
+        businessId: business.id,
+        branchId: branch ? branch.id : null,
+        entryDate: to,
+        sourceType: 'PAYROLL',
+        sourceId,
+        description: `Sales commission ${from} to ${to}`,
+        postedBy: user.id,
+        accountIds,
+        lines: [
+          { accountCode: '6010', debit: amount, description: 'Commission earned' },
+          { accountCode: '2300', credit: amount, description: 'Commission owed to staff' },
+        ],
+      })) tx.queue(statement.sql, statement.params);
+    });
+    ctx.json({
+      ok: true, amount, range: { from, to },
+      message: `₦${amount.toLocaleString('en-NG')} of commission for ${from} to ${to} is now wages on the books, owed until it is paid. It is not a second ledger.`,
+    }, 201);
+  });
+
   // -------------------------------------------------------------------
   // TARGETS
   // -------------------------------------------------------------------

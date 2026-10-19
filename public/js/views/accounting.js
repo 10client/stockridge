@@ -230,9 +230,21 @@
         }));
       }
       if ((data.byCategory || []).length) {
+        stack.appendChild(ui.dataCard({
+          title: 'Takings by shelf',
+          table: ui.renderTable({
+            columns: [
+              { key: 'category_name', label: 'Shelf', render: (r) => r.category_name || r.category_code || 'Uncategorised' },
+              { key: 'revenue_net_of_vat', label: 'Takings', align: 'right', render: (r) => U.money(r.revenue_net_of_vat) },
+            ],
+            rows: data.byCategory,
+            emptyTitle: 'No shelf takings',
+            emptyMessage: 'A sale posts each shelf on its own line. Provisions and fabrics do not share one figure.',
+          }),
+        }));
         stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
-          ui.h('h2', {}, 'Revenue by shelf category'),
-          ui.h('p', { class: 'sub' }, 'The same ledger, read by the shelf the goods were filed on. Analgesics and provisions stay separate under the two sides.'),
+          ui.h('h2', {}, 'The same shelves, as bars'),
+          ui.h('p', { class: 'sub' }, 'The same ledger lines. A shop that sells two kinds of goods can see which side earned the period.'),
           ui.bars((data.byCategory || []).map((c) => ({
             label: c.category_name || c.category || c.name || 'Uncategorised',
             value: c.revenue_net_of_vat != null ? c.revenue_net_of_vat : (c.revenue || c.amount || 0),

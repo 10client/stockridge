@@ -346,13 +346,16 @@ function mount(app, base = '/api') {
       businessId: String(business.id), startDate: from, endDate: to,
       branchId: branch && useBranch ? String(branch.id) : null,
     });
+    const pharmaProfile = String(business.profile_code || '').toUpperCase() === 'PHARMACEUTICAL';
+    const drugTakings = (bySellingGroup || []).some((row) => row.code === 'PHARMACEUTICALS' && (Number(row.revenue) || Number(row.cogs)));
+    const sellingBooks = pharmaProfile || drugTakings ? bySellingGroup : [];
     const rentalBooks = await glService.rentalBooks(db, {
       businessId: String(business.id), startDate: from, endDate: to,
       branchId: branch && useBranch ? String(branch.id) : null,
     });
     ctx.json({
       ok: true, range: { from, to }, scope: useBranch && branch ? { branch: branch.name } : { business: business.name },
-      ...pl, byCategory, bySellingGroup, rentalBooks,
+      ...pl, byCategory, bySellingGroup: sellingBooks, rentalBooks,
       commentary: pl.grossMarginPct != null
         ? `Gross margin is ${pl.grossMarginPct}% on ₦${round2(Number(pl.revenue || 0)).toLocaleString('en-NG')} of revenue for ${from} to ${to}.`
         : null,

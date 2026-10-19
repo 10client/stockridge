@@ -65,9 +65,99 @@
         ui.h('ul', {}, (detail.lines || []).map((l) => ui.h('li', {}, `${l.quantity} × ${l.product_name}`))));
       const footer = [ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Close')];
       if (a.status === 'OUT') {
+        if (a.kind === 'LEASE') footer.push(ui.h('button', { class: 'btn', onClick: () => takeRent(a, detail, m) }, 'Take this month’s rent'));
+        footer.push(ui.h('button', { class: 'btn', onClick: () => buyOut(a, detail, m) }, 'Customer is buying it'));
         footer.push(ui.h('button', { class: 'btn btn-primary', onClick: () => bringBack(a, m) }, 'Goods came back'));
       }
       const m = ui.openModal({ title: a.kind === 'LEASE' ? 'Lease' : 'Hire', body, footer, size: 'wide' });
+    }
+
+    async function askPay(title, amount) {
+      const method = await ui.promptDialog({
+        title,
+        label: `Type CASH or TRANSFER. Amount due is ${U.money(amount)}`,
+        value: 'CASH',
+        required: true,
+      });
+      if (!method) return null;
+      const word = String(method).trim().toUpperCase();
+      const code = word.startsWith('T') ? 'BANK_TRANSFER' : 'CASH';
+      let reference = null;
+      if (code !== 'CASH') {
+        reference = await ui.promptDialog({ title: 'Transfer reference', label: 'Alert code or reference', required: true });
+        if (!reference) return null;
+      }
+      return { method: code, amount: Number(amount) || 0, reference };
+    }
+
+    async function takeRent(agreement, detail, modal) {
+      const lines = detail.lines || [];
+      if (!lines.length) { ui.warn('This agreement has no goods on it.'); return; }
+      const amount = lines.reduce((sum, line) => sum + Number(line.rate || 0) * Number(line.quantity || 0), 0);
+      if (!(amount > 0)) { ui.warn('This lease has no monthly rent on its lines.'); return; }
+      const pay = await askPay('This month’s rent', amount);
+      if (!pay) return;
+      try {
+        const result = await SR.api.post('/api/sales', {
+          customer_id: agreement.customer_id || undefined,
+          sale_type: 'RETAIL',
+          lines: lines.map((line) => ({
+            product_id: line.product_id,
+            quantity: line.quantity,
+            unit_code: line.unit_code || undefined,
+            channel: 'LEASE',
+            continuation: true,
+            agreement_id: agreement.id,
+            rate: line.rate,
+            periods: 1,
+          })),
+          payments: amount > 0 ? [pay] : [],
+        });
+        ui.toast(result.message || 'Rent recorded.');
+        modal.close();
+        load();
+      } catch (err) { ui.apiError(err); }
+    }
+
+    async function buyOut(agreement, detail, modal) {
+      const lines = detail.lines || [];
+      if (!lines.length) { ui.warn('This agreement has no goods on it.'); return; }
+      const held = Number(agreement.deposit_held) || 0;
+      const typed = await ui.promptDialog({
+        title: 'Buyout price',
+        label: held > 0
+          ? `Price for the unit (₦). ${U.money(held)} of deposit is already held and comes off what you take now.`
+          : 'Price for the unit (₦)',
+        value: agreement.buyout_price != null ? String(agreement.buyout_price) : '',
+        required: true,
+      });
+      if (typed == null) return;
+      const price = Number(typed);
+      if (!(price > 0)) { ui.warn('The buyout price has to be more than zero.'); return; }
+      const due = Math.max(0, price - held);
+      const pay = due > 0 ? await askPay('Buyout', due) : null;
+      if (due > 0 && !pay) return;
+      const units = lines.reduce((sum, line) => sum + Number(line.quantity || 0), 0) || 1;
+      const each = price / units;
+      try {
+        const result = await SR.api.post('/api/sales', {
+          customer_id: agreement.customer_id || undefined,
+          sale_type: 'RETAIL',
+          lines: lines.map((line) => ({
+            product_id: line.product_id,
+            quantity: line.quantity || 1,
+            unit_code: line.unit_code || undefined,
+            channel: 'RETAIL',
+            buyout: true,
+            agreement_id: agreement.id,
+            manual_price: each,
+          })),
+          payments: due > 0 ? [pay] : [],
+        });
+        ui.toast(result.message || 'Buyout recorded. The unit has left the books.');
+        modal.close();
+        load();
+      } catch (err) { ui.apiError(err); }
     }
 
     async function bringBack(agreement, modal) {

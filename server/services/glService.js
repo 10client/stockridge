@@ -539,10 +539,12 @@ function postExpenseStatements({ expense, business, branch, user, accountIds, va
 }
 
 /** A stock adjustment (write-off or found stock). */
-function postAdjustmentStatements({ adjustment, business, branch, accountIds, user }) {
+function postAdjustmentStatements({ adjustment, business, branch, accountIds, user, accountCode = null }) {
   const value = round2(Math.abs(Number(adjustment.total_value) || 0));
   if (value <= 0) return [];
-  const writeOffAccount = ADJUSTMENT_ACCOUNTS[String(adjustment.adjustment_type || 'OTHER').toUpperCase()] || '6900';
+  // A caller may name the account. Production use is a cost of what will be
+  // sold, not a sundry write-off, and it still uses this same stock book.
+  const writeOffAccount = accountCode || ADJUSTMENT_ACCOUNTS[String(adjustment.adjustment_type || 'OTHER').toUpperCase()] || '6900';
   const removing = Number(adjustment.quantity) < 0;
   return buildEntry({
     businessId: business.id, branchId: branch.id, sourceType: 'STOCK_ADJUSTMENT', sourceId: adjustment.id,
@@ -550,7 +552,7 @@ function postAdjustmentStatements({ adjustment, business, branch, accountIds, us
     postedBy: user && user.id, accountIds,
     lines: removing
       ? [
-        { accountCode: writeOffAccount, debit: value, description: 'Stock written off' },
+        { accountCode: writeOffAccount, debit: value, description: accountCode ? (adjustment.reason || 'Stock used') : 'Stock written off' },
         { accountCode: '1100', credit: value, description: 'Inventory relieved' },
       ]
       : [
