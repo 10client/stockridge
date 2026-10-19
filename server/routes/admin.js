@@ -52,8 +52,36 @@ const { coordinatesArePlausible } = require('../../domain/geofence');
 const BRANCH_TYPES = ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'];
 const ATTENDANCE_MODES = ['GEOLOCATION', 'REGISTERED_DEVICE'];
 
+const CODE_FILLER = new Set(['HQ', 'MAIN', 'SHOP', 'BRANCH', 'THE', 'AND', 'OF', 'LTD', 'LIMITED']);
+
+/**
+ * A short code from the branch name. "ElecRidge HQ" becomes ELECRI, not MAIN.
+ * MAIN was a hardcoded default, and seven businesses sharing it made every
+ * delivery note and stock count look like the same shop.
+ */
 function branchCodeFromName(name) {
-  return (String(name || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 6) || 'BR').toUpperCase();
+  const words = String(name || '')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .map((word) => word.toUpperCase())
+    .filter((word) => word && !CODE_FILLER.has(word));
+  const source = words.join('') || String(name || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  return (source.slice(0, 6) || 'BR');
+}
+
+async function allocateBranchCode(db, preferred, { exceptId = null } = {}) {
+  const base = String(preferred || 'BR').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 20) || 'BR';
+  let code = base.slice(0, 6);
+  let n = 2;
+  while (await branchCodeTaken(db, code, exceptId)) {
+    const suffix = String(n);
+    code = base.slice(0, Math.max(1, 6 - suffix.length)) + suffix;
+    n += 1;
+    if (n > 40) {
+      throw new HttpError(`Branch code ${base} is already used. Give this branch its own code.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
+    }
+  }
+  return code;
 }
 
 /**
@@ -94,30 +122,20 @@ async function branchCodeTaken(db, code, exceptId = null) {
  * ONE reading of a branch, used when a business is created and when a branch
  * is opened on its own. The columns, the defaults and the refusals match.
  */
-async function readBranchColumns(db, body, { nameFallback = null, exceptId = null, suffixIfTaken = false } = {}) {
+async function readBranchColumns(db, body, { nameFallback = null, exceptId = null } = {}) {
   const name = strField(body.name, { field: 'Branch name', maxLength: 120, required: !nameFallback }) || nameFallback;
   if (!name) throw new HttpError('Branch name is required.', { status: 400, code: 'MISSING_FIELD', fields: { name: 'Branch name is required.' } });
   const typedCode = strField(body.code, { field: 'Branch code', maxLength: 20 });
-  let code = (typedCode || branchCodeFromName(name)).toUpperCase();
-  const taken = await branchCodeTaken(db, code, exceptId);
-  if (taken && typedCode) {
-    throw new HttpError(`Branch code ${code} is already used by ${taken.name}. Codes appear on receipt numbers and transfer references, so they must be unique.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
-  }
-  if (taken && !suffixIfTaken) {
-    throw new HttpError(`Branch code ${code} is already used by ${taken.name}. Codes appear on receipt numbers and transfer references, so they must be unique.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
-  }
-  if (taken && suffixIfTaken) {
-    let n = 2;
-    let candidate = code;
-    while (await branchCodeTaken(db, candidate, exceptId)) {
-      const suffix = String(n);
-      candidate = (code.slice(0, Math.max(1, 20 - suffix.length)) + suffix).toUpperCase();
-      n += 1;
-      if (n > 40) {
-        throw new HttpError(`Branch code ${code} is already used. Give this branch its own code.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
-      }
+  let code;
+  if (typedCode) {
+    code = typedCode.toUpperCase();
+    const taken = await branchCodeTaken(db, code, exceptId);
+    if (taken) {
+      throw new HttpError(`Branch code ${code} is already used by ${taken.name}. It is printed beside the receipt number and on delivery notes, so two branches cannot share it.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
     }
-    code = candidate;
+  } else {
+    // Blank is not MAIN. It is taken from the name, and a clash gets a digit.
+    code = await allocateBranchCode(db, branchCodeFromName(name), { exceptId });
   }
   const coords = readCoordinates(body);
   return {
@@ -332,10 +350,7 @@ function mount(app, base = '/api') {
       if (!b.address) b.address = body.address;
       if (!b.phone) b.phone = body.contact_phone;
       if (!b.email) b.email = body.contact_email;
-      branchRow = await readBranchColumns(db, b, {
-        nameFallback: `${name} — Main`,
-        suffixIfTaken: !strField(b.code, { field: 'Branch code', maxLength: 20 }),
-      });
+      branchRow = await readBranchColumns(db, b, { nameFallback: name });
       branchId = newId();
       await db.run(`INSERT INTO branches (
           id, business_id, name, code, branch_type, address, city, state, lga, phone, email,
@@ -382,7 +397,7 @@ function mount(app, base = '/api') {
       business: { id, name, profile_code: profileCode },
       // A brand-new business is useless without a branch, a category and a
       // ledger, so the message says what was actually built rather than "ok".
-      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchId ? ' with its first branch' : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}`,
+      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchRow ? ` with its first branch ${branchRow.name}, code ${branchRow.code}, taken from the name` : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}`,
       summary,
       branch_id: branchId,
     }, 201);
@@ -521,7 +536,7 @@ function mount(app, base = '/api') {
     }
     await assertCanCreateBranch(db, settings, business.id);
 
-    const row = await readBranchColumns(db, body, { nameFallback: null, suffixIfTaken: false });
+    const row = await readBranchColumns(db, body);
     const id = newId();
     const { name, code } = row;
     const lat = row.latitude;
@@ -566,18 +581,33 @@ function mount(app, base = '/api') {
     const isOwner = atLeast(user.role, 'OWNER');
     const sets = []; const params = [];
     const editable = isOwner
-      ? { name: { field: 'Branch name', maxLength: 120 }, code: { field: 'Branch code', maxLength: 20 }, address: { field: 'Address', maxLength: 300 }, city: { field: 'City', maxLength: 80 }, state: { field: 'State', maxLength: 80 }, lga: { field: 'LGA', maxLength: 80 }, phone: { field: 'Phone', maxLength: 40 }, email: { field: 'Email', maxLength: 160 } }
+      ? { name: { field: 'Branch name', maxLength: 120 }, address: { field: 'Address', maxLength: 300 }, city: { field: 'City', maxLength: 80 }, state: { field: 'State', maxLength: 80 }, lga: { field: 'LGA', maxLength: 80 }, phone: { field: 'Phone', maxLength: 40 }, email: { field: 'Email', maxLength: 160 } }
       : { address: { field: 'Address', maxLength: 300 }, city: { field: 'City', maxLength: 80 }, phone: { field: 'Phone', maxLength: 40 }, email: { field: 'Email', maxLength: 160 } };
+    let savedCode = branch.code;
+    let codeGenerated = false;
     for (const [col, opts] of Object.entries(editable)) {
       if (body[col] !== undefined) {
-        let v = strField(body[col], opts);
-        if (col === 'code') {
-          v = (v || '').toUpperCase();
-          const dupe = await db.first('SELECT id, name FROM branches WHERE code = ? AND is_deleted = 0 AND id <> ?', [v, id]);
-          if (dupe) throw new HttpError(`Branch code ${v} is already used by ${dupe.name}.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
-        }
+        const v = strField(body[col], opts);
         sets.push(`${col} = ?`); params.push(v);
       }
+    }
+    // A blank code is a request to take one from the name. Keeping the old
+    // MAIN is what made "leave it blank" look like a choice of MAIN.
+    if (isOwner && body.code !== undefined) {
+      const typed = strField(body.code, { field: 'Branch code', maxLength: 20 });
+      const nameForCode = body.name !== undefined
+        ? (strField(body.name, { field: 'Branch name', maxLength: 120 }) || branch.name)
+        : branch.name;
+      if (typed) {
+        const code = typed.toUpperCase();
+        const dupe = await branchCodeTaken(db, code, id);
+        if (dupe) throw new HttpError(`Branch code ${code} is already used by ${dupe.name}. It is printed beside the receipt number and on delivery notes, so two branches cannot share it.`, { status: 409, code: 'DUPLICATE_BRANCH_CODE' });
+        savedCode = code;
+      } else {
+        savedCode = await allocateBranchCode(db, branchCodeFromName(nameForCode), { exceptId: id });
+        codeGenerated = true;
+      }
+      sets.push('code = ?'); params.push(savedCode);
     }
     if (isOwner) {
       if (body.latitude !== undefined || body.longitude !== undefined) {
@@ -609,7 +639,13 @@ function mount(app, base = '/api') {
     const before = { ...branch };
     await db.run(`UPDATE branches SET ${sets.join(', ')} WHERE id = ? AND is_deleted = 0`, params);
     await recordFromCtx(ctx, { action: 'BRANCH_UPDATED', entityType: 'BRANCH', entityId: id, branchId: id, businessId: branch.business_id, before, after: body });
-    ctx.json({ ok: true, message: `${body.name || branch.name} updated.` });
+    ctx.json({
+      ok: true,
+      code: savedCode,
+      message: codeGenerated
+        ? `${body.name || branch.name} updated. The code was left blank, so it is ${savedCode}, taken from the name.`
+        : `${body.name || branch.name} updated.`,
+    });
   });
 
   // -------------------------------------------------------------------
@@ -2163,4 +2199,4 @@ function requireVal(body, field) {
   return v;
 }
 
-module.exports = { mount };
+module.exports = { mount, branchCodeFromName, allocateBranchCode };

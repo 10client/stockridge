@@ -44,7 +44,7 @@
     if (businessNode) parent.appendChild(businessNode);
     const identity = ui.h('div', { class: 'form-pairs' });
     identity.appendChild(ui.field({ label: 'Branch name', name: n('name'), value: v.name || '', required: !prefix, placeholder: 'Ikeja Showroom', disabled: lockIdentity }));
-    identity.appendChild(ui.field({ label: 'Code', name: n('code'), value: v.code || '', disabled: lockIdentity, hint: 'Appears on receipt numbers and transfer references. Generated from the name if left blank.' }));
+    identity.appendChild(ui.field({ label: 'Code', name: n('code'), value: v.code || '', disabled: lockIdentity, hint: 'Printed beside the receipt number, and on delivery notes and stock counts. Leave it blank and it is taken from the branch name. It is not filled in as MAIN.' }));
     identity.appendChild(ui.field({ label: 'Type', name: n('branch_type'), options: BRANCH_TYPES.map((t) => ({ value: t, label: U.humanise(t) })), value: v.branch_type || 'RETAIL', disabled: lockIdentity }));
     identity.appendChild(ui.field({
       label: 'Opening float (₦)',
@@ -374,7 +374,7 @@
         const payload = {};
         for (const [k, val] of Object.entries(v)) {
           if (k === 'business_label') continue;
-          if (k === 'code' && (val === null || val === '')) continue;
+          if (k === 'code') { payload[k] = val === null || val === '' ? null : val; continue; }
           if (k === 'is_active') { payload[k] = Boolean(Number(val)); continue; }
           if (['latitude', 'longitude', 'geofence_radius_meters', 'opening_cash'].includes(k)) {
             payload[k] = val === null ? null : Number(val);

@@ -1779,6 +1779,7 @@ async function complete(db, params) {
       saleId,
       receiptNo,
       branchId: String(branch.id),
+      branchCode: branch.code || null,
       totals,
       vat,
       paid: paymentResult.paid,

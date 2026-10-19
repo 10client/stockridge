@@ -790,7 +790,8 @@ function mount(app, base = '/api') {
     }
 
     const id = newId();
-    const reference = strField(body.reference, { field: 'Reference', maxLength: 40 }) || `TRF-${Date.now().toString(36).toUpperCase()}`;
+    const fromTag = String(from.code || 'BR').replace(/[^A-Za-z0-9]/g, '').slice(0, 10).toUpperCase() || 'BR';
+    const reference = strField(body.reference, { field: 'Reference', maxLength: 40 }) || `TRF-${fromTag}-${Date.now().toString(36).toUpperCase()}`;
     const dupe = await db.first('SELECT id FROM stock_transfers WHERE reference = ? AND is_deleted = 0', [reference]);
     if (dupe) throw new HttpError(`A transfer with reference “${reference}” already exists.`, { status: 409, code: 'DUPLICATE_REFERENCE' });
 

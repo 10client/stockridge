@@ -2506,7 +2506,7 @@
           receipt_no: result.receiptNo,
           sold_at: result.soldAt || payload.sold_at,
           branch_name: SR.state.activeBranchName(),
-          branch_code: (SR.state.activeBranch() || {}).code,
+          branch_code: result.branchCode || (SR.state.activeBranch() || {}).code,
           cashier_name: (SR.state.user || {}).fullName,
           customer_name: taken.changeHolderName || taken.customerName,
           customer_phone: taken.changeHolderPhone || taken.customerPhone,
