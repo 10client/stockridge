@@ -1162,7 +1162,7 @@ function mount(app, base = '/api') {
         WHERE d.id = ? AND d.is_deleted = 0`, [id]);
     if (!job) throw new HttpError('That delivery job does not exist.', { status: 404, code: 'DELIVERY_NOT_FOUND' });
     const [items, installations] = await Promise.all([
-      db.all(`SELECT i.*, p.name AS product_name, p.sku, v.name AS variant_name, sn.serial_no
+      db.all(`SELECT i.*, p.name AS product_name, p.sku, p.is_fragile, v.name AS variant_name, sn.serial_no
           FROM delivery_job_items i
           JOIN products p ON p.id = i.product_id
           LEFT JOIN product_variants v ON v.id = i.variant_id
@@ -1515,6 +1515,12 @@ function mount(app, base = '/api') {
       after: { status, note, deliveredTo, proof, stockReturned: ['RETURNED', 'CANCELLED'].includes(status) },
     });
 
+    const fragileCount = await db.scalar(
+      `SELECT COUNT(*) FROM delivery_job_items i
+        JOIN products p ON p.id = i.product_id
+        WHERE i.delivery_job_id = ? AND i.is_deleted = 0 AND p.is_fragile = 1`,
+      [id],
+    );
     const paper = dropTerm ? paperOf({
       settlement: dropTerm,
       saleType: job.sale_type,
@@ -1525,7 +1531,7 @@ function mount(app, base = '/api') {
       ok: true,
       settlement: dropTerm || null,
       paper,
-      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${paper ? ` ${paper.line}` : ''}${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${assignment.driver_pay > 0 ? ` Partner share on the goods: ₦${Number(assignment.driver_pay).toLocaleString('en-NG')}. Record the payout when you pay them — a wage driver is not paid from this drop.` : ''}${note ? ` Note: ${note}` : ''}`,
+      message: `${job.job_no} marked ${status.replace(/_/g, ' ').toLowerCase()}.${paper ? ` ${paper.line}` : ''}${['RETURNED', 'CANCELLED'].includes(status) ? ' The goods have been returned to branch stock and the movement recorded as an adjustment.' : ''}${fragileCount ? ' Fragile goods are on this drop. They do not ride loose.' : ''}${assignment.driver_pay > 0 ? ` Partner share on the goods: ₦${Number(assignment.driver_pay).toLocaleString('en-NG')}. Record the payout when you pay them — a wage driver is not paid from this drop.` : ''}${note ? ` Note: ${note}` : ''}`,
       previousStatus, status,
     });
   }));
@@ -1533,6 +1539,16 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // INSTALLATION
   // -------------------------------------------------------------------
+  function installationCashAccount(method) {
+    const code = String(method || '').toUpperCase();
+    if (code === 'CASH') return '1000';
+    if (code === 'BANK_TRANSFER' || code === 'BANK') return '1020';
+    if (code === 'POS_TERMINAL' || code === 'POS') return '1030';
+    if (code === 'MOBILE_MONEY') return '1040';
+    return null;
+  }
+
+
   /**
    * Book installation work against a delivered job.
    *
@@ -1559,6 +1575,11 @@ function mount(app, base = '/api') {
 
     const fee = numField(body.fee, { field: 'Installation fee', min: 0 });
     const feeCollected = numField(body.fee_collected ?? fee, { field: 'Fee collected', min: 0 });
+    const payMethod = String(body.payment_method || body.paymentMethod || 'CASH').toUpperCase();
+    if (feeCollected > 0 && !installationCashAccount(payMethod)) {
+      throw new HttpError('Say how the installation fee was taken: cash, bank, POS or mobile money. A fee that was taken has to land on the books.', { status: 400, code: 'PAYMENT_METHOD' });
+    }
+    const installAccountIds = feeCollected > 0 ? await glService.loadAccountCodes(db, job.business_id) : null;
     if (feeCollected > fee) {
       throw new HttpError(`You collected \u20a6${feeCollected.toLocaleString('en-NG')} against a \u20a6${fee.toLocaleString('en-NG')} fee. Correct one of the two.`, { status: 400, code: 'OVER_COLLECTION' });
     }
@@ -1589,7 +1610,7 @@ function mount(app, base = '/api') {
         productId, body.variant_id ? String(body.variant_id) : null, serialId,
         strField(body.technician_name, { field: 'Technician', maxLength: 120 }),
         strField(body.technician_phone, { field: 'Technician phone', maxLength: 40 }),
-        strField(body.scheduled_at, { field: 'Scheduled for', maxLength: 40 }),
+        strField(body.scheduled_at || body.scheduled_for, { field: 'Scheduled for', maxLength: 40 }),
         fee, feeCollected, numField(body.parts_cost, { field: 'Parts cost', min: 0 }),
         // Null until it is actually commissioned. Setting it at booking would
         // start the warranty clock before the unit exists in the customer's home.
@@ -1601,6 +1622,18 @@ function mount(app, base = '/api') {
         tx.queue("UPDATE serial_numbers SET notes = COALESCE(notes,'') || ?, updated_at = datetime('now') WHERE id = ?",
           [`\nInstallation ${jobNo} booked ${watNow()} — warranty will start on commissioning.`, serialId]);
       }
+      if (feeCollected > 0) {
+        for (const statement of glService.buildEntry({
+          businessId: job.business_id, branchId: job.branch_id,
+          sourceType: 'DELIVERY', sourceId: `${jobId}:fee`,
+          description: `Installation fee collected, ${jobNo}`,
+          postedBy: user.id, accountIds: installAccountIds,
+          lines: [
+            { accountCode: installationCashAccount(payMethod), debit: feeCollected, description: 'Installation fee taken' },
+            { accountCode: '4100', credit: feeCollected, description: `Installation ${jobNo}` },
+          ],
+        })) tx.queue(statement.sql, statement.params);
+      }
     });
 
     await recordFromCtx(ctx, {
@@ -1610,7 +1643,9 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true, id: jobId, jobNo,
-      message: `Installation ${jobNo} booked for ${product.name} at \u20a6${fee.toLocaleString('en-NG')}.`,
+      message: feeCollected > 0
+        ? `Installation ${jobNo} booked. The fee taken is on the books as installation income.`
+        : `Installation ${jobNo} booked. Nothing was taken, so nothing is on the books yet.`,
     }, 201);
   }));
 
@@ -1634,13 +1669,22 @@ function mount(app, base = '/api') {
     const warrantyStartsAt = boolField(body.starts_warranty, true) && warrantyMonths > 0 ? completedAt.slice(0, 10) : null;
     const warrantyEndsAt = warrantyStartsAt ? addDays(warrantyStartsAt, warrantyMonths * 30).slice(0, 10) : null;
     const partsCost = numField(body.parts_cost ?? job.parts_cost, { field: 'Parts cost', min: 0 });
+    const reportedFee = round2(Number(body.fee_collected != null ? body.fee_collected : job.fee_collected) || 0);
+    const alreadyFee = round2(Number(job.fee_collected) || 0);
+    const extraFee = round2(Math.max(0, reportedFee - alreadyFee));
+    const feeNow = round2(alreadyFee + extraFee);
+    const payMethod = String(body.payment_method || body.paymentMethod || 'CASH').toUpperCase();
+    if ((extraFee > 0 || partsCost > 0) && !installationCashAccount(payMethod)) {
+      throw new HttpError('Say how this money moved: cash, bank, POS or mobile money. The fee and the parts have to land on the books.', { status: 400, code: 'PAYMENT_METHOD' });
+    }
     const note = strField(body.note || body.notes, { field: 'Note', maxLength: 500 });
+    const completeAccounts = (extraFee > 0 || partsCost > 0) ? await glService.loadAccountCodes(db, job.business_id) : null;
 
     await db.transaction(async (tx) => {
-      tx.queue(`UPDATE installation_jobs SET status = 'COMPLETED', completed_at = ?, parts_cost = ?,
+      tx.queue(`UPDATE installation_jobs SET status = 'COMPLETED', completed_at = ?, parts_cost = ?, fee_collected = ?,
           warranty_starts_at = ?, notes = COALESCE(notes,'') || ?, updated_at = datetime('now')
         WHERE id = ? AND is_deleted = 0`, [
-        completedAt, partsCost, warrantyStartsAt,
+        completedAt, partsCost, feeNow, warrantyStartsAt,
         note ? `\n[${completedAt}] Completed by ${user.full_name || user.username} — ${note}` : `\n[${completedAt}] Completed by ${user.full_name || user.username}`,
         id,
       ]);
@@ -1656,6 +1700,31 @@ function mount(app, base = '/api') {
         tx.queue("UPDATE delivery_jobs SET status = 'DELIVERED', delivered_at = COALESCE(delivered_at, datetime('now')), updated_at = datetime('now') WHERE id = ? AND is_deleted = 0",
           [String(job.delivery_job_id)]);
       }
+      const cash = installationCashAccount(payMethod);
+      if (extraFee > 0) {
+        for (const statement of glService.buildEntry({
+          businessId: job.business_id, branchId: job.branch_id,
+          sourceType: 'DELIVERY', sourceId: `${id}:fee-complete`,
+          description: `Installation fee collected on completion, ${job.job_no}`,
+          postedBy: user.id, accountIds: completeAccounts,
+          lines: [
+            { accountCode: cash, debit: extraFee, description: 'Installation fee taken' },
+            { accountCode: '4100', credit: extraFee, description: `Installation ${job.job_no}` },
+          ],
+        })) tx.queue(statement.sql, statement.params);
+      }
+      if (partsCost > 0) {
+        for (const statement of glService.buildEntry({
+          businessId: job.business_id, branchId: job.branch_id,
+          sourceType: 'WARRANTY', sourceId: `${id}:parts`,
+          description: `Parts used on installation ${job.job_no}`,
+          postedBy: user.id, accountIds: completeAccounts,
+          lines: [
+            { accountCode: '5200', debit: partsCost, description: 'Parts used on installation' },
+            { accountCode: cash, credit: partsCost, description: 'Paid for the parts' },
+          ],
+        })) tx.queue(statement.sql, statement.params);
+      }
     });
 
     await recordFromCtx(ctx, {
@@ -1666,7 +1735,7 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true,
-      message: `${job.job_no} completed.${warrantyEndsAt ? ` Warranty now runs to ${warrantyEndsAt} (${warrantyMonths} months from commissioning).` : ' No warranty attached to this unit.'}`,
+      message: `${job.job_no} completed.${warrantyEndsAt ? ` Warranty now runs to ${warrantyEndsAt} (${warrantyMonths} months from commissioning).` : ' No warranty attached to this unit.'}${extraFee > 0 ? ' The fee taken is installation income.' : ''}${partsCost > 0 ? ' The parts are a repair cost.' : ''}`,
       warrantyStartsAt, warrantyEndsAt,
     });
   }));

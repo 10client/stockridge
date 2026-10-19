@@ -479,7 +479,7 @@ const PROFILES = Object.freeze({
       ...ALL_FEATURES_OFF,
       variants: true, bulkyDelivery: true, installation: true, wholesalePricing: true,
       instalments: true, layaway: true, batchTracking: true, quarantine: true,
-      commissionTracking: true, fragileHandling: true,
+      commissionTracking: true, fragileHandling: true, measuredSales: true,
       // Showroom writes the bill. The warehouse releases the piece only against the receipt.
       billBeforeReceipt: true,
     }),

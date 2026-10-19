@@ -37,6 +37,29 @@ const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
 const { fileGreenbook, syntheticBarcode } = require('../services/provisioningService');
 
+async function saveProductMeasure(db, productId, axisCode) {
+  const key = String(axisCode || '').trim().toUpperCase();
+  if (!key || key === 'NONE') {
+    await db.run("UPDATE product_measures SET is_deleted = 1, updated_at = datetime('now') WHERE product_id = ?", [productId]);
+    return null;
+  }
+  const axis = MEASURE_AXES[key];
+  if (!axis) throw new HttpError('That is not a measure this system sells in. Use metre, square metre, litre or kilogram.', { status: 400, code: 'MEASURE_AXIS' });
+  const existing = await db.first('SELECT id FROM product_measures WHERE product_id = ? AND axis = ?', [productId, axis.axis]);
+  if (existing) {
+    await db.run(`UPDATE product_measures SET is_deleted = 0, sell_unit_code = ?, sell_unit_base_factor = ?, base_unit_code = ?, step_quantity = ?, allows_fraction = 1, updated_at = datetime('now') WHERE id = ?`, [
+      axis.sellUnitCode, axis.baseFactor, axis.baseUnitCode, axis.step, existing.id,
+    ]);
+  } else {
+    await db.run(`INSERT INTO product_measures (id, product_id, axis, sell_unit_code, sell_unit_base_factor, base_unit_code, allows_fraction, min_quantity, step_quantity, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,1,0,?, datetime('now'), datetime('now'))`, [
+      newId(), productId, axis.axis, axis.sellUnitCode, axis.baseFactor, axis.baseUnitCode, axis.step,
+    ]);
+  }
+  await db.run("UPDATE product_measures SET is_deleted = 1, updated_at = datetime('now') WHERE product_id = ? AND axis <> ?", [productId, axis.axis]);
+  return axis;
+}
+
 /**
  * The catalogue columns a client may set.
  *
@@ -720,6 +743,7 @@ function mount(app, base = '/api') {
                     VALUES (?,?,?,?,?,?,?,?,?, datetime('now'), datetime('now'))`,
       [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, level.isSellable ? 1 : 0, level.isDefaultSell ? 1 : 0]);
     }
+    if (body.measure_axis !== undefined) await saveProductMeasure(db, id, body.measure_axis);
 
     // A shelf barcode is assigned even when the form left it blank. The seeded
     // catalogue already has one on every row; a product added later must too,
@@ -836,6 +860,7 @@ function mount(app, base = '/api') {
         [newId(), id, level.level, level.code, level.name, level.pluralName, level.quantityInBase, level.isSellable ? 1 : 0, level.isDefaultSell ? 1 : 0]);
       }
     }
+    if (body.measure_axis !== undefined) await saveProductMeasure(db, id, body.measure_axis);
 
     await recordFromCtx(ctx, {
       action: priceChanged ? 'PRICE_CHANGED' : 'PRODUCT_UPDATED', entityType: 'PRODUCT', entityId: id,

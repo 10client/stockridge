@@ -58,9 +58,11 @@
       { key: 'valuation', label: 'Valuation' },
       { key: 'expiring', label: 'Expiring' },
       { key: 'adjusted', label: 'Adjustments', roles: ['MANAGER', 'OWNER'] },
+      { key: 'recalls', label: 'Recalls', roles: ['MANAGER', 'OWNER'], module: 'recalls' },
     ];
     for (const tab of TABS) {
       if (tab.roles && !tab.roles.some((r) => SR.state.atLeast(r))) continue;
+      if (tab.module && !(SR.state.moduleOn && SR.state.moduleOn(tab.module))) continue;
       tabs.appendChild(ui.h('button', {
         class: `tab ${state.tab === tab.key ? 'is-active' : ''}`,
         onClick: () => { state.tab = tab.key; state.page = 0; for (const b of tabs.children) b.classList.toggle('is-active', b.textContent === tab.label); load(); },
@@ -105,6 +107,7 @@
       if (state.tab === 'valuation') return renderValuation();
       if (state.tab === 'expiring') return renderExpiring();
       if (state.tab === 'adjusted') return renderAdjustments();
+      if (state.tab === 'recalls') return renderRecalls();
       return renderOnHand();
     }
 
@@ -428,6 +431,111 @@
           emptyMessage: 'Damage, theft, expiry and count corrections all appear here with the person who recorded them.',
         }),
       }));
+    }
+
+    async function renderRecalls() {
+      let data;
+      try {
+        data = await SR.api.get('/api/recalls', { query: SR.state.query({}) });
+      } catch (err) {
+        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderRecalls } }));
+        return;
+      }
+      const rows = data.data || [];
+      host.replaceChildren(
+        ui.h('div', { class: 'actions' },
+          ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openRecall() }, 'Open a recall')),
+        ui.dataCard({
+          title: 'Recalls',
+          table: ui.renderTable({
+            columns: [
+              { key: 'opened_at', label: 'Opened', render: (r) => U.watClock(r.opened_at) },
+              { key: 'product_name', label: 'Product', className: 'wrap' },
+              { key: 'title', label: 'What', className: 'wrap' },
+              { key: 'recall_type', label: 'Type', render: (r) => U.humanise(String(r.recall_type || '').toLowerCase()) },
+              { key: 'units_affected', label: 'Held', align: 'right', render: (r) => U.qty(r.units_affected) },
+              { key: 'status', label: 'Status', render: (r) => ui.badge(r.status, r.status === 'CLOSED' ? 'badge-good' : 'badge-warn') },
+              { key: 'x', label: '', render: (r) => (r.status === 'CLOSED' ? '' : ui.h('button', { class: 'btn btn-sm', onClick: () => closeRecall(r) }, 'Close')) },
+            ],
+            rows,
+            emptyTitle: 'No recalls',
+            emptyMessage: 'A bad batch is pulled here. Held stock cannot be sold. Closing it writes off what did not come back.',
+          }),
+        }),
+      );
+    }
+
+    async function openRecall() {
+      const term = await ui.promptDialog({ title: 'Which product', label: 'Name or SKU', required: true });
+      if (!term) return;
+      let found;
+      try {
+        found = await SR.api.get('/api/products', { query: SR.state.query({ q: term, limit: 12 }) });
+      } catch (err) { ui.apiError(err); return; }
+      const rows = (found.data || []).filter((row) => row.business_id);
+      if (!rows.length) { ui.warn('No product on this business matches that.'); return; }
+      const product = rows.length === 1 ? rows[0] : await new Promise((resolve) => {
+        const box = ui.h('div', { class: 'stack' });
+        rows.forEach((row) => box.appendChild(ui.h('button', { class: 'btn', onClick: () => { pick.close(); resolve(row); } }, `${row.name}${row.sku ? ` · ${row.sku}` : ''}`)));
+        const pick = ui.openModal({ title: 'Which product', body: box, footer: [ui.h('button', { class: 'btn', onClick: () => { pick.close(); resolve(null); } }, 'Cancel')] });
+      });
+      if (!product) return;
+      const wrapEl = ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'Title', name: 'title', required: true, placeholder: 'NAFDAC pull, cracked batch, failed test' }),
+        ui.field({ label: 'Type', name: 'recall_type', value: 'QUALITY', options: [
+          { value: 'SAFETY', label: 'Safety' },
+          { value: 'QUALITY', label: 'Quality' },
+          { value: 'REGULATORY', label: 'Regulatory' },
+          { value: 'VOLUNTARY', label: 'Voluntary' },
+        ] }),
+        ui.field({ label: 'Batch numbers', name: 'batch_nos', placeholder: 'Leave blank for every batch on the shelf' }),
+        ui.field({ label: 'Authority reference', name: 'authority_ref', placeholder: 'Optional' }),
+        ui.field({ label: 'Why', name: 'reason', type: 'textarea', span: true, required: true }));
+      const m = ui.openModal({
+        title: `Recall ${product.name}`,
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', { class: 'btn btn-primary', onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            if (!v.title || !v.reason) { ui.warn('A recall needs a title and a reason.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const result = await SR.api.post('/api/recalls', {
+                product_id: product.id,
+                title: v.title,
+                reason: v.reason,
+                recall_type: v.recall_type,
+                batch_nos: v.batch_nos || '*',
+                authority_ref: v.authority_ref || null,
+                business_id: SR.state.activeBusinessId,
+              });
+              ui.ok(result.message || 'Recall opened.');
+              m.close();
+              renderRecalls();
+            } catch (err) { ui.apiError(err); ev.currentTarget.disabled = false; }
+          } }, 'Hold the stock'),
+        ],
+      });
+    }
+
+    async function closeRecall(row) {
+      const recovered = await ui.promptDialog({
+        title: 'Close the recall',
+        label: 'How many units came back from customers? The stock still held is written off.',
+        value: '0',
+        required: true,
+      });
+      if (recovered == null) return;
+      try {
+        const result = await SR.api.post(`/api/recalls/${encodeURIComponent(row.id)}/close`, {
+          units_recovered: Number(recovered) || 0,
+          write_off: true,
+          business_id: SR.state.activeBusinessId,
+        });
+        ui.ok(result.message || 'Recall closed.');
+        renderRecalls();
+      } catch (err) { ui.apiError(err); }
     }
 
     // ---------------- RECEIVE ----------------

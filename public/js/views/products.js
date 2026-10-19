@@ -622,6 +622,26 @@
     }
     wrapEl.appendChild(flags);
 
+    const MEASURES = [
+      { value: '', label: 'Not sold by measure', code: '', name: '' },
+      { value: 'LENGTH', label: 'By the metre', code: 'METRE', name: 'Metre' },
+      { value: 'AREA', label: 'By the square metre', code: 'SQUARE_METRE', name: 'Square metre' },
+      { value: 'VOLUME', label: 'By the litre', code: 'LITRE', name: 'Litre' },
+      { value: 'WEIGHT', label: 'By the kilogram', code: 'KILOGRAM', name: 'Kilogram' },
+    ];
+    let measureAxis = (product && product.measures && product.measures.axis) || '';
+    if (SR.state.moduleOn('measured')) {
+      const measureWrap = ui.h('div', { class: 'form-grid' });
+      measureWrap.appendChild(ui.field({
+        label: 'Sold by',
+        name: 'measure_axis',
+        value: measureAxis,
+        options: MEASURES.map((row) => ({ value: row.value, label: row.label })),
+        hint: 'A cable, a tile, paint or fabric sold in parts. The till then accepts half a metre, not only whole pieces. Stock is counted in that unit.',
+      }));
+      wrapEl.appendChild(measureWrap);
+    }
+
     // ---- unit ladder: the highest-value part of this form
     const ladderWrap = ui.h('fieldset');
     ladderWrap.appendChild(ui.h('legend', {}, 'Units'));
@@ -689,6 +709,13 @@
               const serialEl = wrapEl.querySelector('input[name="requires_serial"]');
               if (serialEl) flagValues.requires_serial = serialEl.checked ? 1 : 0;
               const moneyOrNull = (value) => (value === null || value === '' || value === undefined ? null : Number(value));
+              const chosenMeasure = SR.state.moduleOn('measured')
+                ? MEASURES.find((row) => row.value === String(v.measure_axis || ''))
+                : null;
+              if (chosenMeasure && chosenMeasure.code && ladder[0]) {
+                ladder[0].code = chosenMeasure.code;
+                ladder[0].name = chosenMeasure.name;
+              }
               const payload = Object.assign({
                 branch_id: SR.state.activeBranchId,
                 business_id: SR.state.activeBusinessId,
@@ -698,7 +725,8 @@
                 model_no: v.model_no || null,
                 sku: v.sku || null,
                 registration_no: v.registration_no || null,
-                base_unit_name: v.base_unit_name || 'PIECE',
+                base_unit_name: (chosenMeasure && chosenMeasure.name) || v.base_unit_name || 'PIECE',
+                measure_axis: SR.state.moduleOn('measured') ? (v.measure_axis || 'NONE') : undefined,
                 cost_price: v.cost_price === null || v.cost_price === '' ? 0 : Number(v.cost_price),
                 selling_price: Number(v.selling_price),
                 min_margin_pct: v.min_margin_pct === null || v.min_margin_pct === '' ? null : Number(v.min_margin_pct),
@@ -931,7 +959,7 @@
               load();
             } catch (err) { ui.apiError(err); }
           } }, Number(p.requires_serial) ? 'Serial off' : 'Serial on'),
-          ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(data).then((ok) => { if (ok) load(); }); } }, 'Edit'),
+          ui.h('button', { class: 'btn btn-sm', onClick: () => { productForm(Object.assign({}, data.product || data, { units: data.units, measures: data.measures })).then((ok) => { if (ok) load(); }); } }, 'Edit'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.barcode.previewLabel(labelItem) }, 'Label')));
 
       if (offline) overview.push(ui.h('div', { class: 'alert alert-warn' }, 'Offline — from this device\'s last sync.'));

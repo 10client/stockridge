@@ -1263,6 +1263,9 @@
         ui.kpi({ label: 'Scheduled', value: job.scheduled_for ? U.date(job.scheduled_for) : 'not set', small: true }),
         ui.kpi({ label: 'Driver', value: job.driver_name || 'unassigned', foot: job.driver_phone || null, small: true }),
         ui.kpi({ label: 'Delivery fee', value: Number(job.delivery_fee) ? U.money(job.delivery_fee) : 'no charge', small: true })));
+      if ((items || []).some((item) => Number(item.is_fragile) === 1)) {
+        jobNodes.push(ui.h('div', { class: 'alert alert-warn' }, 'Fragile goods are on this drop. They do not ride loose. The person who loads them has to know before the vehicle leaves.'));
+      }
 
       const cols = ui.h('div', { class: 'grid grid-2' });
       cols.appendChild(ui.dataCard({
@@ -1611,7 +1614,13 @@
         ui.field({ label: 'Technician', name: 'technician_name' }),
         ui.field({ label: 'Scheduled for', name: 'scheduled_for', type: 'datetime-local' }),
         ui.field({ label: 'Installation fee (₦)', name: 'fee', type: 'number', step: '0.01', min: '0', value: '0' }),
-        ui.field({ label: 'Fee collected (₦)', name: 'fee_collected', type: 'number', step: '0.01', min: '0', value: '0', hint: 'Leave at zero if the fee is still to be collected on site.' }),
+        ui.field({ label: 'Fee collected (₦)', name: 'fee_collected', type: 'number', step: '0.01', min: '0', value: '0', hint: 'What was taken now. It posts as installation income. Leave at zero if it is still to be collected.' }),
+        ui.field({ label: 'Taken from', name: 'payment_method', value: 'CASH', options: [
+          { value: 'CASH', label: 'Cash' },
+          { value: 'BANK_TRANSFER', label: 'Bank' },
+          { value: 'POS_TERMINAL', label: 'POS' },
+          { value: 'MOBILE_MONEY', label: 'Mobile money' },
+        ] }),
         ui.field({ label: 'Notes', name: 'notes', type: 'textarea', span: true })));
       wrapEl.appendChild(ui.h('label', { class: 'check' },
         ui.h('input', { type: 'checkbox', name: 'starts_warranty', checked: true }),
@@ -1636,6 +1645,7 @@
                   scheduled_for: v.scheduled_for || null,
                   fee: Number(v.fee) || 0,
                   fee_collected: Number(v.fee_collected) || 0,
+                  payment_method: v.payment_method || 'CASH',
                   notes: v.notes || null,
                   starts_warranty: wrapEl.querySelector('[name="starts_warranty"]').checked,
                 });
@@ -1659,8 +1669,14 @@
         ui.field({ label: 'Completed at', name: 'completed_at', type: 'datetime-local', value: U.nowIso().slice(0, 16) }),
         ui.field({ label: 'Technician', name: 'technician_name', value: installation.technician_name || '' }),
         ui.field({ label: 'Warranty months', name: 'warranty_months', type: 'number', step: '1', min: '0', value: installation.warranty_months != null ? String(installation.warranty_months) : '12', hint: 'How much cover this product carries. Starting it here is what makes a claim later provable.' }),
-        ui.field({ label: 'Parts used, cost (₦)', name: 'parts_cost', type: 'number', step: '0.01', min: '0', value: U.numInput(installation.parts_cost) }),
-        ui.field({ label: 'Fee collected (₦)', name: 'fee_collected', type: 'number', step: '0.01', min: '0', value: U.numInput(installation.fee_collected) }),
+        ui.field({ label: 'Parts used, cost (₦)', name: 'parts_cost', type: 'number', step: '0.01', min: '0', value: U.numInput(installation.parts_cost), hint: 'Posts as a repair cost. It does not take a spare off the shelf.' }),
+        ui.field({ label: 'Fee collected so far (₦)', name: 'fee_collected', type: 'number', step: '0.01', min: '0', value: U.numInput(installation.fee_collected), hint: 'The total taken, including what was taken when the job was booked. Only the extra posts now.' }),
+        ui.field({ label: 'Taken from', name: 'payment_method', value: 'CASH', options: [
+          { value: 'CASH', label: 'Cash' },
+          { value: 'BANK_TRANSFER', label: 'Bank' },
+          { value: 'POS_TERMINAL', label: 'POS' },
+          { value: 'MOBILE_MONEY', label: 'Mobile money' },
+        ] }),
         ui.field({ label: 'Note', name: 'note', type: 'textarea', span: true, placeholder: 'e.g. fitted on the wall bracket supplied by the customer; gas topped up' })));
       wrapEl.appendChild(ui.h('label', { class: 'check' },
         ui.h('input', { type: 'checkbox', name: 'starts_warranty', checked: true }),
@@ -1683,6 +1699,7 @@
                   warranty_months: v.warranty_months == null ? null : Number(v.warranty_months),
                   parts_cost: Number(v.parts_cost) || 0,
                   fee_collected: Number(v.fee_collected) || 0,
+                  payment_method: v.payment_method || 'CASH',
                   note: v.note || null,
                   starts_warranty: wrapEl.querySelector('[name="starts_warranty"]').checked,
                 });

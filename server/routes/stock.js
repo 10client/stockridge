@@ -35,6 +35,8 @@ const { watNow, watToday, addDays, watToUtc } = require('../../domain/time');
 const { canAdjustStock } = require('../../domain/planLimits');
 const { oneOf } = require('../../domain/validation');
 const glService = require('../services/glService');
+const { resolveProfile } = require('../../domain/verticals');
+const { modulesFor } = require('../../domain/modules');
 const selling = require('../../domain/selling');
 const { parseSerials, acceptSerials, planSerialRows, serialStatements } = require('../services/serialsService');
 const { planCataloguePrice } = require('../services/cataloguePrice');
@@ -614,6 +616,156 @@ function mount(app, base = '/api') {
     });
     ctx.json({ ok: true, message: quarantine ? `Batch ${batch.batch_no || id.slice(0, 8)} quarantined — it is counted but cannot be sold.` : `Batch ${batch.batch_no || id.slice(0, 8)} released back to sellable stock.` });
   });
+
+  function recallsOn(business) {
+    let overrides = null;
+    if (business && business.profile_overrides_json) {
+      try { overrides = JSON.parse(business.profile_overrides_json); } catch (e) { overrides = null; }
+    }
+    return Boolean(modulesFor(resolveProfile(business && business.profile_code, overrides)).recalls);
+  }
+
+  function recallBatches(rows, batchNos) {
+    const named = String(batchNos || '').trim();
+    if (!named || named === '*') return rows;
+    const wanted = new Set(named.split(/[,;\s]+/).map((part) => part.trim().toUpperCase()).filter(Boolean));
+    return rows.filter((row) => wanted.has(String(row.batch_no || '').toUpperCase()));
+  }
+
+  app.get(`${base}/recalls`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const business = await resolveBusiness(db, ctx);
+    if (!recallsOn(business)) throw new HttpError('This business does not pull products. A pharmacy, a supermarket or a yard that has to stop a batch does.', { status: 403, code: 'MODULE_OFF' });
+    const rows = await db.all(
+      `SELECT r.*, p.name AS product_name, p.sku
+         FROM product_recalls r
+         JOIN products p ON p.id = r.product_id
+        WHERE r.business_id = ? AND r.is_deleted = 0
+        ORDER BY r.opened_at DESC LIMIT 100`,
+      [String(business.id)],
+    );
+    ctx.json({ ok: true, data: rows });
+  });
+
+  app.post(`${base}/recalls`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('A manager opens a recall. It pulls stock off the shelf.', { status: 403, code: 'ROLE_REQUIRED' });
+    const business = await resolveBusiness(db, ctx);
+    if (!recallsOn(business)) throw new HttpError('This business does not pull products.', { status: 403, code: 'MODULE_OFF' });
+    const body = await ctx.req.json();
+    const productId = String(requireField(body, 'product_id', 'Product'));
+    const product = await db.first('SELECT * FROM products WHERE id = ? AND is_deleted = 0', [productId]);
+    if (!product || String(product.business_id) !== String(business.id)) {
+      throw new HttpError('That product is not on this business.', { status: 404, code: 'PRODUCT_NOT_FOUND' });
+    }
+    const title = strField(body.title, { field: 'Title', maxLength: 160, required: true });
+    const reason = strField(body.reason, { field: 'Reason', maxLength: 1000, required: true });
+    if (!title || title.length < 4 || !reason || reason.length < 8) {
+      throw new HttpError('Say what is being pulled, and why. A title and a reason are what the next person acts on.', { status: 400, code: 'REASON_REQUIRED' });
+    }
+    const recallType = valid(oneOf(body.recall_type || 'QUALITY', ['SAFETY', 'QUALITY', 'REGULATORY', 'VOLUNTARY'], { field: 'Recall type' }), 'recall_type');
+    const batchNos = strField(body.batch_nos || body.batchNos, { field: 'Batch numbers', maxLength: 500 }) || '*';
+    const quarantine = body.quarantine_stock == null ? true : boolField(body.quarantine_stock);
+    const id = newId();
+    const batches = quarantine
+      ? recallBatches(await db.all(
+        `SELECT * FROM stock_batches WHERE product_id = ? AND business_id = ? AND is_deleted = 0 AND status = 'ACTIVE' AND quantity > 0`,
+        [productId, String(business.id)],
+      ), batchNos)
+      : [];
+    const units = round2(batches.reduce((sum, row) => sum + Number(row.quantity || 0), 0));
+    await db.transaction(async (tx) => {
+      tx.queue(`INSERT INTO product_recalls (
+          id, business_id, product_id, title, reason, recall_type, authority_ref, batch_nos,
+          status, units_affected, quarantine_stock, opened_by, opened_at, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?, 'OPEN', ?, ?, ?, datetime('now'), datetime('now'), datetime('now'))`, [
+        id, String(business.id), productId, title, reason, recallType,
+        strField(body.authority_ref, { field: 'Authority reference', maxLength: 80 }),
+        batchNos, units, quarantine ? 1 : 0, String(user.id),
+      ]);
+      for (const batch of batches) {
+        tx.queue(`UPDATE stock_batches SET status = 'QUARANTINED', notes = COALESCE(notes,'') || ?, updated_at = datetime('now') WHERE id = ? AND status = 'ACTIVE'`, [
+          ` | Recall ${id}: ${title}`, String(batch.id),
+        ]);
+      }
+    });
+    await recordFromCtx(ctx, {
+      action: 'RECALL_OPENED', entityType: 'PRODUCT_RECALL', entityId: id, businessId: business.id,
+      after: { title, product: product.name, units, batches: batches.length, quarantine },
+    });
+    ctx.json({
+      ok: true, id,
+      message: quarantine
+        ? `${product.name} is under recall. ${batches.length} batch(es), ${units.toLocaleString('en-NG')} ${product.base_unit_name || 'units'}, are held and cannot be sold. The stock is still on the books until you close the recall and write off what did not come back.`
+        : `${product.name} is under recall. Stock was not held. Say so only if the affected goods are already off the shelf.`,
+    }, 201);
+  }));
+
+  app.post(`${base}/recalls/:id/close`, idempotent(async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const user = ctx.get('user');
+    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('A manager closes a recall.', { status: 403, code: 'ROLE_REQUIRED' });
+    const business = await resolveBusiness(db, ctx);
+    if (!recallsOn(business)) throw new HttpError('This business does not pull products.', { status: 403, code: 'MODULE_OFF' });
+    const id = String(ctx.req.param('id'));
+    const recall = await db.first('SELECT * FROM product_recalls WHERE id = ? AND business_id = ? AND is_deleted = 0', [id, String(business.id)]);
+    if (!recall) throw new HttpError('That recall does not exist.', { status: 404, code: 'RECALL_NOT_FOUND' });
+    if (recall.status === 'CLOSED') throw new HttpError('That recall is already closed.', { status: 409, code: 'ALREADY_CLOSED' });
+    const body = await ctx.req.json().catch(() => ({}));
+    const recovered = numField(body.units_recovered != null ? body.units_recovered : 0, { field: 'Units recovered', min: 0, places: 4 });
+    const writeOff = body.write_off == null ? true : boolField(body.write_off);
+    const held = await db.all(
+      `SELECT * FROM stock_batches WHERE product_id = ? AND business_id = ? AND is_deleted = 0 AND status = 'QUARANTINED' AND quantity > quantity_reserved AND notes LIKE ?`,
+      [String(recall.product_id), String(business.id), `%Recall ${id}%`],
+    );
+    const accountIds = writeOff && held.length ? await glService.loadAccountCodes(db, business.id) : null;
+    let written = 0;
+    let value = 0;
+    await db.transaction(async (tx) => {
+      if (writeOff) {
+        for (const batch of held) {
+          const qty = round2(Number(batch.quantity) - Number(batch.quantity_reserved || 0));
+          if (!(qty > 0)) continue;
+          const unitCost = Number(batch.cost_price_per_unit) || 0;
+          const totalValue = round2(qty * unitCost);
+          const adjustmentId = newId();
+          written = round2(written + qty);
+          value = round2(value + totalValue);
+          tx.queue(`UPDATE stock_batches SET quantity = quantity - ?, status = CASE WHEN quantity - ? <= 0 THEN 'DEPLETED' ELSE status END, updated_at = datetime('now')
+              WHERE id = ? AND quantity - quantity_reserved >= ?`, [qty, qty, String(batch.id), qty]);
+          tx.queue(`INSERT INTO stock_adjustments (
+              id, branch_id, business_id, batch_id, product_id, variant_id, adjustment_type,
+              quantity, unit_cost, total_value, reason, requires_approval, created_by, created_at, updated_at)
+            VALUES (?,?,?,?,?,?, 'WRITE_OFF', ?, ?, ?, ?, 0, ?, datetime('now'), datetime('now'))`, [
+            adjustmentId, String(batch.branch_id), String(business.id), String(batch.id), String(recall.product_id),
+            batch.variant_id || null, -qty, unitCost, -totalValue,
+            `Recall ${recall.title}. Stock that did not come back.`, String(user.id),
+          ]);
+          for (const statement of glService.postAdjustmentStatements({
+            adjustment: { id: adjustmentId, adjustment_type: 'WRITE_OFF', quantity: -qty, total_value: -totalValue, reason: recall.title },
+            business: { id: business.id }, branch: { id: batch.branch_id }, accountIds, user,
+          })) tx.queue(statement.sql, statement.params);
+        }
+      }
+      tx.queue(`UPDATE product_recalls SET status = 'CLOSED', units_recovered = ?, closed_at = datetime('now'),
+          notes = COALESCE(notes,'') || ?, updated_at = datetime('now') WHERE id = ?`, [
+        recovered,
+        `\\nClosed ${watNow()} by ${user.full_name || user.username}. Recovered ${recovered}. Written off ${written}.`,
+        id,
+      ]);
+    });
+    await recordFromCtx(ctx, {
+      action: 'RECALL_CLOSED', entityType: 'PRODUCT_RECALL', entityId: id, businessId: business.id,
+      before: { status: recall.status }, after: { recovered, written, value, writeOff },
+    });
+    ctx.json({
+      ok: true,
+      message: writeOff
+        ? `Recall closed. ${written.toLocaleString('en-NG')} still on the shelf was written off, ₦${value.toLocaleString('en-NG')} off the stock asset. ${recovered.toLocaleString('en-NG')} came back from customers and is recorded on the recall, not as a second sale.`
+        : `Recall closed. The held stock was left where it is. Release a batch from quarantine if it can be sold again.`,
+    });
+  }));
 
   // -------------------------------------------------------------------
   // TRANSFERS

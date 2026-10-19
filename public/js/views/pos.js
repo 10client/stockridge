@@ -1081,6 +1081,7 @@
           // to speak the same language as the quantity box beside it.
           onHandBase: product.on_hand != null ? Number(product.on_hand) : null,
           maxQuantity: product.on_hand != null ? Number(product.on_hand) / sell.factor : null,
+          fragile: Number(product.is_fragile) === 1,
           channel: arrangement.channel || 'RETAIL',
           startsOn: arrangement.startsOn || null,
           endsOn: arrangement.endsOn || null,
@@ -1378,6 +1379,7 @@
       const avail = line.maxQuantity;
       if (avail != null && Number(line.quantity) > avail) meta.push(`only ${U.qty(avail)} in stock`);
       row.appendChild(ui.h('div', { class: 'cl-meta' }, meta.filter(Boolean).join(' · ')));
+      if (line.fragile) row.appendChild(ui.h('div', { class: 'hint' }, 'Fragile. It does not ride loose, and it is not stacked.'));
 
       const actions = ui.h('div', { class: 'cl-actions' });
       const qty = ui.h('div', { class: 'qty' });

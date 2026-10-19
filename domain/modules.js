@@ -29,6 +29,8 @@ function modulesFor(profile) {
     variants: Boolean(features.variants),
     commission: Boolean(features.commissionTracking),
     fragile: Boolean(features.fragileHandling),
+    recalls: Boolean(features.recalls),
+    measured: Boolean(features.measuredSales),
     bulky: Boolean(features.bulkyDelivery),
     // Water packing and bakery. Not a FEATURE_FLAGS entry: general retail
     // turns every flag on, and a phone shop must not be asked which keke it owns.
