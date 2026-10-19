@@ -950,6 +950,65 @@ async function profitAndLoss(db, { businessId = null, branchId = null, startDate
   };
 }
 
+const RENTAL_INCOME_ACCOUNTS = Object.freeze([
+  ['4020', 'Hire income'],
+  ['4030', 'Lease income'],
+  ['4040', 'Late return and damage'],
+]);
+
+/**
+ * The rental yard's books, read from the accounts a hire or lease already
+ * posts to. This is not a second ledger. A deposit is a liability, so it is
+ * reported beside the fees and not added to them.
+ */
+async function rentalBooks(db, { businessId, branchId = null, startDate = null, endDate = null } = {}) {
+  if (!businessId) return null;
+  const yardParams = [String(businessId)];
+  let yardSql = `SELECT COUNT(*) AS n FROM branches WHERE business_id = ? AND is_deleted = 0 AND branch_type = 'RENTAL'`;
+  if (branchId) {
+    yardSql += ' AND id = ?';
+    yardParams.push(String(branchId));
+  }
+  const yardRow = await db.first(yardSql, yardParams);
+  const codes = ['4020', '4030', '4040'];
+  const where = ['a.is_deleted = 0', 'e.is_deleted = 0', 'l.is_deleted = 0', 'e.business_id = ?', `a.code IN (${codes.map(() => '?').join(',')})`];
+  const params = [String(businessId), ...codes];
+  if (branchId) { where.push('l.branch_id = ?'); params.push(String(branchId)); }
+  if (startDate) { where.push('e.entry_date >= ?'); params.push(String(startDate)); }
+  if (endDate) { where.push('e.entry_date <= ?'); params.push(String(endDate)); }
+  const movements = await db.all(`SELECT a.code, SUM(l.debit) AS debit, SUM(l.credit) AS credit
+    FROM gl_accounts a
+    JOIN gl_journal_lines l ON l.account_id = a.id
+    JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+    WHERE ${where.join(' AND ')}
+    GROUP BY a.code`, params);
+  const heldWhere = ['a.is_deleted = 0', 'e.is_deleted = 0', 'l.is_deleted = 0', 'e.business_id = ?', "a.code = '2220'"];
+  const heldParams = [String(businessId)];
+  if (branchId) { heldWhere.push('l.branch_id = ?'); heldParams.push(String(branchId)); }
+  if (endDate) { heldWhere.push('e.entry_date <= ?'); heldParams.push(String(endDate)); }
+  const held = await db.first(`SELECT SUM(l.credit) AS credit, SUM(l.debit) AS debit
+    FROM gl_accounts a
+    JOIN gl_journal_lines l ON l.account_id = a.id
+    JOIN gl_journal_entries e ON e.id = l.journal_entry_id
+    WHERE ${heldWhere.join(' AND ')}`, heldParams);
+  const byCode = new Map((movements || []).map((row) => [row.code, row]));
+  const income = RENTAL_INCOME_ACCOUNTS.map(([code, name]) => {
+    const row = byCode.get(code);
+    return { code, name, amount: round2((Number(row && row.credit) || 0) - (Number(row && row.debit) || 0)) };
+  });
+  const incomeTotal = round2(income.reduce((sum, row) => sum + row.amount, 0));
+  const depositsHeld = round2((Number(held && held.credit) || 0) - (Number(held && held.debit) || 0));
+  const yard = Number(yardRow && yardRow.n) > 0;
+  if (!yard && incomeTotal === 0 && depositsHeld === 0) return null;
+  return {
+    yard,
+    income,
+    incomeTotal,
+    depositsHeld,
+    note: 'Hire fees and lease rent are income on these books. A deposit is held until the goods come back, so it is not in the profit above. Goods out on hire stay in inventory. Cost of goods is taken only when a unit is sold.',
+  };
+}
+
 /** Balance sheet. Assets must equal liabilities plus equity. */
 async function balanceSheet(db, { businessId = null, branchId = null, asAt = null } = {}) {
   const tb = await trialBalance(db, { businessId, branchId, asAt });
@@ -1116,5 +1175,5 @@ module.exports = {
   postCashMoveStatements, postCashOverShortStatements, postCashPayoutStatements, postCashAgainstAccountStatements,
   postDebtorPaymentStatements, postCreditorPaymentStatements,
   postWarrantyStatements, postInstalmentInterestStatements,
-  trialBalance, profitAndLoss, balanceSheet, revenueByCategory, booksBySellingGroup,
+  trialBalance, profitAndLoss, rentalBooks, balanceSheet, revenueByCategory, booksBySellingGroup,
 };

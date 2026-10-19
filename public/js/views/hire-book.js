@@ -13,7 +13,9 @@
     wrap.appendChild(ui.h('div', { class: 'page-head' },
       ui.h('div', {},
         ui.h('h1', {}, 'Hire book'),
-        ui.h('p', { class: 'sub' }, 'Goods that are out on hire or lease. The deposit is held here, not earned.')),
+        ui.h('p', { class: 'sub' }, (SR.state.activeBranch() && String(SR.state.activeBranch().branch_type || '').toUpperCase() === 'RENTAL')
+          ? 'This yard’s goods that are out. The fee is hire or lease income on the profit and loss. The deposit stays a liability until the goods come back.'
+          : 'Goods that are out on hire or lease. The deposit is held here, not earned.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm', onClick: () => load() }, 'Refresh'))));
 

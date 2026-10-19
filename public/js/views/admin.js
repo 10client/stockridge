@@ -22,7 +22,22 @@
   const ui = SR.ui;
   const U = SR.util;
 
-  const BRANCH_TYPES = ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'];
+  const BRANCH_TYPES = [
+    { value: 'RETAIL', label: 'Retail' },
+    { value: 'WHOLESALE', label: 'Wholesale' },
+    { value: 'WAREHOUSE', label: 'Warehouse' },
+    { value: 'SHOWROOM', label: 'Showroom' },
+    { value: 'RENTAL', label: 'Rental services' },
+    { value: 'MIXED', label: 'Mixed' },
+  ];
+  const RENTAL_PROFILES = new Set(['EVENT_RENTAL', 'EQUIPMENT_RENTAL', 'LEASING']);
+  function branchTypeForProfile(code) {
+    return RENTAL_PROFILES.has(String(code || '').toUpperCase()) ? 'RENTAL' : 'RETAIL';
+  }
+  function branchTypeLabel(code) {
+    const found = BRANCH_TYPES.find((row) => row.value === String(code || '').toUpperCase());
+    return found ? found.label : U.humanise(code || 'RETAIL');
+  }
   const ATTENDANCE_MODES = [
     { value: 'GEOLOCATION', label: 'Geolocation — record where the phone was' },
     { value: 'REGISTERED_DEVICE', label: 'Registered device — only known devices' },
@@ -45,7 +60,14 @@
     const identity = ui.h('div', { class: 'form-pairs' });
     identity.appendChild(ui.field({ label: 'Branch name', name: n('name'), value: v.name || '', required: !prefix, placeholder: 'Ikeja Showroom', disabled: lockIdentity }));
     identity.appendChild(ui.field({ label: 'Code', name: n('code'), value: v.code || '', disabled: lockIdentity, hint: 'Printed beside the receipt number, and on delivery notes and stock counts. Leave it blank and it is taken from the branch name. It is not filled in as MAIN.' }));
-    identity.appendChild(ui.field({ label: 'Type', name: n('branch_type'), options: BRANCH_TYPES.map((t) => ({ value: t, label: U.humanise(t) })), value: v.branch_type || 'RETAIL', disabled: lockIdentity }));
+    identity.appendChild(ui.field({
+      label: 'Type',
+      name: n('branch_type'),
+      options: BRANCH_TYPES,
+      value: v.branch_type || 'RETAIL',
+      disabled: lockIdentity,
+      hint: 'Rental services is a yard. Goods go out on hire or lease and come back. The fee is income. The deposit is held. A retail counter sells the unit and takes the cost.',
+    }));
     identity.appendChild(ui.field({
       label: 'Opening float (₦)',
       name: n('opening_cash'),
@@ -304,7 +326,7 @@
             columns: [
               { key: 'name', label: 'Branch', render: (b) => ui.h('div', {}, ui.h('div', {}, b.name), ui.h('div', { class: 'hint' }, [b.code, b.city, b.state].filter(Boolean).join(' · '))) },
               { key: 'business_name', label: 'Business', render: (b) => b.business_name || '—' },
-              { key: 'branch_type', label: 'Type', render: (b) => ui.badge(U.humanise(b.branch_type || 'RETAIL'), 'badge-mute') },
+              { key: 'branch_type', label: 'Type', render: (b) => ui.badge(branchTypeLabel(b.branch_type), 'badge-mute') },
               { key: 'active_staff', label: 'Staff', align: 'right', render: (b) => U.qty(b.active_staff || 0) },
               { key: 'stock_at_cost', label: 'Stock', align: 'right', render: (b) => U.money(b.stock_at_cost) },
               { key: 'sales_today', label: 'Sales today', align: 'right', render: (b) => U.qty(b.sales_today || 0) },
@@ -559,7 +581,20 @@
       const cancel = ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel');
       const go = ui.h('button', { class: 'btn btn-primary', disabled: isNew }, isNew ? 'Create and provision' : 'Save changes');
       const m = ui.openModal({ title: isNew ? 'Create a business' : b.name, body: form, footer: [cancel, go], size: 'wide' });
-      if (isNew) fillVerticalSelect(form, go, (row) => { if (form._paintDispatch) form._paintDispatch(row); });
+      let suggestedBranchType = 'RETAIL';
+      function suggestBranchType(profileCode) {
+        const select = form.querySelector('select[name="branch_branch_type"]');
+        if (!select) return;
+        const next = branchTypeForProfile(profileCode);
+        if (!select.value || select.value === suggestedBranchType) {
+          select.value = next;
+          suggestedBranchType = next;
+        }
+      }
+      if (isNew) fillVerticalSelect(form, go, (row) => {
+        if (form._paintDispatch) form._paintDispatch(row);
+        suggestBranchType(row && (row.profile_code || row.code));
+      });
 
       go.addEventListener('click', async () => {
         const v = ui.readForm(form);

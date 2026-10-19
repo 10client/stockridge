@@ -811,20 +811,32 @@
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     }
 
+    function rentalYard() {
+      const branch = SR.state.activeBranch();
+      return Boolean(branch && String(branch.branch_type || '').toUpperCase() === 'RENTAL');
+    }
+
     async function askArrangement(product) {
       const hire = Number(product.offers_hire) === 1 && SR.state.moduleOn('hire');
       const lease = Number(product.offers_lease) === 1 && SR.state.moduleOn('lease');
       const sale = product.offers_sale == null || Number(product.offers_sale) === 1;
       if (!hire && !lease) return { channel: 'RETAIL' };
+      const yard = rentalYard();
       const choices = [];
+      // A rental yard starts on the hire or the lease. A sale is still there
+      // when the customer is buying the unit, and that sale takes the cost.
+      if (yard && hire) choices.push('HIRE');
+      if (yard && lease) choices.push('LEASE');
       if (sale && Number(product.selling_price) > 0) choices.push('SALE');
-      if (hire) choices.push('HIRE');
-      if (lease) choices.push('LEASE');
+      if (hire && !choices.includes('HIRE')) choices.push('HIRE');
+      if (lease && !choices.includes('LEASE')) choices.push('LEASE');
       let channel = choices[0];
       if (choices.length > 1) {
         const picked = await ui.promptDialog({
           title: product.name,
-          label: `How is this going out? Type ${choices.join(', ')}`,
+          label: yard
+            ? `Rental yard. Type ${choices.join(' or ')}. A hire or lease earns the fee and holds the deposit. A sale takes the unit off the books.`
+            : `How is this going out? Type ${choices.join(', ')}`,
           value: choices[0],
           required: true,
         });
@@ -1563,6 +1575,9 @@
       }
       if (billsFirst() && !cartIsBooking()) {
         infoBody.appendChild(ui.h('div', { class: 'hint' }, 'Print a bill first. The goods are held, not sold. The customer pays, the receipt prints, then print the release note before the store hands the goods over.'));
+      }
+      if (rentalYard()) {
+        infoBody.appendChild(ui.h('div', { class: 'hint' }, 'This yard hires goods out. The fee is income. The deposit is held, not earned. The goods stay on the books until they are sold.'));
       }
       if (cart.deliveryRequired) infoBody.appendChild(ui.h('div', { class: 'hint' }, `Delivery to: ${cart.deliveryAddress || cart.customerName || '—'}`));
       infoCard.hidden = infoBody.childElementCount === 0;

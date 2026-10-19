@@ -188,6 +188,27 @@
         ui.kpi({ label: 'Operating expenses', value: U.money(data.totalExpenses) }),
         ui.kpi({ label: 'Net profit', value: U.money(data.netProfit), tone: Number(data.netProfit) >= 0 ? 'good' : 'bad', foot: data.netMarginPct == null ? null : `${data.netMarginPct}% of revenue` })));
       stack.appendChild(groupTable('Revenue', data.revenue || [], data.totalRevenue, 'Sell something and it appears here.'));
+      if (data.rentalBooks) {
+        const book = data.rentalBooks;
+        stack.appendChild(ui.h('p', { class: 'sub' }, book.note));
+        stack.appendChild(ui.dataCard({
+          title: book.yard ? 'Rental yard books' : 'Hire and lease books',
+          table: ui.renderTable({
+            columns: [
+              { key: 'code', label: 'Code' },
+              { key: 'name', label: 'Account' },
+              { key: 'amount', label: 'Amount', align: 'right', render: (r) => U.money(r.amount) },
+            ],
+            rows: [
+              ...(book.income || []),
+              { code: '2220', name: 'Deposits held (not income)', amount: book.depositsHeld },
+            ],
+            foot: ['', 'Fees earned', U.money(book.incomeTotal)],
+            emptyTitle: 'No rental takings',
+            emptyMessage: 'A hire or a lease posts here. A deposit does not.',
+          }),
+        }));
+      }
       stack.appendChild(groupTable('Cost of goods sold', data.cogs || [], data.totalCogs, 'Cost of sales follows the stock you sold, valued at what it cost to land.'));
       stack.appendChild(groupTable('Operating expenses', data.expenses || [], data.totalExpenses, 'Rent, diesel, wages — everything that is not stock.'));
       if ((data.bySellingGroup || []).length) {

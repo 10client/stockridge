@@ -48,6 +48,9 @@
         ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/transfers') }, 'Transfer'),
         SR.exporter.buttons((format) => UI_export(format))));
     wrap.appendChild(head);
+    if (SR.state.activeBranch() && String(SR.state.activeBranch().branch_type || '').toUpperCase() === 'RENTAL') {
+      wrap.appendChild(ui.h('p', { class: 'hint' }, 'This is a rental yard. Stock here can go out and come back. A hire does not take it off the books. A sale does.'));
+    }
 
     const tabs = ui.h('div', { class: 'tabs' });
     const TABS = [

@@ -481,16 +481,16 @@ function createTursoDatabase({ url, authToken, name = null, connect = null } = {
    * fails, the follow-up is ROLLBACK, and closing an open transaction rolls
    * it back as well.
    */
-  async function atomic(statements, { timeoutMs = 30000 } = {}) {
+  async function atomic(statements, { timeoutMs = 30000, foreignKeys = true } = {}) {
     const requests = [
-      { type: 'execute', stmt: { sql: 'PRAGMA foreign_keys = ON' } },
+      { type: 'execute', stmt: { sql: foreignKeys ? 'PRAGMA foreign_keys = ON' : 'PRAGMA foreign_keys = OFF' } },
       { type: 'execute', stmt: { sql: 'BEGIN' } },
       ...statements.map(statementRequest),
     ];
     const json = await post(requests, { timeoutMs });
     const results = json.results || [];
     let failure = null;
-    if (results[0] && results[0].type === 'error') failure = `Turso could not enable foreign keys: ${errorMessage(results[0])}`;
+    if (results[0] && results[0].type === 'error') failure = `Turso could not set foreign keys: ${errorMessage(results[0])}`;
     else if (results[1] && results[1].type === 'error') failure = `Turso could not begin a transaction: ${errorMessage(results[1])}`;
     else {
       for (let i = 0; i < statements.length; i += 1) {
@@ -559,13 +559,13 @@ function createTursoDatabase({ url, authToken, name = null, connect = null } = {
       }
       return { ok: true, count: statements.length };
     },
-    async batch(statements) {
+    async batch(statements, options = {}) {
       const list = statements || [];
       if (!list.length) return { ok: true, count: 0 };
       if (list.length > BATCH_LIMIT_WARN) {
         console.warn(`[turso] committing a transaction of ${list.length} statements`);
       }
-      return atomic(list, { timeoutMs: Math.min(120000, 15000 + list.length * 200) });
+      return atomic(list, { timeoutMs: Math.min(120000, 15000 + list.length * 200), ...options });
     },
     async transaction(fn) {
       const tx = createCollector(api);

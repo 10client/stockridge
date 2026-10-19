@@ -20,6 +20,7 @@ const { shelfForNafdacCategory } = require('../../domain/selling');
 const assignments = require('./assignmentService');
 const { round2 } = require('../../domain/money');
 const { getProfile, resolveProfile, PROFILE_CODES, MEASURE_AXES, ladderForSeedProduct, baseUnitNameFor } = require('../../domain/verticals');
+const { defaultBranchType } = require('../../domain/branchTypes');
 const glService = require('./glService');
 const { HttpError } = require('../lib/http');
 
@@ -683,7 +684,7 @@ async function provisionDeployment(db, {
 
   // Branches
   const branchIds = [];
-  const branchList = branches.length ? branches : [{ name: `${businessName} — Main`, city: 'Lagos', state: 'Lagos', branch_type: 'RETAIL' }];
+  const branchList = branches.length ? branches : [{ name: `${businessName} — Main`, city: 'Lagos', state: 'Lagos', branch_type: defaultBranchType(profileCode) }];
   for (let i = 0; i < branchList.length; i += 1) {
     const b = branchList[i];
     const id = newId();
@@ -691,7 +692,7 @@ async function provisionDeployment(db, {
         id, business_id, name, code, branch_type, address, city, state, lga, phone,
         latitude, longitude, geofence_radius_meters, attendance_mode, opening_cash, is_active, created_at, updated_at)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1, datetime('now'), datetime('now'))`, [
-      id, businessId, b.name, b.code || `BR-${String(i + 1).padStart(2, '0')}`, b.branch_type || 'RETAIL',
+      id, businessId, b.name, b.code || `BR-${String(i + 1).padStart(2, '0')}`, b.branch_type || defaultBranchType(profileCode),
       b.address || null, b.city || null, b.state || null, b.lga || null, b.phone || null,
       b.latitude != null ? b.latitude : null, b.longitude != null ? b.longitude : null,
       Number(b.geofence_radius_meters || 100), b.attendance_mode || 'GEOLOCATION',

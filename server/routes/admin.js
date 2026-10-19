@@ -36,6 +36,7 @@ const { round2 } = require('../../domain/money');
 const { newId, hashPin, verifyPin, numericCode } = require('../../domain/crypto');
 const { watNow, watToday } = require('../../domain/time');
 const { oneOf, pin: pinRule, username: usernameRule, email: emailRule, nigerianPhone, validateNuban } = require('../../domain/validation');
+const { BRANCH_TYPES, defaultBranchType } = require('../../domain/branchTypes');
 const {
   getSettings, DEFAULT_SETTINGS, FLAG_SETTINGS, FEATURE_COLUMNS, FEATURE_LABELS, planUsage,
   assertCanCreateBusiness, assertCanCreateBranch, assertCanCreateStaff, assertFeatureEnabled,
@@ -49,7 +50,7 @@ const { ensureFleet } = require('./dispatch');
 const { ALERT_HORIZON_DAYS } = require('../../domain/compliance');
 const { coordinatesArePlausible } = require('../../domain/geofence');
 
-const BRANCH_TYPES = ['RETAIL', 'WHOLESALE', 'WAREHOUSE', 'SHOWROOM', 'MIXED'];
+
 const ATTENDANCE_MODES = ['GEOLOCATION', 'REGISTERED_DEVICE'];
 
 const CODE_FILLER = new Set(['HQ', 'MAIN', 'SHOP', 'BRANCH', 'THE', 'AND', 'OF', 'LTD', 'LIMITED']);
@@ -122,7 +123,7 @@ async function branchCodeTaken(db, code, exceptId = null) {
  * ONE reading of a branch, used when a business is created and when a branch
  * is opened on its own. The columns, the defaults and the refusals match.
  */
-async function readBranchColumns(db, body, { nameFallback = null, exceptId = null } = {}) {
+async function readBranchColumns(db, body, { nameFallback = null, exceptId = null, defaultType = 'RETAIL' } = {}) {
   const name = strField(body.name, { field: 'Branch name', maxLength: 120, required: !nameFallback }) || nameFallback;
   if (!name) throw new HttpError('Branch name is required.', { status: 400, code: 'MISSING_FIELD', fields: { name: 'Branch name is required.' } });
   const typedCode = strField(body.code, { field: 'Branch code', maxLength: 20 });
@@ -140,7 +141,7 @@ async function readBranchColumns(db, body, { nameFallback = null, exceptId = nul
   const coords = readCoordinates(body);
   return {
     name, code,
-    branch_type: valid(oneOf(body.branch_type || 'RETAIL', BRANCH_TYPES, { field: 'Branch type' }), 'branch_type'),
+    branch_type: valid(oneOf(body.branch_type || defaultType || 'RETAIL', BRANCH_TYPES, { field: 'Branch type' }), 'branch_type'),
     address: strField(body.address, { field: 'Address', maxLength: 300 }),
     city: strField(body.city, { field: 'City', maxLength: 80 }),
     state: strField(body.state, { field: 'State', maxLength: 80 }),
@@ -350,7 +351,7 @@ function mount(app, base = '/api') {
       if (!b.address) b.address = body.address;
       if (!b.phone) b.phone = body.contact_phone;
       if (!b.email) b.email = body.contact_email;
-      branchRow = await readBranchColumns(db, b, { nameFallback: name });
+      branchRow = await readBranchColumns(db, b, { nameFallback: name, defaultType: defaultBranchType(profileCode) });
       branchId = newId();
       await db.run(`INSERT INTO branches (
           id, business_id, name, code, branch_type, address, city, state, lga, phone, email,
@@ -388,6 +389,9 @@ function mount(app, base = '/api') {
     // does is start looking for what went missing. The numbers below are the service's own
     // summary, and `audit.createFlows.js` asserts they match the rows that actually exist.
     const summary = (result && (result.provisioned || result.summary)) || result || {};
+    const rentalNote = branchRow && branchRow.branch_type === 'RENTAL'
+      ? ' The first branch is a rental yard. Hire and lease fees post as income. Deposits are held, not earned. The goods stay in stock until a unit is sold.'
+      : '';
     await recordFromCtx(ctx, {
       action: 'BUSINESS_CREATED', entityType: 'BUSINESS', entityId: id, businessId: id,
       after: { name, profileCode, provisioned: summary },
@@ -397,7 +401,7 @@ function mount(app, base = '/api') {
       business: { id, name, profile_code: profileCode },
       // A brand-new business is useless without a branch, a category and a
       // ledger, so the message says what was actually built rather than "ok".
-      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchRow ? ` with its first branch ${branchRow.name}, code ${branchRow.code}, taken from the name` : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}`,
+      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchRow ? ` with its first branch ${branchRow.name}, code ${branchRow.code}, taken from the name` : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}${rentalNote}`,
       summary,
       branch_id: branchId,
     }, 201);
@@ -536,7 +540,7 @@ function mount(app, base = '/api') {
     }
     await assertCanCreateBranch(db, settings, business.id);
 
-    const row = await readBranchColumns(db, body);
+    const row = await readBranchColumns(db, body, { defaultType: defaultBranchType(business.profile_code) });
     const id = newId();
     const { name, code } = row;
     const lat = row.latitude;
@@ -560,7 +564,7 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true, id, code,
-      message: `${name} (${code}) opened under ${business.name}.${lat ? ` Geofence set to ${radius}m.` : ' No coordinates were given, so clock-ins there will be flagged as unplaced until you set the branch location.'}`,
+      message: `${name} (${code}) opened under ${business.name}${row.branch_type === 'RENTAL' ? ' as a rental yard. Hire and lease fees post as income. Deposits are held, not earned. The goods stay in stock until a unit is sold.' : '.'}${lat ? ` Geofence set to ${radius}m.` : ' No coordinates were given, so clock-ins there will be flagged as unplaced until you set the branch location.'}`,
       warnings: lat ? [] : ['No location set — attendance geofencing cannot work at this branch until you add coordinates.'],
     }, 201);
   });

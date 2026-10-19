@@ -124,13 +124,25 @@ async function applyTursoMigrations(db = tursoDb()) {
       continue;
     }
     const statements = splitSql(sql).flatMap((statement) => splitLargeInsert(statement));
-    process.stdout.write(`      ${id} (${statements.length} statement(s))\n`);
-    for (let i = 0; i < statements.length; i += 1) {
-      const statement = statements[i];
-      const timeoutMs = statement.length > 200000 ? 120000 : 30000;
-      await db.pipeline([{ sql: statement }], { timeoutMs });
-      if (statements.length > 5 && (i + 1) % 10 === 0) {
-        process.stdout.write(`        ${i + 1}/${statements.length}\n`);
+    // A table rebuild cannot drop a referenced table while foreign keys are on.
+    // The marker is a comment, so it is not itself a statement.
+    const rebuild = /turso:\s*foreign_keys\s+off/i.test(sql);
+    if (rebuild) {
+      const body = statements.filter((statement) => {
+        const bare = statement.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '').trim();
+        return bare && !/^\s*PRAGMA\b/i.test(bare);
+      });
+      process.stdout.write(`      ${id} (rebuild, ${body.length} statement(s), foreign keys off)\n`);
+      await db.batch(body.map((statement) => ({ sql: statement })), { foreignKeys: false, timeoutMs: 60000 });
+    } else {
+      process.stdout.write(`      ${id} (${statements.length} statement(s))\n`);
+      for (let i = 0; i < statements.length; i += 1) {
+        const statement = statements[i];
+        const timeoutMs = statement.length > 200000 ? 120000 : 30000;
+        await db.pipeline([{ sql: statement }], { timeoutMs });
+        if (statements.length > 5 && (i + 1) % 10 === 0) {
+          process.stdout.write(`        ${i + 1}/${statements.length}\n`);
+        }
       }
     }
     await db.run('INSERT INTO _migrations (id, checksum) VALUES (?, ?)', [id, sum]);
