@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261020-1857-f90f1b3';
+  SR.BUILD = 'ridge-20261020-1916-ea33075';
 
   // -------------------------------------------------------------------
   // INSTALL
@@ -1471,20 +1471,41 @@
         ? `Welcome. This account was signed in on another device — that device has been signed out.`
         : `Welcome, ${(result.profile && result.profile.fullName) || (result.user && result.user.fullName) || username}.`);
     } catch (err) {
-      if (err && err.isOffline) {
+      const unreachable = err && (
+        err.isOffline || err.retryable || Number(err.status) === 0 || Number(err.status) >= 500
+        || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
+        || /shop server could not be reached/i.test(String(err.message || ''))
+      );
+      if (unreachable) {
         // An offline sign-in is allowed ONLY where this device already holds a
         // session for this username — otherwise the PIN would be checked against
         // nothing at all, which is not a login, it is a bypass.
+        const native = global.stockridgeNative && global.stockridgeNative.store;
+        if (native && native.checkVerifier) {
+          const verified = await native.checkVerifier(username, pin).catch(() => null);
+          if (!verified) {
+            errEl.textContent = 'The shop server could not be reached. This till has not signed that person in while online, or the PIN does not match. Connect once, then the same PIN opens the saved stock.';
+            errEl.hidden = false;
+            pinEl.select();
+            return;
+          }
+        }
         const cached = await SR.store.metaGet('me');
-        if (cached && cached.user && String(cached.user.username).toLowerCase() === username) {
+        const savedName = cached && cached.user && String(cached.user.username).toLowerCase();
+        if (savedName === username || (native && native.checkVerifier)) {
           writeTill({ username, remember });
-          await SR.state.loadFromMirror();
+          const restored = await SR.state.loadFromMirror();
+          if (!restored) {
+            errEl.textContent = 'The PIN matched, but this till has no saved stock yet. Connect once and let the catalogue finish saving.';
+            errEl.hidden = false;
+            return;
+          }
           SR.sync.start();
           navigate('/dashboard', { replace: true });
-          ui.warn('Signed in offline from this device. Your work will sync when the line returns.');
+          ui.warn('Signed in offline from the stock saved on this till. Sales will sync when the line returns.');
           return;
         }
-        errEl.textContent = 'You are offline and this device has no saved session for that username. Connect once and sign in.';
+        errEl.textContent = 'The shop server could not be reached, and this device has no saved session for that username. Connect once and sign in.';
       } else {
         errEl.textContent = err.message || 'Sign-in failed.';
       }
