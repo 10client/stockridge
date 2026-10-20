@@ -75,6 +75,10 @@ migrations_dir = "../schema/migrations"
 [vars]
 ENVIRONMENT = "production"
 DB_NAME = "stockridge"
+# The office books are Turso, the same database as the sample PWA. The URL is
+# not a secret. TURSO_AUTH_TOKEN is a Worker secret and must not be written here.
+# The D1 binding stays so Wrangler can deploy. The Worker does not query it.
+TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
 
 # ---------------------------------------------------------------------
 # OBSERVABILITY
@@ -153,6 +157,9 @@ name = "stockridge"
 [env.production.vars]
 ENVIRONMENT = "production"
 DB_NAME = "stockridge"
+# Same Turso database as the sample PWA. Do not point this at a second database
+# and do not copy D1 back onto it.
+TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "stockridge"

@@ -65,10 +65,9 @@ function databaseFor(env) {
     // statement goes down that socket, so a screen is not capped at 50 fetches.
     return createTursoDatabase({ url, authToken: token, name: env.DB_NAME || 'turso', connect: openSocket });
   }
-  // Sample is the hosted deployment that moved off D1. A missing secret must
-  // fail here, not silently read the old D1 database and look like the move
-  // succeeded.
-  if (url || token || env.ENVIRONMENT === 'sample') {
+  // Sample and the office Worker both use Turso. A missing secret must fail
+  // here, not silently read the old D1 database and look like the move succeeded.
+  if (url || token || env.ENVIRONMENT === 'sample' || env.ENVIRONMENT === 'production') {
     throw new Error('This deployment uses Turso, but TURSO_DATABASE_URL or TURSO_AUTH_TOKEN is missing.');
   }
   return createD1Database(env.DB, { name: env.DB_NAME || 'stockridge' });

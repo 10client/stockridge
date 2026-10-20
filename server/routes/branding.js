@@ -41,7 +41,7 @@ async function publicBranding(db) {
     logoDataUrl: (row && row.logo_data_url) || null,
     // The product mark, used wherever a shop has not uploaded its own. A path,
     // not the bytes: the sign-in screen must not download a picture inside JSON.
-    defaultLogoUrl: '/brand/mark.svg?v=ridge-20261019-1632-f9b872b',
+    defaultLogoUrl: '/brand/mark.svg?v=ridge-20261020-1719-2b6f2db',
     receiptFooter: (row && row.receipt_footer_text) || null,
     // A vendor mark, kept separate from the client's own name so the UI can show
     // "Powered by StockRidge" without competing with the shop's brand.
