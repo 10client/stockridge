@@ -124,16 +124,13 @@ database_id = "abf164d9-f3bb-4e56-9a9f-addd795013f7"
 migrations_dir = "../schema/migrations"
 
 # ---------------------------------------------------------------------
-# SAMPLE — a clean deployment to show a prospective client.
+# SAMPLE — the demonstration PWA.
 #
-# This is the one to point somebody at: `sample.stockridge.workers.dev` answers
-# with ONE administrator and nothing else, so the first thing a visitor does is
-# create their own business and watch provisioning build a chart of accounts,
-# categories, price lists and a starter catalogue for their vertical.
-#
-# IT HAS ITS OWN DATABASE. A sample that shares production's data is not a
-# sample; it is production with a second URL, and the first thing anybody tries
-# in it is something they would not try in production.
+# sample.stockridge.workers.dev and the office host stockridge.stockridge.workers.dev
+# read ONE Turso database, stockridge-10client. The desktop till and the Android
+# app use that same database at the same time, through the Worker. Do not create
+# a second database for sample, for the office host, for the till, or for the APK.
+# Do not copy D1 onto this database. The Turso token is a Worker secret.
 # ---------------------------------------------------------------------
 [env.sample]
 name = "sample"
