@@ -826,6 +826,41 @@
     return { chip, count, label };
   }
 
+  async function updateSaveChrome() {
+    const chip = document.getElementById('save-chip');
+    const label = document.getElementById('save-chip-label');
+    if (!chip || !label || !SR.saveStatus || !SR.state.user) {
+      if (chip) chip.hidden = true;
+      return;
+    }
+    try {
+      const status = SR.sync.status();
+      const stats = await SR.sync.queueStats();
+      const lastPullAt = await SR.store.metaGet('last_pull_at');
+      const truncated = await SR.store.metaGet('sync_truncated');
+      const incomplete = await SR.store.metaGet('sync_incomplete_since');
+      const stock = await SR.store.all('stock_batches').catch(() => []);
+      const products = await SR.store.all('products').catch(() => []);
+      const report = SR.saveStatus.decide({
+        running: status.running,
+        online: SR.api.isOnline(),
+        pending: stats.pending,
+        failed: stats.failed,
+        lastPullAt,
+        truncated,
+        incomplete,
+        stockRows: stock.length,
+        productRows: products.length,
+      });
+      chip.hidden = false;
+      chip.dataset.state = report.state;
+      chip.classList.add('chip-save');
+      label.textContent = report.label;
+      chip.title = report.detail;
+      chip.setAttribute('aria-label', `${report.label}. ${report.detail}`);
+    } catch (e) { /* the store may still be opening */ }
+  }
+
   async function updateQueueChrome() {
     const parts = ensureQueueChip();
     if (!parts) return;
@@ -1720,13 +1755,14 @@
       showLogin();
     }
     updateQueueChrome();
+    updateSaveChrome();
 
     startBellPolling();
-    SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); });
+    SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); });
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
-    SR.api.on('queue', () => { void updateQueueChrome(); });
-    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSubscriptionChrome(); });
+    SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });
+    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); updateSubscriptionChrome(); });
     // A REFUSED WRITE IS THE MOST RELIABLE SIGNAL THERE IS. The cached settings can be
     // minutes or days old (they are mirrored for offline use); a 402 naming the
     // suspension is the server saying it just now. Re-read and repaint rather than trust
@@ -1735,7 +1771,7 @@
     const subLink = document.getElementById('subscription-bar-link');
     if (subLink) subLink.addEventListener('click', () => navigate('/plan'));
     SR.api.on('auth', (detail) => { void handleAuthFailure(detail || {}); });
-    SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); });
+    SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); void updateSaveChrome(); });
     SR.state.on('business', () => {
       paintIdentity();
       buildNav();
@@ -1775,6 +1811,11 @@
     const businessSwitch = document.getElementById('business-switch');
     if (businessSwitch) businessSwitch.addEventListener('click', () => openBusinessPicker());
     document.getElementById('queue-chip').addEventListener('click', () => navigate('/sync'));
+    const saveChip = document.getElementById('save-chip');
+    if (saveChip && !saveChip.dataset.bound) {
+      saveChip.dataset.bound = '1';
+      saveChip.addEventListener('click', () => navigate('/sync'));
+    }
     for (const id of ['install-btn', 'nav-install', 'login-install']) {
       const el = document.getElementById(id);
       if (el) el.addEventListener('click', () => { void downloadApp(); });
@@ -1844,7 +1885,7 @@
     // Anything the POS queued while the tab was hidden should go out promptly.
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        updateNetChrome(); updateQueueChrome(); void updateBell({ refreshPanel: true });
+        updateNetChrome(); updateQueueChrome(); updateSaveChrome(); void updateBell({ refreshPanel: true });
         void offerNewBuild();
       }
     });
@@ -1907,7 +1948,7 @@
     showLogin, showShell, paintIdentity, paintLoginBrand, buildNav, setActiveNav, closeNav,
     openBranchPicker, openBusinessPicker, guardWorkingBusiness,
     updateBell, openBell, closeBell, markAllRead, openMessageComposer,
-    updateNetChrome, updateQueueChrome, handleAuthFailure, doLogout,
+    updateNetChrome, updateQueueChrome, updateSaveChrome, handleAuthFailure, doLogout,
     updateSubscriptionChrome, refreshSubscriptionChrome, subscriptionState,
     liveBuild, offerNewBuild,
     openModal: ui.openModal,

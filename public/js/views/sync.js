@@ -94,6 +94,39 @@
         ui.kpi({ label: 'Last download', value: s.lastPullAt ? U.relTime(s.lastPullAt) : 'never', small: true }),
         ui.kpi({ label: 'Last error', value: s.lastError ? String(s.lastError.message || s.lastError).slice(0, 60) : 'none', tone: s.lastError ? 'bad' : 'good', small: true })));
       statusCard.replaceChildren(card);
+      void paintFinishedSaving(statusCard);
+    }
+
+    async function paintFinishedSaving(host) {
+      if (!SR.saveStatus) return;
+      const status = SR.sync.status();
+      const stats = await SR.sync.queueStats().catch(() => ({ pending: 0, failed: 0 }));
+      const lastPullAt = await SR.store.metaGet('last_pull_at').catch(() => null);
+      const truncated = await SR.store.metaGet('sync_truncated').catch(() => []);
+      const incomplete = await SR.store.metaGet('sync_incomplete_since').catch(() => null);
+      const stock = await SR.store.all('stock_batches').catch(() => []);
+      const products = await SR.store.all('products').catch(() => []);
+      const report = SR.saveStatus.decide({
+        running: status.running,
+        online: SR.api.isOnline(),
+        pending: stats.pending,
+        failed: stats.failed,
+        lastPullAt,
+        truncated,
+        incomplete,
+        stockRows: stock.length,
+        productRows: products.length,
+      });
+      const when = lastPullAt ? String(lastPullAt).replace('T', ' ').slice(0, 16) : 'not yet';
+      document.querySelectorAll('[id="save-status-card"]').forEach((el) => el.remove());
+      host.prepend(ui.h('section', {
+        id: 'save-status-card',
+        class: 'card',
+        'data-state': report.state,
+      }, ui.h('div', { class: 'card-body' },
+        ui.h('h2', {}, report.label),
+        ui.h('p', {}, report.detail),
+        ui.h('p', { class: 'sub' }, 'Catalogue saved: ' + when + ' · ' + products.length + ' products · ' + stock.length + ' stock rows · ' + (stats.pending || 0) + ' waiting · ' + (stats.failed || 0) + ' refused'))));
     }
 
     // -------------------------------------------------------------- queue

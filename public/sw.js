@@ -41,6 +41,7 @@ const SHELL = [
   '/js/state.js?v=ridge-20261020-1719-2b6f2db',
   '/js/ui.js?v=ridge-20261020-1719-2b6f2db',
   '/js/sync.js?v=ridge-20261020-1719-2b6f2db',
+  '/js/save-status.js?v=ridge-20261020-1719-2b6f2db',
   '/js/print.js?v=ridge-20261020-1719-2b6f2db',
   '/js/barcode-label.js?v=ridge-20261020-1719-2b6f2db',
   '/js/export.js?v=ridge-20261020-1719-2b6f2db',
