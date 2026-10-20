@@ -1367,8 +1367,27 @@
       const result = await SR.api.login({ username, pin, remember });
       writeTill({ username, remember });
       try { sessionStorage.removeItem('sr.displaced'); } catch (e) { /* fine */ }
-      SR.api.setToken(result.token, { remember });
+      // A desktop till can accept the PIN against the verifier it saved last
+      // time. `true` is not a token — writing it would erase the real session.
+      if (result && typeof result.token === 'string' && result.token) {
+        SR.api.setToken(result.token, { remember: remember || Boolean(result.offline) });
+      }
       void form;
+      if (result && result.offline) {
+        const restored = await SR.state.loadFromMirror();
+        if (!restored) {
+          errEl.textContent = 'The PIN matched, but this till has no saved stock yet. Connect once and let the catalogue finish saving.';
+          errEl.hidden = false;
+          return;
+        }
+        updateSubscriptionChrome();
+        SR.sync.start();
+        navigate('/dashboard', { replace: true });
+        ui.warn(result.token
+          ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'
+          : 'Signed in offline. The saved sign-in has expired, so these sales stay on this till until you sign in while connected.');
+        return;
+      }
       await SR.state.load({ force: true });
       updateSubscriptionChrome();
       // The mirror is refreshed straight away so a device that loses its line
