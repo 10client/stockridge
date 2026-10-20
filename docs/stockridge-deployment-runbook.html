@@ -847,8 +847,8 @@ Start-Process $AppUrl</pre>
 
 <section class="section">
   <h2 class="sec"><span class="num">17</span><span class="title">Put a Standalone Till on the Shop Computer</span></h2>
-  <p>Do this only when the counter will run StockRidge as a program, not only as a browser tab. A phone still installs the browser app from the Worker URL. The desktop till is a window around the same screens. It is not a second deployment, and it is not a second database in the cloud.</p>
-  <p>Offline sales on that computer are written to a SQLite file before the cashier is told the sale succeeded. When the link returns, the existing sync posts that queue to this client's Worker, then pulls. The till never opens Turso itself. Do not put a Turso token, a Cloudflare token, or a PIN in the desktop folder. The file is SQLCipher. The key stays in the Windows credential store. Do not delete <span class="inline">stockridge.key</span>.</p>
+  <p>Do this only when the counter will run StockRidge as a program, not only as a browser tab. A phone still installs the browser app from the Worker URL. The desktop till is a window around the same screens. It is not a second deployment, and it is not a second database in the cloud. The PWA and the till use one Worker. That Worker is the door into Turso. Water packing, bakery and the other verticals are on that Worker. They are not a separate Electron list.</p>
+  <p>Offline sales on that computer are written to a SQLite file before the cashier is told the sale succeeded. When the link returns, the existing sync posts that queue to this client's Worker, then pulls. The till never opens Turso itself. Do not put a Turso token, a Cloudflare token, or a PIN in the desktop folder. The file is SQLCipher. The key stays in the Windows credential store. Do not delete <span class="inline">stockridge.key</span>. On each launch, while the internet works, the window copies the live PWA screens. That is how the till stays on the same version as the browser. The office host <span class="inline">stockridge.stockridge.workers.dev</span> is the 16 October copy. It is not this Turso database, and it does not list water packing or bakery. Do not point a till at it.</p>
   <p>Sign in once while the internet works. After that, the same PIN opens the saved session when the Worker cannot be reached. A person who has never signed in on that computer still needs the internet once. One counter can start the LAN hub from the File menu and share the last mirror plus queued quantities. Other tills set <span class="inline">STOCKRIDGE_HUB</span> and <span class="inline">STOCKRIDGE_HUB_SECRET</span>. The hub does not accept a sale in place of the Worker. Code signing needs <span class="inline">CSC_LINK</span> and <span class="inline">CSC_KEY_PASSWORD</span>. Without that certificate the program is unsigned. Updates stay off until <span class="inline">STOCKRIDGE_UPDATE_URL</span> is set.</p>
   <h3>17.1 Clone the shell beside this client's checkout</h3>
   <p>The shell is one shared repository. Each client still gets their own clone, so the archive copies that client's screens and not another shop's.</p>
@@ -862,7 +862,7 @@ npm install</pre>
     If GitHub asks for a login, use the office account that can read that repository. Do not point this folder at the client's stockridge remote. Do not copy <span class="inline">.env.deploy</span> into it.
   </div>
   <h3>17.2 Archive for this client only</h3>
-  <p>Deploy the Worker first (Section 13), so the screens on disk are the screens you just shipped. The archive copies <span class="inline">stockridge\public</span> from the sibling folder. It does not download the screens from the Worker.</p>
+  <p>Deploy the Worker first (Section 13), so the screens on disk are the screens you just shipped. The archive copies <span class="inline">stockridge\public</span> from the sibling folder as a spare. The installed program then copies the live screens from this client's Worker on launch, so a later screen change does not wait for another archive.</p>
   <pre>$env:STOCKRIDGE_ORIGIN = "https://northline-stockridge.&lt;account&gt;.workers.dev"
 npm run archive
 Remove-Item Env:STOCKRIDGE_ORIGIN
@@ -873,7 +873,7 @@ Get-Content .\build\desktop-config.json</pre>
   </div>
   <div class="dont">
     <span class="kicker">Do not</span>
-    Run <span class="inline">npm run archive</span> with <span class="inline">STOCKRIDGE_ORIGIN</span> unset. The unset default is the office production host, <span class="inline">stockridge.stockridge.workers.dev</span>, not this client. Do not leave the variable set in the terminal and then archive the next client. Remove it, as the command above does.
+    Run <span class="inline">npm run archive</span> with <span class="inline">STOCKRIDGE_ORIGIN</span> unset when this is a client. The unset default is the demonstration on Turso, <span class="inline">sample.stockridge.workers.dev</span>, the same books as that PWA. A client must set their own Worker URL. Do not leave the variable set in the terminal and then archive the next client. Remove it, as the command above does. Do not set the office production host. That host is not the Turso database.
   </div>
   <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run <span class="inline">npm run archive</span> again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder. The Windows file is not code-signed. The archive skips the signing tools, because those tools contain Mac shortcuts and a normal Windows account cannot create them. Do not turn signing on for this handover.</p>
   <h3>17.3 Rename the file before it can be mixed up</h3>
@@ -913,7 +913,7 @@ git status</pre>
   </div>
   <div class="important">
     <span class="kicker">If this client uses the desktop till</span>
-    A Worker deploy updates the browser. It does not replace the screens already inside an installed desktop program. After a deploy that changes screens, repeat Section 17: set this client's origin, archive again, rename the file with the client name, and replace the program on the counter. Leave the old program in place only when the screens did not change.
+    A Worker deploy updates the browser. The desktop till copies those screens on its next launch, while the internet works. Repeat Section 17 only when the desktop program itself changed, not for a screen-only deploy. The till still has to be aimed at this client's Worker. A new archive does not move an old till off the wrong host by itself.
   </div>
 </section>
 
