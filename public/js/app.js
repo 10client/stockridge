@@ -41,8 +41,30 @@
   // hidden at the only moment someone needs to put the icon back. The sidebar
   // button stays for every browser that can install, including inside an
   // already-installed window, and the steps say how to clear the leftover copy.
+  //
+  // Electron and an Android APK are already the app. Those windows hide every
+  // install button. A browser, including an installed PWA, still shows them.
   let installPrompt = null;
   let browserOfferedInstall = false;
+
+  function runningInNativeShell() {
+    try {
+      const ua = navigator.userAgent || '';
+      if (/Electron/i.test(ua)) return true;
+      const native = window.stockridgeNative;
+      const shell = native && String(native.shell || native.platform || '');
+      if (shell === 'electron' || shell === 'android') return true;
+      if (native && native.store) return true;
+      const cap = window.Capacitor;
+      if (cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) return true;
+      if (window.cordova) return true;
+      // Android System WebView, which an APK uses. Chrome on a phone does not.
+      if (/;\s*wv[;)]/i.test(ua)) return true;
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
 
   function runningAsInstalledApp() {
     try {
@@ -79,6 +101,7 @@
   }
 
   function installCompatible() {
+    if (runningInNativeShell()) return false;
     if (runningAsInstalledApp()) return false;
     if (installPrompt || browserOfferedInstall) return true;
     return safariCanInstall();
@@ -87,11 +110,19 @@
   /** The sidebar button is the way back after a deleted icon. It does not wait
    *  for a prompt the browser will refuse to send while the old install remains. */
   function sidebarInstallVisible() {
+    if (runningInNativeShell()) return false;
     if (inAppBrowser() || !window.isSecureContext) return false;
     return chromiumCanInstall() || safariCanInstall() || Boolean(installPrompt);
   }
 
   function paintInstallButton() {
+    if (runningInNativeShell()) {
+      for (const id of ['install-btn', 'nav-install', 'login-install']) {
+        const el = document.getElementById(id);
+        if (el) el.hidden = true;
+      }
+      return;
+    }
     const fresh = installCompatible();
     const top = document.getElementById('install-btn');
     const login = document.getElementById('login-install');
@@ -102,6 +133,11 @@
   }
 
   window.addEventListener('beforeinstallprompt', (event) => {
+    if (runningInNativeShell()) {
+      event.preventDefault();
+      paintInstallButton();
+      return;
+    }
     // Keep the prompt for our button. The browser's own banner would otherwise
     // consume it, and a till that already has a Download control does not need both.
     event.preventDefault();
@@ -146,6 +182,7 @@
   }
 
   async function downloadApp() {
+    if (runningInNativeShell()) return;
     const prompt = installPrompt;
     // A window that is already the installed app will not be given a prompt.
     // Falling through shows how to remove the leftover copy and install again.
