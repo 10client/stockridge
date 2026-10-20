@@ -1,0 +1,994 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>StockRidge Multi-Client Deployment Runbook</title>
+<style>
+  @page {
+    size: A4;
+    margin: 16mm 16mm 18mm 16mm;
+    @bottom-left {
+      content: "StockRidge  ·  Multi-client deployment runbook";
+      font-family: "DejaVu Sans", sans-serif;
+      font-size: 8pt;
+      color: #6d7c84;
+    }
+    @bottom-right {
+      content: counter(page);
+      font-family: "DejaVu Sans", sans-serif;
+      font-size: 8pt;
+      color: #6d7c84;
+    }
+  }
+  @page :first {
+    margin: 12mm;
+    @bottom-left { content: none; }
+    @bottom-right { content: none; }
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 10.2pt;
+    line-height: 1.48;
+    color: #1c2b33;
+  }
+  h1, h2, h3, p { margin: 0; }
+  strong { font-weight: 700; }
+  code, .mono {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 0.86em;
+  }
+  p + p { margin-top: 8px; }
+  a { color: inherit; text-decoration: none; }
+
+  .cover-wrap { page-break-after: always; }
+  .cover {
+    background: #0c4c44;
+    color: #f4faf8;
+    border-radius: 16px;
+    min-height: 262mm;
+    padding: 54px 46px 40px;
+  }
+  .eyebrow {
+    letter-spacing: 0.16em;
+    font-size: 8.4pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: #d5ebe4;
+    margin-bottom: 14px;
+  }
+  .cover h1 {
+    font-size: 24pt;
+    line-height: 1.15;
+    font-weight: 700;
+    margin: 0 0 14px;
+    color: #fff;
+  }
+  .lede {
+    font-size: 11pt;
+    line-height: 1.45;
+    color: #e7f3ef;
+    max-width: 460px;
+    margin-bottom: 36px;
+  }
+  table.meta {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 8px;
+  }
+  table.meta th {
+    width: 34%;
+    text-align: left;
+    font-size: 8pt;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #d7ebe4;
+    font-weight: 700;
+    vertical-align: top;
+    padding: 9px 12px 9px 0;
+    border-top: 1px solid rgba(255,255,255,0.28);
+  }
+  table.meta td {
+    vertical-align: top;
+    padding: 9px 0;
+    border-top: 1px solid rgba(255,255,255,0.28);
+    color: #f7fbfa;
+    font-size: 10pt;
+  }
+  .cover-foot {
+    margin-top: 28px;
+    font-size: 8.6pt;
+    color: #c5ddd6;
+  }
+
+  h2.sec {
+    display: table;
+    width: 100%;
+    font-size: 15.5pt;
+    line-height: 1.25;
+    color: #0c4c44;
+    font-weight: 700;
+    margin: 16px 0 10px;
+    padding-bottom: 8px;
+    border-bottom: 2px solid #0c4c44;
+    page-break-after: avoid;
+    page-break-inside: avoid;
+  }
+  h2.sec .num, h2.sec .title { display: table-cell; vertical-align: middle; }
+  h2.sec .num { width: 36px; text-align: center; padding: 3px 0; }
+  h2.sec .title { padding-left: 8px; width: 100%; }
+  h2.plain {
+    font-size: 16.5pt;
+    color: #0c4c44;
+    font-weight: 700;
+    margin: 18px 0 8px;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 12pt;
+    color: #0c4c44;
+    margin: 14px 0 6px;
+    page-break-after: avoid;
+  }
+  .num {
+    display: inline-block;
+    background: #0c4c44;
+    color: #fff;
+    font-size: 10pt;
+    font-weight: 700;
+    border-radius: 5px;
+    padding: 1px 7px 2px;
+    margin: 2px 0 0;
+    letter-spacing: 0.02em;
+    flex: none;
+  }
+  .section { page-break-before: auto; }
+  .front { page-break-after: always; }
+
+  .rule, .note, .dont, .caution, .expected, .important, .danger {
+    border-radius: 8px;
+    padding: 10px 12px 11px;
+    margin: 12px 0;
+    page-break-inside: avoid;
+  }
+  .rule { background: #e7f4f0; border: 1px solid #9ecfbf; }
+  .note { background: #f4f7f8; border: 1px solid #d5dee2; }
+  .dont { background: #fff6ea; border: 1px solid #e2c08a; }
+  .caution { background: #fff8e8; border: 1px solid #e6c56a; }
+  .expected { background: #eef8f1; border: 1px solid #b7d7c0; }
+  .important { background: #eef3f8; border: 1px solid #b9cbe0; }
+  .danger { background: #fdf2f2; border: 1px solid #e3b4b4; }
+  .kicker {
+    display: block;
+    font-size: 8pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+  }
+  .rule .kicker { color: #0c4c44; }
+  .note .kicker { color: #3d5560; }
+  .dont .kicker { color: #9a5b00; }
+  .caution .kicker { color: #8a6200; }
+  .expected .kicker { color: #1d6b3a; }
+  .important .kicker { color: #1d4e89; }
+  .danger .kicker { color: #9b2c2c; }
+
+  pre {
+    background: #102433;
+    color: #e7eef3;
+    border-radius: 8px;
+    padding: 11px 13px;
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 8.15pt;
+    line-height: 1.42;
+    white-space: pre-wrap;
+    margin: 8px 0 12px;
+    page-break-inside: avoid;
+  }
+  .tree {
+    background: #f3f6f4;
+    border-left: 4px solid #1f7a56;
+    border-radius: 0 8px 8px 0;
+    padding: 10px 12px;
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 8.4pt;
+    line-height: 1.45;
+    white-space: pre;
+    margin: 8px 0 12px;
+    page-break-inside: avoid;
+  }
+  .inline {
+    font-family: "DejaVu Sans Mono", monospace;
+    font-size: 0.86em;
+    background: #eef4f1;
+    color: #0c4c44;
+    padding: 0 3px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+
+  ul.checks { list-style: none; padding: 0; margin: 8px 0 0; }
+  ul.checks li {
+    padding: 5px 0 5px 22px;
+    position: relative;
+    border-bottom: 1px solid #e6ecee;
+  }
+  ul.checks li:before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 8px;
+    width: 11px;
+    height: 11px;
+    border: 1.4px solid #7d8f86;
+    border-radius: 2px;
+  }
+  ol.steps { margin: 8px 0 0; padding-left: 1.2em; }
+  ol.steps li { margin: 5px 0; }
+  ul.plain { margin: 6px 0 0; padding-left: 1.15em; }
+  ul.plain li { margin: 4px 0; }
+
+  table.terms, table.reg, table.cmds, table.verts {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 12px;
+    page-break-inside: avoid;
+  }
+  table.terms th, table.reg th, table.cmds th, table.verts th {
+    text-align: left;
+    font-size: 8pt;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #0c4c44;
+    border-bottom: 1.5px solid #0c4c44;
+    padding: 4px 8px 5px 0;
+    vertical-align: bottom;
+  }
+  table.terms td, table.reg td, table.cmds td, table.verts td {
+    border-bottom: 1px solid #e1e8ea;
+    padding: 6px 8px 6px 0;
+    vertical-align: top;
+    font-size: 9pt;
+  }
+  table.terms td:first-child, table.cmds td:first-child {
+    font-weight: 700;
+    color: #0c4c44;
+    width: 28%;
+  }
+  table.reg { font-size: 8pt; }
+  table.reg td, table.reg th { font-size: 7.6pt; padding-right: 6px; }
+  .toc { page-break-after: always; }
+  .toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 12px 0 0;
+    counter-reset: toc;
+  }
+  .toc li {
+    counter-increment: toc;
+    border-bottom: 1px solid #e6ecee;
+    padding: 7px 0;
+    font-size: 11pt;
+  }
+  .toc li:before {
+    content: counter(toc, decimal-leading-zero);
+    display: inline-block;
+    width: 32px;
+    color: #0c4c44;
+    font-weight: 700;
+    font-size: 10pt;
+  }
+  .small { font-size: 9pt; color: #3d4e56; }
+  .keep { page-break-inside: avoid; }
+</style>
+</head>
+<body>
+
+<section class="cover-wrap">
+  <div class="cover">
+    <div class="eyebrow">Technical deployment runbook</div>
+    <h1>StockRidge<br>Multi-Client Deployment</h1>
+    <p class="lede">A step-by-step guide for setting up, deploying, and maintaining StockRidge separately for multiple clients from one shared office Windows desktop.</p>
+    <table class="meta">
+      <tr>
+        <th>Audience</th>
+        <td>Developers and deployment operators responsible for onboarding a new client onto StockRidge</td>
+      </tr>
+      <tr>
+        <th>Environment</th>
+        <td>One shared Windows laptop or desktop, Windows Terminal (PowerShell), VS Code</td>
+      </tr>
+      <tr>
+        <th>Systems in scope</th>
+        <td>Git and GitHub (multiple accounts and SSH identities), Cloudflare Workers, D1, Turso, and the desktop&nbsp;till</td>
+      </tr>
+      <tr>
+        <th>Document type</th>
+        <td>Operational runbook — read in order for a new client, then keep for reference</td>
+      </tr>
+    </table>
+    <p class="cover-foot">Internal technical documentation — for the team responsible for client deployments. 20 October 2026.</p>
+  </div>
+</section>
+
+<section class="front">
+  <h2 class="plain" style="margin-top:0">About This Runbook</h2>
+  <p>This runbook is for a developer or deployment operator using <strong>one Windows laptop</strong>, <strong>VS Code</strong>, <strong>multiple GitHub accounts and SSH keys</strong>, and <strong>different Cloudflare accounts</strong> for different StockRidge clients.</p>
+  <p>It assumes each client receives a separate folder, Git remote, Worker, database, custom domain and set of credentials. Never reuse one client's database, Worker name, Git remote, Cloudflare token, Turso token, or backup for another client.</p>
+  <div class="rule">
+    <span class="kicker">Core rule</span>
+    one client folder → one Git remote/SSH alias → one Cloudflare account → one Worker → one live database.
+  </div>
+  <p>Everything below follows from that one rule. Every section either sets up one link in that chain, or verifies it before moving on. If a step ever produces a result that mixes two clients together, stop and fix it before continuing — see Section 20, “Stop Immediately If.”</p>
+  <p>StockRidge is multi-business inside one deployment. A client may run a bakery and a pharmacy as two businesses on <em>their</em> Worker. That is not a reason to put two clients on one Worker. Businesses share a database only when they belong to the same client.</p>
+
+  <h2 class="plain">How to Use This Document</h2>
+  <p>For a <strong>brand-new client</strong>, work through Sections 1–16 in order. Do not skip ahead. Later steps assume the folder, the SSH alias and the Cloudflare account are already the right ones. Section 17 is the counter desktop, when this client will use a Windows till rather than only the browser. Sections 18–20 are for <strong>ongoing operation</strong> once a client is live: routine updates, quick checks, and the signs that mean stop.</p>
+  <div class="important">
+    <span class="kicker">The checkout you already have</span>
+    This repository already contains a demonstration deployment at sample.stockridge.workers.dev. Update only that demonstration with <span class="inline">--env=sample --skip-seed</span>. Do not pass <span class="inline">--reset-pin</span>. Do not omit <span class="inline">--env</span> — with no environment flag, the script deploys production. Do not copy that sample's database, Turso host, or Worker name onto a new client.
+  </div>
+
+  <h2 class="plain">Prerequisites</h2>
+  <p>Before starting on a new client, confirm the workstation and the access are ready:</p>
+  <ul class="checks">
+    <li>Windows laptop or desktop with administrator access (needed once, to enable the SSH agent service)</li>
+    <li>Windows Terminal with PowerShell, and VS Code with the <span class="inline">code</span> command available on PATH</li>
+    <li>Git for Windows installed (provides <span class="inline">ssh-keygen</span> and <span class="inline">ssh-add</span>)</li>
+    <li>Node.js 20.11 or newer, and npm, so that <span class="inline">npm ci</span> and <span class="inline">node tools/deploy-cloudflare.js</span> run from the repository root</li>
+    <li>Wrangler available to that script (<span class="inline">npx wrangler</span> is enough if it is not installed in <span class="inline">node_modules</span>)</li>
+    <li>The Turso CLI, if this client will use Turso rather than D1 as the live database</li>
+    <li>GitHub CLI (<span class="inline">gh</span>), only if the team prefers creating repositories from the terminal</li>
+    <li>The correct GitHub account or organisation membership for this specific client</li>
+    <li>The correct Cloudflare account access for this specific client</li>
+    <li>A secure place for the client deployment register — see Section 2. Identifiers only. No tokens, no PIN.</li>
+    <li>The StockRidge source package, ready to extract into the new client's folder</li>
+    <li>The desktop shell, when this client will have a counter program. Clone it beside that client's checkout in Section 17. It is not a second Worker, and it does not get a database token.</li>
+  </ul>
+
+  <h2 class="plain">Key Terms</h2>
+  <table class="terms">
+    <tr><td>SSH alias</td><td>A short nickname (for example <span class="inline">github-northline</span>) in <span class="inline">~\.ssh\config</span> that tells Git which SSH key to present to github.com, so several GitHub identities can coexist on one machine.</td></tr>
+    <tr><td>Worker</td><td>The Cloudflare Worker that runs StockRidge's API and serves the client's app from the same hostname. There is no second backend and no separate Pages site.</td></tr>
+    <tr><td>D1 database</td><td>Cloudflare's SQL database attached to a Worker. The binding stays in <span class="inline">worker/wrangler.toml</span> so Wrangler can deploy. It is the live store only when Turso is not configured.</td></tr>
+    <tr><td>Turso database</td><td>The live SQL database for a hosted client. The URL is not a secret. The auth token is. Sample uses Turso because a Worker on the Free plan cannot raise its subrequest cap, and one Turso socket keeps a shop screen inside that cap.</td></tr>
+    <tr><td>StockRidge Admin</td><td>The one platform administrator. No business, no branch. Created by the seed, used to sign in and create the client's proprietor. Not the person who rings sales.</td></tr>
+    <tr><td>Proprietor</td><td>The client's owner. Stored as role <span class="inline">OWNER</span> with no business on the row. Owns every business and branch of that deployment, including ones opened later. Created in the app, not in SQL.</td></tr>
+    <tr><td>Environment</td><td>A named block in <span class="inline">worker/wrangler.toml</span>. <span class="inline">--env=sample</span> deploys sample. Omitting <span class="inline">--env</span> deploys the top-level configuration, which is production.</td></tr>
+    <tr><td>Desktop till</td><td>A standalone window for one shop computer. The screens travel inside the program. API calls go to this client's Worker. Offline books on that computer are a SQLite file. The till does not hold a Turso token, and it does not sync to Turso itself.</td></tr>
+  </table>
+</section>
+
+<section class="toc">
+  <h2 class="plain" style="margin-top:0">Table of Contents</h2>
+  <ol>
+    <li>Set Up a Separate Folder for Every Client</li>
+    <li>Keep a Client Deployment Register</li>
+    <li>Configure One SSH Key per GitHub Account</li>
+    <li>Create SSH Aliases in ~\.ssh\config</li>
+    <li>Create the New Client Repository with the Correct SSH Identity</li>
+    <li>GitHub CLI Is Separate from Git SSH</li>
+    <li>Install Dependencies and Connect Wrangler</li>
+    <li>Choose Names — and Do Not Reuse the Downloaded Ones</li>
+    <li>Point wrangler.toml at the New Worker and Database</li>
+    <li>Put Credentials in .env.deploy</li>
+    <li>Apply Migrations to the Database the Worker Will Read</li>
+    <li>Create the First Administrator, and Treat the PIN as a Secret</li>
+    <li>Deploy the Worker and the PWA</li>
+    <li>Create the Proprietor and the First Business</li>
+    <li>Optional: Attach a Client-Owned Custom Domain</li>
+    <li>First Production Smoke Test</li>
+    <li>Put a Standalone Till on the Shop Computer</li>
+    <li>Day-Two Deploy and Update Routine</li>
+    <li>Useful Checks</li>
+    <li>Stop Immediately If Any of These Happen</li>
+  </ol>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">01</span><span class="title">Set Up a Separate Folder for Every Client</span></h2>
+  <p>Every client's copy of StockRidge lives in its own folder. Mixing clients into one folder — and repeatedly editing <span class="inline">worker\wrangler.toml</span> and <span class="inline">.env.deploy</span> to “switch” between them — is the usual way a deploy writes to the wrong database.</p>
+  <p>Create a stable root folder once:</p>
+  <pre>New-Item -ItemType Directory -Force "C:\StockRidgeClients"
+Set-Location "C:\StockRidgeClients"</pre>
+  <p>Recommended layout — one sub-folder per client, each containing its own full copy of the project:</p>
+  <div class="tree">C:\StockRidgeClients\
+├── NorthlineStores\
+│       ├── stockridge\
+│       └── destop-stockridge\
+├── HarbourMart\
+│       ├── stockridge\
+│       └── destop-stockridge\
+└── SampleDemonstration\
+        ├── stockridge\
+        └── destop-stockridge\</div>
+  <p><span class="inline">destop-stockridge</span> is the counter program. Add it in Section 17, beside that client's checkout, only when the shop will use a desktop till. It is not a second copy of the Worker, and it is not a place for this client's tokens.</p>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Keep several clients in one mutable folder and change <span class="inline">worker\wrangler.toml</span> or <span class="inline">.env.deploy</span> to switch between them. That is how a deploy lands in the wrong D1 database, or points a new Worker at the sample Turso host.
+  </div>
+  <p>For a new client folder:</p>
+  <pre>$Client = "NorthlineStores"
+$ClientRoot = "C:\StockRidgeClients\$Client\stockridge"
+New-Item -ItemType Directory -Force $ClientRoot
+Set-Location $ClientRoot</pre>
+  <p>Copy or extract the StockRidge source into <span class="inline">$ClientRoot</span>, then open that folder in VS Code:</p>
+  <pre>code .</pre>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">02</span><span class="title">Keep a Client Deployment Register</span></h2>
+  <p>One row per client, kept somewhere you will actually open before every deploy. This is the source of truth for which folder, SSH alias, Cloudflare account, Worker and database belong together.</p>
+  <div class="note">
+    <span class="kicker">Note</span>
+    Create this record <strong>outside Git</strong> — a password-manager secure note, or an encrypted company record. Store identifiers only. Do not store the Cloudflare token, the Turso token, the JWT secret, or the administrator PIN.
+  </div>
+  <table class="reg">
+    <tr>
+      <th>Client</th><th>Local folder</th><th>SSH alias</th><th>GitHub repo</th>
+    </tr>
+    <tr>
+      <td>Northline Stores</td>
+      <td>C:\StockRidgeClients\NorthlineStores\stockridge</td>
+      <td>github-northline</td>
+      <td>northline-org/stockridge</td>
+    </tr>
+    <tr>
+      <th>Cloudflare account</th><th>Worker</th><th>Live database</th><th>Domain</th>
+    </tr>
+    <tr>
+      <td>stored securely, not in Git</td>
+      <td>northline-stockridge</td>
+      <td>northline-stockridge (Turso) — not the sample host</td>
+      <td>app.northline.example</td>
+    </tr>
+  </table>
+  <p>Before every deploy, read the current row and confirm the folder, the remote, the Worker, the environment flag and the database all agree. If the Turso host in the register is <span class="inline">stockridge-10client.aws-eu-north-1.turso.io</span>, you are looking at the demonstration, not at a new client.</p>
+  <p>When this client has a desktop till, add two more fields to the same row: the Worker URL baked into the archive, and the renamed file you handed the shop. Those two must name this client. The desktop folder is a clone of the shared shell. It does not get its own Turso database.</p>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">03</span><span class="title">Configure One SSH Key per GitHub Account</span></h2>
+  <p>Each client's repository lives under a specific GitHub account or organisation. Git needs a dedicated SSH key for that account so it never authenticates as the wrong identity.</p>
+  <h3>3.1 Check existing SSH keys</h3>
+  <pre>Get-ChildItem "$HOME\.ssh"</pre>
+  <div class="caution">
+    <span class="kicker">Caution</span>
+    If a key already belongs to another GitHub account, do not overwrite it.
+  </div>
+  <h3>3.2 Create a new client GitHub key, if needed</h3>
+  <p>Name the key after the <strong>GitHub account</strong>, not after the database:</p>
+  <pre>$GitHubKey = "$HOME\.ssh\id_ed25519_github_northline"
+ssh-keygen -t ed25519 -a 64 -C "github-northline-deployment" -f $GitHubKey</pre>
+  <p>Choose a passphrase. Do not use the administrator PIN, or the proprietor's PIN, as an SSH passphrase.</p>
+  <p>Copy the public key and add it to the intended GitHub account under Settings → SSH and GPG keys:</p>
+  <pre>Get-Content "$GitHubKey.pub" | Set-Clipboard
+Start-Process "https://github.com/settings/keys"</pre>
+  <p>If the repository belongs to an organisation using SSO, authorise the new key for that organisation in GitHub.</p>
+  <h3>3.3 Start the Windows SSH agent and load the key</h3>
+  <p>Run this once from an <strong>Administrator</strong> PowerShell, only if the service is disabled:</p>
+  <pre>Set-Service -Name ssh-agent -StartupType Automatic
+Start-Service ssh-agent</pre>
+  <p>Then, from the normal VS Code terminal:</p>
+  <pre>ssh-add $GitHubKey
+ssh-add -l</pre>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">04</span><span class="title">Create SSH Aliases in ~\.ssh\config</span></h2>
+  <p>An alias stops Git from guessing which key to use for <span class="inline">github.com</span>. It maps a short host name onto one identity file.</p>
+  <pre>$SshConfig = "$HOME\.ssh\config"
+$KeyForConfig = ($GitHubKey -replace '\\','/')
+@"
+Host github-northline
+    HostName github.com
+    User git
+    IdentityFile $KeyForConfig
+    IdentitiesOnly yes
+"@ | Add-Content $SshConfig</pre>
+  <p>Example with two GitHub accounts side by side:</p>
+  <pre>Host github-personal
+    HostName github.com
+    User git
+    IdentityFile C:/Users/YourName/.ssh/id_ed25519_personal
+    IdentitiesOnly yes
+
+Host github-northline
+    HostName github.com
+    User git
+    IdentityFile C:/Users/YourName/.ssh/id_ed25519_github_northline
+    IdentitiesOnly yes</pre>
+  <p>Test the intended identity:</p>
+  <pre>ssh -T git@github-northline</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    GitHub replies with a successful authentication message followed by “does not provide shell access.” That is expected. It is not an error.
+  </div>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Use <span class="inline">git@github.com:...</span> for a multi-account client repository. Use the alias: <span class="inline">git@github-northline:northline-org/stockridge.git</span>.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">05</span><span class="title">Create the New Client Repository with the Correct SSH Identity</span></h2>
+  <p>From the new client folder:</p>
+  <pre>Set-Location "C:\StockRidgeClients\NorthlineStores\stockridge"</pre>
+  <p>If the downloaded folder contains the source project's old Git history and you want a new, clean repository:</p>
+  <pre>if (Test-Path .git) {
+    Remove-Item -Recurse -Force .git
+}
+git init
+git branch -M main
+git config --local user.name "Your Northline GitHub identity"
+git config --local user.email "your-northline-github-email@example.com"
+git add .
+git commit -m "Initial Northline Stores StockRidge deployment"</pre>
+  <div class="note">
+    <span class="kicker">Note</span>
+    Set the name and email with <span class="inline">--local</span>, inside this folder only. A global identity becomes the wrong author on the next client's commit.
+  </div>
+  <p>Create an empty <strong>private</strong> repository in the intended GitHub account or organisation. Then connect it with the SSH alias:</p>
+  <pre>git remote add origin "git@github-northline:northline-org/stockridge.git"
+git push -u origin main</pre>
+  <p>Verify the boundaries before continuing:</p>
+  <pre>git remote -v
+git config --local user.name
+git config --local user.email
+git status</pre>
+  <div class="expected">
+    <span class="kicker">Expected remote</span>
+    <span class="inline">git@github-northline:northline-org/stockridge.git</span>
+  </div>
+  <p>If it says <span class="inline">github.com</span> without the alias, correct it before the next push:</p>
+  <pre>git remote set-url origin "git@github-northline:northline-org/stockridge.git"</pre>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Commit <span class="inline">.env.deploy</span>, <span class="inline">.env</span>, <span class="inline">.data\d1-seed.sql</span>, a database file, a backup, or a token. Those paths are gitignored. <span class="inline">git status</span> showing one of them means the ignore failed — do not add it.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">06</span><span class="title">GitHub CLI Is Separate from Git SSH</span></h2>
+  <p>Git uses the SSH alias to push and pull. The GitHub CLI (<span class="inline">gh</span>) is independent. It uses its own active browser or token session. You can create the repository in the browser and avoid switching CLI accounts entirely.</p>
+  <p>If you do use <span class="inline">gh</span>, check the active account before creating a repository:</p>
+  <pre>gh auth status</pre>
+  <p>Sign in to the intended GitHub account when required:</p>
+  <pre>gh auth login --hostname github.com --git-protocol ssh --web
+gh auth status</pre>
+  <p>Use <span class="inline">gh auth switch</span> only after checking which account it selects:</p>
+  <pre>gh auth switch --hostname github.com</pre>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Paste a GitHub personal access token into a file that Git tracks. A token in <span class="inline">.env.deploy</span> stays on the machine. It does not go in the repository.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">07</span><span class="title">Install Dependencies and Connect Wrangler</span></h2>
+  <p>StockRidge deploys from the repository root, not from a hand-typed list of Wrangler commands. The script is <span class="inline">tools\deploy-cloudflare.js</span>. Install the locked dependency set first.</p>
+  <pre>Set-Location "C:\StockRidgeClients\NorthlineStores\stockridge"
+npm ci</pre>
+  <div class="note">
+    <span class="kicker">Note</span>
+    Use <span class="inline">npm ci</span>, not <span class="inline">npm audit fix --force</span>. The lock file is the set this project was tested with. <span class="inline">package.json</span> is at the root. Do not run <span class="inline">npm ci</span> inside <span class="inline">worker</span> unless that folder has its own lock file — it does not.
+  </div>
+  <p>Confirm Wrangler can see <strong>this client's</strong> Cloudflare account. The browser window that opens during login is normal.</p>
+  <pre>npx wrangler login
+npx wrangler whoami</pre>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Paste a Cloudflare API token into a Git-tracked file, into <span class="inline">worker\wrangler.toml</span>, or into a screenshot that will be committed. The token belongs in <span class="inline">.env.deploy</span>, which is gitignored. See Section 10.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">08</span><span class="title">Choose Names — and Do Not Reuse the Downloaded Ones</span></h2>
+  <p>Use lowercase letters, numbers and hyphens. The downloaded <span class="inline">worker\wrangler.toml</span> already names a demonstration. Those names and IDs belong to that demonstration. A new client does not inherit them.</p>
+  <pre>$WorkerName = "northline-stockridge"
+$DatabaseName = "northline-stockridge-db"
+$TursoName = "northline-stockridge"</pre>
+  <div class="dont">
+    <span class="kicker">Do not reuse these downloaded values</span>
+    Worker <span class="inline">stockridge</span> or <span class="inline">sample</span>. D1 database <span class="inline">stockridge</span> (<span class="inline">32aa519c-a7fb-41d5-bc5b-083d0a0489bc</span>). D1 database <span class="inline">stockridge-staging</span> (<span class="inline">abf164d9-f3bb-4e56-9a9f-addd795013f7</span>). D1 database <span class="inline">stockridge-sample</span> (<span class="inline">fd72e95b-c0c8-4073-8aba-d3ca5919b107</span>). Turso host <span class="inline">stockridge-10client.aws-eu-north-1.turso.io</span>.
+  </div>
+  <h3>Which database this client will actually read</h3>
+  <p>Pick one live store. Do not point the Worker at both and hope.</p>
+  <table class="cmds">
+    <tr><th>Path</th><th>Use it when</th></tr>
+    <tr>
+      <td>Turso</td>
+      <td>A hosted shop. This is what sample uses. The Worker opens one TLS socket to Turso, so a screen is not cut off at the Free plan's 50 external subrequests. Required if the environment variable <span class="inline">ENVIRONMENT</span> is <span class="inline">sample</span> — that name refuses to fall back to D1.</td>
+    </tr>
+    <tr>
+      <td>D1</td>
+      <td>Only when Turso is not configured, and the environment is not named <span class="inline">sample</span>. The deploy script then applies migrations to the D1 database named in <span class="inline">wrangler.toml</span>.</td>
+    </tr>
+  </table>
+  <p>Create the new D1 database in this client's Cloudflare account. The binding is required even when Turso is the live store, because Wrangler deploys against it. The Worker does not query that D1 once a Turso URL and token are both present.</p>
+  <pre>npx wrangler d1 create $DatabaseName</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    Cloudflare prints a new <span class="inline">database_id</span>. Copy that id. It must not be one of the three ids in the box above.
+  </div>
+  <pre>$DatabaseId = Read-Host "Paste the new Cloudflare D1 database_id"</pre>
+  <div class="keep">
+  <h3>Create the Turso database, if Turso is the live store</h3>
+  <p>Do not create a token for the sample database.</p>
+  <pre>turso db create $TursoName
+turso db show $TursoName --url
+turso db tokens create $TursoName</pre>
+  <p>The URL may come back as <span class="inline">libsql://...</span>. In <span class="inline">wrangler.toml</span>, write the <span class="inline">https://</span> form of the same host. The token is shown once by the Turso CLI. Put it in <span class="inline">.env.deploy</span> and nowhere else. Do not paste it into a commit message.</p>
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">09</span><span class="title">Point wrangler.toml at the New Worker and Database</span></h2>
+  <p>The file is <span class="inline">worker\wrangler.toml</span>, not <span class="inline">wrangler.jsonc</span>. A new client should not keep the downloaded top-level name <span class="inline">stockridge</span> if that Worker already exists on another account — and must not keep it if this Cloudflare account already has the demonstration Worker.</p>
+  <p>From the repository root, replace the Worker name, the D1 name and the D1 id in the block you are about to deploy. The script later rewrites <span class="inline">database_id</span> for the environment it is deploying, and only that block. It does not rewrite the other environments. That is why the folder must already be this client's folder before you run it.</p>
+  <p>For a client whose production is the top-level block, the values that must change are:</p>
+  <pre>name = "northline-stockridge"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "northline-stockridge-db"
+database_id = "&lt;the new id from Section 8&gt;"
+migrations_dir = "../schema/migrations"
+
+[vars]
+ENVIRONMENT = "production"
+DB_NAME = "northline-stockridge-db"</pre>
+  <p>If this client uses Turso, add the URL to that same <span class="inline">[vars]</span> block. Do not add the token here.</p>
+  <pre>TURSO_DATABASE_URL = "https://northline-stockridge-&lt;org&gt;.turso.io"</pre>
+  <div class="important">
+    <span class="kicker">Environments</span>
+    <span class="inline">--env=sample</span> reads <span class="inline">[env.sample]</span>. Omitting <span class="inline">--env</span> reads the top of the file, which is production. <span class="inline">--env=prod</span> is not a declared environment. The script refuses an unknown name. A missing flag is not refused — it deploys production. <span class="inline">--env=production</span> is the named production block. In the downloaded file that block and the top level point at the same demonstration database. On a new client, make them agree with the register, or delete the environment blocks this client will not use.
+  </div>
+  <p>Review the names before the first deploy:</p>
+  <pre>Select-String -Path .\worker\wrangler.toml -Pattern "name =|database_name|database_id"
+Select-String -Path .\worker\wrangler.toml -Pattern "TURSO_DATABASE_URL|ENVIRONMENT"</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    You see the new Worker name, the new D1 name, the new D1 id, and — if Turso is the live store — a Turso host that is not <span class="inline">stockridge-10client</span>. You do not see a token.
+  </div>
+  <div class="keep">
+  <p>A D1 database id is not a password. The Turso hostname is not a password. Keeping the client repository private is still the right default. Commit the non-secret configuration after you have reviewed it:</p>
+  <pre>git add .\worker\wrangler.toml
+git commit -m "Configure Northline Worker and database"
+git push</pre>
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">10</span><span class="title">Put Credentials in .env.deploy</span></h2>
+  <p>The deploy script reads credentials from the environment, or from <span class="inline">.env.deploy</span> at the repository root. That file is gitignored. One client's file must not be copied into another client's folder.</p>
+  <pre># .env.deploy — this client only. Never commit.
+CLOUDFLARE_API_TOKEN=...
+CLOUDFLARE_ACCOUNT_ID=...
+STOCKRIDGE_ADMIN_USERNAME=admin
+STOCKRIDGE_JWT_SECRET=...</pre>
+  <p>Add the Turso lines only when this client uses Turso, and only for the database created in Section 8:</p>
+  <pre>TURSO_DATABASE_URL=https://northline-stockridge-&lt;org&gt;.turso.io
+TURSO_AUTH_TOKEN=...</pre>
+  <p>Generate the JWT secret in the terminal. Do not invent a short one, and do not reuse another client's.</p>
+  <pre>$Jwt = node -e "console.log(require('crypto').randomBytes(48).toString('base64url'))"
+# Put $Jwt into .env.deploy as STOCKRIDGE_JWT_SECRET, then:
+Remove-Variable Jwt</pre>
+  <div class="dont">
+    <span class="kicker">Never place a production secret in</span>
+    <span class="inline">worker\wrangler.toml</span> · a file Git tracks · a commit message · a PowerShell script that is committed · a screenshot · the deployment register
+  </div>
+  <p>The script writes <span class="inline">STOCKRIDGE_JWT_SECRET</span> to the Worker as the secret <span class="inline">JWT_SECRET</span>. If that variable is missing on a later deploy, the existing Worker secret is left alone, so a shop day is not signed out. Set it before the first deploy, and keep the same value for later deploys of this client.</p>
+  <p>Confirm Git will not pick the file up:</p>
+  <pre>git check-ignore .env.deploy
+git status</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    <span class="inline">git check-ignore</span> prints <span class="inline">.env.deploy</span>. <span class="inline">git status</span> does not list it as a file to commit.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">11</span><span class="title">Apply Migrations to the Database the Worker Will Read</span></h2>
+  <p>The schema is the SQL files in <span class="inline">schema\migrations</span>. There is one set. D1 records applied files in <span class="inline">d1_migrations</span>. Turso records them in <span class="inline">_migrations</span>. Do not edit a file that has already been applied. Do not recreate a deleted <span class="inline">0023</span>. A change is a new file.</p>
+  <h3>Turso path</h3>
+  <p>With this client's URL and token in <span class="inline">.env.deploy</span>, from the repository root:</p>
+  <pre>node tools/turso-admin.js migrate</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    A JSON line listing the migrations applied. A second run applies none and reports the ones already recorded. The token is not printed.
+  </div>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Run <span class="inline">node tools/turso-admin.js copy-from-d1</span> as part of onboarding, or on any later deploy. That copy is a one-time move off an old D1 database. Running it again overwrites rows the shop has written on Turso. Do not copy the demonstration database into a new client.
+  </div>
+  <p>Migration <span class="inline">0013</span> loads the NAFDAC Greenbook as reference data — just under 6,800 rows. A count of zero means that migration did not apply. A non-zero count does not mean this shop is a pharmacy. The Greenbook is used only when the business vertical is pharmaceutical.</p>
+  <h3>D1 path</h3>
+  <p>Leave <span class="inline">TURSO_DATABASE_URL</span> and <span class="inline">TURSO_AUTH_TOKEN</span> unset. Do not name the environment <span class="inline">sample</span>. The deploy script in Section 13 applies the same SQL files to the remote D1 database. You do not run a separate migrate command first.</p>
+  <div class="caution">
+    <span class="kicker">Caution</span>
+    If both Turso variables are set, the deploy script skips D1 migrations on purpose and applies schema to Turso instead. A half-configured file — a URL without a token, or the sample URL copied by mistake — is a reason to stop, not a reason to continue.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">12</span><span class="title">Create the First Administrator, and Treat the PIN as a Secret</span></h2>
+  <p>A migrated database has the schema. It does not yet have a person. The seed creates exactly three things: the settings row, the withholding-tax schedule as editable rows, and one <span class="inline">ADMIN</span> account with no business and no branch. It does not create a business, a proprietor, stock, or a sample PIN for staff.</p>
+  <p>The PIN is digits only, at least four. The deploy script can generate a five-digit PIN. Only a hash is stored. The PIN is shown once. It is not written into Git.</p>
+  <h3>D1 is the live store</h3>
+  <p>Do not seed by hand. The first deploy in Section 13 creates the administrator. Read the PIN from the summary only when the summary says the PIN is in effect. A line that says the PIN is unverified means the script could not read the administrator count. That printed number is not the live PIN. Do not hand it to anyone.</p>
+  <p>A later deploy must pass <span class="inline">--skip-seed</span>. The seed is <span class="inline">INSERT OR IGNORE</span>, so a normal re-run would not change an existing PIN, but the script may still print a freshly generated number that does not work.</p>
+  <h3>Turso is the live store</h3>
+  <p>The deploy script's seed still writes to the D1 binding. The Worker will not read that D1 once Turso is configured. Seeding D1 does not create the person who can sign in. Generate the SQL yourself, apply it to this Turso database, then delete the file.</p>
+  <pre>$Pin = Read-Host "Choose the administrator PIN (digits, at least 4)"
+node tools/d1-seed.js --out=.data/d1-seed.sql --username=admin --pin=$Pin
+cmd /c "turso db shell northline-stockridge &lt; .data\d1-seed.sql"
+Remove-Item .\.data\d1-seed.sql
+Remove-Variable Pin</pre>
+  <p>Confirm the account without printing a hash:</p>
+  <pre>$Sql = "SELECT username, role, is_active FROM users WHERE role = 'ADMIN'"
+turso db shell northline-stockridge $Sql</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    One row: username <span class="inline">admin</span>, role <span class="inline">ADMIN</span>, active. Then deploy with <span class="inline">--skip-seed</span>, so the script does not print a different PIN from the unused D1 database.
+  </div>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Pass <span class="inline">--reset-pin</span> unless the administrator PIN is lost and you intend to overwrite it. That flag rewrites the stored hash. Do not create the proprietor, a co-owner, or a cashier in SQL. Do not store the PIN in <span class="inline">.env.deploy</span>. Do not re-hash the PIN with another tool: a hash written above 100,000 PBKDF2 iterations cannot be checked by the Worker.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">13</span><span class="title">Deploy the Worker and the PWA</span></h2>
+  <p>One command stamps the build, checks the Cloudflare token, prepares the database, sets secrets, uploads the Worker, and smoke-tests the URL. The Worker serves both <span class="inline">/api/*</span> and the app. Do not deploy <span class="inline">public\</span> to Pages as a second site.</p>
+  <p>The stamp is written for you into <span class="inline">public\js\app.js</span>, <span class="inline">public\sw.js</span> and the asset URLs. Its clock is West Africa Time. Do not edit <span class="inline">SR.BUILD</span> by hand. A browser that keeps the previous stamp keeps the previous screens.</p>
+  <table class="cmds">
+    <tr><th>Intent</th><th>Command, from this client's folder</th></tr>
+    <tr><td>First deploy, D1 is the live store</td><td><span class="inline">node tools/deploy-cloudflare.js</span></td></tr>
+    <tr><td>First deploy, Turso already seeded</td><td><span class="inline">node tools/deploy-cloudflare.js --skip-seed</span></td></tr>
+    <tr><td>Update the existing demonstration</td><td><span class="inline">node tools/deploy-cloudflare.js --env=sample --skip-seed</span></td></tr>
+    <tr><td>Later update of this client</td><td>the same command as the first deploy, plus <span class="inline">--skip-seed</span></td></tr>
+  </table>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Pass <span class="inline">--reset-pin</span>. Do not omit <span class="inline">--env</span> when you meant sample. Do not treat <span class="inline">--dry-run</span> as a safe preview: it skips the Worker upload only. It still stamps files and still prepares the database named in the config.
+  </div>
+  <p>Read the summary before you close the terminal.</p>
+  <ul class="plain">
+    <li>Environment is the one in the register. “production (default)” means you omitted <span class="inline">--env</span>.</li>
+    <li>Other environments are listed as untouched. If one of them points at this database, stop.</li>
+    <li>The Worker URL is the one you will smoke-test.</li>
+    <li>Turso, if used, is this client's host. The token line says it was stored and not printed.</li>
+    <li>The PIN line, on a D1 first deploy, is in effect only when the summary says so. Unverified means ignore the number.</li>
+    <li>Readiness <span class="inline">awaiting_first_business</span> is the correct handover state. It is not a failed deploy.</li>
+  </ul>
+  <div class="expected">
+    <span class="kicker">Expected health</span>
+    <span class="inline">/api/health</span> returns JSON with <span class="inline">"ok": true</span>, <span class="inline">"status": "up"</span> and <span class="inline">"service": "stockridge"</span>. HTML means the asset store answered, or another application owns this Worker name.
+  </div>
+  <pre>$WorkerUrl = "https://northline-stockridge.&lt;account&gt;.workers.dev"
+Invoke-RestMethod "$WorkerUrl/api/health"
+Start-Process $WorkerUrl</pre>
+  <p>After a successful deploy, commit the stamp files the script changed — <span class="inline">public\index.html</span>, <span class="inline">public\js\app.js</span>, <span class="inline">public\sw.js</span>, and the two route files if they changed — so the private repository matches what the browser loads. Do not commit <span class="inline">.env.deploy</span> in that commit.</p>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">14</span><span class="title">Create the Proprietor and the First Business</span></h2>
+  <p>Sign in with the administrator from Section 12. Open <strong>Businesses</strong> and create the client's first business. Choose the vertical that matches the shop. Provisioning builds the chart of accounts, categories, price lists and a starter catalogue, and it creates the first branch with the business. That is the audited start of the client's books. Do not insert those rows in SQL.</p>
+  <p>Then open <strong>Staff</strong> and create the proprietor: role Owner, with no business pinned on the account. The proprietor owns every business and every branch on this deployment, including one opened later. Hand them their own PIN in private. Ask them to sign in and confirm they can see the business.</p>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Create, publish, or reuse a sample PIN. Do not create a fifth stored role. Co-owner is <span class="inline">OWNER</span> with a business on the row, plus the businesses they are granted — not a separate role, and not a job title. A general manager is <span class="inline">MANAGER</span> with no branch, and covers every branch of their business, not every business on the deployment. A branch manager and a member of staff are pinned to one branch.
+  </div>
+  <h3>Verticals the create-business screen can provision</h3>
+  <table class="verts">
+    <tr><th>Code</th><th>What it is</th></tr>
+    <tr><td>ELECTRONICS</td><td>Electronics, appliances and gadgets</td></tr>
+    <tr><td>FURNITURE</td><td>Furniture and home furnishings</td></tr>
+    <tr><td>BUILDING_MATERIALS</td><td>Building materials and hardware</td></tr>
+    <tr><td>WHOLESALE_RETAIL</td><td>Wholesale and retail general merchandise</td></tr>
+    <tr><td>SUPERMARKET</td><td>Supermarket</td></tr>
+    <tr><td>PROVISIONS_FABRICS</td><td>Provisions and fabrics</td></tr>
+    <tr><td>GENERAL_RETAIL</td><td>General retail, fully configurable</td></tr>
+    <tr><td>PHARMACEUTICAL</td><td>Dispensary. Greenbook and dispensing belong here, not on the other rows.</td></tr>
+    <tr><td>WATER_PACKING</td><td>Sachet and bottled water. Packaged water, not a pharmacy.</td></tr>
+    <tr><td>BAKERY</td><td>Bakery, retail and wholesale. Not a pharmacy.</td></tr>
+    <tr><td>EVENT_RENTAL</td><td>Event rental. The branch type is rental.</td></tr>
+    <tr><td>EQUIPMENT_RENTAL</td><td>Equipment rental</td></tr>
+    <tr><td>LEASING</td><td>Leasing</td></tr>
+    <tr><td>SELL_AND_LEASE</td><td>Sell and lease. Do not turn this into a rental yard by default.</td></tr>
+  </table>
+  <p>A client with two trades gets two businesses on this same Worker, each with its own vertical. They do not get a second Worker unless they are a second client.</p>
+  <p>When a branch is created, give it a real code. A blank code must not be saved as <span class="inline">MAIN</span>. The code appears on transfer references.</p>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">15</span><span class="title">Optional: Attach a Client-Owned Custom Domain</span></h2>
+  <p>The domain must already be on the same Cloudflare account as the Worker. For a dedicated hostname, add a custom-domain route to the block you deploy. Example, on the top-level production block:</p>
+  <pre>[[routes]]
+pattern = "app.northline.example"
+custom_domain = true</pre>
+  <p>For a named environment, the header is <span class="inline">[[env.production.routes]]</span> or <span class="inline">[[env.sample.routes]]</span>, matching the block. Keep <span class="inline">run_worker_first = ["/api/*"]</span> in the assets block. That is what sends API calls to the Worker instead of the asset store.</p>
+  <p>Deploy again with the same command you used in Section 13, including <span class="inline">--skip-seed</span> now that the administrator exists.</p>
+  <pre>$AppUrl = "https://app.northline.example"
+Invoke-RestMethod "$AppUrl/api/health"
+Start-Process $AppUrl</pre>
+  <div class="note">
+    <span class="kicker">Note</span>
+    This deployment serves the whole app and <span class="inline">/api/*</span> from the same hostname. Do not separately deploy <span class="inline">public\</span> to Pages unless you intentionally redesign routing. A health URL that returns HTML is the symptom of that mistake.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">16</span><span class="title">First Production Smoke Test</span></h2>
+  <p>Complete these in the browser before handing the app to the client's team. Use the client's URL, not the demonstration URL, unless you are checking the demonstration on purpose.</p>
+  <ul class="checks">
+    <li><span class="inline">/api/health</span> returns JSON, not HTML. <span class="inline">/api/health/ready</span> is <span class="inline">awaiting_first_business</span> before the first business, and <span class="inline">ready</span> after it.</li>
+    <li>Administrator signs in with the PIN from Section 12. A PIN printed as unverified does not count.</li>
+    <li>Administrator creates one real business and chooses the vertical. A branch is created with it. The branch has a real code.</li>
+    <li>Administrator creates the proprietor. The proprietor signs in on their own PIN and can see that business.</li>
+    <li>Proprietor creates one general manager, or one branch manager, and one member of staff. A general manager with more than one shop can open the top-bar shop control and pick a shop. It must not stay a blank dash.</li>
+    <li>Manager creates a supplier and receives a small test batch into the shop that was selected, not into “all shops”.</li>
+    <li>Staff opens a till, completes one cash sale, and reviews the receipt. Cancel sits beside Print. The receipt does not invent a second page of system codes.</li>
+    <li>Manager closes the till against the physical expected amount.</li>
+    <li>Proprietor checks Dashboard, Accounting, Staff, Branches, and Settings. Settings save on their own tab. Branding is not mixed into a settings save that the screen did not offer.</li>
+    <li>Signing the same account in on a second device signs the first device out of the app. That is the rule, not a failed session.</li>
+    <li>Install the app on the counter phone or laptop. If a launcher icon was cached from an older build, remove it and install again, then confirm the build stamp in the app matches the deploy summary.</li>
+  </ul>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Run <span class="inline">node tools/format-admin-only.js</span> to “clean up” a smoke test on a database that already has real sales. That tool deletes businesses and trading rows and leaves the administrator. It refuses to run without <span class="inline">--yes</span> and without <span class="inline">--env=sample</span> or <span class="inline">--env=production</span>. It is not a reset button for a live client.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">17</span><span class="title">Put a Standalone Till on the Shop Computer</span></h2>
+  <p>Do this only when the counter will run StockRidge as a program, not only as a browser tab. A phone still installs the browser app from the Worker URL. The desktop till is a window around the same screens. It is not a second deployment, and it is not a second database in the cloud.</p>
+  <p>Offline sales on that computer are written to a SQLite file before the cashier is told the sale succeeded. When the link returns, the existing sync posts that queue to this client's Worker, then pulls. The till never opens Turso itself. Do not put a Turso token, a Cloudflare token, or a PIN in the desktop folder.</p>
+  <h3>17.1 Clone the shell beside this client's checkout</h3>
+  <p>The shell is one shared repository. Each client still gets their own clone, so the archive copies that client's screens and not another shop's.</p>
+  <pre>Set-Location "C:\StockRidgeClients\NorthlineStores"
+git clone "https://github.com/10client/destop-stockridge.git" destop-stockridge
+Set-Location .\destop-stockridge
+git pull
+npm install</pre>
+  <div class="note">
+    <span class="kicker">Note</span>
+    If GitHub asks for a login, use the office account that can read that repository. Do not point this folder at the client's stockridge remote. Do not copy <span class="inline">.env.deploy</span> into it.
+  </div>
+  <h3>17.2 Archive for this client only</h3>
+  <p>Deploy the Worker first (Section 13), so the screens on disk are the screens you just shipped. The archive copies <span class="inline">stockridge\public</span> from the sibling folder. It does not download the screens from the Worker.</p>
+  <pre>$env:STOCKRIDGE_ORIGIN = "https://northline-stockridge.&lt;account&gt;.workers.dev"
+npm run archive
+Remove-Item Env:STOCKRIDGE_ORIGIN
+Get-Content .\build\desktop-config.json</pre>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    The terminal prints <span class="inline">This archive will sign in against</span> this client's Worker URL. <span class="inline">desktop-config.json</span> contains that same URL. It does not contain a token.
+  </div>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Run <span class="inline">npm run archive</span> with <span class="inline">STOCKRIDGE_ORIGIN</span> unset. The unset default is the office production host, <span class="inline">stockridge.stockridge.workers.dev</span>, not this client. Do not leave the variable set in the terminal and then archive the next client. Remove it, as the command above does.
+  </div>
+  <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run <span class="inline">npm run archive</span> again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder.</p>
+  <h3>17.3 Rename the file before it can be mixed up</h3>
+  <p>The builder uses the same file name for every client. A shared Downloads folder will overwrite one shop with another. Rename it with the client name before you move it. The version in the name comes from <span class="inline">destop-stockridge\package.json</span>. If that version is not <span class="inline">0.1.0</span>, rename the file the command just wrote.</p>
+  <pre>Move-Item .\dist\StockRidge-0.1.0-win-x64.exe `
+  .\dist\StockRidge-Northline-0.1.0-win-x64.exe</pre>
+  <p>Copy that renamed program to the shop computer. The shop computer does not need Node, Git, or the checkout. The first launch creates <span class="inline">stockridge.db</span> in the Windows app-data folder of the user who is signed in. File → Save a copy of this till is the backup of sales that have not synced yet. Keep that backup with this client's records, not in Git.</p>
+  <div class="note">
+    <span class="kicker">Note</span>
+    This Windows laptop builds a Windows program. A Mac counter needs the archive built on a Mac. Do not send the <span class="inline">.exe</span> to a Mac and expect it to open.
+  </div>
+  <h3>17.4 Open it once before you leave</h3>
+  <p>The window is at <span class="inline">127.0.0.1:47321</span> on that computer. Sign in with a staff PIN for this client, not with a sample PIN. Complete one cash sale, or confirm an already synced till opens. A second window is refused, so two copies cannot write the same file. If the port is already in use, close the other StockRidge window rather than building a second archive.</p>
+  <p>A till that has already been selling in Chrome does not hand its queue over by itself. On that browser, open Sync and choose Back up this device. In the desktop window, open Sync and choose Restore from a backup. Do that before abandoning the browser, or unsynced sales stay in Chrome.</p>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Treat <span class="inline">npm start</span> as the handover. That is the development window. It still needs the checkout beside it, and with no origin set it signs in against the sample Worker. Do not point the till at Turso Sync. Push, then pull, through this client's Worker, is the only door into the cloud database.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">18</span><span class="title">Day-Two Deploy and Update Routine</span></h2>
+  <p>From the VS Code terminal at <strong>this client's</strong> repository root:</p>
+  <pre>git pull
+npm ci
+node tools/deploy-cloudflare.js --skip-seed
+git status</pre>
+  <p>Add <span class="inline">--env=sample</span> only when the register says this folder's target is the demonstration. Add <span class="inline">--env=&lt;name&gt;</span> only when the register names that environment. Then:</p>
+  <p>pull source → install locked dependencies → deploy (the script applies new migrations to the live store) → read the summary → smoke-test <span class="inline">/api/health</span> and one signed-in screen → commit the stamp files if they changed.</p>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Run a destructive reset against a real client's database. Do not pass <span class="inline">--reset-pin</span>. Do not run <span class="inline">copy-from-d1</span>. Do not omit <span class="inline">--skip-seed</span> on a database that already has an administrator. Take a backup and confirm the target database name before any remote SQL you type by hand.
+  </div>
+  <div class="important">
+    <span class="kicker">Updating the demonstration that already exists</span>
+    From the demonstration folder only: <span class="inline">node tools/deploy-cloudflare.js --env=sample --skip-seed</span>. Production is not updated by that command. The PIN is not changed. Reload the browser once so it picks up the new stamp.
+  </div>
+  <div class="important">
+    <span class="kicker">If this client uses the desktop till</span>
+    A Worker deploy updates the browser. It does not replace the screens already inside an installed desktop program. After a deploy that changes screens, repeat Section 17: set this client's origin, archive again, rename the file with the client name, and replace the program on the counter. Leave the old program in place only when the screens did not change.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">19</span><span class="title">Useful Checks</span></h2>
+  <pre># Who is Wrangler signed in as?
+npx wrangler whoami
+
+# Which environment does this folder declare?
+Select-String -Path .\worker\wrangler.toml -Pattern "name =|database_name"
+Select-String -Path .\worker\wrangler.toml -Pattern "TURSO_DATABASE_URL|^\[env\."
+
+# Applied D1 migrations, only if D1 is the live store
+$Db = "northline-stockridge-db"
+$Cfg = "worker/wrangler.toml"
+npx wrangler d1 migrations list $Db --remote --config $Cfg
+
+# Turso: migrations recorded, token not printed
+node tools/turso-admin.js migrate
+
+# Health — JSON, not HTML
+Invoke-RestMethod "$WorkerUrl/api/health"
+Invoke-RestMethod "$WorkerUrl/api/health/ready"
+
+# Administrator exists. The query returns no PIN and no hash.
+$Sql = "SELECT username, role, is_active FROM users WHERE role = 'ADMIN'"
+npx wrangler d1 execute $Db --remote --config $Cfg --command $Sql
+turso db shell northline-stockridge $Sql
+
+# Greenbook rows: thousands, not zero. Not proof of a pharmacy.
+turso db shell northline-stockridge "SELECT COUNT(*) AS n FROM nafdac_catalog;"
+
+# Git has no accidental secrets waiting
+git status
+git check-ignore .env.deploy
+git check-ignore .data/d1-seed.sql</pre>
+  <p>From this client's <span class="inline">destop-stockridge</span> folder, when a till was archived:</p>
+  <pre># Origin baked into the last archive. Must be this client's Worker. No token.
+Get-Content .\build\desktop-config.json
+
+# The handed-over file is renamed. The generic name is not a client.
+Get-ChildItem .\dist\StockRidge-Northline-*</pre>
+  <div class="note">
+    <span class="kicker">Note</span>
+    On a D1-only client, use the Wrangler form of the administrator and catalogue queries, and do not call <span class="inline">turso db shell</span>. On a Turso client, a D1 query can look healthy while the Worker is reading a different database. Query the store named in the register.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">20</span><span class="title">Stop Immediately If Any of These Happen</span></h2>
+  <div class="danger">
+    <span class="kicker">Danger signs</span>
+    <ul class="plain">
+      <li>The Worker name is still <span class="inline">stockridge</span> or <span class="inline">sample</span> and this is a new client.</li>
+      <li>The database name or id is one of the downloaded demonstration ids in Section 8.</li>
+      <li><span class="inline">TURSO_DATABASE_URL</span> still contains <span class="inline">stockridge-10client</span>.</li>
+      <li>The folder, the Git remote, and the Cloudflare account in <span class="inline">npx wrangler whoami</span> are not the same row of the register.</li>
+      <li><span class="inline">git status</span> shows <span class="inline">.env.deploy</span>, <span class="inline">.env</span>, <span class="inline">.data\d1-seed.sql</span>, a backup SQL file, or a database file.</li>
+      <li>The deploy summary says production, and you meant sample — or the reverse.</li>
+      <li><span class="inline">/api/health</span> returns HTML instead of JSON.</li>
+      <li><span class="inline">/api/diagnose</span> answers as another application. Another Worker owns this name.</li>
+      <li>You are about to pass <span class="inline">--reset-pin</span>, run <span class="inline">format-admin-only</span>, or run <span class="inline">copy-from-d1</span> against a database that has real sales.</li>
+      <li>The summary printed a PIN marked unverified, and you are about to send that number to the client.</li>
+      <li>You are about to add a <span class="inline">[limits]</span> block to raise the Free-plan subrequest cap. Free cannot raise it, and a CPU-limit block fails the upload. Turso with one socket is the path this project uses instead.</li>
+      <li><span class="inline">npm run archive</span> was run without <span class="inline">STOCKRIDGE_ORIGIN</span>, or <span class="inline">desktop-config.json</span> names another client's Worker, or the demonstration host, and this is not that demonstration.</li>
+      <li>The archive file is still the generic <span class="inline">StockRidge-0.1.0-win-x64.exe</span> in a folder that holds more than one client.</li>
+      <li><span class="inline">destop-stockridge</span> contains <span class="inline">.env.deploy</span>, a Turso token, a Cloudflare token, or a PIN.</li>
+      <li><span class="inline">STOCKRIDGE_ROOT</span> points at a different client's <span class="inline">stockridge</span> folder.</li>
+    </ul>
+  </div>
+  <p>Correct the configuration first. Do not “try it and see” with a client's books, or with the demonstration books.</p>
+  <div class="rule">
+    <span class="kicker">Core rule, again</span>
+    one client folder → one Git remote/SSH alias → one Cloudflare account → one Worker → one live database. If a step mixed two of those, it is not finished.
+  </div>
+</section>
+
+</body>
+</html>
