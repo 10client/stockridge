@@ -94,8 +94,13 @@
       lastProbe = Date.now();
       try {
         const res = await fetch('/api/health/ping', { method: 'GET', cache: 'no-store', headers: { 'X-Device-Id': SR.device.current().id } });
-        // Any HTTP answer at all means the server is there; a 404 for the ping
-        // route still proves the app is reachable, so the status is not tested.
+        const text = await res.clone().text().catch(() => '');
+        // The desktop proxy answers 502 when the Worker cannot be reached.
+        // That is not the shop being up. A 404 still proves the app answered.
+        if (res.status >= 500 || /UPSTREAM_UNREACHABLE|shop server could not be reached/i.test(text)) {
+          setOnline(false);
+          return false;
+        }
         setOnline(true);
         return true;
       } catch (e) {
@@ -125,7 +130,10 @@
       this.payload = payload;
     }
     get isAuth() { return this.status === 401 || this.code === 'NO_TOKEN' || this.code === 'SESSION_SUPERSEDED'; }
-    get isOffline() { return this.status === 0; }
+    get isOffline() {
+      if (this.status === 0 || this.code === 'OFFLINE' || this.code === 'UPSTREAM_UNREACHABLE') return true;
+      return /shop server could not be reached/i.test(String(this.message || ''));
+    }
   }
 
   async function parseError(res, text) {
@@ -211,8 +219,6 @@
         signal: controller.signal,
         cache: 'no-store',
       });
-      // Any answer at all proves the server is up, even an error answer.
-      setOnline(true);
     } catch (e) {
       setOnline(false);
       if (queue === 'auto') {
@@ -234,6 +240,8 @@
     const text = await res.text();
     if (!res.ok) {
       const err = await parseError(res, text);
+      if (err.isOffline) setOnline(false);
+      else setOnline(true);
       if (err.isAuth) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
@@ -245,6 +253,7 @@
       if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
       throw err;
     }
+    setOnline(true);
     if (!text) return {};
     try {
       return JSON.parse(text);

@@ -1472,7 +1472,7 @@
         : `Welcome, ${(result.profile && result.profile.fullName) || (result.user && result.user.fullName) || username}.`);
     } catch (err) {
       const unreachable = err && (
-        err.isOffline || err.retryable || Number(err.status) === 0 || Number(err.status) >= 500
+        err.isOffline || Number(err.status) === 0
         || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
         || /shop server could not be reached/i.test(String(err.message || ''))
       );
@@ -1481,10 +1481,12 @@
         // session for this username — otherwise the PIN would be checked against
         // nothing at all, which is not a login, it is a bypass.
         const native = global.stockridgeNative && global.stockridgeNative.store;
+        let verified = null;
         if (native && native.checkVerifier) {
-          const verified = await native.checkVerifier(username, pin).catch(() => null);
-          if (!verified) {
-            errEl.textContent = 'The shop server could not be reached. This till has not signed that person in while online, or the PIN does not match. Connect once, then the same PIN opens the saved stock.';
+          verified = await native.checkVerifier(username, pin).catch(() => null);
+          const known = native.hasVerifier ? await native.hasVerifier(username).catch(() => false) : false;
+          if (!verified && known) {
+            errEl.textContent = 'That PIN does not match the sign-in saved on this till.';
             errEl.hidden = false;
             pinEl.select();
             return;
@@ -1492,20 +1494,22 @@
         }
         const cached = await SR.store.metaGet('me');
         const savedName = cached && cached.user && String(cached.user.username).toLowerCase();
-        if (savedName === username || (native && native.checkVerifier)) {
+        if (verified || savedName === username) {
           writeTill({ username, remember });
           const restored = await SR.state.loadFromMirror();
           if (!restored) {
-            errEl.textContent = 'The PIN matched, but this till has no saved stock yet. Connect once and let the catalogue finish saving.';
+            errEl.textContent = 'This till has no saved stock yet. Connect once and let the catalogue finish saving.';
             errEl.hidden = false;
             return;
           }
           SR.sync.start();
           navigate('/dashboard', { replace: true });
-          ui.warn('Signed in offline from the stock saved on this till. Sales will sync when the line returns.');
+          ui.warn(verified
+            ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'
+            : 'Opened the stock saved on this till. The older program did not save a PIN check, so the next connected sign-in will lock that check in.');
           return;
         }
-        errEl.textContent = 'The shop server could not be reached, and this device has no saved session for that username. Connect once and sign in.';
+        errEl.textContent = 'This till has not signed that person in while connected. Connect once, then the same PIN opens the saved stock.';
       } else {
         errEl.textContent = err.message || 'Sign-in failed.';
       }
@@ -1784,8 +1788,11 @@
     }
     if (!restored) {
       const till = readTill();
-      const reachable = SR.api.isOnline() ? true : await SR.api.probe({ force: true });
-      if (till && till.remember && !reachable) {
+      // A Wi-Fi icon is not the shop. The desktop proxy also answers HTTP when
+      // the Worker is down, so the shop has to be asked before the login form
+      // is treated as the only door.
+      const reachable = await SR.api.probe({ force: true });
+      if (!reachable && till && till.remember) {
         restored = Boolean(await SR.state.loadFromMirror());
       }
     }
