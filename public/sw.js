@@ -36,6 +36,7 @@ const SHELL = [
   '/js/deviceId.js?v=ridge-20261019-1632-f9b872b',
   '/js/theme.js?v=ridge-20261019-1632-f9b872b',
   '/js/store.js?v=ridge-20261019-1632-f9b872b',
+  '/js/store-native.js?v=ridge-20261019-1632-f9b872b',
   '/js/api.js?v=ridge-20261019-1632-f9b872b',
   '/js/state.js?v=ridge-20261019-1632-f9b872b',
   '/js/ui.js?v=ridge-20261019-1632-f9b872b',

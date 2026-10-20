@@ -1626,6 +1626,7 @@
     try {
       await SR.store.open();
       await SR.store.requestPersistence();
+      if (SR.store.engine === 'sqlite') setBootLine('This computer is keeping the offline books in SQLite.', 18);
     } catch (err) {
       bootError('StockRidge cannot store data on this device.', err.message);
       return;

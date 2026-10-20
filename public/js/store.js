@@ -30,8 +30,9 @@
 //
 // The adapter below is deliberately shaped like the server's `db` (all/first/
 // run), so the view code that renders a mirrored list looks the same as the code
-// that renders a server list. A native wrapper (Capacitor/Electron) can swap in
-// a real SQLite engine behind `SR.store.adapter` without any view changing.
+// that renders a server list. A desktop or Android shell sets
+// window.stockridgeNative before store-native.js runs, and that file swaps
+// this IndexedDB engine for SQLite. Views keep calling SR.store.
 // =====================================================================
 (function (global) {
   const SR = global.SR = global.SR || {};
