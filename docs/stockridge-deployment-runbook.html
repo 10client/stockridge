@@ -874,7 +874,7 @@ Get-Content .\build\desktop-config.json</pre>
     <span class="kicker">Do not</span>
     Run <span class="inline">npm run archive</span> with <span class="inline">STOCKRIDGE_ORIGIN</span> unset. The unset default is the office production host, <span class="inline">stockridge.stockridge.workers.dev</span>, not this client. Do not leave the variable set in the terminal and then archive the next client. Remove it, as the command above does.
   </div>
-  <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run <span class="inline">npm run archive</span> again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder.</p>
+  <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run <span class="inline">npm run archive</span> again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder. The Windows file is not code-signed. The archive skips the signing tools, because those tools contain Mac shortcuts and a normal Windows account cannot create them. Do not turn signing on for this handover.</p>
   <h3>17.3 Rename the file before it can be mixed up</h3>
   <p>The builder uses the same file name for every client. A shared Downloads folder will overwrite one shop with another. Rename it with the client name before you move it. The version in the name comes from <span class="inline">destop-stockridge\package.json</span>. If that version is not <span class="inline">0.1.0</span>, rename the file the command just wrote.</p>
   <pre>Move-Item .\dist\StockRidge-0.1.0-win-x64.exe `
