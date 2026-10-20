@@ -304,7 +304,7 @@
       </tr>
       <tr>
         <th>Systems in scope</th>
-        <td>Git and GitHub (multiple accounts and SSH identities), Cloudflare Workers, D1, Turso, and the desktop&nbsp;till</td>
+        <td>Git and GitHub (multiple accounts and SSH identities), Cloudflare Workers, D1, Turso, the desktop till, and the Android app</td>
       </tr>
       <tr>
         <th>Document type</th>
@@ -323,11 +323,11 @@
     <span class="kicker">Core rule</span>
     one client folder → one Git remote/SSH alias → one Cloudflare account → one Worker → one live database.
   </div>
-  <p>Everything below follows from that one rule. Every section either sets up one link in that chain, or verifies it before moving on. If a step ever produces a result that mixes two clients together, stop and fix it before continuing — see Section 20, “Stop Immediately If.”</p>
+  <p>Everything below follows from that one rule. Every section either sets up one link in that chain, or verifies it before moving on. If a step ever produces a result that mixes two clients together, stop and fix it before continuing — see Section 21, “Stop Immediately If.”</p>
   <p>StockRidge is multi-business inside one deployment. A client may run a bakery and a pharmacy as two businesses on <em>their</em> Worker. That is not a reason to put two clients on one Worker. Businesses share a database only when they belong to the same client.</p>
 
   <h2 class="plain">How to Use This Document</h2>
-  <p>For a <strong>brand-new client</strong>, work through Sections 1–16 in order. Do not skip ahead. Later steps assume the folder, the SSH alias and the Cloudflare account are already the right ones. Section 17 is the counter desktop, when this client will use a Windows till rather than only the browser. Sections 18–20 are for <strong>ongoing operation</strong> once a client is live: routine updates, quick checks, and the signs that mean stop.</p>
+  <p>For a <strong>brand-new client</strong>, work through Sections 1–16 in order. Do not skip ahead. Later steps assume the folder, the SSH alias and the Cloudflare account are already the right ones. Section 17 is the counter desktop, when this client will use a Windows till rather than only the browser. Section 18 is the Android app, when a phone should open StockRidge as a program instead of only in Chrome. Sections 19–21 are for <strong>ongoing operation</strong> once a client is live: routine updates, quick checks, and the signs that mean stop.</p>
   <div class="important">
     <span class="kicker">The checkout you already have</span>
     This repository already contains a demonstration deployment at sample.stockridge.workers.dev. Update only that demonstration with <span class="inline">--env=sample --skip-seed</span>. Do not pass <span class="inline">--reset-pin</span>. Do not omit <span class="inline">--env</span> — with no environment flag, the script deploys production. Do not copy that sample's database, Turso host, or Worker name onto a new client.
@@ -383,6 +383,7 @@
     <li>Optional: Attach a Client-Owned Custom Domain</li>
     <li>First Production Smoke Test</li>
     <li>Put a Standalone Till on the Shop Computer</li>
+    <li>Put StockRidge on an Android Phone</li>
     <li>Day-Two Deploy and Update Routine</li>
     <li>Useful Checks</li>
     <li>Stop Immediately If Any of These Happen</li>
@@ -888,6 +889,7 @@ Get-Content .\build\desktop-config.json</pre>
   <h3>17.4 Open it once before you leave</h3>
   <p>The window is at <span class="inline">127.0.0.1:47321</span> on that computer. Sign in with a staff PIN for this client, not with a sample PIN. Complete one cash sale, or confirm an already synced till opens. A second window is refused, so two copies cannot write the same file. If the port is already in use, close the other StockRidge window rather than building a second archive.</p>
   <p>A till that has already been selling in Chrome does not hand its queue over by itself. On that browser, open Sync and choose Back up this device. In the desktop window, open Sync and choose Restore from a backup. Do that before abandoning the browser, or unsynced sales stay in Chrome.</p>
+  <p>The window must not show Download or Install. Those buttons belong on the browser, including a home-screen app. The program removes them, even when the hosted screens still contain them. If Install is still in the sidebar, this computer is running an older program. Pull <span class="inline">destop-stockridge</span> and run <span class="inline">npm run archive</span> again. Do not deploy the website just to hide that button.</p>
   <div class="dont">
     <span class="kicker">Do not</span>
     Treat <span class="inline">npm start</span> as the handover. That is the development window. It still needs the checkout beside it, and with no origin set it signs in against the sample Worker. Do not point the till at Turso Sync. Push, then pull, through this client's Worker, is the only door into the cloud database.
@@ -895,7 +897,24 @@ Get-Content .\build\desktop-config.json</pre>
 </section>
 
 <section class="section">
-  <h2 class="sec"><span class="num">18</span><span class="title">Day-Two Deploy and Update Routine</span></h2>
+  <h2 class="sec"><span class="num">18</span><span class="title">Put StockRidge on an Android Phone</span></h2>
+  <p>Do this only when a phone should open StockRidge as a program, not only as a Chrome tab. Chrome on that phone still shows Download and Install. That is the PWA, and it stays. The APK is a WebView around this client's Worker. It is the same screens and the same books. It removes Download and Install itself, so a website deploy is not required for that. The APK does not hold a Turso token, a Cloudflare token, or a PIN, and it does not open Turso.</p>
+  <p>The project is <span class="inline">destop-stockridge\\android</span>, in the same shell repository as the Windows till. It is not a second Worker and not a second database. Open that folder in Android Studio on a machine that has the Android SDK. Before you build a client copy, set the origin in <span class="inline">app\\src\\main\\res\\values\\strings.xml</span> to this client's Worker URL. The value in the repository is the demonstration, <span class="inline">https://sample.stockridge.workers.dev</span>.</p>
+  <pre>Set-Location "C:\\StockRidgeClients\\NorthlineStores\\destop-stockridge"
+git pull</pre>
+  <p>In Android Studio: File → Open, and choose the <span class="inline">android</span> folder. Wait for Gradle. Then Build → Build Bundle(s) / APK(s) → Build APK(s). The file is <span class="inline">app\\build\\outputs\\apk\\debug\\app-debug.apk</span>. Rename it with the client name before it can be mixed up. A release build for a shop needs a signing key that stays with this client. Do not commit that key, and do not commit the APK.</p>
+  <div class="expected">
+    <span class="kicker">Expected</span>
+    The installed app opens this client's Worker. The top bar and the sidebar do not offer Download or Install. Chrome on the same phone, opened to the same URL, may still offer them.
+  </div>
+  <div class="dont">
+    <span class="kicker">Do not</span>
+    Point a client's APK at the demonstration or at the office host. Do not put a Turso token in the Android project. Do not expect Chrome on the phone to hide Install. Chrome is the PWA. Do not deploy the website just to hide the button inside the APK.
+  </div>
+</section>
+
+<section class="section">
+  <h2 class="sec"><span class="num">19</span><span class="title">Day-Two Deploy and Update Routine</span></h2>
   <p>From the VS Code terminal at <strong>this client's</strong> repository root:</p>
   <pre>git pull
 npm ci
@@ -913,12 +932,12 @@ git status</pre>
   </div>
   <div class="important">
     <span class="kicker">If this client uses the desktop till</span>
-    A Worker deploy updates the browser. The desktop till copies those screens on its next launch, while the internet works. Repeat Section 17 only when the desktop program itself changed, not for a screen-only deploy. The till still has to be aimed at this client's Worker. A new archive does not move an old till off the wrong host by itself.
+    A Worker deploy updates the browser. The desktop till copies those screens on its next launch, while the internet works. Repeat Section 17 only when the desktop program itself changed, not for a screen-only deploy. Repeat Section 18 only when the Android program itself changed. The till and the APK still have to be aimed at this client's Worker. A new archive does not move an old till off the wrong host by itself.
   </div>
 </section>
 
 <section class="section">
-  <h2 class="sec"><span class="num">19</span><span class="title">Useful Checks</span></h2>
+  <h2 class="sec"><span class="num">20</span><span class="title">Useful Checks</span></h2>
   <pre># Who is Wrangler signed in as?
 npx wrangler whoami
 
@@ -963,7 +982,7 @@ Get-ChildItem .\dist\StockRidge-Northline-*</pre>
 </section>
 
 <section class="section">
-  <h2 class="sec"><span class="num">20</span><span class="title">Stop Immediately If Any of These Happen</span></h2>
+  <h2 class="sec"><span class="num">21</span><span class="title">Stop Immediately If Any of These Happen</span></h2>
   <div class="danger">
     <span class="kicker">Danger signs</span>
     <ul class="plain">
@@ -982,6 +1001,8 @@ Get-ChildItem .\dist\StockRidge-Northline-*</pre>
       <li>The archive file is still the generic <span class="inline">StockRidge-0.1.0-win-x64.exe</span> in a folder that holds more than one client.</li>
       <li><span class="inline">destop-stockridge</span> contains <span class="inline">.env.deploy</span>, a Turso token, a Cloudflare token, or a PIN.</li>
       <li><span class="inline">STOCKRIDGE_ROOT</span> points at a different client's <span class="inline">stockridge</span> folder.</li>
+      <li>The Electron window still shows Download or Install. That program is older than the hide. Archive again. Do not deploy the website to remove it.</li>
+      <li>A client's APK still names <span class="inline">sample.stockridge.workers.dev</span>, or the office host, in <span class="inline">strings.xml</span>.</li>
     </ul>
   </div>
   <p>Correct the configuration first. Do not “try it and see” with a client's books, or with the demonstration books.</p>
