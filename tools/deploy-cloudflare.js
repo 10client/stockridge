@@ -656,6 +656,7 @@ async function main() {
   writeDatabaseId(databaseId);
   applyMigrations();
   const seeding = seedAdministrator();
+  if (has('--skip-seed')) seeding.pinEffective = false;
   setJwtSecret();
   const tursoHost = await configureTurso();
   const url = deployWorker();
