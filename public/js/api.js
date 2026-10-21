@@ -199,7 +199,8 @@
     const h = Object.assign({ Accept: 'application/json' }, headers);
     if (body !== undefined && body !== null) h['Content-Type'] = 'application/json';
     if (auth) h.Authorization = `Bearer ${auth}`;
-    h['X-Device-Id'] = SR.device.current().id;
+    const deviceId = SR.device && SR.device.current ? SR.device.current().id : '';
+    if (deviceId && deviceId !== 'SR-UNKNOWN') h['X-Device-Id'] = deviceId;
     if (idempotencyKey) h['Idempotency-Key'] = idempotencyKey;
 
     // Queued straight away, without a network attempt.
@@ -324,8 +325,9 @@
   // auth
   // -------------------------------------------------------------------
   async function login({ username, pin, remember = true }) {
+    const device = SR.device && SR.device.current ? SR.device.current() : null;
     const out = await request('POST', '/api/auth/login', {
-      body: { username, pin, remember: Boolean(remember) },
+      body: { username, pin, remember: Boolean(remember), deviceId: device && device.id && device.id !== 'SR-UNKNOWN' ? device.id : undefined },
       queue: false,
     });
     if (out.token) setToken(out.token, { remember: Boolean(remember) });

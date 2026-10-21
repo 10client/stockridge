@@ -138,7 +138,11 @@ async function startSession(db, user, secret, { deviceId = null, userAgent = nul
 }
 
 function presentedDevice(deviceId) {
-  return deviceId ? String(deviceId).slice(0, 120) : null;
+  const id = deviceId ? String(deviceId).trim().slice(0, 120) : '';
+  // SR-UNKNOWN is the page's placeholder before this till has an id. It is not
+  // a second device, and neither is a missing header.
+  if (!id || id === 'SR-UNKNOWN') return null;
+  return id;
 }
 
 async function login(db, { username, pin, secret, deviceId = null, userAgent = null, remember = false }) {
@@ -186,7 +190,7 @@ async function login(db, { username, pin, secret, deviceId = null, userAgent = n
   // the row below replaces the session, and the other device is signed out
   // on its next request. The PIN is never stored to make that possible.
   const otherDevice = Boolean(previous && previous.device_id && presented && previous.device_id !== presented);
-  const { token, sessionId } = await startSession(db, user, secret, { deviceId, userAgent, remember: Boolean(remember) });
+  const { token, sessionId } = await startSession(db, user, secret, { deviceId: presented, userAgent, remember: Boolean(remember) });
   await db.run("UPDATE users SET last_login_at = datetime('now'), updated_at = datetime('now') WHERE id = ?", [String(user.id)]);
 
   const scope = await resolveScope(db, user);
@@ -243,9 +247,10 @@ async function authenticate(db, token, secret, { deviceId = null } = {}) {
     // device yet (a row from before the device was stored) is left alone, so
     // a deploy does not sign the current till out. The same device may keep
     // several tabs — they send the same device id.
-    const bound = session.device_id ? String(session.device_id) : '';
+    const bound = session.device_id && session.device_id !== 'SR-UNKNOWN' ? String(session.device_id) : '';
     const presented = presentedDevice(deviceId);
-    if (bound && presented !== bound) {
+    // A missing id is not another device. A different id still takes over.
+    if (bound && presented && presented !== bound) {
       throw new HttpError(
         'This account is signed in on another device, so this one has been signed out. Sign in here only if this should be the device that uses the account. If you did not sign in elsewhere, tell a manager — your PIN may be known to somebody else.',
         { status: 401, code: 'SESSION_SUPERSEDED' },
