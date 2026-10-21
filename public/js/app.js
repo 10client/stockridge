@@ -1446,6 +1446,11 @@
       }
       void form;
       if (result && result.offline) {
+        if (!result.token && SR.api.isOnline()) {
+          errEl.textContent = 'The shop is up, but this sign-in did not finish. Try again.';
+          errEl.hidden = false;
+          return;
+        }
         const restored = await SR.state.loadFromMirror();
         if (!restored) {
           errEl.textContent = 'The PIN matched, but this till has no saved stock yet. Connect once and let the catalogue finish saving.';
@@ -1476,8 +1481,8 @@
         || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
         || /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(err.message || ''))
       );
-      if (err && err.code === 'OFFLINE_UNKNOWN_USER') {
-        errEl.textContent = err.message || 'This person has not signed in on this till while the shop answered. The PIN is not stored.';
+      if (err && (err.code === 'OFFLINE_UNKNOWN_USER' || err.code === 'LOGIN_NOT_STUCK')) {
+        errEl.textContent = err.message || 'This sign-in did not finish. Try again.';
         errEl.hidden = false;
         pinEl.select();
         return;
