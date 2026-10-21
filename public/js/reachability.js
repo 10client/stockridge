@@ -11,6 +11,10 @@
     const body = String(text || '');
     if (!Number.isFinite(code) || code <= 0 || code >= 500) return false;
     if (/UPSTREAM_UNREACHABLE|shop server could not be reached|did not answer from this window/i.test(body)) return false;
+    // The till's own saved-session door answers 200 with offline:true. That is
+    // this computer, not the shop. It must not count as a connection.
+    if (/"offline"\s*:\s*true/.test(body)) return false;
+    if (/<!doctype html|<html[\s>]/i.test(body)) return false;
     return true;
   }
 

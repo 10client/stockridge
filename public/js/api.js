@@ -255,10 +255,24 @@
       throw new ApiError('The shop is up, but this screen did not load. Try again.', {
         status: 503,
         code: 'SHOP_READ_FAILED',
-        retryable: true,
+        retryable: false,
       });
     }
-    markOfflineNow();
+    const marked = markOfflineNow();
+    // One miss must not send every screen down the offline banner. Those
+    // screens treat an OFFLINE error as "you are offline". Only throw that
+    // once the shop has missed the probe twice.
+    if (!marked) {
+      if (options.queue === 'auto') {
+        ejectToOutbox(method, path, options.body, { idempotencyKey: options.idempotencyKey, label: options.headers && options.headers['X-Queue-Label'] });
+        return { queued: true, ok: true, offline: false, path };
+      }
+      throw new ApiError('The shop is up, but this screen did not load. Try again.', {
+        status: 503,
+        code: 'SHOP_READ_FAILED',
+        retryable: false,
+      });
+    }
     if (options.queue === 'auto') {
       ejectToOutbox(method, path, options.body, { idempotencyKey: options.idempotencyKey, label: options.headers && options.headers['X-Queue-Label'] });
       return { queued: true, ok: true, offline: true, path };
