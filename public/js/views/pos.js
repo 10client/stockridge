@@ -280,7 +280,7 @@
       if (q.length < 2 && !group) { results.hidden = true; results.replaceChildren(); return; }
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
-      const offline = !SR.api.isOnline() || (typeof navigator !== 'undefined' && navigator.onLine === false);
+      const offline = !SR.api.isOnline();
       // Offline must not wait on a request that cannot succeed. A failed fetch
       // that comes back as an empty page used to be treated as "nothing matches".
       if (!offline) {

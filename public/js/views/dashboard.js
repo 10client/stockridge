@@ -110,7 +110,17 @@
         changeOwed = live.changeOwed;
       } catch (err) {
         error = err;
-        if (!shopMiss(err)) throw err;
+        if (err && err.code === 'SHOP_READ_FAILED') {
+          body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
+          return;
+        }
+        if (!shopMiss(err) || (SR.api.isOnline && SR.api.isOnline())) {
+          if (SR.api.isOnline && SR.api.isOnline()) {
+            body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
+            return;
+          }
+          throw err;
+        }
         // One slow read is not proof the shop is down. Login can succeed while
         // this call gives up. Ask once more before painting the saved figures.
         const up = SR.api.probe ? await SR.api.probe({ force: true }).catch(() => false) : false;
@@ -121,6 +131,10 @@
             changeOwed = again.changeOwed;
             offline = false;
           } catch (againErr) {
+            if (SR.api.isOnline && SR.api.isOnline()) {
+              body.replaceChildren(ui.errorBlock(againErr, { retry: { label: 'Try again', run: refresh } }));
+              return;
+            }
             if (!shopMiss(againErr)) throw againErr;
             offline = true;
             data = await fromMirror();
@@ -131,6 +145,12 @@
         }
       }
       if (!data) { body.replaceChildren(ui.errorBlock(error || new Error('No data.'), { retry: { label: 'Try again', run: refresh } })); return; }
+      // The banner is a lie when the shop has answered. Keep the saved figures
+      // off this screen until a probe has actually marked the till offline.
+      if (offline && SR.api.isOnline && SR.api.isOnline()) {
+        body.replaceChildren(ui.errorBlock(error || new Error('The shop is up, but this screen did not load. Try again.'), { retry: { label: 'Try again', run: refresh } }));
+        return;
+      }
       paint(body, data, { offline, changeOwed });
     }
 

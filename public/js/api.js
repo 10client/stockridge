@@ -23,9 +23,13 @@
   const ONLINE_PROBE_MS = 45000;
 
   let token = null;
-  let online = navigator.onLine !== false;
+  // Do not start from navigator.onLine. Electron can report no network while
+  // the shop on this computer's proxy is answering. The probe is the authority.
+  let online = true;
   let lastProbe = 0;
   let probing = null;
+  let probeMisses = 0;
+  let recheckTimer = null;
   const listeners = new Map(); // event -> Set<fn>
 
   function emit(event, detail) {
@@ -72,8 +76,29 @@
   // The desktop sign-in does not go through request(), so a live token would
   // otherwise leave the flag from the last miss. A connected sign-in is online.
   function noteReachable(up) {
-    setOnline(Boolean(up));
+    if (up) {
+      probeMisses = 0;
+      setOnline(true);
+    }
     return online;
+  }
+
+  function markOfflineNow() {
+    const policy = global.SRReach && global.SRReach.shouldMarkOffline;
+    const mark = policy
+      ? policy({ probeAttempted: true, probeAnswered: false, consecutiveProbeMisses: probeMisses })
+      : probeMisses >= 2;
+    if (mark) setOnline(false);
+    else armRecheck();
+    return mark;
+  }
+
+  function armRecheck() {
+    if (recheckTimer) return;
+    recheckTimer = setTimeout(() => {
+      recheckTimer = null;
+      probe({ force: true }).catch(() => {});
+    }, 4000);
   }
 
   function setOnline(next, { silent = false } = {}) {
@@ -83,8 +108,9 @@
     if (!silent) emit('net', { online });
   }
 
-  global.addEventListener('online', () => setOnline(true));
-  global.addEventListener('offline', () => setOnline(false));
+  // A browser offline event is not the shop. Ask the shop before changing the chip.
+  global.addEventListener('online', () => { probe({ force: true }).catch(() => {}); });
+  global.addEventListener('offline', () => { probe({ force: true }).catch(() => {}); });
 
   /**
    * Confirm the server is actually reachable.
@@ -94,24 +120,36 @@
    * every request fails. A failed fetch is therefore also treated as evidence,
    * and this probe is what recovers the app once the line genuinely returns.
    */
+  function reached(status, text) {
+    if (global.SRReach && global.SRReach.shopAnswered) return global.SRReach.shopAnswered(status, text);
+    const code = Number(status);
+    const body = String(text || '');
+    if (!Number.isFinite(code) || code <= 0 || code >= 500) return false;
+    return !/UPSTREAM_UNREACHABLE|shop server could not be reached|did not answer from this window/i.test(body);
+  }
+
   async function probe({ force = false } = {}) {
     if (!force && Date.now() - lastProbe < 8000) return online;
     if (probing) return probing;
     probing = (async () => {
       lastProbe = Date.now();
       try {
-        const res = await fetch('/api/health/ping', { method: 'GET', cache: 'no-store', headers: { 'X-Device-Id': SR.device.current().id } });
+        // /api/health is a real shop answer. The ping route is a 404, which
+        // still proves the shop spoke, but health is the clearer check.
+        const res = await fetch('/api/health', { method: 'GET', cache: 'no-store', headers: { 'X-Device-Id': SR.device.current().id } });
         const text = await res.clone().text().catch(() => '');
-        // The desktop proxy answers 502 when the Worker cannot be reached.
-        // That is not the shop being up. A 404 still proves the app answered.
-        if (res.status >= 500 || /UPSTREAM_UNREACHABLE|shop server could not be reached/i.test(text)) {
-          setOnline(false);
-          return false;
+        const up = reached(res.status, text);
+        if (up) {
+          probeMisses = 0;
+          setOnline(true);
+          return true;
         }
-        setOnline(true);
-        return true;
+        probeMisses += 1;
+        markOfflineNow();
+        return false;
       } catch (e) {
-        setOnline(false);
+        probeMisses += 1;
+        markOfflineNow();
         return false;
       } finally {
         probing = null;
@@ -120,7 +158,9 @@
     return probing;
   }
 
-  setInterval(() => { if (!online) probe({ force: true }); }, ONLINE_PROBE_MS);
+  // Recover a false Offline quickly. A connected till must not sit on the
+  // banner for most of a minute after one missed read.
+  setInterval(() => { if (!online) probe({ force: true }); }, 12000);
 
   // -------------------------------------------------------------------
   // errors
@@ -199,7 +239,34 @@
    * for a 4-second timeout on a bad line makes the queue look like a freeze.
    * A queued write returns `{ queued: true, ... }` so the caller can say so.
    */
-  async function request(method, path, { body, query, headers = {}, queue = false, idempotencyKey = null, timeoutMs = 20000, raw = false } = {}) {
+  async function settleMiss(err, method, path, opts) {
+    const options = opts || {};
+    const up = await probe({ force: true }).catch(() => false);
+    if (up && !options.retried) {
+      setOnline(true);
+      return request(method, path, Object.assign({}, options, { retried: true }));
+    }
+    if (up) {
+      setOnline(true);
+      if (options.queue === 'auto') {
+        ejectToOutbox(method, path, options.body, { idempotencyKey: options.idempotencyKey, label: options.headers && options.headers['X-Queue-Label'] });
+        return { queued: true, ok: true, offline: false, path };
+      }
+      throw new ApiError('The shop is up, but this screen did not load. Try again.', {
+        status: 503,
+        code: 'SHOP_READ_FAILED',
+        retryable: true,
+      });
+    }
+    markOfflineNow();
+    if (options.queue === 'auto') {
+      ejectToOutbox(method, path, options.body, { idempotencyKey: options.idempotencyKey, label: options.headers && options.headers['X-Queue-Label'] });
+      return { queued: true, ok: true, offline: true, path };
+    }
+    throw err;
+  }
+
+  async function request(method, path, { body, query, headers = {}, queue = false, idempotencyKey = null, timeoutMs = 20000, raw = false, retried = false } = {}) {
     const url = buildUrl(path, query);
     const auth = loadToken();
 
@@ -228,17 +295,13 @@
         cache: 'no-store',
       });
     } catch (e) {
-      setOnline(false);
-      if (queue === 'auto') {
-        ejectToOutbox(method, path, body, { idempotencyKey, label: headers['X-Queue-Label'] });
-        return { queued: true, ok: true, offline: true, path };
-      }
-      throw new ApiError(
+      const missed = new ApiError(
         e && e.name === 'AbortError'
           ? 'The server did not answer in time. Check the connection and try again.'
           : 'The shop did not answer from this window. Try again.',
         { status: 0, code: 'OFFLINE', retryable: true },
       );
+      return settleMiss(missed, method, path, { body, query, headers, queue, idempotencyKey, timeoutMs, raw, retried });
     } finally {
       clearTimeout(timer);
     }
@@ -248,8 +311,9 @@
     const text = await res.text();
     if (!res.ok) {
       const err = await parseError(res, text);
-      if (err.isOffline) setOnline(false);
-      else setOnline(true);
+      if (err.isOffline) return settleMiss(err, method, path, { body, query, headers, queue, idempotencyKey, timeoutMs, raw, retried });
+      probeMisses = 0;
+      setOnline(true);
       if (err.isAuth) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
@@ -261,6 +325,7 @@
       if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
       throw err;
     }
+    probeMisses = 0;
     setOnline(true);
     if (!text) return {};
     try {
