@@ -1476,6 +1476,12 @@
         || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
         || /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(err.message || ''))
       );
+      if (err && err.code === 'OFFLINE_UNKNOWN_USER') {
+        errEl.textContent = err.message || 'This person has not signed in on this till while the shop answered. The PIN is not stored.';
+        errEl.hidden = false;
+        pinEl.select();
+        return;
+      }
       if (unreachable) {
         // An offline sign-in is allowed ONLY where this device already holds a
         // session for this username — otherwise the PIN would be checked against
@@ -1509,7 +1515,7 @@
             : 'Opened the stock saved on this till. The older program did not save a PIN check, so the next connected sign-in will lock that check in.');
           return;
         }
-        errEl.textContent = 'The shop did not answer from this window. Try the same username and PIN again.';
+        errEl.textContent = 'This person is not saved on this till yet. Sign in once while the shop answers, and this till will remember them. The PIN is not stored.';
       } else {
         errEl.textContent = err.message || 'Sign-in failed.';
       }
