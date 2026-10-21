@@ -228,7 +228,7 @@
       throw new ApiError(
         e && e.name === 'AbortError'
           ? 'The server did not answer in time. Check the connection and try again.'
-          : 'Cannot reach the server. You appear to be offline.',
+          : 'The shop did not answer from this window. Try again.',
         { status: 0, code: 'OFFLINE', retryable: true },
       );
     } finally {
