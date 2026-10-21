@@ -1509,7 +1509,7 @@
             : 'Opened the stock saved on this till. The older program did not save a PIN check, so the next connected sign-in will lock that check in.');
           return;
         }
-        errEl.textContent = 'This till has not signed that person in while connected. Connect once, then the same PIN opens the saved stock.';
+        errEl.textContent = 'The shop did not answer from this window. Try the same username and PIN again.';
       } else {
         errEl.textContent = err.message || 'Sign-in failed.';
       }
