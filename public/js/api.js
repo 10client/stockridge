@@ -69,6 +69,13 @@
   // -------------------------------------------------------------------
   function isOnline() { return online; }
 
+  // The desktop sign-in does not go through request(), so a live token would
+  // otherwise leave the flag from the last miss. A connected sign-in is online.
+  function noteReachable(up) {
+    setOnline(Boolean(up));
+    return online;
+  }
+
   function setOnline(next, { silent = false } = {}) {
     const value = Boolean(next);
     if (value === online) return;
@@ -346,7 +353,7 @@
     get, post, put, patch, del, request,
     login, me, logout,
     setToken, hasToken, loadToken,
-    isOnline, probe, on, emit, canQueue, classify,
+    isOnline, noteReachable, probe, on, emit, canQueue, classify,
     TOKEN_KEY,
   };
 }(window));

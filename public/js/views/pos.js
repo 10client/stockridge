@@ -2362,9 +2362,11 @@
         try {
           result = await SR.api.post('/api/sales', payload, { timeoutMs: 25000 });
         } catch (err) {
-          if (err.isOffline || err.retryable) {
+          const missed = err && (err.isOffline || err.retryable
+            || /did not answer|could not be reached|failed to fetch/i.test(String(err.message || '')));
+          if (missed) {
             // The line dropped between the button and the request. The sale
-            // happened; queue it rather than telling the cashier to try again.
+            // happened; save it on this till rather than telling the cashier to try again.
             result = await queueOffline(payload);
           } else {
             throw err;

@@ -87,26 +87,69 @@
     const body = ui.h('div', { class: 'stack' });
     wrap.appendChild(body);
 
+    function shopMiss(err) {
+      return Boolean(err && (err.isOffline || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
+        || /did not answer from this window|shop server could not be reached|failed to fetch/i.test(String(err.message || ''))));
+    }
+
+    async function readDashboard() {
+      const data = await SR.api.get('/api/dashboard', { query: SR.state.query(), timeoutMs: 25000 });
+      let changeOwed = null;
+      try { changeOwed = await SR.api.get('/api/change-owed/summary', { timeoutMs: 12000 }); } catch (e) { changeOwed = null; }
+      if (SR.api.noteReachable) SR.api.noteReachable(true);
+      return { data, changeOwed, offline: false };
+    }
+
     async function refresh() {
       body.replaceChildren(ui.loading('Reading the position…'));
       let data = null; let offline = false; let error = null;
       let changeOwed = null;
       try {
-        data = await SR.api.get('/api/dashboard', { query: SR.state.query() });
-        // CHANGE OWED IS FETCHED SEPARATELY AND MAY FAIL WITHOUT TAKING THE DASHBOARD
-        // WITH IT. It is the one figure here that is a promise with a date on it, and
-        // its own endpoint keeps the dashboard query — which every seat runs on every
-        // load — from growing a subquery it does not need.
-        try { changeOwed = await SR.api.get('/api/change-owed/summary'); } catch (e) { changeOwed = null; }
+        const live = await readDashboard();
+        data = live.data;
+        changeOwed = live.changeOwed;
       } catch (err) {
         error = err;
-        const missed = err && (err.isOffline || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
-          || /did not answer from this window|shop server could not be reached|failed to fetch/i.test(String(err.message || '')));
-        if (missed) { offline = true; data = await fromMirror(); }
-        else throw err;
+        if (!shopMiss(err)) throw err;
+        // One slow read is not proof the shop is down. Login can succeed while
+        // this call gives up. Ask once more before painting the saved figures.
+        const up = SR.api.probe ? await SR.api.probe({ force: true }).catch(() => false) : false;
+        if (up) {
+          try {
+            const again = await readDashboard();
+            data = again.data;
+            changeOwed = again.changeOwed;
+            offline = false;
+          } catch (againErr) {
+            if (!shopMiss(againErr)) throw againErr;
+            offline = true;
+            data = await fromMirror();
+          }
+        } else {
+          offline = true;
+          data = await fromMirror();
+        }
       }
       if (!data) { body.replaceChildren(ui.errorBlock(error || new Error('No data.'), { retry: { label: 'Try again', run: refresh } })); return; }
       paint(body, data, { offline, changeOwed });
+    }
+
+    function localSales(items) {
+      const today = (SR.util && SR.util.nowWatSql ? String(SR.util.nowWatSql()) : new Date().toISOString()).slice(0, 10);
+      let gross = 0;
+      let count = 0;
+      for (const item of items || []) {
+        if (!item || String(item.type || '').toUpperCase() !== 'SALE') continue;
+        if (item.status && !['PENDING', 'RETRY'].includes(String(item.status))) continue;
+        const when = String(item.occurred_at || item.at || '');
+        if (when && when.slice(0, 10) !== today) continue;
+        const payload = item.payload || {};
+        const payments = Array.isArray(payload.payments) ? payload.payments : [];
+        const paid = payments.reduce((sum, payment) => sum + (payment && payment.method === 'CREDIT' ? 0 : Number(payment && payment.amount) || 0), 0);
+        gross += paid;
+        count += 1;
+      }
+      return { count, gross };
     }
 
     async function fromMirror() {
@@ -137,10 +180,11 @@
         atCost += s.value;
       }
       const outbox = await SR.sync.queueStats();
+      const saved = localSales(outbox.items || []);
       return {
         offline: true,
         view: 'STAFF',
-        today: { sales: 0, count: 0, gross: 0, queued: outbox.pending, vsYesterday: null },
+        today: { sales: saved.count, count: saved.count, gross: saved.gross, queued: outbox.pending, vsYesterday: null },
         period: null,
         stock: { products: products.length, lowStockCount, atCost },
         debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
@@ -168,11 +212,6 @@
               ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', onClick: () => SR.app.navigate('/pos') }, 'Sell'),
               SR.state.moduleOn('dispatch') ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => SR.app.navigate('/fleet') }, 'Vehicles') : null))));
       }
-      if (offline) {
-        todayNodes.push(ui.h('div', { class: 'alert alert-warn' },
-          ui.h('strong', {}, 'Offline — '),
-          'these figures are computed from this device\'s last sync, not from the office. Sales made here are counted in the queue below.'));
-      }
       const sub = document.getElementById('dash-sub');
       if (sub) {
         const period = data.period ? `${U.date(data.period.from)} → ${U.date(data.period.to)}` : U.date(U.nowIso());
@@ -197,6 +236,17 @@
 
       const today = data.today || {};
       const period = data.period || {};
+      if (offline) {
+        const sales = Number(today.count) || 0;
+        const queued = Number(today.queued) || 0;
+        const savedHere = Number(today.gross) || 0;
+        let savedText = 'the shop did not answer. These figures are from the stock saved on this till. A sale made now is saved here and uploads when the line returns.';
+        if (sales) savedText = `the shop did not answer. ${sales === 1 ? '1 sale is' : sales + ' sales are'} saved on this till (${U.money(savedHere)}). They upload when the line returns.`;
+        else if (queued) savedText = `the shop did not answer. ${queued === 1 ? '1 item is' : queued + ' items are'} saved on this till and will upload when the line returns.`;
+        todayNodes.push(ui.h('div', { class: 'alert alert-warn' },
+          ui.h('strong', {}, 'Offline — '),
+          savedText));
+      }
       const stock = data.stock || {};
       const debtors = data.debtors || {};
       const cash = data.cash || {};
