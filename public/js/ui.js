@@ -752,7 +752,7 @@
   function errorBlock(err, { retry = null } = {}) {
     const node = h('div', { class: 'card' }, h('div', { class: 'card-body' },
       h('div', { class: 'alert alert-danger' },
-        h('strong', {}, err && err.code === 'OFFLINE' ? 'You are offline. ' : 'That failed. '),
+        h('strong', {}, err && (err.code === 'OFFLINE' || err.code === 'UPSTREAM_UNREACHABLE' || err.isOffline) ? 'You are offline. ' : 'That failed. '),
         err && err.message ? err.message : 'Unknown error.'),
       retry ? h('button', { class: 'btn', onClick: retry.run }, retry.label || 'Try again') : null));
     return node;

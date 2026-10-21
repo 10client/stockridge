@@ -1474,7 +1474,7 @@
       const unreachable = err && (
         err.isOffline || Number(err.status) === 0
         || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
-        || /shop server could not be reached/i.test(String(err.message || ''))
+        || /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(err.message || ''))
       );
       if (unreachable) {
         // An offline sign-in is allowed ONLY where this device already holds a

@@ -100,7 +100,9 @@
         try { changeOwed = await SR.api.get('/api/change-owed/summary'); } catch (e) { changeOwed = null; }
       } catch (err) {
         error = err;
-        if (err.isOffline) { offline = true; data = await fromMirror(); }
+        const missed = err && (err.isOffline || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
+          || /did not answer from this window|shop server could not be reached|failed to fetch/i.test(String(err.message || '')));
+        if (missed) { offline = true; data = await fromMirror(); }
         else throw err;
       }
       if (!data) { body.replaceChildren(ui.errorBlock(error || new Error('No data.'), { retry: { label: 'Try again', run: refresh } })); return; }

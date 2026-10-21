@@ -132,7 +132,7 @@
     get isAuth() { return this.status === 401 || this.code === 'NO_TOKEN' || this.code === 'SESSION_SUPERSEDED'; }
     get isOffline() {
       if (this.status === 0 || this.code === 'OFFLINE' || this.code === 'UPSTREAM_UNREACHABLE') return true;
-      return /shop server could not be reached/i.test(String(this.message || ''));
+      return /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(this.message || ''));
     }
   }
 
