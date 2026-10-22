@@ -575,8 +575,16 @@
     stopSessionWatch();
     ui.endPageNow();
     showBoot(false);
-    document.getElementById('shell').hidden = true;
-    document.getElementById('login-screen').hidden = false;
+    const shell = document.getElementById('shell');
+    const login = document.getElementById('login-screen');
+    if (shell) {
+      shell.hidden = true;
+      shell.style.setProperty('display', 'none', 'important');
+    }
+    if (login) {
+      login.hidden = false;
+      login.style.removeProperty('display');
+    }
     paintDisplacedNotice();
     applyRememberedLogin();
     const u = document.getElementById('login-username');
@@ -587,8 +595,18 @@
 
   function showShell() {
     showBoot(false);
-    document.getElementById('login-screen').hidden = true;
-    document.getElementById('shell').hidden = false;
+    const login = document.getElementById('login-screen');
+    const shell = document.getElementById('shell');
+    // .login-screen sets display:grid. That author rule can beat the hidden
+    // attribute, so the form stays on screen after a successful sign-in.
+    if (login) {
+      login.hidden = true;
+      login.style.setProperty('display', 'none', 'important');
+    }
+    if (shell) {
+      shell.hidden = false;
+      shell.style.removeProperty('display');
+    }
     startSessionWatch();
     // paintIdentity() is decoration: the header, the chips, the user menu. The
     // navigation is the way out of a screen. When a bug in a five-line header
@@ -1299,6 +1317,9 @@
   let sessionWatchTimer = null;
   let sessionWatchBound = false;
   let signingOut = false;
+  // A shop 401 in the same breath as a successful sign-in was signing the till
+  // straight back out. The welcome toast stayed. The login page stayed too.
+  let loginGraceUntil = 0;
 
   function onSessionVisible() {
     if (document.visibilityState === 'hidden') return;
@@ -1381,6 +1402,11 @@
 
   async function handleAuthFailure(detail) {
     if (signingOut) return;
+    // The sign-in just succeeded. A parallel sync or dashboard read can still
+    // be refused while the device id catches up. Do not pull the login page
+    // back over the welcome toast. After this window, one account, one device
+    // still signs the other session out.
+    if (Date.now() < loginGraceUntil) return;
     signingOut = true;
     stopSessionWatch();
     const failedToken = detail && detail.token;
@@ -1459,6 +1485,8 @@
         }
         updateSubscriptionChrome();
         SR.sync.start();
+        loginGraceUntil = Date.now() + 12000;
+        showShell();
         navigate('/dashboard', { replace: true });
         ui.warn(result.token
           ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'
@@ -1466,12 +1494,23 @@
         return;
       }
       await SR.state.load({ force: true });
+      if (!SR.state.user) {
+        const restored = await SR.state.loadFromMirror();
+        if (!restored || !SR.state.user) {
+          errEl.textContent = 'The shop accepted the sign-in, but this till did not open the shop. Try again.';
+          errEl.hidden = false;
+          return;
+        }
+      }
       updateSubscriptionChrome();
-      // The mirror is refreshed straight away so a device that loses its line
-      // after signing in still has the catalogue and today's prices.
+      // Leave the login page before the toast. A later refusal must not be
+      // able to put the form back on top of "Welcome".
+      loginGraceUntil = Date.now() + 12000;
+      showShell();
+      navigate('/dashboard', { replace: true });
+      // The mirror is refreshed after the shell is open, not before it.
       SR.sync.start();
       SR.sync.runOnce({ silent: true }).catch(() => {});
-      navigate('/dashboard', { replace: true });
       ui.ok(result.otherDevice
         ? `Welcome. This account was signed in on another device — that device has been signed out.`
         : `Welcome, ${(result.profile && result.profile.fullName) || (result.user && result.user.fullName) || username}.`);
@@ -1514,6 +1553,8 @@
             return;
           }
           SR.sync.start();
+          loginGraceUntil = Date.now() + 12000;
+          showShell();
           navigate('/dashboard', { replace: true });
           ui.warn(verified
             ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'

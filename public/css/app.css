@@ -134,6 +134,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* ------------------------------ login ------------------------------- */
 .login-screen { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; background: var(--page); }
+#login-screen[hidden], #shell[hidden] { display: none !important; }
 .login-card {
   width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); padding: 28px 26px 22px; box-shadow: var(--shadow-2);

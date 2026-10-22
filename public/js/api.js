@@ -339,14 +339,17 @@
       if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
       throw err;
     }
-    probeMisses = 0;
-    setOnline(true);
-    if (!text) return {};
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      return { ok: true, raw: text };
+    let parsed = {};
+    if (text) {
+      try { parsed = JSON.parse(text); } catch (e) { parsed = { ok: true, raw: text }; }
     }
+    // The saved-till door answers 200 with offline:true. That is this computer,
+    // not the shop. Do not mark the till online from it.
+    if (!parsed || parsed.offline !== true) {
+      probeMisses = 0;
+      setOnline(true);
+    }
+    return parsed;
   }
 
   function ejectToOutbox(method, path, body, { idempotencyKey, label }) {
