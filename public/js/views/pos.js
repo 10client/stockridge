@@ -2357,23 +2357,30 @@
       }
 
       const online = SR.api.isOnline();
-      let result;
+      // Write the sale on this till before asking the shop. A logout or a
+      // dropped page while the shop is still answering must not lose it.
+      const queued = await queueOffline(payload, { adjustStock: false });
+      let result = queued;
       if (online) {
         try {
-          result = await SR.api.post('/api/sales', payload, { timeoutMs: 25000 });
+          const live = await SR.api.post('/api/sales', payload, { timeoutMs: 25000 });
+          if (live && !live.offline && !live.queued && SR.store.markSynced) {
+            await SR.store.markSynced(queued.clientId, (live.sale && live.sale.id) || live.saleId || live.receiptNo || null).catch(() => {});
+          }
+          await applyLocalSale(cart.lines).catch(() => {});
+          if (live && !live.queued && !live.offline) result = live;
+          else result = queued;
         } catch (err) {
-          const missed = err && (err.isOffline || err.retryable
-            || /did not answer|could not be reached|failed to fetch/i.test(String(err.message || '')));
-          if (missed) {
-            // The line dropped between the button and the request. The sale
-            // happened; save it on this till rather than telling the cashier to try again.
-            result = await queueOffline(payload);
-          } else {
+          const refused = err && err.status >= 400 && err.status < 500 && !err.isAuth && !err.isOffline && err.code !== 'SHOP_READ_FAILED';
+          if (refused) {
+            if (SR.store.removeOutbox) await SR.store.removeOutbox(queued.clientId).catch(() => {});
             throw err;
           }
+          await applyLocalSale(cart.lines).catch(() => {});
+          result = queued;
         }
       } else {
-        result = await queueOffline(payload);
+        await applyLocalSale(cart.lines).catch(() => {});
       }
 
       const snapshot = checkoutSnapshot();
@@ -2389,8 +2396,8 @@
       return { result, payload, snapshot };
     }
 
-    async function queueOffline(payload) {
-      await applyLocalSale(cart.lines).catch(() => {});
+    async function queueOffline(payload, { adjustStock = true } = {}) {
+      if (adjustStock) await applyLocalSale(cart.lines).catch(() => {});
       const record = await SR.store.enqueue({
         type: 'SALE',
         payload,

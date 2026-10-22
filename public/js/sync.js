@@ -320,30 +320,36 @@
   async function runOnce({ full = false, silent = false } = {}) {
     if (running) return running;
     running = (async () => {
-      if (!SR.api.isOnline()) await SR.api.probe({ force: true });
-      if (!SR.api.isOnline()) {
+      try {
+        if (!SR.api.isOnline()) await SR.api.probe({ force: true });
+        if (!SR.api.isOnline()) return { ok: false, offline: true };
+        emit('change', status());
+        let pushResult = { applied: 0, rejected: 0 };
+        try { pushResult = await push(); } catch (err) { lastError = err.message; }
+        // PUSH first, then pull — always. Pulling first would fetch stock figures
+        // that do not include the sales this device just made. A failed pull must
+        // not leave the chip on Saving, and must not throw away a sale already
+        // written on this till.
+        let pullResult = { ok: false, rows: 0 };
+        try { pullResult = await pull({ full }); } catch (err) { lastError = err.message; }
+        if (!silent) {
+          const bits = [];
+          if (pushResult.applied) bits.push(`${pushResult.applied} sent`);
+          if (pushResult.rejected) bits.push(`${pushResult.rejected} refused`);
+          if (pullResult.rows) bits.push(`${pullResult.rows} rows received`);
+          if (bits.length) SR.ui.ok(`Synced: ${bits.join(', ')}.`);
+          else if (pullResult && pullResult.ok) SR.ui.info('Everything is already up to date.');
+        }
+        return { ok: true, push: pushResult, pull: pullResult };
+      } finally {
         running = null;
-        return { ok: false, offline: true };
+        emit('change', status());
       }
-      emit('change', status());
-      let pushResult = { applied: 0, rejected: 0 };
-      try { pushResult = await push(); } catch (err) { lastError = err.message; }
-      // PUSH first, then pull — always. Pulling first would fetch stock figures
-      // that do not include the sales this device just made.
-      const pullResult = await pull({ full });
+    })();
+    try { return await running; } finally {
       running = null;
       emit('change', status());
-      if (!silent) {
-        const bits = [];
-        if (pushResult.applied) bits.push(`${pushResult.applied} sent`);
-        if (pushResult.rejected) bits.push(`${pushResult.rejected} refused`);
-        if (pullResult.rows) bits.push(`${pullResult.rows} rows received`);
-        if (bits.length) SR.ui.ok(`Synced: ${bits.join(', ')}.`);
-        else SR.ui.info('Everything is already up to date.');
-      }
-      return { ok: true, push: pushResult, pull: pullResult };
-    })();
-    try { return await running; } finally { running = null; }
+    }
   }
 
   function start({ intervalMs = AUTO_INTERVAL_MS } = {}) {

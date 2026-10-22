@@ -280,7 +280,7 @@
     throw err;
   }
 
-  async function request(method, path, { body, query, headers = {}, queue = false, idempotencyKey = null, timeoutMs = 20000, raw = false, retried = false } = {}) {
+  async function request(method, path, { body, query, headers = {}, queue = false, idempotencyKey = null, timeoutMs = 20000, raw = false, retried = false, quiet = false } = {}) {
     const url = buildUrl(path, query);
     const auth = loadToken();
 
@@ -328,7 +328,11 @@
       if (err.isOffline) return settleMiss(err, method, path, { body, query, headers, queue, idempotencyKey, timeoutMs, raw, retried });
       probeMisses = 0;
       setOnline(true);
-      if (err.isAuth) {
+      // A page refusal is not a sign-out. Only a dead session ends the till,
+      // and the shell confirms that before leaving. A missing token on one
+      // path is a dropped header, not a logout.
+      const fatalAuth = err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED';
+      if (err.isAuth && fatalAuth && !quiet) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
       }
@@ -423,7 +427,7 @@
     return out;
   }
 
-  async function me() { return request('GET', '/api/auth/me'); }
+  async function me({ quiet = false } = {}) { return request('GET', '/api/auth/me', { quiet }); }
 
   async function logout() {
     try { await request('POST', '/api/auth/logout', { body: {} }); } catch (e) { /* the token is being dropped anyway */ }

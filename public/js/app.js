@@ -432,7 +432,10 @@
       host.scrollTop = 0;
     } catch (err) {
       if (token !== renderToken) return;
-      if (err && err.isAuth) { void handleAuthFailure({ reason: err.code, token: err.token, message: err.message }); return; }
+      if (err && err.isAuth && (err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED')) {
+        void handleAuthFailure({ reason: err.code, token: err.token, message: err.message });
+        return;
+      }
       host.replaceChildren();
       host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: () => render() } }));
       if (err && err.code !== 'OFFLINE') console.error(`[view:${hit.route.view}]`, err);
@@ -1407,6 +1410,20 @@
     // back over the welcome toast. After this window, one account, one device
     // still signs the other session out.
     if (Date.now() < loginGraceUntil) return;
+    const reason = detail && detail.reason;
+    const fatal = reason === 'SESSION_REVOKED' || reason === 'BAD_TOKEN' || reason === 'TOKEN_EXPIRED' || reason === 'USER_GONE' || reason === 'SESSION_SUPERSEDED';
+    // Navigating to a page must not sign the till out. A 401 from a dropped
+    // header, or a shop miss, leaves the shell open. Sign out only when
+    // /api/auth/me confirms the session itself is dead.
+    if (!fatal) return;
+    if (reason === 'SESSION_SUPERSEDED') {
+      try {
+        const me = await SR.api.me({ quiet: true });
+        if (me && (me.user || me.offline)) return;
+      } catch (err) {
+        if (!err || !err.isAuth || err.code === 'NO_TOKEN' || err.isOffline || err.code === 'OFFLINE' || err.code === 'SHOP_READ_FAILED') return;
+      }
+    }
     signingOut = true;
     stopSessionWatch();
     const failedToken = detail && detail.token;
