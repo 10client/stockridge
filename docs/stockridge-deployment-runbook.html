@@ -311,7 +311,7 @@
         <td>Operational runbook — read in order for a new client, then keep for reference</td>
       </tr>
     </table>
-    <p class="cover-foot">Internal technical documentation — for the team responsible for client deployments. 20 October 2026.</p>
+    <p class="cover-foot">Internal technical documentation — for the team responsible for client deployments. Revised 22 October 2026. Open dist\win-unpacked\StockRidge.exe. Do not open the portable exe.</p>
   </div>
 </section>
 
@@ -363,7 +363,7 @@
     <tr><td>StockRidge Admin</td><td>The one platform administrator. No business, no branch. Created by the seed, used to sign in and create the client's proprietor. Not the person who rings sales.</td></tr>
     <tr><td>Proprietor</td><td>The client's owner. Stored as role <span class="inline">OWNER</span> with no business on the row. Owns every business and branch of that deployment, including ones opened later. Created in the app, not in SQL.</td></tr>
     <tr><td>Environment</td><td>A named block in <span class="inline">worker/wrangler.toml</span>. <span class="inline">--env=sample</span> deploys sample. Omitting <span class="inline">--env</span> deploys the top-level configuration, which is production.</td></tr>
-    <tr><td>Desktop till</td><td>A standalone window for one shop computer. The screens travel inside the program. API calls go to this client's Worker. Offline books on that computer are a SQLite file. The till does not hold a Turso token, and it does not sync to Turso itself.</td></tr>
+    <tr><td>Desktop till</td><td>A standalone window for one shop computer. The screens travel inside the program. A file shipped in that program wins over a copy downloaded from the Worker, so a Worker deploy does not update the till. API calls go to this client's Worker. Offline books on that computer are a SQLite file. The till does not hold a Turso token, and it does not sync to Turso itself.</td></tr>
   </table>
 </section>
 
@@ -853,39 +853,46 @@ Start-Process $AppUrl</pre>
 <section class="section">
   <h2 class="sec"><span class="num">17</span><span class="title">Put a Standalone Till on the Shop Computer</span></h2>
   <p>Do this only when the counter will run StockRidge as a program, not only as a browser tab. A phone still installs the browser app from the Worker URL. The desktop till is a window around the same screens. It is not a second deployment, and it is not a second database in the cloud. The PWA and the till use one Worker. That Worker is the door into Turso. Water packing, bakery and the other verticals are on that Worker. They are not a separate Electron list.</p>
-  <p>Offline sales on that computer are written to a SQLite file before the cashier is told the sale succeeded. When the link returns, the existing sync posts that queue to this client's Worker, then pulls. The till never opens Turso itself. Do not put a Turso token, a Cloudflare token, or a PIN in the desktop folder. The file is SQLCipher. The key stays in the Windows credential store. Do not delete <span class="inline">stockridge.key</span>. On each launch, while the internet works, the window copies the live PWA screens. That is how the till stays on the same version as the browser. The office host <span class="inline">stockridge.stockridge.workers.dev</span>, the PWA at <span class="inline">sample.stockridge.workers.dev</span>, this till, and the Android app read one Turso database at the same time: <span class="inline">stockridge-10client.aws-eu-north-1.turso.io</span>. Water packing, bakery and the other verticals are on that database. The old D1 database was not copied back, and no PIN was changed. Do not create a second database so the phone can have its own books.</p>
+  <p>Offline sales on that computer are written to a SQLite file before the cashier is told the sale succeeded. When the link returns, the existing sync posts that queue to this client's Worker, then pulls. The till never opens Turso itself. Do not put a Turso token, a Cloudflare token, or a PIN in the desktop folder. The file is SQLCipher. The key stays in the Windows credential store. Do not delete <span class="inline">stockridge.key</span>. The window may copy screens from the Worker into a cache. That cache does not replace a file already inside the program. A Worker deploy updates the browser. It does not update the till. A screen fix reaches the till only when you stage that client's <span class="inline">stockridge\public</span> and build the unpacked program again. The office host <span class="inline">stockridge.stockridge.workers.dev</span>, the PWA at <span class="inline">sample.stockridge.workers.dev</span>, this till, and the Android app read one Turso database at the same time: <span class="inline">stockridge-10client.aws-eu-north-1.turso.io</span>. Water packing, bakery and the other verticals are on that database. The old D1 database was not copied back, and no PIN was changed. Do not create a second database so the phone can have its own books.</p>
   <p>Sign in once while the internet works. After that, the same PIN opens the saved session when the Worker cannot be reached. A person who has never signed in on that computer still needs the internet once. One counter can start the LAN hub from the File menu and share the last mirror plus queued quantities. Other tills set <span class="inline">STOCKRIDGE_HUB</span> and <span class="inline">STOCKRIDGE_HUB_SECRET</span>. The hub does not accept a sale in place of the Worker. Code signing needs <span class="inline">CSC_LINK</span> and <span class="inline">CSC_KEY_PASSWORD</span>. Without that certificate the program is unsigned. Updates stay off until <span class="inline">STOCKRIDGE_UPDATE_URL</span> is set.</p>
   <h3>17.1 Clone the shell beside this client's checkout</h3>
-  <p>The shell is one shared repository. Each client still gets their own clone, so the archive copies that client's screens and not another shop's.</p>
+  <p>The shell is one shared repository. Each client still gets their own clone, next to that client's <span class="inline">stockridge</span> folder, so the build copies that client's screens and not another shop's. Pull each repository in its own folder. Do not run <span class="inline">git pull</span> in the parent folder. A parent path with a space, such as <span class="inline">C:\Users\Mohammed Hayatudeen\StockRidge</span>, is split by <span class="inline">npm.cmd</span>, and the build never runs.</p>
   <pre>Set-Location "C:\StockRidgeClients\NorthlineStores"
 git clone "https://github.com/10client/destop-stockridge.git" destop-stockridge
-Set-Location .\destop-stockridge
+
+Set-Location "C:\StockRidgeClients\NorthlineStores\stockridge"
 git pull
+git rev-parse --short HEAD
+
+Set-Location "C:\StockRidgeClients\NorthlineStores\destop-stockridge"
+git pull
+git rev-parse --short HEAD
 npm install</pre>
   <div class="note">
     <span class="kicker">Note</span>
-    If GitHub asks for a login, use the office account that can read that repository. Do not point this folder at the client's stockridge remote. Do not copy <span class="inline">.env.deploy</span> into it.
+    If the desktop folder is not cloned yet, clone it into <span class="inline">destop-stockridge</span> beside <span class="inline">stockridge</span>, then pull. If GitHub asks for a login, use the office account that can read that repository. Do not point this folder at the client's stockridge remote. Do not copy <span class="inline">.env.deploy</span> into it. Write both short hashes in the register before you build. Those hashes are the program you are about to hand over. As of 22 October 2026 the demonstration till fixes are destop <span class="inline">2c13aed</span> and stockridge <span class="inline">bf3f961</span>. A later hash in the same folder replaces them only after you print it and build again.
   </div>
-  <h3>17.2 Archive for this client only</h3>
-  <p>Deploy the Worker first (Section 13), so the screens on disk are the screens you just shipped. The archive copies <span class="inline">stockridge\public</span> from the sibling folder as a spare. The installed program then copies the live screens from this client's Worker on launch, so a later screen change does not wait for another archive.</p>
-  <pre>$env:STOCKRIDGE_ORIGIN = "https://northline-stockridge.&lt;account&gt;.workers.dev"
-npm run archive
+  <h3>17.2 Build the unpacked program for this client only</h3>
+  <p>Deploy the Worker first (Section 13) so this client has a host to sign in against. The screens inside the program come from the sibling <span class="inline">stockridge\public</span> at the moment you stage, not from the live Worker. Set the origin, stage, then build. Do not start the build through <span class="inline">npm.cmd</span> when the folder path contains a space.</p>
+  <pre>Set-Location "C:\StockRidgeClients\NorthlineStores\destop-stockridge"
+$env:STOCKRIDGE_ORIGIN = "https://northline-stockridge.&lt;account&gt;.workers.dev"
+node .\tools\stage-ui.js
+node .\node_modules\electron-builder\cli.js --win dir --config.win.signAndEditExecutable=false
 Remove-Item Env:STOCKRIDGE_ORIGIN
 Get-Content .\build\desktop-config.json</pre>
   <div class="expected">
     <span class="kicker">Expected</span>
-    The terminal prints <span class="inline">This archive will sign in against</span> this client's Worker URL. <span class="inline">desktop-config.json</span> contains that same URL. It does not contain a token.
+    The stage line prints <span class="inline">This archive will sign in against</span> this client's Worker URL. <span class="inline">desktop-config.json</span> contains that same URL and no token. The program you open is <span class="inline">dist\win-unpacked\StockRidge.exe</span>.
   </div>
   <div class="dont">
     <span class="kicker">Do not</span>
-    Run <span class="inline">npm run archive</span> with <span class="inline">STOCKRIDGE_ORIGIN</span> unset when this is a client. The unset default is the demonstration on Turso, <span class="inline">sample.stockridge.workers.dev</span>, the same books as that PWA. A client must set their own Worker URL. Do not leave the variable set in the terminal and then archive the next client. Remove it, as the command above does. The office host is the same Turso books as the demonstration. A client still must not be archived against either of those two URLs.
+    Leave <span class="inline">STOCKRIDGE_ORIGIN</span> unset when this is a client. The unset default is the demonstration, <span class="inline">sample.stockridge.workers.dev</span>. Do not leave the variable set and then build the next client. The office host is the same Turso books as the demonstration. A client must not be built against either of those two URLs. Do not run <span class="inline">npm run archive</span> from a parent folder. Do not spawn electron-builder through <span class="inline">shell: true</span>.
   </div>
-  <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run <span class="inline">npm run archive</span> again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder. The Windows file is not code-signed. The archive skips the signing tools, because those tools contain Mac shortcuts and a normal Windows account cannot create them. Do not turn signing on for this handover.</p>
-  <h3>17.3 Rename the file before it can be mixed up</h3>
-  <p>The builder uses the same file name for every client. A shared Downloads folder will overwrite one shop with another. Rename it with the client name before you move it. The version in the name comes from <span class="inline">destop-stockridge\package.json</span>. If that version is not <span class="inline">0.1.0</span>, rename the file the command just wrote.</p>
-  <pre>Move-Item .\dist\StockRidge-0.1.0-win-x64.exe `
-  .\dist\StockRidge-Northline-0.1.0-win-x64.exe</pre>
-  <p>Copy that renamed program to the shop computer. The shop computer does not need Node, Git, or the checkout. The first launch creates <span class="inline">stockridge.db</span> in the Windows app-data folder of the user who is signed in. File → Save a copy of this till is the backup of sales that have not synced yet. Keep that backup with this client's records, not in Git.</p>
+  <p>If the native SQLite step fails, install the Visual Studio C++ build tools and Python, then run the same two <span class="inline">node</span> commands again with the same origin. Do not hand over a half-built <span class="inline">dist</span> folder. The Windows file is not code-signed until <span class="inline">CSC_LINK</span> exists. Leave <span class="inline">signAndEditExecutable</span> false. Do not turn signing on for this handover.</p>
+  <h3>17.3 Copy the unpacked folder, not the portable exe</h3>
+  <p><span class="inline">dist\win-unpacked\StockRidge.exe</span> is the launcher inside a folder. It runs the files beside it. That folder is what a new build replaces. Copy the whole <span class="inline">win-unpacked</span> folder to the shop computer, and rename the folder with the client name before it can be mixed up, for example <span class="inline">StockRidge-Northline-win-unpacked</span>. The shop computer does not need Node, Git, or the checkout.</p>
+  <p><span class="inline">dist\StockRidge-0.1.0-win-x64.exe</span> is an old single-file portable package. The current build does not write it. The copy left on the office computer is the locked file from 20 October 2026, 4:37:44 PM, length 77,304,820. Opening it runs that old program. A build that tries to overwrite it waits until it is cancelled, so the new fixes never land in it. Do not open it. Do not rename it and hand it over. Do not tell the shop to use it.</p>
+  <p>The first launch creates <span class="inline">stockridge.db</span> in the Windows app-data folder of the user who is signed in. File → Save a copy of this till is the backup of sales that have not synced yet. Keep that backup with this client's records, not in Git.</p>
   <div class="note">
     <span class="kicker">Note</span>
     This Windows laptop builds a Windows program. A Mac counter needs the archive built on a Mac. Do not send the <span class="inline">.exe</span> to a Mac and expect it to open.
@@ -893,7 +900,7 @@ Get-Content .\build\desktop-config.json</pre>
   <h3>17.4 Open it once before you leave</h3>
   <p>The window is at <span class="inline">127.0.0.1:47321</span> on that computer. Sign in with a staff PIN for this client, not with a sample PIN. Complete one cash sale, or confirm an already synced till opens. A second window is refused, so two copies cannot write the same file. If the port is already in use, close the other StockRidge window rather than building a second archive.</p>
   <p>A till that has already been selling in Chrome does not hand its queue over by itself. On that browser, open Sync and choose Back up this device. In the desktop window, open Sync and choose Restore from a backup. Do that before abandoning the browser, or unsynced sales stay in Chrome.</p>
-  <p>The window must not show Download or Install. Those buttons belong on the browser, including a home-screen app. The program removes them, even when the hosted screens still contain them. If Install is still in the sidebar, this computer is running an older program. Pull <span class="inline">destop-stockridge</span> and run <span class="inline">npm run archive</span> again. Do not deploy the website just to hide that button.</p>
+  <p>The window must not show Download or Install. Those buttons belong on the browser, including a home-screen app. The program removes them, even when the hosted screens still contain them. If Install is still in the sidebar, this computer is running an older program, often the portable exe. Close it. Pull both repositories in their own folders, print the short hashes, and build the unpacked program again. Do not deploy the website just to hide that button.</p>
   <div class="dont">
     <span class="kicker">Do not</span>
     Treat <span class="inline">npm start</span> as the handover. That is the development window. It still needs the checkout beside it, and with no origin set it signs in against the sample Worker. Do not point the till at Turso Sync. Push, then pull, through this client's Worker, is the only door into the cloud database.
@@ -936,7 +943,7 @@ git status</pre>
   </div>
   <div class="important">
     <span class="kicker">If this client uses the desktop till</span>
-    A Worker deploy updates the browser. The desktop till copies those screens on its next launch, while the internet works. Repeat Section 17 only when the desktop program itself changed, not for a screen-only deploy. Repeat Section 18 only when the Android program itself changed. The till and the APK still have to be aimed at this client's Worker. A new archive does not move an old till off the wrong host by itself.
+    A Worker deploy updates the browser. It does not update the till. A file already inside the program wins over the screen cache. Repeat Section 17 when the desktop program changed or when a screen in <span class="inline">stockridge\public</span> changed. Pull each repository in its own folder, print both short hashes, stage, and build <span class="inline">dist\win-unpacked\StockRidge.exe</span>. Do not open <span class="inline">dist\StockRidge-0.1.0-win-x64.exe</span>. Repeat Section 18 only when the Android program itself changed. The till and the APK still have to be aimed at this client's Worker. A new build does not move an old till off the wrong host by itself. Do not deploy the Worker merely to refresh the till.
   </div>
 </section>
 
@@ -973,12 +980,13 @@ turso db shell northline-stockridge "SELECT COUNT(*) AS n FROM nafdac_catalog;"
 git status
 git check-ignore .env.deploy
 git check-ignore .data/d1-seed.sql</pre>
-  <p>From this client's <span class="inline">destop-stockridge</span> folder, when a till was archived:</p>
-  <pre># Origin baked into the last archive. Must be this client's Worker. No token.
+  <p>From this client's <span class="inline">destop-stockridge</span> folder, after a till build:</p>
+  <pre># Origin baked into the last build. Must be this client's Worker. No token.
 Get-Content .\build\desktop-config.json
 
-# The handed-over file is renamed. The generic name is not a client.
-Get-ChildItem .\dist\StockRidge-Northline-*</pre>
+# The program you hand over. The portable exe is not this build.
+Get-Item .\dist\win-unpacked\StockRidge.exe
+Get-Item .\dist\StockRidge-0.1.0-win-x64.exe -ErrorAction SilentlyContinue</pre>
   <div class="note">
     <span class="kicker">Note</span>
     On a D1-only client, use the Wrangler form of the administrator and catalogue queries, and do not call <span class="inline">turso db shell</span>. On a Turso client, a D1 query can look healthy while the Worker is reading a different database. Query the store named in the register.
@@ -1001,11 +1009,13 @@ Get-ChildItem .\dist\StockRidge-Northline-*</pre>
       <li>You are about to pass <span class="inline">--reset-pin</span>, run <span class="inline">format-admin-only</span>, or run <span class="inline">copy-from-d1</span> against a database that has real sales.</li>
       <li>The summary printed a PIN marked unverified, and you are about to send that number to the client.</li>
       <li>You are about to add a <span class="inline">[limits]</span> block to raise the Free-plan subrequest cap. Free cannot raise it, and a CPU-limit block fails the upload. Turso with one socket is the path this project uses instead.</li>
-      <li><span class="inline">npm run archive</span> was run without <span class="inline">STOCKRIDGE_ORIGIN</span>, or <span class="inline">desktop-config.json</span> names another client's Worker, or the demonstration host, and this is not that demonstration.</li>
-      <li>The archive file is still the generic <span class="inline">StockRidge-0.1.0-win-x64.exe</span> in a folder that holds more than one client.</li>
+      <li><span class="inline">STOCKRIDGE_ORIGIN</span> was unset, or <span class="inline">desktop-config.json</span> names another client's Worker, or the demonstration host, and this is not that demonstration.</li>
+      <li>You are about to open or hand over <span class="inline">dist\StockRidge-0.1.0-win-x64.exe</span>. That portable file is not the unpacked build.</li>
+      <li>You ran <span class="inline">git pull</span> or <span class="inline">npm run archive</span> in a parent folder, or the path contains a space and the build was started through <span class="inline">npm.cmd</span>.</li>
+      <li>The short hashes were not printed in both folders before the build, so you cannot tell which program the shop will open.</li>
       <li><span class="inline">destop-stockridge</span> contains <span class="inline">.env.deploy</span>, a Turso token, a Cloudflare token, or a PIN.</li>
       <li><span class="inline">STOCKRIDGE_ROOT</span> points at a different client's <span class="inline">stockridge</span> folder.</li>
-      <li>The Electron window still shows Download or Install. That program is older than the hide. Archive again. Do not deploy the website to remove it.</li>
+      <li>The Electron window still shows Download or Install. That program is older than the hide, or it is the portable exe. Build the unpacked program again. Do not deploy the website to remove it.</li>
       <li>A client's APK still names <span class="inline">sample.stockridge.workers.dev</span>, or the office host, in <span class="inline">strings.xml</span>.</li>
     </ul>
   </div>
