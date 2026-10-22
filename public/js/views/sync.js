@@ -104,6 +104,8 @@
       const lastPullAt = await SR.store.metaGet('last_pull_at').catch(() => null);
       const truncated = await SR.store.metaGet('sync_truncated').catch(() => []);
       const incomplete = await SR.store.metaGet('sync_incomplete_since').catch(() => null);
+      const pullError = await SR.store.metaGet('sync_pull_error').catch(() => null);
+      const catalogueEmpty = await SR.store.metaGet('catalogue_empty').catch(() => null);
       const stock = await SR.store.all('stock_batches').catch(() => []);
       const products = await SR.store.all('products').catch(() => []);
       const report = SR.saveStatus.decide({
@@ -114,6 +116,8 @@
         lastPullAt,
         truncated,
         incomplete,
+        pullError,
+        catalogueEmpty,
         stockRows: stock.length,
         productRows: products.length,
       });

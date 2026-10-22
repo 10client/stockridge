@@ -897,6 +897,8 @@
       const lastPullAt = await SR.store.metaGet('last_pull_at');
       const truncated = await SR.store.metaGet('sync_truncated');
       const incomplete = await SR.store.metaGet('sync_incomplete_since');
+      const pullError = await SR.store.metaGet('sync_pull_error');
+      const catalogueEmpty = await SR.store.metaGet('catalogue_empty');
       const stock = await SR.store.all('stock_batches').catch(() => []);
       const products = await SR.store.all('products').catch(() => []);
       const report = SR.saveStatus.decide({
@@ -907,6 +909,8 @@
         lastPullAt,
         truncated,
         incomplete,
+        pullError,
+        catalogueEmpty,
         stockRows: stock.length,
         productRows: products.length,
       });

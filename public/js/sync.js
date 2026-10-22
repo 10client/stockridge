@@ -235,24 +235,77 @@
    * device does the first time and after an admin asks it to "re-download
    * everything" from the Sync screen.
    */
-  async function pull({ full = false, tables = null } = {}) {
-    if (!SR.api.isOnline()) return { ok: false, offline: true, rows: 0 };
-    if (!SR.api.hasToken()) return { ok: false, needsAuth: true, rows: 0 };
-
-    // The shelf is a handful of rows. Download it on its own first, so a
-    // catalogue of eleven thousand names timing out cannot leave the till
-    // unable to find a shoe that is sitting on the shelf.
-    if (!tables) {
-      await pullRequest({
-        full: true,
-        tables: ['stock_batches', 'purchase_orders', 'product_price_overrides'],
-        saveCursor: false,
-      }).catch(() => {});
+  function pullFailureReason(err) {
+    const msg = String((err && (err.message || err.code)) || err || '');
+    if (/did not answer|could not be reached|in time|timed out|timeout|failed to fetch|shop_read_failed/i.test(msg)) {
+      return 'The shop did not finish sending the catalogue. Leave the till open and connected so it can try again.';
     }
-    return pullRequest({ full, tables, saveCursor: true });
+    if (err && (err.isAuth || err.code === 'SESSION_SUPERSEDED' || err.code === 'NO_TOKEN')) {
+      return 'The shop did not accept this session, so the catalogue was not copied.';
+    }
+    return msg || 'The catalogue download did not finish.';
   }
 
-  async function pullRequest({ full = false, tables = null, saveCursor = true } = {}) {
+  async function rememberPullError(reason) {
+    lastError = reason;
+    try { await SR.store.metaSet('sync_pull_error', reason); } catch (err) { /* the chip still has lastError */ }
+  }
+
+  async function pull({ full = false, tables = null } = {}) {
+    if (!SR.api.isOnline()) {
+      const products = await SR.store.all('products').catch(() => []);
+      const stock = await SR.store.all('stock_batches').catch(() => []);
+      if (!products.length && !stock.length) {
+        await rememberPullError('The shop did not answer, so the catalogue was not copied onto this till.');
+      }
+      return { ok: false, offline: true, rows: 0 };
+    }
+    if (!SR.api.hasToken()) return { ok: false, needsAuth: true, rows: 0 };
+    if (tables) return pullRequest({ full, tables, saveCursor: true, stamp: true });
+
+    // One request for the whole catalogue was cut off before a row was stored,
+    // and the chip then said Not saved. Write each group as it arrives. The
+    // names come first, then the shelf, then the rest. A later miss keeps what
+    // already landed.
+    const groups = [
+      ['products', 'product_categories', 'product_units', 'product_variants', 'product_barcodes'],
+      ['price_lists', 'price_list_items', 'product_price_overrides', 'stock_batches', 'purchase_orders'],
+      ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'suppliers', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_compliance_records'],
+    ];
+    let rows = 0;
+    let cursor = null;
+    let truncated = [];
+    let softErrors = [];
+    let failed = null;
+    for (const group of groups) {
+      let result = await pullRequest({ full, tables: group, saveCursor: false, stamp: false });
+      if (!result.ok && result.fast) result = await pullRequest({ full, tables: group, saveCursor: false, stamp: false });
+      rows += result.rows || 0;
+      if (result.cursor) cursor = result.cursor;
+      if (result.truncated && result.truncated.length) truncated = truncated.concat(result.truncated);
+      if (result.softErrors && result.softErrors.length) softErrors = softErrors.concat(result.softErrors);
+      if (!result.ok) { failed = result; break; }
+    }
+    if (failed) {
+      try { await SR.store.metaSet('sync_incomplete_since', await SR.store.metaGet('sync_cursor', null)); } catch (err) { /* the error sentence is already stored */ }
+      emit('change', status());
+      return { ok: false, rows, error: failed.error };
+    }
+    if (cursor) await SR.store.metaSet('sync_cursor', cursor);
+    const savedAt = SR.util.nowIso();
+    await SR.store.metaSet('last_pull_at', savedAt);
+    await SR.store.metaSet('sync_truncated', truncated);
+    await SR.store.metaSet('sync_pull_error', null);
+    await SR.store.metaSet('sync_incomplete_since', softErrors.length ? (await SR.store.metaGet('sync_cursor', null)) : null);
+    const products = await SR.store.all('products').catch(() => []);
+    const stock = await SR.store.all('stock_batches').catch(() => []);
+    await SR.store.metaSet('catalogue_empty', products.length === 0 && stock.length === 0);
+    lastPullAt = savedAt;
+    emit('change', status());
+    return { ok: true, rows, cursor, truncated };
+  }
+
+  async function pullRequest({ full = false, tables = null, saveCursor = true, stamp = true } = {}) {
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
     const branchId = SR.state.activeBranchId;
     // Stock and the orders it came from are always pulled in full. A cursor
@@ -262,6 +315,7 @@
     if (asking.includes('stock_batches')) fullTables.push('stock_batches');
     if (asking.includes('purchase_orders')) fullTables.push('purchase_orders');
     let result;
+    const started = Date.now();
     try {
       result = await SR.api.post('/api/sync/pull', {
         device_id: SR.device.current().id,
@@ -271,21 +325,47 @@
         include_all_branches: true,
         tables: asking,
         full_tables: fullTables.length ? fullTables : undefined,
-      }, { timeoutMs: 60000 });
+      }, { timeoutMs: 70000 });
     } catch (err) {
-      lastError = err.message;
-      await SR.store.log({ kind: 'PULL', status: 'FAILED', count: 0, message: err.message });
+      const reason = pullFailureReason(err);
+      await rememberPullError(reason);
+      await SR.store.log({ kind: 'PULL', status: 'FAILED', count: 0, message: reason }).catch(() => {});
       emit('change', status());
-      return { ok: false, error: err, rows: 0 };
+      return { ok: false, error: err, rows: 0, fast: Date.now() - started < 8000 };
     }
+    if (!result || !result.tables) {
+      const reason = 'The shop answered without a catalogue, so nothing was written.';
+      await rememberPullError(reason);
+      return { ok: false, error: new Error(reason), rows: 0, fast: false };
+    }
+    const blocking = Object.entries(result.tables).filter(([name, item]) => item && item.error && (name === 'products' || name === 'stock_batches'));
+    if (blocking.length) {
+      const reason = 'A catalogue table did not download (' + blocking[0][1].error + '). What already arrived is kept.';
+      await rememberPullError(reason);
+      return { ok: false, error: new Error(reason), rows: 0, fast: false };
+    }
+    const softErrors = Object.entries(result.tables).filter(([, item]) => item && item.error).map(([name]) => name);
 
     let rows = 0;
+    let sent = 0;
     const perTable = [];
-    for (const [table, payload] of Object.entries((result && result.tables) || {})) {
-      if (!payload || payload.error || !Array.isArray(payload.rows)) continue;
-      await SR.store.putMany(table, payload.rows);
-      rows += payload.rows.length;
-      perTable.push({ table, count: payload.rows.length });
+    try {
+      for (const [table, payload] of Object.entries(result.tables || {})) {
+        if (!payload || !Array.isArray(payload.rows)) continue;
+        sent += payload.rows.length;
+        const wrote = await SR.store.putMany(table, payload.rows);
+        rows += Number(wrote) || 0;
+        perTable.push({ table, count: Number(wrote) || 0 });
+      }
+    } catch (err) {
+      const reason = pullFailureReason(err);
+      await rememberPullError(reason);
+      return { ok: false, error: err, rows, fast: false };
+    }
+    if (sent > 0 && rows === 0) {
+      const reason = 'The shop sent catalogue rows, but this till could not store them.';
+      await rememberPullError(reason);
+      return { ok: false, error: new Error(reason), rows: 0, fast: false };
     }
 
     // Only advance the cursor when the whole pull succeeded. Moving it past a
@@ -303,15 +383,19 @@
       // the mirror is incomplete rather than quietly pretending otherwise.
       await SR.store.metaSet('sync_incomplete_since', since || null);
     }
-    await SR.store.metaSet('last_pull_at', SR.util.nowIso());
-    await SR.store.metaSet('sync_truncated', (result && result.truncatedTables) || []);
-    lastPullAt = SR.util.nowIso();
+    if (stamp) {
+      const savedAt = SR.util.nowIso();
+      await SR.store.metaSet('last_pull_at', savedAt);
+      await SR.store.metaSet('sync_truncated', (result && result.truncatedTables) || []);
+      await SR.store.metaSet('sync_pull_error', null);
+      lastPullAt = savedAt;
+    }
     await SR.store.log({
       kind: 'PULL', status: 'OK', count: rows,
       message: result && result.fullSync ? `Full sync: ${rows} rows` : `${rows} changed rows`,
     });
     emit('change', status());
-    return { ok: true, rows, perTable, cursor: result && result.cursor, fullSync: Boolean(result && result.fullSync), truncated: (result && result.truncatedTables) || [] };
+    return { ok: true, rows, perTable, cursor: result && result.cursor, fullSync: Boolean(result && result.fullSync), truncated: (result && result.truncatedTables) || [], softErrors };
   }
 
   // -------------------------------------------------------------------
@@ -322,7 +406,10 @@
     running = (async () => {
       try {
         if (!SR.api.isOnline()) await SR.api.probe({ force: true });
-        if (!SR.api.isOnline()) return { ok: false, offline: true };
+        if (!SR.api.isOnline()) {
+          await pull({ full });
+          return { ok: false, offline: true };
+        }
         emit('change', status());
         let pushResult = { applied: 0, rejected: 0 };
         try { pushResult = await push(); } catch (err) { lastError = err.message; }
