@@ -373,6 +373,19 @@ function mount(app, base = '/api') {
       withCatalogue: seedCatalogue,
       createdBy: String(user.id),
     });
+    // The chart has to exist before the first money can be posted. The branch
+    // row alone is not the record: the safe and Owner's Capital both have to
+    // show it, or the shop opens with cash the books have never heard of.
+    let opening = { recorded: false, amount: 0 };
+    if (branchId && branchRow && Number(branchRow.opening_cash) > 0) {
+      opening = await provisioning.recordOpeningFloat(db, {
+        businessId: id,
+        branchId,
+        branchName: branchRow.name,
+        amount: branchRow.opening_cash,
+        userId: user.id,
+      });
+    }
 
     // THE SERVICE HANDS BACK THE SUMMARY ITSELF. `provisionBusiness` ends `return summary` — the
     // counts are the value, at `result.categories` / `result.accounts` / `result.products`. The
@@ -392,6 +405,9 @@ function mount(app, base = '/api') {
     const rentalNote = branchRow && branchRow.branch_type === 'RENTAL'
       ? ' The first branch is a rental yard. Hire and lease fees post as income. Deposits are held, not earned. The goods stay in stock until a unit is sold.'
       : '';
+    const openingNote = opening.recorded
+      ? ` Opening money of ₦${Number(opening.amount).toLocaleString('en-NG')} is in the safe and in Owner's Capital.`
+      : (branchRow ? ' No opening money was entered, so none was recorded.' : '');
     await recordFromCtx(ctx, {
       action: 'BUSINESS_CREATED', entityType: 'BUSINESS', entityId: id, businessId: id,
       after: { name, profileCode, provisioned: summary },
@@ -401,7 +417,7 @@ function mount(app, base = '/api') {
       business: { id, name, profile_code: profileCode },
       // A brand-new business is useless without a branch, a category and a
       // ledger, so the message says what was actually built rather than "ok".
-      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchRow ? ` with its first branch ${branchRow.name}, code ${branchRow.code}, taken from the name` : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}${rentalNote}`,
+      message: `${name} created as ${getProfileOrDefault(profileCode).label}${branchRow ? ` with its first branch ${branchRow.name}, code ${branchRow.code}, taken from the name` : ''} and provisioned: ${summary.categories || 0} categories, ${summary.accounts || 0} ledger accounts, ${summary.customerClasses || 0} customer classes${seedCatalogue ? `, ${summary.products || 0} starter products` : ''}.${summary.skipped && summary.skipped.length ? ` ${summary.skipped.length} item(s) were skipped because they already existed.` : ''}${openingNote}${rentalNote}`,
       summary,
       branch_id: branchId,
     }, 201);
@@ -554,6 +570,13 @@ function mount(app, base = '/api') {
       row.phone, row.email, row.latitude, row.longitude, row.geofence_radius_meters,
       row.attendance_mode, row.opening_cash,
     ]);
+    const opening = await provisioning.recordOpeningFloat(db, {
+      businessId: business.id,
+      branchId: id,
+      branchName: row.name,
+      amount: row.opening_cash,
+      userId: user.id,
+    });
 
     // A new branch starts with NO stock: it does not inherit another branch's
     // shelves. Copying stock would create units in two places at once, and the
@@ -564,7 +587,7 @@ function mount(app, base = '/api') {
     });
     ctx.json({
       ok: true, id, code,
-      message: `${name} (${code}) opened under ${business.name}${row.branch_type === 'RENTAL' ? ' as a rental yard. Hire and lease fees post as income. Deposits are held, not earned. The goods stay in stock until a unit is sold.' : '.'}${lat ? ` Geofence set to ${radius}m.` : ' No coordinates were given, so clock-ins there will be flagged as unplaced until you set the branch location.'}`,
+      message: `${name} (${code}) opened under ${business.name}${row.branch_type === 'RENTAL' ? ' as a rental yard. Hire and lease fees post as income. Deposits are held, not earned. The goods stay in stock until a unit is sold.' : '.'}${opening.recorded ? ` Opening money of ₦${Number(opening.amount).toLocaleString('en-NG')} is in the safe and in Owner's Capital.` : ' No opening money was entered, so none was recorded.'}${lat ? ` Geofence set to ${radius}m.` : ' No coordinates were given, so clock-ins there will be flagged as unplaced until you set the branch location.'}`,
       warnings: lat ? [] : ['No location set — attendance geofencing cannot work at this branch until you add coordinates.'],
     }, 201);
   });

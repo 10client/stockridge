@@ -253,7 +253,10 @@ function mount(app, base = '/api') {
           AND date(t.closed_at, '+1 hours') BETWEEN ? AND ? ${tillWhere}`, [from, to, ...tillParam]);
     const safeWhere = useBranch ? 'AND branch_id = ?' : (business ? 'AND business_id = ?' : '');
     const safeParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
-    const safe = await db.first(`SELECT COALESCE(SUM(CASE WHEN entry_type IN ('OPENING_FLOAT','CASH_DEPOSIT','TILL_TRANSFER_IN','BANK_DEPOSIT') THEN amount ELSE -amount END),0) AS balance
+    // The amount already carries its sign. OPENING is a positive amount, not a
+    // type named OPENING_FLOAT. Treating every other type as negative hid the
+    // first money and then subtracted it.
+    const safe = await db.first(`SELECT COALESCE(SUM(amount),0) AS balance
         FROM branch_safe_ledger WHERE is_deleted = 0 ${safeWhere}`, safeParam);
 
     // ---- CASH POSITION (from the ledger, not the tills) ---------------

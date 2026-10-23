@@ -80,10 +80,11 @@ async function accessibleBusinessIds(db, user) {
 /** Build the resolved scope object used by every access decision. */
 async function resolveScope(db, user) {
   const access = await accessibleBusinessIds(db, user);
-  let allBranchRows = null;
-  if (!user.branch_id) {
-    allBranchRows = await db.all('SELECT id, business_id FROM branches WHERE is_deleted = 0 AND is_active = 1');
-  }
+  // A pin on the user row is not a reason to skip the branch list. A co-owner
+  // who was created inside the first branch still reaches every branch of the
+  // businesses they own. Skipping this query left them with only that first
+  // branch, and an offline login after a browser clear had nothing else to restore.
+  const allBranchRows = await db.all('SELECT id, business_id FROM branches WHERE is_deleted = 0 AND is_active = 1');
   return buildScope(user, { businessIds: access.businessIds, grantIds: access.grantIds, allBranchIds: allBranchRows });
 }
 

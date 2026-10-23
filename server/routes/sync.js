@@ -609,6 +609,7 @@ function mount(app, base = '/api') {
     // table existed does not hide the rows already on the shelf.
     const fullTables = new Set(Array.isArray(body.full_tables) ? body.full_tables.map((t) => String(t).toLowerCase()) : []);
     const includeAllBranches = body.include_all_branches === true || body.include_all_branches === 1 || body.include_all_branches === '1';
+    const includeAllBusinesses = includeAllBranches || body.include_all_businesses === true || body.include_all_businesses === 1 || body.include_all_businesses === '1';
 
     // A first sync has no cursor and must get everything; a later sync gets only
     // what changed. The cap on a full sync matters — a 78-product catalogue with
@@ -633,7 +634,20 @@ function mount(app, base = '/api') {
       const spec = PULLABLE[table];
       const where = []; const params = [];
       if (spec.softDelete !== false) where.push('is_deleted = 0');
-      if (spec.businessScoped !== false && biz) { where.push('(business_id = ? OR business_id IS NULL)'); params.push(biz); }
+      // A full mirror must not be cut to the shop the shell happened to stand
+      // in. After a browser clear that shop is the first branch, and an offline
+      // login then restored only that branch. A pinned cashier is still limited
+      // by scope below.
+      if (spec.businessScoped !== false && includeAllBusinesses && scope.allBusinesses) {
+        // every business this person reaches
+      } else if (spec.businessScoped !== false && includeAllBusinesses && scope.businessIds && scope.businessIds.size) {
+        const ids = [...scope.businessIds];
+        where.push(`(business_id IS NULL OR business_id IN (${ids.map(() => '?').join(',')}))`);
+        params.push(...ids);
+      } else if (spec.businessScoped !== false && biz) {
+        where.push('(business_id = ? OR business_id IS NULL)');
+        params.push(biz);
+      }
       if (spec.branchScoped && !scope.allBranches && scope.branchIds) {
         const ids = [...scope.branchIds];
         where.push(`(branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',')}))`);

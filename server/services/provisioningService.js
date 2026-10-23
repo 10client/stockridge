@@ -44,6 +44,55 @@ function profileForBusiness(business) {
 }
 
 /**
+ * The first money put in when a business or a branch opens.
+ *
+ * The branch row remembering the number is not the record. The safe ledger is
+ * the cash the shop holds, and the journal is the other side: debit Cash in
+ * Safe, credit Owner's Capital. Posted as income, the shop would show a profit
+ * on the day it opened. Posted twice, the capital would double. A zero float
+ * is a real choice and writes nothing.
+ */
+async function recordOpeningFloat(db, { businessId, branchId, branchName, amount, userId }) {
+  const cash = round2(Number(amount) || 0);
+  if (!(cash > 0) || !businessId || !branchId) return { recorded: false, amount: 0, reason: 'none' };
+  const sourceId = `opening-${branchId}`;
+  const safeRow = await db.first(
+    `SELECT id FROM branch_safe_ledger WHERE branch_id = ? AND entry_type = 'OPENING' AND is_deleted = 0`,
+    [String(branchId)],
+  );
+  const journal = await db.first(
+    `SELECT id FROM gl_journal_entries WHERE source_type = 'OPENING_BALANCE' AND source_id = ? AND is_deleted = 0`,
+    [sourceId],
+  );
+  if (safeRow && journal) return { recorded: true, amount: cash, already: true };
+  if (!safeRow) {
+    await db.run(`INSERT INTO branch_safe_ledger (
+        id, branch_id, business_id, entry_type, amount, balance_after, reason, created_by, created_at, updated_at)
+      VALUES (?,?,?, 'OPENING', ?, ?, 'Opening cash float', ?, datetime('now'), datetime('now'))`,
+    [newId(), String(branchId), String(businessId), cash, cash, userId ? String(userId) : null]);
+  }
+  if (!journal) {
+    const accountIds = await glService.loadAccountCodes(db, businessId);
+    for (const st of glService.postCashAgainstAccountStatements({
+      businessId: String(businessId),
+      branchId: String(branchId),
+      amount: cash,
+      cash: 'SAFE',
+      direction: 'IN',
+      accountCode: '3000',
+      sourceType: 'OPENING_BALANCE',
+      sourceId,
+      description: `Opening cash float for ${branchName || 'this branch'}`,
+      accountIds,
+      user: userId ? { id: String(userId) } : null,
+    })) {
+      await db.run(st.sql, st.params);
+    }
+  }
+  return { recorded: true, amount: cash, already: false };
+}
+
+/**
  * Provision a business: categories, chart of accounts, customer classes and
  * default price lists. Returns what was created and what already existed.
  */
@@ -718,22 +767,10 @@ async function provisionDeployment(db, {
     // opening float IS, and it belongs in equity rather than in the trading accounts —
     // an opening float posted as income would show a profit on the day a shop opened.
     if (Number(b.opening_cash) > 0) {
-      await db.run(`INSERT INTO branch_safe_ledger (
-          id, branch_id, business_id, entry_type, amount, balance_after, reason, created_by, created_at, updated_at)
-        VALUES (?,?,?, 'OPENING', ?, ?, 'Opening cash float', ?, datetime('now'), datetime('now'))`,
-      [newId(), id, businessId, round2(Number(b.opening_cash)), round2(Number(b.opening_cash)), ownerId]);
-
-      const gl = require('./glService');
-      const accountIds = await gl.loadAccountCodes(db, businessId);
-      for (const st of gl.postCashAgainstAccountStatements({
-        businessId, branchId: id, amount: round2(Number(b.opening_cash)),
-        cash: 'SAFE', direction: 'IN', accountCode: '3000',
-        sourceType: 'OPENING_BALANCE', sourceId: `opening-${id}`,
-        description: `Opening cash float for ${b.name}`,
-        accountIds, user: { id: ownerId },
-      })) {
-        await db.run(st.sql, st.params);
-      }
+      await recordOpeningFloat(db, {
+        businessId, branchId: id, branchName: b.name,
+        amount: b.opening_cash, userId: ownerId,
+      });
     }
 
     // A branch manager per branch, when the caller asked for one.
@@ -772,4 +809,4 @@ async function provisionDeployment(db, {
   };
 }
 
-module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku, fileGreenbook };
+module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku, fileGreenbook, recordOpeningFloat };

@@ -323,6 +323,7 @@
         since: since || undefined,
         branch_id: branchId || undefined,
         include_all_branches: true,
+        include_all_businesses: true,
         tables: asking,
         full_tables: fullTables.length ? fullTables : undefined,
       }, { timeoutMs: 70000 });
