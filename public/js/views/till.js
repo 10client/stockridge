@@ -70,6 +70,7 @@
 
     const banner = ui.h('div', {});
     const currentHost = ui.h('div', {});
+    const drawerSafe = ui.h('div', {});
     const summaryHost = ui.h('div', {});
     const safeHost = ui.h('div', {});
 
@@ -90,7 +91,7 @@
       head,
       remember: 'sr.tillTab',
       sections: [
-        { id: 'drawer', label: 'Drawer', nodes: [banner, currentHost, summaryHost] },
+        { id: 'drawer', label: 'Drawer', nodes: [banner, currentHost, drawerSafe, summaryHost] },
         { id: 'safe', label: 'Safe', nodes: [safeHost] },
         { id: 'history', label: 'History', nodes: [toolbar, host] },
       ],
@@ -107,7 +108,7 @@
       try {
         const current = await SR.api.get('/api/tills/current', { query: SR.state.query({}) });
         if (current && current.till) renderCurrent(current, false);
-        else renderNoOpenTill();
+        else renderNoOpenTill(current && current.message, current && current.safeBalance);
       } catch (err) {
         if (!err.isOffline) renderNoOpenTill(String(err.message || 'Could not read the current till.'));
         else {
@@ -165,14 +166,32 @@
       }
     }
 
-    function renderNoOpenTill(message) {
+    function renderNoOpenTill(message, safeBalance) {
       paintTillAction(null);
-      currentHost.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+      const body = ui.h('div', { class: 'card-body' },
         ui.h('div', { class: 'row' },
           ui.h('div', { class: 'grow' },
             ui.h('h2', {}, 'No till is open'),
             ui.h('p', { class: 'sub' }, message || 'Open a till with the float you are starting the day with. Every cash sale until it closes is counted against that float — which is what makes the variance mean something.')),
-          ui.h('button', { class: 'btn btn-primary', onClick: () => openTill() }, 'Open a till')))));
+          ui.h('button', { class: 'btn btn-primary', onClick: () => openTill() }, 'Open a till')));
+      if (safeBalance != null && safeBalance !== '') body.appendChild(safeLine(safeBalance));
+      currentHost.replaceChildren(ui.h('div', { class: 'card' }, body));
+    }
+
+    function showSafeTab() {
+      const bar = wrap.querySelector('.section-dock .tabs');
+      if (!bar) return;
+      for (const btn of bar.querySelectorAll('[role="tab"]')) {
+        if (btn.textContent === 'Safe') btn.click();
+      }
+    }
+
+    function safeLine(balance) {
+      return ui.h('div', { class: 'row between wrap', style: { marginTop: '12px' } },
+        ui.h('div', {},
+          ui.h('div', { class: 'hint' }, 'Branch safe'),
+          ui.h('strong', {}, U.money(balance))),
+        ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: showSafeTab }, 'Open the safe'));
     }
 
     function renderCurrent(payload, offline) {
@@ -192,7 +211,8 @@
           ui.kpi({ label: 'Opening float', value: U.money(t.opening_cash) }),
           ui.kpi({ label: 'Cash sales', value: U.money(t.cash_sales_total) }),
           ui.kpi({ label: 'Refunds', value: U.money(t.refund_total), tone: Number(t.refund_total) > 0 ? 'warn' : null }),
-          ui.kpi({ label: 'Expected in the drawer', value: U.money(expected), tone: 'info', foot: 'float + cash sales − refunds' })))));
+          ui.kpi({ label: 'Expected in the drawer', value: U.money(expected), tone: 'info', foot: 'float + cash sales − refunds' }),
+          payload.safeBalance != null ? ui.kpi({ label: 'Branch safe', value: U.money(payload.safeBalance), icon: 'wallet', foot: 'Outside this drawer' }) : null))));
       currentHost.replaceChildren(next);
       if (offline) banner.replaceChildren(offlineBanner());
     }
@@ -499,29 +519,60 @@
     // what the safe had done all month, which is not a report a shop can be run
     // from. Found while making the safe a real account (Stage T2b): the endpoint
     // existed, was tested, and was invisible.
+    async function mirroredSafe() {
+      const branchId = SR.state.activeBranchId;
+      const rows = await SR.store.all('branch_safe_ledger', {
+        where: (row) => !Number(row.is_deleted) && (!branchId || String(row.branch_id) === String(branchId)),
+      });
+      const balance = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      return {
+        balance,
+        data: rows.slice(0, 8),
+        offline: true,
+        inAgreement: null,
+        agreementMessage: rows.length
+          ? 'Offline — this is the safe copied onto this device. It is not the live books.'
+          : 'Offline — this device has no safe rows yet. Sign in once while connected so the safe can be copied.',
+      };
+    }
+
     async function loadSafe() {
       safeHost.replaceChildren(ui.skeleton(3));
+      drawerSafe.replaceChildren();
       let safe;
       try {
         safe = await SR.api.get('/api/safe', { query: SR.state.query({ limit: 8 }) });
       } catch (err) {
-        if (!err.isOffline) { safeHost.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: loadSafe } })); return; }
-        safe = null;
+        if (!err.isOffline) {
+          const block = ui.errorBlock(err, { retry: { label: 'Try again', run: loadSafe } });
+          safeHost.replaceChildren(block);
+          drawerSafe.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, err.message || 'The safe could not be read.'));
+          return;
+        }
+        try { safe = await mirroredSafe(); } catch (e) { safe = null; }
       }
       safeHost.replaceChildren();
-      if (!safe) return;
+      if (!safe) {
+        drawerSafe.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, 'The safe could not be read.'));
+        return;
+      }
+      if (safe.balance != null) drawerSafe.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }, safeLine(safe.balance))));
       const card = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' }));
       card.firstElementChild.appendChild(ui.h('div', { class: 'row between wrap' },
         ui.h('div', {},
           ui.h('h3', { style: { margin: '0 0 4px' } }, 'Branch safe'),
           ui.h('p', { class: 'hint', style: { margin: 0 } },
-            `${U.money(safe.balance)} in the safe ledger · ${U.money(safe.ledgerBalance)} in the accounts`)),
+            safe.ledgerBalance == null
+              ? `${U.money(safe.balance)} in the safe`
+              : `${U.money(safe.balance)} in the safe ledger · ${U.money(safe.ledgerBalance)} in the accounts`)),
         ui.h('div', { class: 'actions' },
           SR.state.atLeast('MANAGER') && safe.inAgreement === false
             ? ui.h('button', { class: 'btn btn-sm', onClick: () => openReconcile(safe) }, 'Reconcile')
             : null)));
 
-      if (safe.inAgreement === false) {
+      if (safe.offline) {
+        card.firstElementChild.appendChild(ui.h('div', { class: 'alert alert-warn' }, safe.agreementMessage || 'Offline — showing the safe copied onto this device.'));
+      } else if (safe.inAgreement === false) {
         card.firstElementChild.appendChild(ui.h('div', { class: 'alert alert-warn' }, safe.agreementMessage
           || `The safe ledger and the accounts disagree by ${U.money(Math.abs(safe.difference))}.`));
       } else {

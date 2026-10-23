@@ -172,6 +172,40 @@
       return { count, gross };
     }
 
+    // The safe ledger, for this shop only. A pinned cashier's mirror is already
+    // limited to their shop. Summing every row here would show another branch's
+    // cash on a device that had once stood in that shop.
+    async function mirroredSafe(branchId) {
+      try {
+        const rows = await SR.store.all('branch_safe_ledger', {
+          where: (row) => !Number(row.is_deleted) && (!branchId || String(row.branch_id) === String(branchId)),
+        });
+        if (!rows.length) return null;
+        return rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function openSafeScreen() {
+      try { sessionStorage.setItem('sr.tillTab', 'safe'); } catch (e) { /* private mode */ }
+      SR.app.navigate('/till');
+    }
+
+    function paintSafe(body, cash) {
+      if (!cash || cash.safeBalance == null || cash.safeBalance === '') return;
+      body.appendChild(ui.h('div', { class: 'kpis', style: { marginTop: '12px' } },
+        ui.kpi({
+          label: 'Branch safe',
+          value: U.money(cash.safeBalance),
+          small: true,
+          icon: 'wallet',
+          foot: 'Cash held outside the drawer. Not the till float.',
+        })));
+      body.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '8px' } },
+        ui.h('button', { class: 'btn btn-sm', onClick: openSafeScreen }, 'Open the safe')));
+    }
+
     async function fromMirror() {
       // Rebuild the essentials from the device mirror. Deliberately NOT a full
       // replica of the server's dashboard: everything here is something a till
@@ -208,7 +242,7 @@
         period: null,
         stock: { products: products.length, lowStockCount, atCost },
         debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
-        cash: { safeBalance: null, myTill: null, openTills: [] },
+        cash: { safeBalance: await mirroredSafe(branchId), myTill: null, openTills: [] },
         topProducts: [],
         actions: [],
         plan: null,
@@ -378,9 +412,6 @@
           // CASH IN THE DRAWER, not stock. This carried the box.
           ui.kpi({ label: 'Expected in drawer', value: U.money(myTill.expectedCash), tone: 'info', small: true, icon: 'cash' }),
           ui.kpi({ label: 'Transactions', value: String(myTill.saleCount || 0), foot: `since ${U.time(myTill.openedAt)}`, small: true, icon: 'receipt' })));
-        if (cash.safeBalance != null) {
-          tillBody.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '10px' } }, `Branch safe: ${U.money(cash.safeBalance)}`));
-        }
         tillBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
           ui.h('button', { class: 'btn btn-primary btn-sm', onClick: () => SR.app.navigate('/till') }, 'Close & count'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/pos') }, 'Go to the counter')));
@@ -408,6 +439,11 @@
           mark: 'cash',
         }));
       }
+      // THE SAFE IS NOT THE DRAWER. It used to be painted only inside the branch
+      // where this person had their own till open. A general manager opens the
+      // till and funds the safe. Staff then see that till, and the safe figure
+      // was dropped. A pinned cashier still only receives their own shop's sum.
+      paintSafe(tillBody, cash);
       tillCard.appendChild(tillBody);
       todayNodes.push(tillCard);
 

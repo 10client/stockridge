@@ -162,7 +162,20 @@ function mount(app, base = '/api') {
       if (till) ctx.set('tillBelongsToSomebodyElse', true);
     }
 
-    if (!till) return ctx.json({ ok: true, till: null, message: `No till is open at ${branch.name}.` });
+    // The safe is not part of the drawer. A general manager can open a till and
+    // fund the safe, and a cashier who has no drawer of their own still has to
+    // see that safe. Omitting it here made the empty-till card the only card,
+    // and the safe looked missing.
+    if (!till) {
+      const safeNow = await safeBalance(db, branch.id);
+      return ctx.json({
+        ok: true,
+        till: null,
+        safeBalance: safeNow,
+        branch: { id: branch.id, name: branch.name },
+        message: `No till is open at ${branch.name}.`,
+      });
+    }
 
     const live = await db.first(`SELECT COUNT(*) AS sales, COALESCE(SUM(s.total),0) AS revenue,
           COALESCE(SUM(s.balance_due),0) AS outstanding

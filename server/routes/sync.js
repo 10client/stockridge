@@ -623,7 +623,7 @@ function mount(app, base = '/api') {
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
-      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings'];
+      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_safe_ledger'];
 
     const out = {};
     let totalRows = 0;
@@ -865,6 +865,10 @@ const PULLABLE = {
   suppliers: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   stock_batches: { businessScoped: true, branchScoped: true, orderBy: 'product_id, batch_no' },
   branch_compliance_records: { businessScoped: false, branchScoped: true, orderBy: 'record_type' },
+  // The safe is cash the shop holds outside the drawer. A pinned cashier is
+  // limited by branch scope. Without this table the till showed an open drawer
+  // and an empty safe after the line dropped.
+  branch_safe_ledger: { businessScoped: true, branchScoped: true, orderBy: 'created_at DESC' },
   purchase_orders: { businessScoped: true, branchScoped: true, orderBy: 'ordered_at' },
   deposits: { businessScoped: true, branchScoped: true, orderBy: 'expires_at' },
   instalment_plans: { businessScoped: true, branchScoped: true, orderBy: 'next_due_date' },

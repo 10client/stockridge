@@ -34,7 +34,7 @@
     'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes',
     'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers',
     'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
-    'branch_compliance_records',
+    'branch_compliance_records', 'branch_safe_ledger',
   ];
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;
@@ -270,7 +270,7 @@
     const groups = [
       ['products', 'product_categories', 'product_units', 'product_variants', 'product_barcodes'],
       ['price_lists', 'price_list_items', 'product_price_overrides', 'stock_batches', 'purchase_orders'],
-      ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'suppliers', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_compliance_records'],
+      ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'suppliers', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_compliance_records', 'branch_safe_ledger'],
     ];
     let rows = 0;
     let cursor = null;
