@@ -1658,16 +1658,20 @@
     return `${bizName} · ${branch.city || ''} ${branch.state || ''}${branch.is_active ? '' : ' · INACTIVE'}`.replace(/^\s*·\s*/, '').trim();
   }
 
-  function openBranchPicker() {
+  function openBranchPicker(opts = {}) {
+    const requireShop = Boolean(opts && opts.requireShop);
+    const onChosen = opts && typeof opts.onChosen === 'function' ? opts.onChosen : null;
     if (SR.state.lockedToOneShop && SR.state.lockedToOneShop()) {
       ui.info(`You are pinned to ${SR.state.activeBranchName()}. An owner can move you to another shop.`);
       return;
     }
     const body = ui.h('div', {});
     const inOne = SR.state.activeBusiness();
-    body.appendChild(ui.h('p', { class: 'hint' }, inOne
-      ? `Shops of ${inOne.name}. Stock, cash and a sale belong to one shop. Another business is on the business switch.`
-      : 'Picking a shop also enters that shop\'s business, so the two cannot disagree.'));
+    body.appendChild(ui.h('p', { class: 'hint' }, requireShop
+      ? 'This has to name one shop. All shops is the group, and it will not be guessed. A pinned cashier is not offered another shop.'
+      : (inOne
+        ? `Shops of ${inOne.name}. Stock, cash and a sale belong to one shop. Another business is on the business switch.`
+        : 'Picking a shop also enters that shop\'s business, so the two cannot disagree.')));
     const list = ui.h('div', { class: 'stack' });
     const inBiz = inOne ? SR.state.branchesFor(inOne.id) : [];
     // A business with no shop must not open an empty picker. List the shops this
@@ -1682,6 +1686,10 @@
         type: 'button',
         style: { justifyContent: 'flex-start' },
         onClick: () => {
+          if (requireShop) {
+            ui.warn('Pick one shop below. All shops is the group, and a clock-in will not guess.');
+            return;
+          }
           const res = SR.state.setBranch(null);
           if (!res.ok) { ui.warn(res.reason); return; }
           m.close();
@@ -1717,6 +1725,7 @@
           paintIdentity();
           ui.ok(`Now working in ${branch.name || branch.code || 'that shop'}.`);
           render();
+          if (onChosen) onChosen(branch);
         },
       });
       row.appendChild(ui.h('span', { class: 'grow', style: { textAlign: 'left' } },

@@ -563,8 +563,38 @@
       });
     }
 
-    function clockIn() {
+    // A general manager has no shop pin. The shell can show the shop they picked,
+    // and the clock-in still used to post with no branch_id. The server then
+    // answered "Choose which branch this applies to" on every press, so the
+    // selection looked ignored. The selected shop is sent. It is not guessed.
+    // A pinned cashier already has one shop, and is not offered another.
+    function selectedShop() {
+      const id = SR.state.activeBranchId;
+      if (!id || !SR.state.activeBranch) return null;
       const branch = SR.state.activeBranch();
+      if (!branch || String(branch.id) !== String(id)) return null;
+      if (SR.state.activeBusinessId && branch.business_id
+          && String(branch.business_id) !== String(SR.state.activeBusinessId)) return null;
+      return branch;
+    }
+
+    function needShop(thenFn) {
+      if (SR.state.lockedToOneShop && SR.state.lockedToOneShop()) {
+        ui.warn(`You are pinned to ${SR.state.activeBranchName()}. That shop is not on this screen yet. Sign in again. Another shop will not be guessed.`);
+        return;
+      }
+      ui.warn('Pick the shop you are standing in. A general manager is not pinned to one shop, so this will not guess.');
+      if (SR.app && SR.app.openBranchPicker) {
+        SR.app.openBranchPicker({ requireShop: true, onChosen: () => thenFn() });
+      }
+    }
+
+    function clockIn() {
+      const branch = selectedShop();
+      if (!branch) {
+        needShop(() => clockIn());
+        return;
+      }
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'Your location and this device are recorded with the clock-in. That is not surveillance — it is what makes the entry defensible when the hours are questioned.'));
       const grid = ui.h('div', { class: 'form-grid' },
@@ -599,6 +629,12 @@
             class: 'btn btn-primary',
             onClick: async (ev) => {
               const v = ui.readFormStrings(wrapEl);
+              const shop = selectedShop();
+              if (!shop) {
+                ui.warn('That shop is no longer selected. Pick it again. The clock-in will not guess.');
+                ev.currentTarget.disabled = false;
+                return;
+              }
               ev.currentTarget.disabled = true;
               try {
                 const result = await SR.api.post('/api/attendance/clock-in', {
@@ -608,7 +644,9 @@
                   latitude: coords ? coords.latitude : null,
                   longitude: coords ? coords.longitude : null,
                   accuracy_meters: coords ? coords.accuracy : null,
-                }, { queue: 'auto' });
+                  branch_id: String(shop.id),
+                  business_id: shop.business_id ? String(shop.business_id) : undefined,
+                }, { queue: 'auto', query: { branch_id: String(shop.id), business_id: shop.business_id ? String(shop.business_id) : undefined } });
                 if (result && result.queued) ui.info('Offline — your clock-in is queued with the time you pressed it.');
                 else if (result && result.flagged) ui.warn(result.message || `Recorded, but it needs a manager's review: ${(result.flags || []).join(' ')}`);
                 else ui.ok(result && result.message ? result.message : `Clocked in at ${U.watTime(U.nowIso())}.`);
@@ -625,6 +663,11 @@
     }
 
     function clockOut() {
+      const shop = selectedShop();
+      if (!shop) {
+        needShop(() => clockOut());
+        return;
+      }
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Note', name: 'notes', span: true, placeholder: 'Optional', hint: 'The hours are worked out from your clock-in time. If this shift was left open, a manager sets the time you actually left from the attendance table. The earlier time stays in the notes.' })));
@@ -640,11 +683,19 @@
               const v = ui.readFormStrings(wrapEl);
               ev.currentTarget.disabled = true;
               try {
+                const leaving = selectedShop();
+                if (!leaving) {
+                  ui.warn('That shop is no longer selected. Pick it again. The clock-out will not guess.');
+                  ev.currentTarget.disabled = false;
+                  return;
+                }
                 const result = await SR.api.post('/api/attendance/clock-out', {
                   device_id: SR.device.current().id,
                   clocked_at: U.nowWatSql(),
                   notes: v.notes || null,
-                }, { queue: 'auto' });
+                  branch_id: String(leaving.id),
+                  business_id: leaving.business_id ? String(leaving.business_id) : undefined,
+                }, { queue: 'auto', query: { branch_id: String(leaving.id), business_id: leaving.business_id ? String(leaving.business_id) : undefined } });
                 ui.ok(result && result.message ? result.message : 'Clocked out. Have a good evening.');
                 m.close();
                 load();

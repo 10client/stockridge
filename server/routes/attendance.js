@@ -208,9 +208,11 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx);
     const business = await resolveBusiness(db, ctx, branch);
 
-    // The branch is resolved from the USER, not from the body. Letting a request
-    // choose its own branch would allow a clock-in to be attributed anywhere,
-    // which defeats the purpose of recording it.
+    // A pinned cashier has a shop on the account, and resolveBranch will not
+    // let the body name a different one. A general manager has no pin and
+    // reaches more than one shop, so the request has to name the shop they
+    // picked. Guessing would put the hours on the wrong shop. The name is
+    // accepted only when that shop is in their scope.
     const lat = body.latitude != null && String(body.latitude).trim() !== '' ? Number(body.latitude) : null;
     const lng = body.longitude != null && String(body.longitude).trim() !== '' ? Number(body.longitude) : null;
     const deviceId = strField(body.device_id || body.deviceId || ctx.req.header('X-Device-Id'), { field: 'Device', maxLength: 120 });
