@@ -93,7 +93,7 @@ function mount(app, base = '/api') {
    * make the received-quantity comparison meaningless the moment the supplier
    * delivers in a different pack size — which happens constantly.
    */
-  app.post(`${base}/purchase-orders`, async (ctx) => {
+  app.post(`${base}/purchase-orders`, idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can raise a purchase order. It commits the business to pay a supplier.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -164,6 +164,33 @@ function mount(app, base = '/api') {
 
     const expectedDate = strField(body.expected_date, { field: 'Expected date', maxLength: 10 }) || addDays(watToday(), supplier.payment_terms_days || 7);
     const status = valid(oneOf(body.status || 'PENDING', PO_STATUSES, { field: 'Status' }), 'status');
+
+    // The till used to send this same raise more than once when the first
+    // answer was lost. A client that sends an Idempotency-Key is replayed
+    // above. A till that does not still gets the open order back, instead of
+    // a second commitment, when the supplier, the shop, and the lines match
+    // an order this person raised in the last two minutes. A cancelled order
+    // is not that match: they cancelled it so they could raise again.
+    const already = await openOrderJustRaised(db, {
+      userId: String(user.id),
+      supplierId,
+      branchId: String(branch.id),
+      total,
+      items,
+    });
+    if (already) {
+      ctx.json({
+        ok: true,
+        id: already.id,
+        poNumber: already.po_number,
+        po_number: already.po_number,
+        total: Number(already.total),
+        status: already.status,
+        replayed: true,
+        message: `Purchase order ${already.po_number} was already raised with ${supplier.name}. It was not raised again.`,
+      }, 200);
+      return;
+    }
 
     // Credit exposure: an open PO plus what is already owed. Advisory, because a
     // shop must be able to order beyond a supplier's nominal limit — but the
@@ -251,12 +278,12 @@ function mount(app, base = '/api') {
       after: { poNumber, supplier: supplier.name, items: items.length, total, status, wht: wht ? round2(wht.wht) : 0 },
     });
     ctx.json({
-      ok: true, id, poNumber, total, status,
+      ok: true, id, poNumber, po_number: poNumber, total, status,
       message: `Purchase order ${poNumber} raised with ${supplier.name} for ₦${total.toLocaleString('en-NG')} across ${items.length} line(s).${wht && round2(wht.wht) > 0 ? ` ₦${round2(wht.wht).toLocaleString('en-NG')} WHT (${wht.ratePercent}%) will be withheld on payment.` : ''}`,
       advisories,
       exposure: { owedToSupplier, openPoValue, thisOrder: total, supplierLimit },
     }, 201);
-  });
+  }));
 
   app.get(`${base}/purchase-orders/:id`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -713,6 +740,42 @@ function mount(app, base = '/api') {
   });
 }
 
+function poLineKey(line) {
+  const productId = line.productId || line.product_id;
+  const unit = line.unitCode || line.unit_code || '';
+  const qty = line.quantityOrdered != null ? line.quantityOrdered : line.quantity_ordered;
+  const cost = line.expectedUnitCost != null ? line.expectedUnitCost : line.expected_unit_cost;
+  return [String(productId), String(unit).toUpperCase(), String(Number(qty)), String(Number(cost))].join('|');
+}
+
+function samePoLines(existing, incoming) {
+  if (!existing || !incoming || existing.length !== incoming.length) return false;
+  const left = existing.map(poLineKey).sort();
+  const right = incoming.map(poLineKey).sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+async function openOrderJustRaised(db, { userId, supplierId, branchId, total, items }) {
+  const recent = await db.all(
+    `SELECT id, po_number, total, status FROM purchase_orders
+      WHERE ordered_by = ? AND supplier_id = ? AND branch_id = ? AND is_deleted = 0
+        AND status IN ('DRAFT', 'PENDING', 'PARTIALLY_RECEIVED')
+        AND ordered_at >= datetime('now', '-2 minutes')
+      ORDER BY ordered_at DESC`,
+    [String(userId), String(supplierId), String(branchId)],
+  );
+  for (const row of recent) {
+    if (round2(Number(row.total)) !== round2(Number(total))) continue;
+    const lines = await db.all(
+      `SELECT product_id, unit_code, quantity_ordered, expected_unit_cost
+         FROM purchase_order_items WHERE purchase_order_id = ? AND is_deleted = 0`,
+      [row.id],
+    );
+    if (samePoLines(lines, items)) return row;
+  }
+  return null;
+}
+
 function requireVal(body, field, label) {
   const v = body[field];
   if (v === undefined || v === null || String(v).trim() === '') {
@@ -721,4 +784,4 @@ function requireVal(body, field, label) {
   return v;
 }
 
-module.exports = { mount, PO_STATUSES };
+module.exports = { mount, PO_STATUSES, poLineKey, samePoLines };

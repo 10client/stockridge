@@ -1241,7 +1241,7 @@
                   committed = true;
                   saved.set(l.product_id, l);
                 }
-                const result = await SR.api.post('/api/purchase-orders', {
+                const body = {
                   branch_id: SR.state.activeBranchId,
                   business_id: SR.state.activeBusinessId,
                   supplier_id: String(supplierId),
@@ -1256,8 +1256,39 @@
                     quantity: Number(l.quantity),
                     expected_unit_cost: Number(l.expected_unit_cost) || 0,
                   })),
-                });
-                ui.ok(result.po_number ? `${result.po_number} raised.` : 'Purchase order raised.');
+                };
+                const bodyText = JSON.stringify(body);
+                const button = ev.currentTarget;
+                if (!button._raiseKey || button._raiseBody !== bodyText) {
+                  button._raiseKey = (window.crypto && crypto.randomUUID)
+                    ? crypto.randomUUID()
+                    : `po-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+                  button._raiseBody = bodyText;
+                }
+                let result = null;
+                let lastErr = null;
+                for (let attempt = 0; attempt < 4; attempt += 1) {
+                  try {
+                    result = await SR.api.post('/api/purchase-orders', body, {
+                      idempotencyKey: button._raiseKey,
+                      timeoutMs: 25000,
+                    });
+                    lastErr = null;
+                    break;
+                  } catch (err) {
+                    lastErr = err;
+                    if (err && err.code === 'IDEMPOTENCY_IN_PROGRESS' && attempt < 3) {
+                      await new Promise((resolve) => setTimeout(resolve, 2000));
+                      continue;
+                    }
+                    throw err;
+                  }
+                }
+                if (!result) throw lastErr || new Error('The purchase order was not raised.');
+                const number = result.poNumber || result.po_number;
+                ui.ok(result.replayed && number
+                  ? `${number} was already raised. It was not raised again.`
+                  : (number ? `${number} raised.` : 'Purchase order raised.'));
                 m.close();
                 load();
               } catch (err) {
