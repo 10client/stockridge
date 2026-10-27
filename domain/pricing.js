@@ -18,12 +18,17 @@
 //                    Onitsha are not the same market.
 //   3. PRICE_LIST  — the customer's class price list (wholesale vs retail),
 //                    including quantity-break rows.
-//   4. BATCH       — stock_batches.selling_price_per_unit. The price of
-//                    record for the actual stock being sold, which is what
-//                    lets two deliveries of the same fridge coexist at
-//                    different prices after a supplier increase.
-//   5. PRODUCT     — products.selling_price, the fallback for a product with
-//                    no stock at this branch (a special order).
+//   4. CATALOGUE   — products.selling_price, the price the sell screen shows.
+//                    A goods receipt may store a different figure on the
+//                    batch. Charging that figure put ₦50,000 on the receipt
+//                    while the till had quoted ₦58,500, and the payment was
+//                    then refused. A delivery does not replace a price already
+//                    set. The stored source stays BATCH: the sale-line check
+//                    has no CATALOGUE value, and a new one would need a
+//                    migration. Do not add one to make the label prettier.
+//   5. BATCH       — stock_batches.selling_price_per_unit, only when the
+//                    catalogue has no price yet. That is the figure typed at
+//                    the gate for a product the shop had not priced.
 //
 // The chosen source is STORED on the sale line as price_source. That is not
 // decoration: when an owner asks "why did we sell this below cost on
@@ -100,7 +105,23 @@ function resolveUnitPrice(ctx) {
     }
   }
 
-  // 4. BATCH — the price of record for this stock.
+  // 4. CATALOGUE — the price the sell screen shows. A goods receipt does
+  // not replace it. price_source stays BATCH because the sale-line check
+  // only allows BATCH, PRICE_LIST, OVERRIDE, and MANUAL.
+  const variantPrice = variant && Number(variant.selling_price) > 0 ? Number(variant.selling_price) : null;
+  const productPrice = Number((product && product.selling_price) || 0);
+  if (variantPrice != null || productPrice > 0) {
+    const perBase = variantPrice != null ? variantPrice : productPrice;
+    const factor = unitFactor(unit, ladder);
+    return {
+      source: 'BATCH',
+      unitPrice: round2(perBase * factor),
+      unitCode: unit,
+      explanation: 'Catalogue selling price. A goods receipt does not replace a price already set.',
+    };
+  }
+
+  // 5. BATCH — only when the catalogue has no price yet.
   if (batch && batch.selling_price_per_unit != null) {
     const perBase = Number(batch.selling_price_per_unit);
     const batchUnitPrice = pickBatchUnitPrice(batch, unit, perBase, ladder);
@@ -109,21 +130,16 @@ function resolveUnitPrice(ctx) {
         source: 'BATCH',
         unitPrice: round2(batchUnitPrice),
         unitCode: unit,
-        explanation: 'Price on the stock batch being sold.',
+        explanation: 'Price typed when this stock was received. The catalogue had no selling price yet.',
       };
     }
   }
 
-  // 5. PRODUCT fallback
-  const variantPrice = variant && Number.isFinite(Number(variant.selling_price)) ? Number(variant.selling_price) : null;
-  const productPrice = Number((product && product.selling_price) || 0);
-  const perBase = variantPrice != null ? variantPrice : productPrice;
-  const factor = unitFactor(unit, ladder);
   return {
-    source: 'BATCH', // no batch and no list: the catalogue price stands in
-    unitPrice: round2(perBase * factor),
+    source: 'BATCH',
+    unitPrice: 0,
     unitCode: unit,
-    explanation: 'Catalogue price — no stock batch or price list matched.',
+    explanation: 'No catalogue price and no batch price.',
     fallback: true,
   };
 }

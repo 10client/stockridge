@@ -300,9 +300,17 @@ function mount(app, base = '/api') {
     const costPerBase = round2((costPerReceivedUnit * conversion.factor) / conversion.factor) === costPerReceivedUnit
       ? costPerReceivedUnit / Number(conversion.factor || 1)
       : costPerReceivedUnit / Number(conversion.factor || 1);
-    const sellingPerBase = body.selling_price != null
+    // Same rule as a purchase-order receipt: a selling price already on the
+    // product is what the till quotes and what the customer receipt prints.
+    // A figure typed on this delivery fills an empty catalogue. It does not
+    // replace one.
+    const typedPerBase = body.selling_price != null
       ? numField(body.selling_price, { field: 'Selling price', min: 0 }) / Number(conversion.factor || 1)
-      : Number(product.selling_price) || round2(costPerBase * 1.3);
+      : 0;
+    const cataloguePerBase = Number(product.selling_price) > 0 ? Number(product.selling_price) : 0;
+    const sellingPerBase = cataloguePerBase > 0
+      ? cataloguePerBase
+      : (typedPerBase > 0 ? typedPerBase : round2(costPerBase * 1.3));
 
     const supplierId = body.supplier_id ? String(body.supplier_id) : null;
     if (supplierId) {

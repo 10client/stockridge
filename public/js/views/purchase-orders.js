@@ -1654,7 +1654,7 @@
         if (card._paintSerialHint) card._paintSerialHint();
       }
     });
-    wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Selling price defaults to the product\'s current price. If this shop has no price yet, the figure you type becomes the price the till charges. A later delivery does not change a price already set — it only prices the new batch.'));
+    wrapEl.appendChild(ui.h('div', { class: 'hint' }, 'Selling price defaults to the product\'s current price. If this shop has no price yet, the figure you type becomes the price the till charges. If a selling price is already set, the till keeps that price. Typing a different figure here does not change the customer receipt. Change the product selling price if the receipt should show a new price.'));
     paint();
 
     const m = ui.openModal({

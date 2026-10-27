@@ -1629,17 +1629,29 @@
       if (result && Array.isArray(result.warnings)) notes.push(...result.warnings);
       if (result && Array.isArray(result.advisories)) notes.push(...result.advisories);
       if (result && result.credit && result.credit.overLimit) notes.push(`This sale puts the customer ${U.money(result.credit.over)} over their credit limit.`);
-      // A server price that differs from the mirror is worth mentioning once,
-      // quietly — the counter price is the one the customer was quoted.
+      // The receipt prints the server price. Leaving the cart on a different
+      // figure made the cashier collect one amount and the shop refuse the
+      // payment as too much or too little. The cart takes the receipt price
+      // before the money is counted. A typed counter price is left alone.
       if (result && Array.isArray(result.lines)) {
+        let changed = false;
         for (const sl of result.lines) {
           const local = cart.lines.find((l) => String(l.productId) === String(sl.product_id));
-          if (!local) continue;
+          if (!local || local.manualPrice) continue;
           const serverPrice = Number(sl.unit_price != null ? sl.unit_price : local.unitPrice);
-          if (serverPrice && Math.abs(serverPrice - Number(local.unitPrice)) > 0.01) {
-            local.agreedPrice = local.unitPrice;
-            local.serverPrice = serverPrice;
+          if (serverPrice > 0 && Math.abs(serverPrice - Number(local.unitPrice)) > 0.01) {
+            notes.push(`${local.name} is ${U.money(serverPrice)} on the receipt, not ${U.money(local.unitPrice)}.`);
+            local.unitPrice = U.round2(serverPrice);
+            local.serverPrice = null;
+            local.agreedPrice = null;
+            changed = true;
           }
+        }
+        if (changed) {
+          save();
+          const typing = document.activeElement && cartBody.contains(document.activeElement);
+          if (typing) paintTotals();
+          else paint();
         }
       }
       if (notes.length) previewWarn(notes.join(' '));
@@ -1778,12 +1790,35 @@
     }
 
     // ---------------- tender ----------------
+    async function alignReceiptPrices() {
+      if (!cart.lines.length || !SR.api.isOnline()) return;
+      const t = computedTotals();
+      let result;
+      try {
+        result = await SR.api.post('/api/sales/preview', {
+          branch_id: SR.state.activeBranchId,
+          business_id: SR.state.activeBusinessId,
+          customer_id: cart.customerId,
+          sale_type: cart.saleType,
+          discount_amount: t.discount,
+          delivery_fee: t.delivery,
+          lines: cart.lines.map((l) => linePayload(l)),
+          walk_in_name: cart.customerName || null,
+          walk_in_phone: cart.customerPhone || null,
+        }, { timeoutMs: 9000 });
+      } catch (err) {
+        return;
+      }
+      showPreviewWarnings(result);
+    }
+
     async function openTender() {
       const ready = await ensureDispense(cart.lines);
       if (!ready) {
         ui.warn('Payment was not opened. A prescription-only or controlled item still needs the details the register requires.');
         return;
       }
+      await alignReceiptPrices();
       if (!cart.lines.length) { ui.warn('Add something to the cart first.'); return; }
       const missing = missingSerials();
       if (missing.length) {
@@ -2071,6 +2106,7 @@
 
     async function raiseBill() {
       if (!cart.lines.length) { ui.warn('Add something to the bill first.'); return; }
+      await alignReceiptPrices();
       if (!assertPlace()) return;
       if (cartIsBooking()) {
         ui.warn('A hire or a lease is booked, not billed. Take payment for that line on its own.');

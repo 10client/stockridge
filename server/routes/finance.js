@@ -433,7 +433,15 @@ function mount(app, base = '/api') {
       const costPerUnit = numField(r.cost_per_unit ?? item.expected_unit_cost, { field: 'Cost per unit', min: 0, places: 6 });
       const freightPerUnit = numField(r.freight_per_unit, { field: 'Freight per unit', min: 0, places: 6 });
       const landed = round2((costPerUnit + freightPerUnit) * 1000000) / 1000000;
-      const sellingPrice = numField(r.selling_price ?? product.selling_price, { field: 'Selling price', min: 0 });
+      // A price already on the product is the price the till quotes. The figure
+      // typed on this delivery is kept only when the catalogue is still empty.
+      // Storing the typed figure on the batch made the receipt charge that
+      // figure while the sell screen still showed the catalogue price, and the
+      // payment was then refused.
+      const typedSell = numField(r.selling_price ?? product.selling_price, { field: 'Selling price', min: 0 });
+      const catalogueSell = Number(product.selling_price) > 0 ? round2(Number(product.selling_price)) : 0;
+      const sellingPrice = catalogueSell > 0 ? catalogueSell : typedSell;
+      const shelfKept = catalogueSell > 0 && Math.abs(catalogueSell - typedSell) > 0.01;
       receivedValue = round2(receivedValue + qtyBase * landed);
 
       const units = await db.all('SELECT * FROM product_units WHERE product_id = ? AND is_deleted = 0 ORDER BY quantity_in_base ASC', [item.product_id]);
@@ -460,7 +468,7 @@ function mount(app, base = '/api') {
       });
       const batchId = newId();
       plan.push({
-        item, product, qtyBase, landed, costPerUnit, freightPerUnit, sellingPrice, newAvg, ladder, batchId,
+        item, product, qtyBase, landed, costPerUnit, freightPerUnit, sellingPrice, shelfKept, newAvg, ladder, batchId,
         serialRows: await planSerialRows(db, accepted.serials, {
           branchId: String(branch.id), batchId, productId: String(item.product_id),
           variantId: item.variant_id || null, actorId: String(user.id),
@@ -571,7 +579,8 @@ function mount(app, base = '/api') {
       receivedValue, fullyReceived, serialCount,
       prices: plan.filter((p) => p.priceWrite && p.priceWrite.receipt).map((p) => p.priceWrite.receipt),
       serials: plan.flatMap((p) => (p.serialRows || []).map((r) => r.serialNo)),
-      warnings: plan.flatMap((p) => p.serialWarnings || []),
+      warnings: plan.flatMap((p) => p.serialWarnings || []).concat(plan.filter((p) => p.shelfKept).map((p) =>
+        `${p.product.name} already sells at ₦${Number(p.sellingPrice).toLocaleString('en-NG')}. The figure typed on this delivery was not used. Change the product selling price if that is the price the receipt should show.`)),
       newStatus: fullyReceived ? 'RECEIVED' : 'PARTIALLY_RECEIVED',
     });
   }));
