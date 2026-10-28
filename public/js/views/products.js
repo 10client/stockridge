@@ -341,7 +341,10 @@
       }
       if (state.category) rows = rows.filter((p) => String(p.category_id) === String(state.category));
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
-      const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.branch_id) === String(SR.state.activeBranchId) });
+      const storedBatches = await SR.store.all('stock_batches').catch(() => []);
+      const batches = SR.shelf && SR.shelf.batchesForBranch
+        ? SR.shelf.batchesForBranch(storedBatches, SR.state.activeBranchId)
+        : storedBatches.filter((b) => !Number(b.is_deleted) && String(b.branch_id) === String(SR.state.activeBranchId));
       const onHand = new Map();
       const batchPrice = new Map();
       const ordered = batches.slice().sort((a, b) => String(b.received_at || '').localeCompare(String(a.received_at || '')));

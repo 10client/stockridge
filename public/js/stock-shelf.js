@@ -186,5 +186,20 @@
     return changed;
   }
 
-  return { roundTo, factorFor, baseQuantity, consumeLines, adjustLine };
+  // The session shop and the shelf shop can disagree for a moment after the
+  // first paint. Hiding every row is how the list shows stock and then goes
+  // blank. One shop on this till is that shop. Several shops stay filtered,
+  // so a cashier is not offered another shop's goods.
+  function batchesForBranch(batches, branchId) {
+    const rows = (batches || []).filter((batch) => batch && !Number(batch.is_deleted));
+    const id = branchId == null || branchId === '' ? '' : String(branchId);
+    if (!id || id === 'null' || id === 'undefined') return rows;
+    const matched = rows.filter((batch) => String(batch.branch_id) === id);
+    if (matched.length) return matched;
+    const present = [...new Set(rows.map((batch) => String(batch.branch_id || '')).filter(Boolean))];
+    if (present.length === 1) return rows.filter((batch) => String(batch.branch_id) === present[0]);
+    return matched;
+  }
+
+  return { roundTo, factorFor, baseQuantity, consumeLines, adjustLine, batchesForBranch };
 });

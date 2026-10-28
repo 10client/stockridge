@@ -198,7 +198,10 @@
 
     async function fromMirror() {
       const branchId = SR.state.activeBranchId;
-      const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && String(b.branch_id) === String(branchId) });
+      const stored = await SR.store.all('stock_batches').catch(() => []);
+      const batches = SR.shelf && SR.shelf.batchesForBranch
+        ? SR.shelf.batchesForBranch(stored, branchId)
+        : stored.filter((b) => !Number(b.is_deleted) && String(b.branch_id) === String(branchId));
       const products = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
       const cats = await SR.store.all('product_categories').catch(() => []);
       const catById = new Map(cats.map((c) => [String(c.id), c]));

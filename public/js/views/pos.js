@@ -330,9 +330,14 @@
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
       const offline = !SR.api.isOnline();
+      const pending = SR.store.pending ? await SR.store.pending().catch(() => []) : [];
+      const queuedShelf = (pending || []).some((row) => row && (row.type === 'SALE' || row.type === 'STOCK_ADJUST'));
       // Offline must not wait on a request that cannot succeed. A failed fetch
       // that comes back as an empty page used to be treated as "nothing matches".
-      if (!offline) {
+      // A sale still on this till is not in the shop's list yet. Searching the
+      // shop then would show the old count, and the next paint would drop the
+      // product. Stay on this till's shelf until that sale has been sent.
+      if (!offline && !queuedShelf) {
         try {
           const data = await SR.api.get('/api/products', { query: SR.state.query({ q: q.length >= 2 ? q : undefined, limit: 30, for_sale: '1', selling_group: group || undefined }) });
           if (!data || !Array.isArray(data.data)) throw new Error('The till search did not return a list.');
@@ -401,14 +406,14 @@
      */
     async function sellableIndex() {
       const branchId = SR.state.activeBranchId;
-      const batches = await SR.store.all('stock_batches').catch(() => []);
+      const stored = await SR.store.all('stock_batches').catch(() => []);
+      const batches = SR.shelf && SR.shelf.batchesForBranch ? SR.shelf.batchesForBranch(stored, branchId) : stored;
       const byProduct = new Map();
       const rows = [];
       for (const b of batches) {
         if (Number(b.is_deleted)) continue;
         const status = String(b.status || 'ACTIVE').toUpperCase();
-        if (status === 'QUARANTINED' || status === 'EXPIRED' || status === 'DEPLETED') continue;
-        if (branchId && String(b.branch_id) !== String(branchId)) continue;
+        if (status === 'QUARANTINED' || status === 'EXPIRED') continue;
         const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
         if (!(avail > 0)) continue;
         const id = String(b.product_id);
@@ -2506,6 +2511,15 @@
      */
     async function applyLocalSale(lines, extra) {
       try {
+        if (SR.store && SR.store.engine === 'sqlite' && SR.store.applySale) {
+          await SR.store.applySale({
+            client_id: extra && (extra.clientId || extra.client_id),
+            lines: lines || [],
+            holds: (extra && (extra.holds || extra.stockHolds)) || [],
+            sold_at: extra && (extra.soldAt || extra.sold_at),
+          });
+          return;
+        }
         if (!SR.shelf || !SR.shelf.consumeLines) return;
         const branchId = SR.state.activeBranchId;
         const batches = await SR.store.all('stock_batches', {
@@ -2603,7 +2617,7 @@
           if (live && !live.offline && !live.queued && SR.store.markSynced) {
             await SR.store.markSynced(queued.clientId, (live.sale && live.sale.id) || live.saleId || live.receiptNo || null).catch(() => {});
           }
-          await applyLocalSale(cart.lines).catch(() => {});
+          await applyLocalSale(cart.lines, { clientId: queued.clientId, holds: payload.stock_holds || payload.stockHolds }).catch(() => {});
           if (live && !live.queued && !live.offline) result = live;
           else result = queued;
         } catch (err) {
@@ -2612,11 +2626,11 @@
             if (SR.store.removeOutbox) await SR.store.removeOutbox(queued.clientId).catch(() => {});
             throw err;
           }
-          await applyLocalSale(cart.lines).catch(() => {});
+          await applyLocalSale(cart.lines, { clientId: queued.clientId, holds: payload.stock_holds || payload.stockHolds }).catch(() => {});
           result = queued;
         }
       } else {
-        await applyLocalSale(cart.lines).catch(() => {});
+        await applyLocalSale(cart.lines, { clientId: queued.clientId, holds: payload.stock_holds || payload.stockHolds }).catch(() => {});
       }
 
       const snapshot = checkoutSnapshot();
@@ -2633,13 +2647,18 @@
     }
 
     async function queueOffline(payload, { adjustStock = true } = {}) {
-      if (adjustStock) await applyLocalSale(cart.lines).catch(() => {});
       const record = await SR.store.enqueue({
         type: 'SALE',
         payload,
         label: `Sale · ${cart.lines.length} line(s) · ${U.money(computedTotals().total)}`,
         occurredAt: payload.sold_at,
       });
+      if (adjustStock) {
+        await applyLocalSale(cart.lines, {
+          clientId: record.client_id,
+          holds: payload.stock_holds || payload.stockHolds,
+        }).catch(() => {});
+      }
       await rememberClaim(payload, { offline: true }).catch(() => {});
       return { offline: true, queued: true, clientId: record.client_id, cachedSale: payload, total: computedTotals().total };
     }

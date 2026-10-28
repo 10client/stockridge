@@ -394,7 +394,10 @@
         const wrote = await SR.store.putMany(table, payload.rows);
         rows += Number(wrote) || 0;
         perTable.push({ table, count: Number(wrote) || 0 });
-        if (table === 'stock_batches') await replayUnsyncedShelf().catch(() => {});
+        if (table === 'stock_batches') {
+          if (SR.store && SR.store.engine === 'sqlite' && SR.store.replayShelf) await SR.store.replayShelf().catch(() => {});
+          else await replayUnsyncedShelf().catch(() => {});
+        }
       }
     } catch (err) {
       const reason = pullFailureReason(err);
