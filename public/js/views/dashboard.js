@@ -110,28 +110,26 @@
         changeOwed = live.changeOwed;
       } catch (err) {
         error = err;
-        if (err && err.code === 'SHOP_READ_FAILED') {
+        const knownUp = Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed());
+        // "The shop is up" is only true after a probe answered. An offline
+        // sign-in used to land here while the chip still said online, and the
+        // page was replaced by Try again.
+        if (knownUp && err && err.code === 'SHOP_READ_FAILED') {
           body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
           return;
         }
-        if (!shopMiss(err) || (SR.api.isOnline && SR.api.isOnline())) {
-          if (SR.api.isOnline && SR.api.isOnline()) {
-            body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
-            return;
-          }
-          throw err;
+        if (knownUp && !shopMiss(err)) {
+          body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
+          return;
         }
-        // One slow read is not proof the shop is down. Login can succeed while
-        // this call gives up. Ask once more before painting the saved figures.
-        const up = SR.api.probe ? await SR.api.probe({ force: true }).catch(() => false) : false;
-        if (up) {
+        if (knownUp) {
           try {
             const again = await readDashboard();
             data = again.data;
             changeOwed = again.changeOwed;
             offline = false;
           } catch (againErr) {
-            if (SR.api.isOnline && SR.api.isOnline()) {
+            if (againErr && againErr.code === 'SHOP_READ_FAILED') {
               body.replaceChildren(ui.errorBlock(againErr, { retry: { label: 'Try again', run: refresh } }));
               return;
             }
@@ -144,10 +142,16 @@
           data = await fromMirror();
         }
       }
-      if (!data) { body.replaceChildren(ui.errorBlock(error || new Error('No data.'), { retry: { label: 'Try again', run: refresh } })); return; }
-      // The banner is a lie when the shop has answered. Keep the saved figures
-      // off this screen until a probe has actually marked the till offline.
-      if (offline && SR.api.isOnline && SR.api.isOnline()) {
+      if (!data) {
+        const missed = !(SR.api.shopConfirmed && SR.api.shopConfirmed());
+        const fallback = new Error(missed
+          ? 'The shop did not answer, and this device has no saved figures yet. Connect once so this page can load.'
+          : ((error && error.message) || 'This screen did not load. Try again.'));
+        body.replaceChildren(ui.errorBlock(missed ? fallback : (error || fallback), { retry: { label: 'Try again', run: refresh } }));
+        return;
+      }
+      // Saved figures are not an offline banner while the shop has answered.
+      if (offline && SR.api.shopConfirmed && SR.api.shopConfirmed()) {
         body.replaceChildren(ui.errorBlock(error || new Error('The shop is up, but this screen did not load. Try again.'), { retry: { label: 'Try again', run: refresh } }));
         return;
       }

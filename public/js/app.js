@@ -437,6 +437,12 @@
         return;
       }
       host.replaceChildren();
+      const shopUp = Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed());
+      if (!shopUp && err && /shop is up/i.test(String(err.message || ''))) {
+        err = new Error('The shop did not answer from this window. The saved till is still here.');
+        err.code = 'OFFLINE';
+        err.isOffline = true;
+      }
       host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: () => render() } }));
       if (err && err.code !== 'OFFLINE') console.error(`[view:${hit.route.view}]`, err);
     } finally {
@@ -1483,6 +1489,15 @@
     submit.disabled = true;
     submit.textContent = 'Signing in…';
     try {
+      // A phone with no network must not wait on a dead sign-in and then say
+      // the shop is up. Electron ignores this flag: its proxy can still answer.
+      if (!global.stockridgeNative && typeof navigator !== 'undefined' && navigator.onLine === false) {
+        const missed = new Error('The shop did not answer from this window. Try again.');
+        missed.code = 'OFFLINE';
+        missed.status = 0;
+        missed.isOffline = true;
+        throw missed;
+      }
       const result = await SR.api.login({ username, pin, remember });
       writeTill({ username, remember });
       try { sessionStorage.removeItem('sr.displaced'); } catch (e) { /* fine */ }
@@ -1493,7 +1508,7 @@
       }
       void form;
       if (result && result.offline) {
-        if (!result.token && SR.api.isOnline()) {
+        if (!result.token && SR.api.shopConfirmed && SR.api.shopConfirmed()) {
           errEl.textContent = 'The shop is up, but this sign-in did not finish. Try again.';
           errEl.hidden = false;
           return;
@@ -1536,10 +1551,11 @@
         ? `Welcome. This account was signed in on another device — that device has been signed out.`
         : `Welcome, ${(result.profile && result.profile.fullName) || (result.user && result.user.fullName) || username}.`);
     } catch (err) {
-      const unreachable = err && (
+      const shopUp = Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed());
+      const unreachable = !shopUp && err && (
         err.isOffline || Number(err.status) === 0
-        || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE'
-        || /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(err.message || ''))
+        || err.code === 'UPSTREAM_UNREACHABLE' || err.code === 'OFFLINE' || err.code === 'SHOP_UNCONFIRMED' || err.code === 'SHOP_READ_FAILED'
+        || /shop server could not be reached|did not answer from this window|failed to fetch|this screen did not load/i.test(String(err.message || ''))
       );
       if (err && (err.code === 'OFFLINE_UNKNOWN_USER' || err.code === 'LOGIN_NOT_STUCK')) {
         errEl.textContent = err.message || 'This sign-in did not finish. Try again.';

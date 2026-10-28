@@ -29,6 +29,7 @@
   let lastProbe = 0;
   let probing = null;
   let probeMisses = 0;
+  let probeUp = null;
   let recheckTimer = null;
   const listeners = new Map(); // event -> Set<fn>
 
@@ -78,12 +79,27 @@
   function noteReachable(up) {
     if (up) {
       probeMisses = 0;
+      probeUp = true;
       setOnline(true);
     }
     return online;
   }
 
+  // A phone with no network is offline. Electron can report the same flag while
+  // the shop on this computer's proxy is answering, so that flag is ignored there.
+  function browserOfflineTrusted() {
+    if (global.stockridgeNative) return false;
+    try { return typeof navigator !== 'undefined' && navigator.onLine === false; } catch (e) { return false; }
+  }
+
+  function shopConfirmed() { return probeUp === true; }
+
   function markOfflineNow() {
+    if (browserOfflineTrusted()) {
+      probeUp = false;
+      setOnline(false);
+      return true;
+    }
     const policy = global.SRReach && global.SRReach.shouldMarkOffline;
     const mark = policy
       ? policy({ probeAttempted: true, probeAnswered: false, consecutiveProbeMisses: probeMisses })
@@ -133,25 +149,38 @@
     if (probing) return probing;
     probing = (async () => {
       lastProbe = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
       try {
         // /api/health is a real shop answer. The ping route is a 404, which
         // still proves the shop spoke, but health is the clearer check.
-        const res = await fetch('/api/health', { method: 'GET', cache: 'no-store', headers: { 'X-Device-Id': SR.device.current().id } });
+        // Eight seconds is enough to know a dead line did not answer. A longer
+        // wait is what left an offline sign-in sitting on "Signing in…".
+        const res = await fetch('/api/health', {
+          method: 'GET',
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { 'X-Device-Id': SR.device.current().id },
+        });
         const text = await res.clone().text().catch(() => '');
         const up = reached(res.status, text);
         if (up) {
           probeMisses = 0;
+          probeUp = true;
           setOnline(true);
           return true;
         }
         probeMisses += 1;
+        probeUp = false;
         markOfflineNow();
         return false;
       } catch (e) {
         probeMisses += 1;
+        probeUp = false;
         markOfflineNow();
         return false;
       } finally {
+        clearTimeout(timer);
         probing = null;
       }
     })();
@@ -178,7 +207,7 @@
     }
     get isAuth() { return this.status === 401 || this.code === 'NO_TOKEN' || this.code === 'SESSION_SUPERSEDED'; }
     get isOffline() {
-      if (this.status === 0 || this.code === 'OFFLINE' || this.code === 'UPSTREAM_UNREACHABLE') return true;
+      if (this.status === 0 || this.code === 'OFFLINE' || this.code === 'UPSTREAM_UNREACHABLE' || this.code === 'SHOP_UNCONFIRMED') return true;
       return /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(this.message || ''));
     }
   }
@@ -259,18 +288,18 @@
       });
     }
     const marked = markOfflineNow();
-    // One miss must not send every screen down the offline banner. Those
-    // screens treat an OFFLINE error as "you are offline". Only throw that
-    // once the shop has missed the probe twice.
+    // The probe did not answer. Do not say the shop is up. That sentence was
+    // what an offline sign-in showed instead of opening the saved till.
+    // The chip still waits for a second miss unless the phone itself is offline.
     if (!marked) {
       if (options.queue === 'auto') {
         ejectToOutbox(method, path, options.body, { idempotencyKey: options.idempotencyKey, label: options.headers && options.headers['X-Queue-Label'] });
-        return { queued: true, ok: true, offline: false, path };
+        return { queued: true, ok: true, offline: true, path };
       }
-      throw new ApiError('The shop is up, but this screen did not load. Try again.', {
-        status: 503,
-        code: 'SHOP_READ_FAILED',
-        retryable: false,
+      throw new ApiError('The shop did not answer from this window. Try again.', {
+        status: 0,
+        code: 'SHOP_UNCONFIRMED',
+        retryable: true,
       });
     }
     if (options.queue === 'auto') {
@@ -351,6 +380,7 @@
     // not the shop. Do not mark the till online from it.
     if (!parsed || parsed.offline !== true) {
       probeMisses = 0;
+      probeUp = true;
       setOnline(true);
     }
     return parsed;
@@ -422,6 +452,7 @@
     const out = await request('POST', '/api/auth/login', {
       body: { username, pin, remember: Boolean(remember), deviceId: device && device.id && device.id !== 'SR-UNKNOWN' ? device.id : undefined },
       queue: false,
+      timeoutMs: 8000,
     });
     if (out.token) setToken(out.token, { remember: Boolean(remember) });
     return out;
@@ -439,7 +470,7 @@
     get, post, put, patch, del, request,
     login, me, logout,
     setToken, hasToken, loadToken,
-    isOnline, noteReachable, probe, on, emit, canQueue, classify,
+    isOnline, noteReachable, shopConfirmed, probe, on, emit, canQueue, classify,
     TOKEN_KEY,
   };
 }(window));
