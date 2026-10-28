@@ -26,6 +26,7 @@
   // Do not start from navigator.onLine. Electron can report no network while
   // the shop on this computer's proxy is answering. The probe is the authority.
   let online = true;
+  let lineReturnedAt = 0;
   let lastProbe = 0;
   let probing = null;
   let probeMisses = 0;
@@ -119,9 +120,17 @@
 
   function setOnline(next, { silent = false } = {}) {
     const value = Boolean(next);
+    const was = online;
     if (value === online) return;
     online = value;
-    if (!silent) emit('net', { online });
+    if (value && !was) lineReturnedAt = Date.now();
+    if (!silent) emit('net', { online, returned: value && !was });
+  }
+
+  // The first requests after the line returns are not a sign-out. The saved
+  // till stays open while the follower catches up to the shop.
+  function reconnecting() {
+    return lineReturnedAt > 0 && Date.now() - lineReturnedAt < 20000;
   }
 
   // A browser offline event is not the shop. Ask the shop before changing the chip.
@@ -361,7 +370,7 @@
       // and the shell confirms that before leaving. A missing token on one
       // path is a dropped header, not a logout.
       const fatalAuth = err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED';
-      if (err.isAuth && fatalAuth && !quiet) {
+      if (err.isAuth && fatalAuth && !quiet && !reconnecting()) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
       }
@@ -470,7 +479,7 @@
     get, post, put, patch, del, request,
     login, me, logout,
     setToken, hasToken, loadToken,
-    isOnline, noteReachable, shopConfirmed, probe, on, emit, canQueue, classify,
+    isOnline, noteReachable, shopConfirmed, reconnecting, probe, on, emit, canQueue, classify,
     TOKEN_KEY,
   };
 }(window));

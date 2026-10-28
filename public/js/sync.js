@@ -602,15 +602,27 @@
     }
   }
 
+  async function resumeAfterLine() {
+    const up = await SR.api.probe({ force: true }).catch(() => false);
+    if (!up) return { ok: false, offline: true, role: 'follower' };
+    return runOnce({ silent: true });
+  }
+
   function start({ intervalMs = AUTO_INTERVAL_MS } = {}) {
     stop();
     timer = setInterval(() => {
       if (!SR.api.hasToken()) return;
       runOnce({ silent: true }).catch(() => {});
     }, intervalMs);
-    // Coming back online is the moment that matters most: run immediately rather
-    // than waiting out the interval.
-    SR.api.on('net', ({ online }) => { if (online) runOnce({ silent: true }).catch(() => {}); });
+    // Coming back online is the follower catching up to the leader. Turso stays
+    // behind the Worker. This till never opens it. The person stays signed in.
+    // Push the local outbox first, then copy the leader's catalogue. Do not
+    // start that in the same tick as the line returning: the first answer was
+    // being read as a sign-out.
+    SR.api.on('net', ({ online }) => {
+      if (!online) return;
+      setTimeout(() => resumeAfterLine().catch(() => {}), 1500);
+    });
     SR.api.on('queue', () => {
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => runOnce({ silent: true }).catch(() => {}), DEBOUNCE_AFTER_QUEUE_MS);

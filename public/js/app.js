@@ -1348,7 +1348,12 @@
     sessionWatchTimer = setInterval(() => { void watchSession(); }, 15000);
     if (!sessionWatchBound) {
       document.addEventListener('visibilitychange', onSessionVisible);
-      window.addEventListener('online', onSessionVisible);
+      // Do not ask /api/auth/me in the same breath as the line returning.
+      // That first answer was signing a saved till out. The interval checks
+      // after the follower has had time to catch up.
+      window.addEventListener('online', () => {
+        setTimeout(() => { void watchSession(); }, 12000);
+      });
       sessionWatchBound = true;
     }
   }
@@ -1416,6 +1421,35 @@
     }
   }
 
+  let sessionConfirmTimer = null;
+  let uploadNoticeAt = 0;
+
+  function noteUploadNeedsSignIn() {
+    if (Date.now() - uploadNoticeAt < 10 * 60 * 1000) return;
+    uploadNoticeAt = Date.now();
+    ui.warn('The line is back. You are still signed in on this till. Sales saved here will upload when the shop accepts this session.');
+  }
+
+  function scheduleSessionConfirm(detail) {
+    if (sessionConfirmTimer) return;
+    sessionConfirmTimer = setTimeout(async () => {
+      sessionConfirmTimer = null;
+      if (SR.api.reconnecting && SR.api.reconnecting()) return;
+      try {
+        const me = await SR.api.me({ quiet: true });
+        if (me && (me.user || me.offline)) return;
+      } catch (err) {
+        if (!err || !err.isAuth || err.isOffline || err.code === 'OFFLINE' || err.code === 'SHOP_READ_FAILED' || err.code === 'NO_TOKEN') return;
+        void handleAuthFailure({
+          reason: err.code,
+          token: err.token || (detail && detail.token) || SR.api.loadToken(),
+          message: err.message,
+          confirmedTwice: true,
+        });
+      }
+    }, 8000);
+  }
+
   async function handleAuthFailure(detail) {
     if (signingOut) return;
     // The sign-in just succeeded. A parallel sync or dashboard read can still
@@ -1424,18 +1458,28 @@
     // still signs the other session out.
     if (Date.now() < loginGraceUntil) return;
     const reason = detail && detail.reason;
-    const fatal = reason === 'SESSION_REVOKED' || reason === 'BAD_TOKEN' || reason === 'TOKEN_EXPIRED' || reason === 'USER_GONE' || reason === 'SESSION_SUPERSEDED';
+    const fatal = reason === 'SESSION_REVOKED' || reason === 'BAD_TOKEN' || reason === 'TOKEN_EXPIRED' || reason === 'USER_GONE' || reason === 'SESSION_SUPERSEDED' || reason === 'TOKEN_BAD_SIGNATURE';
     // Navigating to a page must not sign the till out. A 401 from a dropped
-    // header, or a shop miss, leaves the shell open. Sign out only when
-    // /api/auth/me confirms the session itself is dead.
+    // header, a sibling host, or the moment the line returns, leaves the
+    // shell open. Sign out only when the same shop confirms the session is
+    // dead after the line has settled.
     if (!fatal) return;
-    if (reason === 'SESSION_SUPERSEDED') {
-      try {
-        const me = await SR.api.me({ quiet: true });
-        if (me && (me.user || me.offline)) return;
-      } catch (err) {
-        if (!err || !err.isAuth || err.code === 'NO_TOKEN' || err.isOffline || err.code === 'OFFLINE' || err.code === 'SHOP_READ_FAILED') return;
-      }
+    const saved = await SR.store.metaGet('me').catch(() => null);
+    const hasLocalSession = Boolean(SR.state.user) || Boolean(saved && saved.user);
+    const decision = (SR.sessionHold && SR.sessionHold.decide)
+      ? SR.sessionHold.decide({
+        reason,
+        message: detail && detail.message,
+        hasLocalSession,
+        reconnecting: Boolean(SR.api.reconnecting && SR.api.reconnecting()),
+        shopConfirmed: Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed()),
+        confirmedTwice: Boolean(detail && detail.confirmedTwice),
+      })
+      : { signOut: !hasLocalSession };
+    if (!decision.signOut) {
+      if (decision.needsSignInToUpload) noteUploadNeedsSignIn();
+      if (hasLocalSession && !detail.confirmedTwice) scheduleSessionConfirm(detail);
+      return;
     }
     signingOut = true;
     stopSessionWatch();
