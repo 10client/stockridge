@@ -169,12 +169,33 @@
     }
 
     const wrap = ui.h('div', { class: 'stack' });
+    let sellStep = cart.lines.length ? 'cart' : 'pay';
+
+    function showStep(step) {
+      const next = step === 'find' || step === 'cart' || step === 'pay' ? step : 'pay';
+      sellStep = next;
+      grid.dataset.step = next;
+      for (const pane of grid.querySelectorAll('.sell-pane')) pane.hidden = pane.dataset.pane !== next;
+      for (const btn of sellNav.querySelectorAll('[data-step]')) {
+        btn.className = btn.dataset.step === next ? 'btn btn-primary btn-sm' : 'btn btn-sm';
+      }
+      const cartBtn = sellNav.querySelector('[data-step="cart"]');
+      if (cartBtn) cartBtn.textContent = cart.lines.length ? `Cart · ${cart.lines.length}` : 'Cart';
+    }
+
+    const sellNav = ui.h('div', { class: 'sell-nav', id: 'sell-nav' },
+      ui.h('button', { class: 'btn btn-sm', type: 'button', 'data-step': 'find', onClick: () => showStep('find') }, 'Find goods'),
+      ui.h('button', { class: 'btn btn-sm', type: 'button', 'data-step': 'cart', onClick: () => showStep('cart') }, 'Cart'),
+      ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', 'data-step': 'pay', onClick: () => showStep('pay') }, 'Take payment'));
+    wrap.appendChild(sellNav);
 
     // ---------------- layout ----------------
-    const grid = ui.h('div', { class: 'pos' });
-    const left = ui.h('div', { class: 'stack' });
-    const right = ui.h('div', { class: 'stack pos-side' });
+    const grid = ui.h('div', { class: 'pos', 'data-step': sellStep });
+    const left = ui.h('div', { class: 'stack sell-pane', 'data-pane': 'find' });
+    const cartPane = ui.h('div', { class: 'stack sell-pane', 'data-pane': 'cart' });
+    const right = ui.h('div', { class: 'stack pos-side sell-pane', 'data-pane': 'pay' });
     grid.appendChild(left);
+    grid.appendChild(cartPane);
     grid.appendChild(right);
 
     // ---------------- the scan box ----------------
@@ -219,13 +240,16 @@
       ui.h('span', { class: 'spacer' }));
     const lineCount = ui.h('span', { class: 'badge badge-mute' }, '0 lines');
     cartHead.appendChild(lineCount);
-    const openBillsBtn = ui.h('button', { class: 'btn btn-sm', id: 'pos-open-bills', hidden: true, onClick: () => openBills() }, 'Open bills');
-    cartHead.appendChild(openBillsBtn);
     cartHead.appendChild(ui.h('button', { class: 'btn btn-sm btn-ghost', onClick: clearCart }, 'Clear'));
+    cartHead.appendChild(ui.h('button', { class: 'btn btn-sm btn-primary', type: 'button', onClick: () => showStep('pay') }, 'Take payment'));
     cartCard.appendChild(cartHead);
     const cartBody = ui.h('div', { class: 'card-body tight' });
     cartCard.appendChild(cartBody);
-    left.appendChild(cartCard);
+    cartCard.appendChild(ui.h('div', { class: 'card-body' },
+      ui.h('div', { class: 'btn-row' },
+        ui.h('button', { class: 'btn', type: 'button', onClick: () => showStep('find') }, 'Add more'),
+        ui.h('button', { class: 'btn btn-primary', type: 'button', onClick: () => showStep('pay') }, 'Take payment'))));
+    cartPane.appendChild(cartCard);
 
     // ---------------- pay a printed bill ----------------
     const payBillCard = ui.h('div', { class: 'card', id: 'pos-pay-bill', hidden: true });
@@ -242,7 +266,8 @@
     payBillBody.appendChild(ui.h('div', { class: 'hint' }, 'The customer comes back with the bill. Type the payment code printed on it. The code is made from the time the bill was printed, mixed with the bill figures. This marks those goods paid and prints the receipt. The bill is not a receipt.'));
     payBillBody.appendChild(ui.h('div', { class: 'btn-row' },
       payCodeInput,
-      ui.h('button', { class: 'btn btn-primary', onClick: () => findPrintedBill() }, 'Find bill')));
+      ui.h('button', { class: 'btn btn-primary', onClick: () => findPrintedBill() }, 'Find bill'),
+      ui.h('button', { class: 'btn', id: 'pos-open-bills', hidden: true, type: 'button', onClick: () => openBills() }, 'Open bills')));
     payBillBody.appendChild(payBillResult);
     payBillCard.appendChild(payBillBody);
     right.appendChild(payBillCard);
@@ -257,6 +282,7 @@
     totalsBody.appendChild(totalsEl);
     const termsHost = ui.h('div', { id: 'pos-terms' });
     totalsBody.appendChild(termsHost);
+    totalsBody.appendChild(ui.h('div', { class: 'hint', id: 'pos-pay-hint' }, 'Find goods, check the cart, then take payment here. Cancelling or completing a sale returns to this card.'));
     totalsBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '14px' } },
       ui.h('button', { class: 'btn btn-primary btn-lg grow', id: 'pos-complete', onClick: () => primaryAction() }, 'Take payment'),
       ui.h('button', { class: 'btn btn-lg', id: 'pos-pay-desk', hidden: true, onClick: () => openTender() }, 'Pay at this desk'),
@@ -1119,6 +1145,7 @@
       const added = cart.lines[cart.lines.length - 1];
       if (added && String(added.productId) === String(product.id)) await fillLineFacts(added, product);
       save();
+      showStep('cart');
       paint();
       refreshPreview();
     }
@@ -1341,6 +1368,7 @@
       scanInput.value = '';
       results.hidden = true;
       results.replaceChildren();
+      showStep('pay');
       paint();
     }
 
@@ -1374,7 +1402,8 @@
       paintTotals();
       paintInfo();
       const complete = document.getElementById('pos-complete');
-      if (complete) complete.disabled = cart.lines.length === 0;
+      if (complete) complete.disabled = false;
+      showStep(sellStep);
     }
 
     function serialsNeeded(line) {
@@ -1577,6 +1606,12 @@
       if (dispatchOn) totalsEl.appendChild(row('Where', placeLabel()));
       const method = dominantMethod();
       if (method) totalsEl.appendChild(row('Paying by', METHOD_LABEL[method] || method));
+      const hint = document.getElementById('pos-pay-hint');
+      if (hint) {
+        hint.textContent = cart.lines.length
+          ? 'These goods are ready. Print the bill, or take payment at this desk. The receipt uses this total.'
+          : 'Nothing is in the cart. Find goods to start a sale, or type a payment code if the customer already has a bill.';
+      }
       const pay = document.getElementById('pos-complete');
       const desk = document.getElementById('pos-pay-desk');
       const billsBtn = document.getElementById('pos-open-bills');
@@ -1587,8 +1622,10 @@
       if (desk) desk.hidden = !billMode || !cart.lines.length;
       if (pay) {
         if (cart.settlement === 'CREDIT') pay.textContent = cart.lines.length ? `Supply on credit · ${U.money(t.total)}` : 'Supply on credit';
-        else if (billMode) pay.textContent = cart.lines.length ? `Print bill · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Print bill';
-        else pay.textContent = cart.lines.length ? `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}` : 'Take payment';
+        else if (billMode && cart.lines.length) pay.textContent = `Print bill · ${U.money(t.collect != null ? t.collect : t.total)}`;
+        else if (cart.lines.length) pay.textContent = `Take payment · ${U.money(t.collect != null ? t.collect : t.total)}`;
+        else if (billsFirst()) pay.textContent = 'Pay a printed bill';
+        else pay.textContent = 'Find goods';
       }
     }
 
@@ -2089,8 +2126,9 @@
           else if (outcome === 'cancel') {
             cart.payments = paymentsAtOpen;
             save();
+            showStep('pay');
             paint();
-          }
+          } else showStep('pay');
         },
       });
       paintButtons();
@@ -2109,6 +2147,19 @@
     }
     function primaryAction() {
       ensureSettlement();
+      if (sellStep !== 'pay') {
+        showStep('pay');
+        return;
+      }
+      if (!cart.lines.length) {
+        if (billsFirst() && payCodeInput) {
+          payCodeInput.focus();
+          return;
+        }
+        showStep('find');
+        if (scanInput) scanInput.focus();
+        return;
+      }
       if (cart.settlement === 'CREDIT') return openTender();
       if (billsFirst() && !cartIsBooking()) return raiseBill();
       return openTender();
@@ -2130,7 +2181,11 @@
     }
 
     async function raiseBill() {
-      if (!cart.lines.length) { ui.warn('Add something to the bill first.'); return; }
+      if (!cart.lines.length) {
+        showStep('find');
+        if (scanInput) scanInput.focus();
+        return;
+      }
       await alignReceiptPrices();
       if (!assertPlace()) return;
       if (cartIsBooking()) {
@@ -2821,6 +2876,7 @@
     }
 
     // ---------------- mount ----------------
+    showStep(cart.lines.length ? 'cart' : 'pay');
     paint();
     paintTotals();
 
