@@ -165,7 +165,11 @@
             cashier_name: (SR.state.user || {}).fullName,
           };
         });
-      return { data: queued, paging: { total: queued.length, limit: queued.length, offset: 0 } };
+      const stored = await SR.store.all('sales').catch(() => []);
+      const seen = new Set(queued.map((row) => String(row.id)));
+      const copied = (stored || []).filter((row) => row && row.id != null && !Number(row.is_deleted) && !seen.has(String(row.id)));
+      const rows = queued.concat(copied).sort((a, b) => String(b.sold_at || '').localeCompare(String(a.sold_at || '')));
+      return { data: rows, paging: { total: rows.length, limit: rows.length, offset: 0 } };
     }
 
     function fromMirrorSales() { return fromMirror(); }
@@ -191,13 +195,20 @@
       try {
         data = await SR.api.get(`/api/sales/${encodeURIComponent(ctx.params.id)}`);
       } catch (err) {
-        if (err.status === 404) {
-          // It may be a sale this device queued that the server has not seen.
+        if (err.status === 404 || err.isOffline) {
           const queued = (await SR.store.outboxAll()).find((o) => o.client_id === ctx.params.id);
           if (queued) { host.replaceChildren(queuedCard(queued)); return; }
+          const sale = await SR.store.get('sales', ctx.params.id).catch(() => null);
+          if (sale) {
+            const items = await SR.store.all('sale_items', { where: (row) => String(row.sale_id) === String(sale.id) && !Number(row.is_deleted) }).catch(() => []);
+            const payments = await SR.store.all('sale_payments', { where: (row) => String(row.sale_id) === String(sale.id) && !Number(row.is_deleted) }).catch(() => []);
+            data = { sale, items, payments, changeOwed: [], journal: [], serials: [], prescriptions: [], controlledRegister: [] };
+          }
         }
-        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Reload', run: load } }));
-        return;
+        if (!data) {
+          host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Reload', run: load } }));
+          return;
+        }
       }
       const sale = data.sale || data;
       const items = data.items || sale.items || [];

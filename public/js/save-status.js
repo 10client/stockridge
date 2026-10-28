@@ -32,7 +32,8 @@
         return { state: 'empty', label: 'Not saved', finished: false, detail: 'This till has not downloaded the catalogue yet. Leave it open and connected until this says Saved.' };
       }
       if (truncated.length || row.incomplete) return { state: 'partial', label: 'Part saved', finished: false, detail: 'Some of the download did not finish. You can sell from what is here, then sync again while connected.' };
-      return { state: 'saved', label: 'Saved', finished: true, detail: 'The catalogue is on this till and nothing is waiting to upload. You can disconnect.' };
+      if (!row.salesCopied) return { state: 'partial', label: 'Part saved', finished: false, detail: 'The catalogue is on this till, but the sales book has not been copied yet. Leave it open and connected until this says Saved.' };
+      return { state: 'saved', label: 'Saved', finished: true, detail: 'The catalogue and the sales book are on this till. You can disconnect.' };
     }
     return { decide: decideSaveStatus };
   }

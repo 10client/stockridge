@@ -623,7 +623,7 @@ function mount(app, base = '/api') {
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
-      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_safe_ledger'];
+      : ['businesses', 'branches', 'users', 'customer_classes', 'customers', 'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes', 'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers', 'stock_batches', 'purchase_orders', 'purchase_order_items', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings', 'branch_safe_ledger', 'sales', 'sale_items', 'sale_payments', 'sale_returns', 'customer_bills', 'change_owed', 'till_sessions'];
 
     const out = {};
     let totalRows = 0;
@@ -634,6 +634,31 @@ function mount(app, base = '/api') {
       const spec = PULLABLE[table];
       const where = []; const params = [];
       if (spec.softDelete !== false) where.push('is_deleted = 0');
+      if (spec.parent && /^[a-z_]+$/.test(spec.parent.table) && /^[a-z_]+$/.test(spec.parent.column)) {
+        const parentSpec = PULLABLE[spec.parent.table] || {};
+        const parentWhere = parentSpec.softDelete === false ? ['1 = 1'] : ['is_deleted = 0'];
+        const parentParams = [];
+        if (parentSpec.businessScoped !== false && includeAllBusinesses && scope.allBusinesses) {
+          // the parent already covers every business this person reaches
+        } else if (parentSpec.businessScoped !== false && includeAllBusinesses && scope.businessIds && scope.businessIds.size) {
+          const ids = [...scope.businessIds];
+          parentWhere.push(`(business_id IS NULL OR business_id IN (${ids.map(() => '?').join(',')}))`);
+          parentParams.push(...ids);
+        } else if (parentSpec.businessScoped !== false && biz) {
+          parentWhere.push('(business_id = ? OR business_id IS NULL)');
+          parentParams.push(biz);
+        }
+        if (parentSpec.branchScoped && !scope.allBranches && scope.branchIds) {
+          const ids = [...scope.branchIds];
+          parentWhere.push(`(branch_id IS NULL OR branch_id IN (${ids.map(() => '?').join(',')}))`);
+          parentParams.push(...ids);
+        } else if (parentSpec.branchScoped && branch && !includeAllBranches) {
+          parentWhere.push('(branch_id IS NULL OR branch_id = ?)');
+          parentParams.push(String(branch.id));
+        }
+        where.push(`${spec.parent.column} IN (SELECT id FROM ${spec.parent.table} WHERE ${parentWhere.join(' AND ')})`);
+        params.push(...parentParams);
+      }
       // A full mirror must not be cut to the shop the shell happened to stand
       // in. After a browser clear that shop is the first branch, and an offline
       // login then restored only that branch. A pinned cashier is still limited
@@ -658,7 +683,11 @@ function mount(app, base = '/api') {
         // had no shelf there. Scope still limits a pinned cashier.
         where.push('(branch_id IS NULL OR branch_id = ?)'); params.push(String(branch.id));
       }
-      if (since && !fullTables.has(table)) { where.push('updated_at > ?'); params.push(since); }
+      if (since && !fullTables.has(table)) {
+        const cursorColumn = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
+        where.push(`${cursorColumn} > ?`);
+        params.push(since);
+      }
       const cols = spec.columns ? spec.columns.join(', ') : '*';
       let rows;
       try {
@@ -874,6 +903,25 @@ const PULLABLE = {
   instalment_plans: { businessScoped: true, branchScoped: true, orderBy: 'next_due_date' },
   delivery_jobs: { businessScoped: true, branchScoped: true, orderBy: 'created_at DESC' },
   client_settings: { businessScoped: false, branchScoped: false, orderBy: 'updated_at DESC' },
+  // The sales book. A till that only stored the catalogue could say Saved
+  // and then show an empty receipt list, and a product count that vanished,
+  // once the line dropped. These rows are the same tables Turso holds.
+  // Child rows have no business column of their own, so they are limited
+  // through the parent. Secrets and the ledger stay off the device.
+  product_measures: { businessScoped: false, branchScoped: false, orderBy: 'product_id' },
+  purchase_order_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'purchase_orders', column: 'purchase_order_id' } },
+  sales: { businessScoped: true, branchScoped: true, orderBy: 'sold_at' },
+  sale_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'sales', column: 'sale_id' } },
+  sale_payments: { businessScoped: false, branchScoped: true, orderBy: 'updated_at' },
+  sale_serials: { businessScoped: false, branchScoped: true, softDelete: false, cursorColumn: 'created_at', orderBy: 'created_at' },
+  sale_returns: { businessScoped: true, branchScoped: true, orderBy: 'updated_at' },
+  sale_return_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'sale_returns', column: 'sale_return_id' } },
+  customer_bills: { businessScoped: true, branchScoped: true, orderBy: 'raised_at' },
+  bill_holds: { businessScoped: false, branchScoped: false, softDelete: false, cursorColumn: 'created_at', orderBy: 'created_at', parent: { table: 'customer_bills', column: 'bill_id' } },
+  sale_issues: { businessScoped: true, branchScoped: true, softDelete: false, orderBy: 'updated_at' },
+  change_owed: { businessScoped: true, branchScoped: true, orderBy: 'created_at' },
+  till_sessions: { businessScoped: true, branchScoped: true, orderBy: 'opened_at' },
+  serial_numbers: { businessScoped: false, branchScoped: true, orderBy: 'serial_no' },
 };
 
 /** Strip anything a device should not carry around. */

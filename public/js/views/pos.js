@@ -406,16 +406,6 @@
      */
     async function sellableIndex() {
       const branchId = SR.state.activeBranchId;
-      const received = SR.store.receivedOnHand ? await SR.store.receivedOnHand(branchId).catch(() => null) : null;
-      const hand = !Array.isArray(received) && SR.store.stockOnHand
-        ? await SR.store.stockOnHand(branchId).catch(() => null)
-        : null;
-      const sqlHand = new Map();
-      if (Array.isArray(received)) {
-        for (const row of received) sqlHand.set(String(row.product_id), Number(row.on_hand) || 0);
-      } else if (Array.isArray(hand)) {
-        for (const row of hand) sqlHand.set(String(row.product_id), Number(row.available) || 0);
-      }
       const stored = await SR.store.all('stock_batches').catch(() => []);
       const batches = SR.shelf && SR.shelf.batchesForBranch ? SR.shelf.batchesForBranch(stored, branchId) : stored;
       const byProduct = new Map();
@@ -424,8 +414,13 @@
         if (Number(b.is_deleted)) continue;
         const status = String(b.status || 'ACTIVE').toUpperCase();
         if (status === 'QUARANTINED' || status === 'EXPIRED') continue;
-        const avail = Number(b.quantity) - Number(b.quantity_reserved || 0);
-        if (!(avail > 0)) continue;
+        const qty = Number(b.quantity) || 0;
+        const reserved = Number(b.quantity_reserved) || 0;
+        const avail = qty - reserved;
+        // A hold must not remove the row. The count can fall. The product stays
+        // while units are still on the shelf. Hiding it is how the list starts
+        // to count and then goes blank.
+        if (!(qty > 0)) continue;
         const id = String(b.product_id);
         const cur = byProduct.get(id) || {
           on_hand: 0,
@@ -443,7 +438,7 @@
           registrationNo: b.product_registration_no || null,
           nafdacCatalogId: b.product_nafdac_catalog_id || null,
         };
-        cur.on_hand += avail;
+        cur.on_hand += avail > 0 ? avail : qty;
         if (!cur.name && b.product_name) cur.name = b.product_name;
         if (!cur.sku && b.product_sku) cur.sku = b.product_sku;
         if (!cur.brand && b.product_brand) cur.brand = b.product_brand;
@@ -459,11 +454,6 @@
         if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
         byProduct.set(id, cur);
         rows.push(b);
-      }
-      if (Array.isArray(received) || Array.isArray(hand)) {
-        for (const [id, cur] of byProduct) {
-          cur.on_hand = sqlHand.has(id) ? sqlHand.get(id) : 0;
-        }
       }
       return { byProduct, rows, branchId };
     }
@@ -509,7 +499,7 @@
       for (const [id, info] of stock.byProduct) {
         const product = await SR.store.get('products', id).catch(() => null);
         if (product && Number(product.is_deleted)) continue;
-        if (product && Number(product.is_active) === 0) continue;
+        if (product && product.offers_sale != null && Number(product.offers_sale) === 0) continue;
         const name = (product && product.name) || info.name || '';
         const sku = (product && product.sku) || info.sku || '';
         const brand = (product && product.brand) || info.brand || '';

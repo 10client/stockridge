@@ -223,7 +223,7 @@
       const branchId = SR.state.activeBranchId;
       if (SR.store.stockOnHand && state.filter !== 'quarantined') {
         const sqlRows = await SR.store.stockOnHand(branchId).catch(() => null);
-        if (Array.isArray(sqlRows)) return finishOnHand(sqlRows);
+        if (Array.isArray(sqlRows) && sqlRows.length) return finishOnHand(sqlRows);
       }
       const stored = await SR.store.all('stock_batches').catch(() => []);
       const batches = SR.shelf && SR.shelf.batchesForBranch

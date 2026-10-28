@@ -33,9 +33,12 @@
     'businesses', 'branches', 'users', 'customer_classes', 'customers',
     'product_categories', 'products', 'product_units', 'product_variants', 'product_barcodes',
     'price_lists', 'price_list_items', 'product_price_overrides', 'suppliers',
-    'stock_batches', 'purchase_orders', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
+    'stock_batches', 'purchase_orders', 'purchase_order_items', 'product_measures', 'deposits', 'instalment_plans', 'delivery_jobs', 'client_settings',
     'branch_compliance_records', 'branch_safe_ledger',
+    'sales', 'sale_items', 'sale_payments', 'sale_serials', 'sale_returns', 'sale_return_items',
+    'customer_bills', 'bill_holds', 'sale_issues', 'change_owed', 'till_sessions', 'serial_numbers',
   ];
+  const SALES_TABLES = ['sales', 'sale_items', 'sale_payments', 'sale_serials', 'sale_returns', 'sale_return_items', 'customer_bills', 'bill_holds', 'sale_issues', 'change_owed', 'till_sessions', 'serial_numbers'];
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;
   const DEBOUNCE_AFTER_QUEUE_MS = 2500;
@@ -351,6 +354,12 @@
     const fullTables = [];
     if (asking.includes('stock_batches')) fullTables.push('stock_batches');
     if (asking.includes('purchase_orders')) fullTables.push('purchase_orders');
+    const pulledSales = await SR.store.metaGet('pulled_sales_tables').catch(() => null);
+    const gap = await SR.store.metaGet('pull_gap').catch(() => []);
+    const gapNames = Array.isArray(gap) ? gap : [];
+    if (!pulledSales || gapNames.some((name) => SALES_TABLES.includes(name))) {
+      for (const name of SALES_TABLES) if (asking.includes(name) && !fullTables.includes(name)) fullTables.push(name);
+    }
     let result;
     const started = Date.now();
     try {
@@ -415,7 +424,14 @@
     // device — it would ask for "everything since" a moment the rows never
     // arrived in. A shelf-only prefetch must not move it either: that request
     // does not carry the catalogue.
-    if (saveCursor && result && result.cursor && !(result.tables && Object.values(result.tables).some((t) => t && t.error))) {
+    const tableErrors = Object.entries((result && result.tables) || {}).filter(([, item]) => item && item.error);
+    const hardErrors = tableErrors.filter(([, item]) => item.error !== 'not_syncable');
+    const gaps = tableErrors.filter(([, item]) => item.error === 'not_syncable').map(([name]) => name);
+    await SR.store.metaSet('pull_gap', gaps);
+    if (result && result.tables && result.tables.sales && !result.tables.sales.error) {
+      await SR.store.metaSet('pulled_sales_tables', true);
+    }
+    if (saveCursor && result && result.cursor && !hardErrors.length) {
       await SR.store.metaSet('sync_cursor', result.cursor);
       if (fullTables.includes('purchase_orders') && result.tables && result.tables.purchase_orders && !result.tables.purchase_orders.error) {
         await SR.store.metaSet('pulled_purchase_orders', true);
@@ -440,6 +456,55 @@
     return { ok: true, rows, perTable, cursor: result && result.cursor, fullSync: Boolean(result && result.fullSync), truncated: (result && result.truncatedTables) || [], softErrors };
   }
 
+  // The live shop already answers GET /api/sales. Copy that book into the
+  // same tables the pull writes, so a till built before the shop knows the
+  // new tables still has the receipts, the lines, and the payments offline.
+  async function copySalesBook() {
+    if (!SR.api.isOnline()) return { ok: false, count: 0 };
+    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
+    const headers = [];
+    let offset = 0;
+    for (let page = 0; page < 12; page += 1) {
+      const data = await SR.api.get('/api/sales', { query: { from: '2020-01-01', to, limit: 500, offset }, timeoutMs: 25000 });
+      const rows = (data && data.data) || [];
+      headers.push(...rows.filter((row) => row && row.id != null));
+      if (!rows.length || !data.paging || !data.paging.hasMore) break;
+      offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+    }
+    if (headers.length) await SR.store.putMany('sales', headers);
+    const items = [];
+    const payments = [];
+    const serials = [];
+    const owed = [];
+    const recent = headers.slice(0, 120);
+    for (let i = 0; i < recent.length; i += 4) {
+      const chunk = recent.slice(i, i + 4);
+      const details = await Promise.all(chunk.map((row) => SR.api.get('/api/sales/' + encodeURIComponent(row.id), { timeoutMs: 20000 }).catch(() => null)));
+      for (const detail of details) {
+        if (!detail || !detail.sale || detail.sale.id == null) continue;
+        await SR.store.putMany('sales', [detail.sale]);
+        for (const row of detail.items || []) if (row && row.id != null) items.push(row);
+        for (const row of detail.payments || []) if (row && row.id != null) payments.push(row);
+        for (const row of detail.serials || []) if (row && row.id != null) serials.push(row);
+        for (const row of detail.changeOwed || []) if (row && row.id != null) owed.push(row);
+      }
+    }
+    if (items.length) await SR.store.putMany('sale_items', items);
+    if (payments.length) await SR.store.putMany('sale_payments', payments);
+    if (serials.length) await SR.store.putMany('sale_serials', serials);
+    if (owed.length) await SR.store.putMany('change_owed', owed);
+    const bills = [];
+    for (const status of ['OPEN', 'PAYING', 'PAID', 'CANCELLED']) {
+      const data = await SR.api.get('/api/bills', { query: { status }, timeoutMs: 20000 }).catch(() => null);
+      for (const row of (data && data.data) || []) if (row && row.id != null) bills.push(row);
+    }
+    if (bills.length) await SR.store.putMany('customer_bills', bills);
+    const savedAt = SR.util.nowIso();
+    await SR.store.metaSet('sales_copy_at', savedAt);
+    await SR.store.metaSet('sales_copy_count', headers.length);
+    return { ok: true, count: headers.length };
+  }
+
   // -------------------------------------------------------------------
   // THE CYCLE
   // -------------------------------------------------------------------
@@ -461,6 +526,9 @@
         // written on this till.
         let pullResult = { ok: false, rows: 0 };
         try { pullResult = await pull({ full }); } catch (err) { lastError = err.message; }
+        if (SR.api.isOnline()) {
+          try { await copySalesBook(); } catch (err) { lastError = err.message; }
+        }
         if (!silent) {
           const bits = [];
           if (pushResult.applied) bits.push(`${pushResult.applied} sent`);

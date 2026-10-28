@@ -905,6 +905,7 @@
       const incomplete = await SR.store.metaGet('sync_incomplete_since');
       const pullError = await SR.store.metaGet('sync_pull_error');
       const catalogueEmpty = await SR.store.metaGet('catalogue_empty');
+      const salesCopied = await SR.store.metaGet('sales_copy_at');
       const stock = await SR.store.all('stock_batches').catch(() => []);
       const products = await SR.store.all('products').catch(() => []);
       const report = SR.saveStatus.decide({
@@ -919,6 +920,7 @@
         catalogueEmpty,
         stockRows: stock.length,
         productRows: products.length,
+        salesCopied: Boolean(salesCopied),
       });
       chip.hidden = false;
       chip.dataset.state = report.state;
