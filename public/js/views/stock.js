@@ -196,8 +196,35 @@
       }));
     }
 
+    function finishOnHand(rows) {
+      const needle = state.q.toLowerCase();
+      const finished = (rows || [])
+        .filter((row) => !needle || `${row.name || ''} ${row.sku || ''}`.toLowerCase().includes(needle))
+        .map((row) => {
+          const available = Number(row.available);
+          return Object.assign({}, row, {
+            selling_group_label: U.sellingGroup(row).label,
+            low_stock: Number(row.reorder_level) > 0 && available <= Number(row.reorder_level),
+            out_of_stock: available <= 0,
+            days_to_expiry: row.next_expiry ? U.daysBetween(U.todayWat(), row.next_expiry) : null,
+          });
+        })
+        .filter((row) => {
+          if (state.sellingGroup && U.sellingGroup(row).code !== state.sellingGroup) return false;
+          if (state.filter === 'low') return row.low_stock;
+          if (state.filter === 'out') return row.out_of_stock;
+          return true;
+        })
+        .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      return { data: finished, paging: { total: finished.length, limit: finished.length, offset: 0 } };
+    }
+
     async function fromMirror() {
       const branchId = SR.state.activeBranchId;
+      if (SR.store.stockOnHand && state.filter !== 'quarantined') {
+        const sqlRows = await SR.store.stockOnHand(branchId).catch(() => null);
+        if (Array.isArray(sqlRows)) return finishOnHand(sqlRows);
+      }
       const stored = await SR.store.all('stock_batches').catch(() => []);
       const batches = SR.shelf && SR.shelf.batchesForBranch
         ? SR.shelf.batchesForBranch(stored, branchId)

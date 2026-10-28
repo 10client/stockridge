@@ -220,6 +220,32 @@
       // answers with its own key names is the same defect as the ten above,
       // waiting for the day the device goes offline.
       const branchId = SR.state.activeBranchId;
+      const sqlHand = SR.store.stockOnHand ? await SR.store.stockOnHand(branchId).catch(() => null) : null;
+      if (Array.isArray(sqlHand)) {
+        const products = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
+        let lowStockCount = 0;
+        let atCost = 0;
+        const byId = new Map(sqlHand.map((row) => [String(row.product_id), row]));
+        for (const p of products) {
+          const s = byId.get(String(p.id)) || { available: 0, stock_value: 0 };
+          if (Number(p.reorder_level) > 0 && Number(s.available) <= Number(p.reorder_level)) lowStockCount += 1;
+          atCost += Number(s.stock_value) || 0;
+        }
+        const outbox = await SR.sync.queueStats();
+        const saved = localSales(outbox.items || []);
+        return {
+          offline: true,
+          view: 'STAFF',
+          today: { sales: saved.count, count: saved.count, gross: saved.gross, queued: outbox.pending, vsYesterday: null },
+          period: null,
+          stock: { products: products.length, lowStockCount, atCost },
+          debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
+          cash: { safeBalance: await mirroredSafe(branchId), myTill: null, openTills: [] },
+          topProducts: [],
+          actions: [],
+          plan: null,
+        };
+      }
       const batches = await SR.store.all('stock_batches', { where: (b) => !Number(b.is_deleted) && (!branchId || String(b.branch_id) === String(branchId)) });
       const products = await SR.store.all('products', { where: (p) => !Number(p.is_deleted) });
       const byProduct = new Map();

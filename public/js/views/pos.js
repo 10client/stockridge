@@ -406,6 +406,16 @@
      */
     async function sellableIndex() {
       const branchId = SR.state.activeBranchId;
+      const received = SR.store.receivedOnHand ? await SR.store.receivedOnHand(branchId).catch(() => null) : null;
+      const hand = !Array.isArray(received) && SR.store.stockOnHand
+        ? await SR.store.stockOnHand(branchId).catch(() => null)
+        : null;
+      const sqlHand = new Map();
+      if (Array.isArray(received)) {
+        for (const row of received) sqlHand.set(String(row.product_id), Number(row.on_hand) || 0);
+      } else if (Array.isArray(hand)) {
+        for (const row of hand) sqlHand.set(String(row.product_id), Number(row.available) || 0);
+      }
       const stored = await SR.store.all('stock_batches').catch(() => []);
       const batches = SR.shelf && SR.shelf.batchesForBranch ? SR.shelf.batchesForBranch(stored, branchId) : stored;
       const byProduct = new Map();
@@ -449,6 +459,11 @@
         if (batchPrice > 0 && !(cur.price > 0)) cur.price = batchPrice;
         byProduct.set(id, cur);
         rows.push(b);
+      }
+      if (Array.isArray(received) || Array.isArray(hand)) {
+        for (const [id, cur] of byProduct) {
+          cur.on_hand = sqlHand.has(id) ? sqlHand.get(id) : 0;
+        }
       }
       return { byProduct, rows, branchId };
     }

@@ -468,10 +468,90 @@
     return rows.find((r) => String(r.claim_code || '').toUpperCase() === wanted) || null;
   }
 
+  async function stockOnHand(branchId) {
+    const products = (await all('products')).filter((row) => row && !Number(row.is_deleted));
+    const batches = (await all('stock_batches')).filter((row) => row && !Number(row.is_deleted) && !['QUARANTINED', 'EXPIRED'].includes(String(row.status || 'ACTIVE')));
+    const cats = await all('product_categories').catch(() => []);
+    const catById = new Map((cats || []).map((row) => [String(row.id), row]));
+    const asked = branchId == null || branchId === '' ? '' : String(branchId);
+    let shelf = batches;
+    if (asked) {
+      const matched = batches.filter((row) => String(row.branch_id) === asked);
+      if (matched.length) shelf = matched;
+      else {
+        const present = [...new Set(batches.map((row) => String(row.branch_id || '')).filter(Boolean))];
+        shelf = present.length === 1 ? batches.filter((row) => String(row.branch_id) === present[0]) : [];
+      }
+    }
+    const byProduct = new Map();
+    for (const row of shelf) {
+      const key = String(row.product_id);
+      const cur = byProduct.get(key) || { on_shelf: 0, reserved: 0, value: 0, batches: 0, next_expiry: null, branch_id: row.branch_id };
+      cur.on_shelf += Number(row.quantity) || 0;
+      cur.reserved += Number(row.quantity_reserved) || 0;
+      cur.value += (Number(row.quantity) || 0) * (Number(row.cost_price_per_unit) || 0);
+      cur.batches += 1;
+      if (row.expiry_date && (!cur.next_expiry || row.expiry_date < cur.next_expiry)) cur.next_expiry = row.expiry_date;
+      byProduct.set(key, cur);
+    }
+    const round2 = (value) => Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+    return products.filter((product) => byProduct.has(String(product.id))).map((product) => {
+      const sum = byProduct.get(String(product.id));
+      const cat = catById.get(String(product.category_id)) || {};
+      const parent = cat.parent_id ? catById.get(String(cat.parent_id)) : null;
+      return {
+        product_id: product.id,
+        branch_id: sum.branch_id,
+        sku: product.sku,
+        name: product.name,
+        base_unit_name: product.base_unit_name,
+        reorder_level: Number(product.reorder_level) || 0,
+        selling_price: Number(product.selling_price) || 0,
+        book_cost: Number(product.cost_price) || 0,
+        requires_serial: product.requires_serial,
+        tracks_variants: product.tracks_variants,
+        has_expiry: product.has_expiry,
+        nafdac_catalog_id: product.nafdac_catalog_id,
+        category_name: cat.name || null,
+        category_code: cat.code || null,
+        category_parent_code: (parent && parent.code) || null,
+        on_shelf: round2(sum.on_shelf),
+        reserved: round2(sum.reserved),
+        available: round2(sum.on_shelf - sum.reserved),
+        stock_value: round2(sum.value),
+        batch_count: sum.batches,
+        next_expiry: sum.next_expiry,
+      };
+    }).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
+  async function receivedOnHand(branchId) {
+    const orders = await all('purchase_orders').catch(() => []);
+    if (!orders.length) return null;
+    const received = new Set(orders.filter((row) => row && !Number(row.is_deleted) && ['PARTIALLY_RECEIVED', 'RECEIVED'].includes(String(row.status))).map((row) => String(row.id)));
+    if (!received.size) return [];
+    const hand = await stockOnHand(branchId);
+    const batches = await all('stock_batches');
+    const asked = branchId == null || branchId === '' ? '' : String(branchId);
+    const totals = new Map();
+    for (const row of batches) {
+      if (!row || Number(row.is_deleted) || String(row.status || 'ACTIVE') !== 'ACTIVE') continue;
+      if (!received.has(String(row.purchase_order_id || ''))) continue;
+      if (asked && String(row.branch_id) !== asked) continue;
+      const key = String(row.product_id);
+      totals.set(key, (totals.get(key) || 0) + (Number(row.quantity) || 0) - (Number(row.quantity_reserved) || 0));
+    }
+    return hand.filter((row) => totals.has(String(row.product_id))).map((row) => ({
+      product_id: row.product_id,
+      on_hand: Math.round(((totals.get(String(row.product_id)) || 0) + Number.EPSILON) * 100) / 100,
+    }));
+  }
+
   SR.store = {
     DB_NAME, DB_VERSION, OUTBOX_CAP,
     open, tx,
     putMany, all, first, get, remove, rememberShopPrice, clearTable, clearAll, tableStats,
+    stockOnHand, receivedOnHand,
     saveLocalClaim, localClaims, findLocalClaim,
     enqueue, pending, outboxAll, outboxCount, updateOutbox, removeOutbox,
     markFailed, markSynced, purgeSynced, requeue,

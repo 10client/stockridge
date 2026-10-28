@@ -346,11 +346,20 @@
         ? SR.shelf.batchesForBranch(storedBatches, SR.state.activeBranchId)
         : storedBatches.filter((b) => !Number(b.is_deleted) && String(b.branch_id) === String(SR.state.activeBranchId));
       const onHand = new Map();
+      const handRows = SR.store.stockOnHand ? await SR.store.stockOnHand(SR.state.activeBranchId).catch(() => null) : null;
+      if (Array.isArray(handRows)) {
+        for (const row of handRows) onHand.set(String(row.product_id), Number(row.available) || 0);
+      }
       const batchPrice = new Map();
       const ordered = batches.slice().sort((a, b) => String(b.received_at || '').localeCompare(String(a.received_at || '')));
       for (const b of ordered) {
         const k = String(b.product_id);
-        onHand.set(k, (onHand.get(k) || 0) + Number(b.quantity || 0) - Number(b.quantity_reserved || 0));
+        if (!Array.isArray(handRows)) {
+          const status = String(b.status || 'ACTIVE').toUpperCase();
+          if (status !== 'QUARANTINED' && status !== 'EXPIRED') {
+            onHand.set(k, (onHand.get(k) || 0) + Number(b.quantity || 0) - Number(b.quantity_reserved || 0));
+          }
+        }
         if (!batchPrice.has(k) && Number(b.selling_price_per_unit) > 0
           && !['QUARANTINED', 'EXPIRED'].includes(String(b.status || '').toUpperCase())) {
           batchPrice.set(k, Number(b.selling_price_per_unit));
