@@ -10,6 +10,7 @@ const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
 const { scopeFilter, inScope, strField } = require('../lib/respond');
+const { round2 } = require('../../domain/money');
 const salesRoutes = require('./sales');
 const salesService = require('../services/salesService');
 const bills = require('../services/billService');
@@ -74,6 +75,21 @@ function mount(app, base = '/api') {
       ok: true,
       data: rows.map((row) => bills.publicBill(row)),
     });
+  });
+
+  app.get(`${base}/bills/lookup`, async (ctx) => {
+    const db = ctx.env.DB || ctx.env.db;
+    const code = strField(ctx.req.queryParam('code'), { field: 'Payment code', maxLength: 16 });
+    if (!code) throw new HttpError('Type the payment code printed on the bill.', { status: 400, code: 'PAY_CODE_REQUIRED' });
+    const branchIds = await branchIdsInScope(db, ctx.get('scope'));
+    const row = await bills.findByCode(db, code, branchIds);
+    if (!row) {
+      throw new HttpError('No bill has that payment code. Read it off the bill again. An old bill can also be found by its bill number.', { status: 404, code: 'BILL_NOT_FOUND' });
+    }
+    if (!inScope(ctx.get('scope'), row)) {
+      throw new HttpError('That bill is at another branch.', { status: 403, code: 'BRANCH_SCOPE_VIOLATION' });
+    }
+    ctx.json({ ok: true, bill: bills.publicBill(row) });
   });
 
   app.get(`${base}/bills/:id`, async (ctx) => {
@@ -143,6 +159,15 @@ function mount(app, base = '/api') {
       }
       params.stockHolds = locked.holds;
       params.allowReservedSerials = locked.serials;
+      const preview = await salesService.prepare(db, params);
+      const saleTotal = round2(Number(preview.totals && preview.totals.total));
+      const billTotal = round2(Number(bill.total));
+      if (Math.abs(saleTotal - billTotal) > 0.01) {
+        throw new HttpError(
+          `Bill ${bill.bill_no} is ₦${billTotal.toLocaleString('en-NG')} but the sale would record ₦${saleTotal.toLocaleString('en-NG')}. Payment was not taken. The bill, the receipt, and the books have to be the same figure.`,
+          { status: 409, code: 'BILL_TOTAL_MISMATCH' },
+        );
+      }
       sale = await salesService.complete(db, params);
       const stamped = bill.sale_place
         ? { skip: false, salePlace: bill.sale_place, vehicleId: bill.vehicle_id || null, vehicleName: null }
@@ -163,12 +188,28 @@ function mount(app, base = '/api') {
       businessId: bill.business_id,
       after: { bill_no: bill.bill_no, sale_id: sale.saleId, receipt_no: sale.receiptNo },
     });
+    const bookedTotal = round2(Number(sale.totals && sale.totals.total));
+    const billTotal = round2(Number(bill.total));
+    const figuresMatch = Math.abs(bookedTotal - billTotal) <= 0.01;
+    const cashierName = user.full_name || user.username || 'Staff';
     ctx.json({
       ok: true,
       billNo: bill.bill_no,
       billId: bill.id,
+      payCode: bills.publicBill(bill).pay_code,
+      raisedByName: bill.raised_by_name || null,
+      cashierName,
+      total: bookedTotal,
+      figures: {
+        billTotal,
+        saleTotal: bookedTotal,
+        paid: round2(Number(sale.paid) || 0),
+        match: figuresMatch,
+      },
       ...sale,
-      message: `Bill ${bill.bill_no} is paid. Receipt ${sale.receiptNo} is the proof of payment. Print the release note before the goods leave the store.`,
+      message: figuresMatch
+        ? `Bill ${bill.bill_no} is paid. Receipt ${sale.receiptNo} is ₦${bookedTotal.toLocaleString('en-NG')}, the same figure as the bill and the books. Received by ${cashierName}. Print the release note before the goods leave.`
+        : `Receipt ${sale.receiptNo} is recorded at ₦${bookedTotal.toLocaleString('en-NG')} and bill ${bill.bill_no} was ₦${billTotal.toLocaleString('en-NG')}. Do not take the payment again. Check the sale before the goods leave.`,
     });
   });
 

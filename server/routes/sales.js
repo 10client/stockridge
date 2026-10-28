@@ -465,6 +465,8 @@ function mount(app, base = '/api') {
       ok: true,
       saleId: result.saleId,
       receiptNo: result.receiptNo,
+      total: result.totals && result.totals.total,
+      cashierName: user.full_name || user.username || null,
       totals: result.totals,
       vat: result.vat,
       paid: result.paid,

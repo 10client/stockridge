@@ -14,6 +14,7 @@ const { round2 } = require('../../domain/money');
 const { resolveProfile } = require('../../domain/verticals');
 const {
   billsFirst, holdUntil, holdExpired, billableLines, customerNameForBill, saleNoteToken,
+  paymentCode, payCodeToken, codeFromNotes,
 } = require('../../domain/billing');
 const salesService = require('./salesService');
 
@@ -128,7 +129,10 @@ function publicBill(row, extra = {}) {
     total: Number(row.total) || 0,
     valid_until: row.valid_until,
     raised_at: row.raised_at,
-    raised_by_name: row.raised_by_name || null,
+    raised_by_name: row.raised_by_name || extra.raisedByName || null,
+    pay_code: codeFromNotes(row.notes) || extra.payCode || null,
+    paid_receipt_no: row.paid_receipt_no || null,
+    paid_by_name: row.paid_by_name || null,
     notes: row.notes || null,
     sale_place: row.sale_place || null,
     vehicle_id: row.vehicle_id || null,
@@ -168,6 +172,40 @@ async function serialsOnBill(db, billId) {
   const row = await db.first('SELECT lines_json FROM customer_bills WHERE id = ?', [String(billId)]);
   const packed = parseJson(row && row.lines_json, {});
   return Array.isArray(packed.serials) ? packed.serials.map(String) : [];
+}
+
+async function unusedPayCode(db, seed) {
+  for (let salt = 0; salt < 6; salt += 1) {
+    const code = paymentCode(Object.assign({}, seed, { salt }));
+    const hit = await db.first(
+      'SELECT id FROM customer_bills WHERE branch_id = ? AND is_deleted = 0 AND notes LIKE ? LIMIT 1',
+      [String(seed.branchId), `%${payCodeToken(code)}%`],
+    );
+    if (!hit) return code;
+  }
+  throw fail('A unique payment code could not be made. Print the bill again.', 'PAY_CODE_FAILED', 409);
+}
+
+async function findByCode(db, code, branchIds) {
+  const cleaned = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (cleaned.length < 4 || !branchIds || !branchIds.length) return null;
+  const ids = branchIds.map(String);
+  return db.first(
+    `SELECT b.*, br.name AS branch_name, u.full_name AS raised_by_name,
+            payer.full_name AS paid_by_name, s.receipt_no AS paid_receipt_no
+       FROM customer_bills b
+       LEFT JOIN branches br ON br.id = b.branch_id
+       LEFT JOIN users u ON u.id = b.raised_by
+       LEFT JOIN users payer ON payer.id = b.paid_by
+       LEFT JOIN sales s ON s.id = b.paid_sale_id
+      WHERE b.is_deleted = 0
+        AND b.branch_id IN (${ids.map(() => '?').join(',')})
+        AND (b.notes LIKE ? OR upper(b.bill_no) = ?)
+      ORDER BY CASE b.status WHEN 'OPEN' THEN 0 WHEN 'PAYING' THEN 1 WHEN 'PAID' THEN 2 ELSE 3 END,
+               b.raised_at DESC
+      LIMIT 1`,
+    [...ids, `%${payCodeToken(cleaned)}%`, cleaned],
+  );
 }
 
 async function raise(db, { params, rawLines, user }) {
@@ -210,12 +248,18 @@ async function raise(db, { params, rawLines, user }) {
     holds,
   };
   const phone = (params.customer && params.customer.phone) || params.walkInPhone || null;
+  const staffName = user.full_name || user.username || 'Staff';
+  let payCode = null;
   let billId = null;
   let billNo = null;
   let lastError = null;
   for (let attempt = 0; attempt < 2 && !billId; attempt += 1) {
     billId = newId();
     billNo = await nextBillNo(db, params.branch.id);
+    payCode = await unusedPayCode(db, {
+      issuedAt, billNo, total: prepared.totals.total, branchId: params.branch.id, branchCode: params.branch.code,
+    });
+    const notes = [payCodeToken(payCode), params.notes || null].filter(Boolean).join(' ').slice(0, 500);
     try {
       await db.transaction(async (tx) => {
         tx.queue(`INSERT INTO customer_bills (
@@ -229,7 +273,7 @@ async function raise(db, { params, rawLines, user }) {
           prepared.totals.subtotal, round2(Number(params.discountAmount) || 0), params.discountReason || null,
           round2(Number(params.deliveryFee) || 0), params.deliveryRequired ? 1 : 0, params.deliveryAddress || null,
           prepared.totals.vatAmount || 0, prepared.totals.total,
-          JSON.stringify(packed), params.notes || null, validUntil, String(user.id), issuedAt,
+          JSON.stringify(packed), notes, validUntil, String(user.id), issuedAt,
         ]);
         holds.forEach((hold, index) => {
           tx.queue(
@@ -274,8 +318,8 @@ async function raise(db, { params, rawLines, user }) {
   return {
     ok: true,
     id: billId,
-    bill: publicBill(row, { branchName: params.branch.name }),
-    message: `Bill ${billNo} is printed. The goods are held until ${validUntil} or until it is paid. This is not a receipt — the store must not release the goods against it.`,
+    bill: publicBill(row, { branchName: params.branch.name, raisedByName: staffName, payCode }),
+    message: `Bill ${billNo} is printed. Payment code ${payCode}. Give that code to ${named.name}. The cashier types it to take the money. This paper is not a receipt.`,
   };
 }
 
@@ -473,6 +517,7 @@ module.exports = {
   expireDue,
   recoverPaying,
   loadBill,
+  findByCode,
   beginPay,
   payRequest,
   markPaid,

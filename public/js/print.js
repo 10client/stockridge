@@ -171,7 +171,10 @@
     L.push(cols(doc.title, sale.receipt_no || '—', width));
     L.push(cols('Date', U.soldAt(sale.sold_at), width));
     if (sale.branch_code) L.push(cols('Branch', String(sale.branch_code), width));
-    L.push(cols('Cashier', sale.cashier_name || sale.sold_by_name || '—', width));
+    L.push(cols('Cashier', sale.cashier_name || sale.sold_by_name || sale.cashierName || '—', width));
+    if (sale.bill_no) L.push(cols('Bill', sale.bill_no, width));
+    if (sale.pay_code) L.push(cols('Pay code', sale.pay_code, width));
+    if (sale.raised_by_name) L.push(cols('Raised by', sale.raised_by_name, width));
     L.push(cols('Type', U.humanise(sale.sale_type || 'RETAIL'), width));
     L.push(cols('Terms', doc.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot', width));
     L.push(cols('Customer', sale.customer_name || 'Walk-in', width));
@@ -593,7 +596,11 @@
     const meta = h('div', { class: 'slip-meta' },
       row(paper.title, sale.receipt_no || '—'),
       row('Date', U.soldAt(sale.sold_at)),
-      row('Cashier', sale.cashier_name || sale.sold_by_name || '—'),
+      row('Cashier', sale.cashier_name || sale.sold_by_name || sale.cashierName || '—'),
+      sale.bill_no ? row('Bill', sale.bill_no) : null,
+      sale.pay_code ? row('Payment code', sale.pay_code) : null,
+      sale.raised_by_name ? row('Bill raised by', sale.raised_by_name) : null,
+      sale.figures && sale.figures.match ? row('Books', U.money(sale.figures.saleTotal != null ? sale.figures.saleTotal : sale.total)) : null,
       row('Type', U.humanise(sale.sale_type || 'RETAIL')),
       row('Terms', paper.settlement === 'CREDIT' ? 'On credit' : 'Paid on the spot'),
       row('Customer', sale.customer_name || 'Walk-in'),
@@ -799,6 +806,8 @@
       row('Date', doc.raised_at || doc.sold_at ? U.soldAt(doc.raised_at || doc.sold_at) : '—'),
       row('Customer', doc.customer_name || '—'),
       doc.customer_phone ? row('Phone', doc.customer_phone) : null,
+      row(release ? 'Released by' : 'Staff', doc.raised_by_name || doc.cashier_name || '—'),
+      !release && doc.pay_code ? row('Payment code', doc.pay_code) : null,
       !release && doc.valid_until ? row('Hold until', U.soldAt(doc.valid_until)) : null);
     const items = h('div', { class: 'slip-items' });
     for (const item of doc.lines || doc.items || []) {
@@ -814,7 +823,14 @@
     }
     const totals = h('div', { class: 'slip-totals' },
       row('Total', U.money(doc.total), 'slip-total'));
+    const code = !release && doc.pay_code
+      ? h('div', { class: 'slip-claim' },
+        h('div', {}, 'Payment code'),
+        h('div', { class: 'slip-claim-code' }, doc.pay_code),
+        h('div', {}, 'The cashier types this code to take the payment.'))
+      : null;
     const foot = h('div', { class: 'slip-foot' },
+      code,
       h('div', {}, release
         ? 'The store may hand these goods over. This note is not proof of payment. Keep the receipt.'
         : 'Pay this bill at the cashier. The goods stay held until a receipt is printed. Do not release them against this paper.'));
@@ -830,6 +846,8 @@
       `${release ? 'Release' : 'Bill'}  ${doc.bill_no || ''}`,
       release && doc.receipt_no ? `Receipt ${doc.receipt_no}` : '',
       `Customer ${doc.customer_name || ''}`,
+      `Staff ${doc.raised_by_name || doc.cashier_name || ''}`,
+      !release && doc.pay_code ? `Payment code ${doc.pay_code}` : '',
       !release && doc.valid_until ? `Hold until ${doc.valid_until}` : '',
       '',
     ];

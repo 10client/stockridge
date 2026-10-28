@@ -123,6 +123,39 @@ function customerNameForBill(name) {
   return { ok: true, name: cleaned };
 }
 
+/**
+ * A payment code the cashier can type.
+ *
+ * The first four characters are the hour and minute the bill was printed.
+ * The last four are mixed from that clock, the bill number, the total, and
+ * the shop, so two bills in the same minute do not share a code. This is
+ * not a sign-in PIN. It is printed on the bill and thrown away when the
+ * bill is paid.
+ */
+function paymentCode({ issuedAt, billNo, total, branchCode, salt = 0 }) {
+  const clock = String(issuedAt || '').replace(/\D/g, '').slice(-6);
+  const head = clock.slice(0, 4).padStart(4, '0');
+  const soup = `${clock}|${Math.round(Number(total) || 0)}|${billNo || ''}|${branchCode || ''}|${Number(salt) || 0}`;
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let n = (Number(salt) || 0) + 17;
+  for (let i = 0; i < soup.length; i += 1) n = (n * 33 + soup.charCodeAt(i)) % 2147483647;
+  let tail = '';
+  for (let i = 0; i < 4; i += 1) {
+    n = (n * 33 + soup.charCodeAt(i % soup.length) + i + 1) % 2147483647;
+    tail += alphabet[n % alphabet.length];
+  }
+  return `${head}${tail}`;
+}
+
+function payCodeToken(code) {
+  return `PAYCODE:${String(code || '').toUpperCase()}`;
+}
+
+function codeFromNotes(notes) {
+  const match = String(notes || '').match(/PAYCODE:([A-Z0-9]{8})/);
+  return match ? match[1] : null;
+}
+
 /** A token written onto the sale so a crashed payment can be found again. */
 function saleNoteToken(billId) {
   return `[[bill:${String(billId || '').replace(/[^a-zA-Z0-9]/g, '')}]]`;
@@ -136,5 +169,8 @@ module.exports = {
   holdExpired,
   billableLines,
   customerNameForBill,
+  paymentCode,
+  payCodeToken,
+  codeFromNotes,
   saleNoteToken,
 };

@@ -227,6 +227,29 @@
     cartCard.appendChild(cartBody);
     left.appendChild(cartCard);
 
+    // ---------------- pay a printed bill ----------------
+    const payBillCard = ui.h('div', { class: 'card', id: 'pos-pay-bill', hidden: true });
+    const payBillBody = ui.h('div', { class: 'card-body stack' });
+    const payCodeInput = ui.h('input', {
+      type: 'text',
+      id: 'pos-pay-code',
+      placeholder: 'Payment code',
+      autocomplete: 'off',
+      style: { fontFamily: 'var(--mono)', letterSpacing: '0.08em', textTransform: 'uppercase' },
+    });
+    const payBillResult = ui.h('div', { class: 'stack' });
+    payBillBody.appendChild(ui.h('h2', {}, 'Pay a printed bill'));
+    payBillBody.appendChild(ui.h('div', { class: 'hint' }, 'The customer comes back with the bill. Type the payment code printed on it. The code is made from the time the bill was printed, mixed with the bill figures. This marks those goods paid and prints the receipt. The bill is not a receipt.'));
+    payBillBody.appendChild(ui.h('div', { class: 'btn-row' },
+      payCodeInput,
+      ui.h('button', { class: 'btn btn-primary', onClick: () => findPrintedBill() }, 'Find bill')));
+    payBillBody.appendChild(payBillResult);
+    payBillCard.appendChild(payBillBody);
+    right.appendChild(payBillCard);
+    payCodeInput.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') { ev.preventDefault(); findPrintedBill(); }
+    });
+
     // ---------------- totals + payment ----------------
     const totalsCard = ui.h('div', { class: 'card' });
     const totalsBody = ui.h('div', { class: 'card-body' });
@@ -1559,6 +1582,8 @@
       const billsBtn = document.getElementById('pos-open-bills');
       const billMode = billsFirst() && !cartIsBooking() && cart.settlement !== 'CREDIT';
       if (billsBtn) billsBtn.hidden = !billsFirst();
+      const payCard = document.getElementById('pos-pay-bill');
+      if (payCard) payCard.hidden = !billsFirst();
       if (desk) desk.hidden = !billMode || !cart.lines.length;
       if (pay) {
         if (cart.settlement === 'CREDIT') pay.textContent = cart.lines.length ? `Supply on credit · ${U.money(t.total)}` : 'Supply on credit';
@@ -2159,6 +2184,71 @@
       }
     }
 
+    function staffName() {
+      const user = SR.state.user || {};
+      return user.fullName || user.full_name || user.username || 'Staff';
+    }
+
+    async function findPrintedBill() {
+      const typed = String((payCodeInput && payCodeInput.value) || '').trim();
+      const code = typed.toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (code.length < 4) {
+        ui.warn('Type the payment code printed on the bill.');
+        return;
+      }
+      if (!SR.api.isOnline()) {
+        ui.warn('An open bill lives on the server, because that is where the goods are held. Connect, then type the code.');
+        return;
+      }
+      payBillResult.replaceChildren(ui.h('div', { class: 'hint' }, 'Looking up the bill…'));
+      try {
+        const res = await SR.api.get('/api/bills/lookup', {
+          query: { code, branch_id: SR.state.activeBranchId || undefined },
+        });
+        const bill = res && res.bill;
+        if (!bill) {
+          payBillResult.replaceChildren(ui.h('div', { class: 'alert alert-warn' }, 'No bill has that code.'));
+          return;
+        }
+        paintFoundBill(bill);
+      } catch (err) {
+        payBillResult.replaceChildren();
+        ui.apiError(err);
+      }
+    }
+
+    function paintFoundBill(bill) {
+      payBillResult.replaceChildren();
+      if (bill.status === 'PAID') {
+        payBillResult.appendChild(ui.h('div', { class: 'alert alert-info' },
+          `${bill.bill_no} for ${bill.customer_name} is already paid${bill.paid_receipt_no ? `. Receipt ${bill.paid_receipt_no}` : ''}${bill.paid_by_name ? ` by ${bill.paid_by_name}` : ''}. Do not take the money again.`));
+        if (bill.paid_sale_id) {
+          payBillResult.appendChild(ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate(`/sales/${bill.paid_sale_id}`) }, 'Open the receipt'));
+        }
+        return;
+      }
+      if (bill.status !== 'OPEN' && bill.status !== 'PAYING') {
+        payBillResult.appendChild(ui.h('div', { class: 'alert alert-warn' },
+          `${bill.bill_no} is ${String(bill.status || '').toLowerCase()}. The goods are not held. Raise a new bill if the customer still wants them.`));
+        return;
+      }
+      payBillResult.appendChild(ui.h('div', {}, ui.h('strong', {}, bill.customer_name || 'Customer'), ` · ${bill.bill_no}`));
+      payBillResult.appendChild(ui.h('div', { class: 'hint' },
+        `Payment code ${bill.pay_code || '—'}. Raised by ${bill.raised_by_name || 'staff'}. Total ${U.money(bill.total)}.`));
+      const lines = ui.h('div', { class: 'stack' });
+      for (const line of bill.lines || []) {
+        lines.appendChild(ui.h('div', { class: 'slip-row' },
+          ui.h('span', {}, `${U.qty(line.quantity)} × ${line.product_name || line.name || 'Item'}`),
+          ui.h('span', { class: 'mono' }, U.money(line.line_total != null ? line.line_total : line.unit_price))));
+      }
+      payBillResult.appendChild(lines);
+      payBillResult.appendChild(ui.h('div', { class: 'hint' }, 'Taking the payment prints a receipt for these goods. The bill total, the receipt, and the books must be the same figure. The goods leave only after the release note.'));
+      payBillResult.appendChild(ui.h('button', {
+        class: 'btn btn-primary',
+        onClick: () => payBill(bill, null),
+      }, `Mark paid · ${U.money(bill.total)}`));
+    }
+
     async function openBills() {
       if (!SR.api.isOnline()) {
         ui.warn('Open bills live on the server, because that is where the stock is held. Connect, then open the list.');
@@ -2188,7 +2278,7 @@
             const row = ui.h('div', { class: 'card' });
             const inner = ui.h('div', { class: 'card-body stack' });
             inner.appendChild(ui.h('div', {}, ui.h('strong', {}, bill.bill_no || 'Bill'), ` · ${bill.customer_name || '—'}`));
-            inner.appendChild(ui.h('div', { class: 'hint' }, `${U.money(bill.total)} · hold until ${bill.valid_until || '—'} · ${bill.branch_name || ''}`));
+            inner.appendChild(ui.h('div', { class: 'hint' }, `${U.money(bill.total)} · code ${bill.pay_code || '—'} · raised by ${bill.raised_by_name || 'staff'} · hold until ${bill.valid_until || '—'}`));
             inner.appendChild(ui.h('div', { class: 'btn-row' },
               ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => payBill(bill, m) }, 'Take payment'),
               ui.h('button', { class: 'btn btn-sm', onClick: () => {
@@ -2280,6 +2370,11 @@
           payModal.close();
           if (listModal) listModal.close();
           showPaidDocument(result, bill);
+          payBillResult.replaceChildren(ui.h('div', { class: result.figures && result.figures.match === false ? 'alert alert-warn' : 'alert alert-info' },
+            result.figures && result.figures.match === false
+              ? `Receipt ${result.receiptNo || ''} is recorded, but it does not match ${bill.bill_no}. Do not take the payment again.`
+              : `Receipt ${result.receiptNo || ''} recorded for ${bill.customer_name}. Bill, receipt and books agree.`));
+          if (payCodeInput) payCodeInput.value = '';
         } catch (err) {
           ui.apiError(err);
           go.disabled = false;
@@ -2295,7 +2390,11 @@
         receipt_no: result.receiptNo,
         sold_at: result.soldAt,
         branch_name: bill.branch_name || SR.state.activeBranchName(),
-        cashier_name: (SR.state.user || {}).fullName,
+        cashier_name: result.cashierName || staffName(),
+        raised_by_name: bill.raised_by_name || null,
+        pay_code: result.payCode || bill.pay_code || null,
+        bill_no: result.billNo || bill.bill_no,
+        figures: result.figures || null,
         customer_name: bill.customer_name,
         customer_phone: bill.customer_phone,
         sale_type: result.saleType || bill.sale_type,
@@ -2303,7 +2402,7 @@
         paper: result.paper || null,
         amount_paid: result.paid != null ? result.paid : null,
         subtotal: bill.subtotal,
-        total: result.total != null ? result.total : bill.total,
+        total: result.total != null ? result.total : (result.totals && result.totals.total != null ? result.totals.total : bill.total),
         vat_amount: result.vat && result.vat.vatAmount,
         items: result.lines || bill.lines || [],
         payments: [],
@@ -2316,7 +2415,9 @@
         brand, footer, autoPrint: true,
         banner: result.paper && result.paper.kind === 'INVOICE'
           ? `${result.paper.line} Bill ${bill.bill_no} is not a receipt.`
-          : `Paid against bill ${bill.bill_no}. Print the release note before the goods leave. The bill is not a receipt.`,
+          : (result.figures && result.figures.match === false)
+            ? `Receipt ${result.receiptNo} does not match bill ${bill.bill_no}. Do not take the payment again. Check the sale before the goods leave.`
+            : `Paid against bill ${bill.bill_no}${bill.pay_code ? `, code ${bill.pay_code}` : ''}. Receipt, bill and books are ${U.money(sale.total)}. Received by ${sale.cashier_name}. Print the release note before the goods leave.`,
       });
       const foot = document.querySelector('.modal-foot');
       if (foot && SR.print.printRelease) {
@@ -2331,6 +2432,52 @@
           total: sale.total,
           lines: result.lines || bill.lines || [],
         }, { autoPrint: true }) }, 'Print release note'), foot.firstElementChild);
+      }
+    }
+
+    /**
+     * Drop the sold units from this till's shelf copy.
+     *
+     * The shop has already recorded the sale by the time this runs. The name
+     * used to be called and never defined, so Complete sale threw
+     * "applyLocalSale is not defined" after the receipt was already in Sales.
+     * A failure here must not look like a failed sale.
+     */
+    async function applyLocalSale(lines) {
+      try {
+        const branchId = SR.state.activeBranchId;
+        const batches = await SR.store.all('stock_batches', {
+          where: (b) => !Number(b.is_deleted)
+            && String(b.status || 'ACTIVE').toUpperCase() === 'ACTIVE'
+            && (!branchId || String(b.branch_id) === String(branchId)),
+        });
+        batches.sort((a, b) => String(a.received_at || '').localeCompare(String(b.received_at || '')));
+        const need = new Map();
+        for (const line of lines || []) {
+          const factor = Number(line.unitFactor) > 0 ? Number(line.unitFactor) : 1;
+          const base = (Number(line.quantity) || 0) * factor;
+          if (!(base > 0) || !line.productId) continue;
+          const id = String(line.productId);
+          need.set(id, (need.get(id) || 0) + base);
+        }
+        const changed = [];
+        for (const batch of batches) {
+          const id = String(batch.product_id);
+          const left = need.get(id) || 0;
+          if (!(left > 0)) continue;
+          const qty = Number(batch.quantity) || 0;
+          const take = Math.min(Math.max(0, qty), left);
+          if (!(take > 0)) continue;
+          need.set(id, left - take);
+          const nextQty = Math.max(0, qty - take);
+          changed.push(Object.assign({}, batch, {
+            quantity: nextQty,
+            status: nextQty <= 0 ? 'DEPLETED' : batch.status,
+          }));
+        }
+        if (changed.length) await SR.store.putMany('stock_batches', changed);
+      } catch (err) {
+        void err;
       }
     }
 
@@ -2542,7 +2689,7 @@
           receipt_no: `OFFLINE-${String(result.clientId).slice(-8)}`,
           sold_at: payload.sold_at,
           branch_name: SR.state.activeBranchName(),
-          cashier_name: (SR.state.user || {}).fullName,
+          cashier_name: staffName(),
           customer_name: taken.changeHolderName || taken.customerName,
           customer_phone: taken.changeHolderPhone || taken.customerPhone,
           sale_type: taken.saleType,
@@ -2572,7 +2719,7 @@
           sold_at: result.soldAt || payload.sold_at,
           branch_name: SR.state.activeBranchName(),
           branch_code: result.branchCode || (SR.state.activeBranch() || {}).code,
-          cashier_name: (SR.state.user || {}).fullName,
+          cashier_name: result.cashierName || staffName(),
           customer_name: taken.changeHolderName || taken.customerName,
           customer_phone: taken.changeHolderPhone || taken.customerPhone,
           sale_type: taken.saleType,
@@ -2580,7 +2727,7 @@
           paper: result.paper || null,
           amount_paid: result.paid != null ? result.paid : null,
           subtotal: taken.totals.subtotal,
-          total: result.total != null ? result.total : taken.totals.total,
+          total: result.total != null ? result.total : (result.totals && result.totals.total != null ? result.totals.total : taken.totals.total),
           vat_amount: result.vatAmount != null ? result.vatAmount : taken.totals.vat,
           vat_rate_percent: taken.totals.vatRate,
           discount_amount: payload.discount_amount,
