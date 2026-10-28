@@ -40,6 +40,7 @@ const SHELL = [
   '/js/api.js?v=ridge-20261028-0933-a211d23',
   '/js/state.js?v=ridge-20261028-0933-a211d23',
   '/js/ui.js?v=ridge-20261028-0933-a211d23',
+  '/js/stock-shelf.js?v=ridge-20261028-0933-a211d23',
   '/js/sync.js?v=ridge-20261028-0933-a211d23',
   '/js/save-status.js?v=ridge-20261028-0933-a211d23',
   '/js/print.js?v=ridge-20261028-0933-a211d23',

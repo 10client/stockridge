@@ -130,13 +130,20 @@
       toolbar.appendChild(filterSel);
       filtersHost.replaceChildren(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }, toolbar)));
 
-      let data = null; let offline = false;
-      try {
-        data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, selling_group: state.sellingGroup || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
-      } catch (err) {
-        if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderOnHand } })); return; }
+      let data = null; let offline = false; let queuedShelf = false;
+      const pending = SR.store.pending ? await SR.store.pending().catch(() => []) : [];
+      queuedShelf = pending.some((row) => row && (row.type === 'SALE' || row.type === 'STOCK_ADJUST'));
+      if (queuedShelf) {
         offline = true;
         data = await fromMirror();
+      } else {
+        try {
+          data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, selling_group: state.sellingGroup || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
+        } catch (err) {
+          if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderOnHand } })); return; }
+          offline = true;
+          data = await fromMirror();
+        }
       }
       const rows = data.data || [];
       const paging = data.paging || {};
@@ -175,7 +182,8 @@
       });
 
       host.replaceChildren();
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — these figures are from this device\'s last sync. Receiving and adjusting will be queued.'));
+      if (queuedShelf) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'These figures include sales saved on this till that have not reached the shop yet. The count drops as each sale is recorded here.'));
+      else if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — these figures are from this device\'s last sync. Receiving and adjusting will be queued.'));
       const total = paging.total != null ? paging.total : rows.length;
       host.appendChild(ui.dataCard({
         title: 'On hand',
@@ -917,7 +925,7 @@
               if (!v.reason || String(v.reason).trim().length < 4) { ui.warn('Give a real reason. It is read when the month is reviewed.'); return; }
               ev.currentTarget.disabled = true;
               try {
-                await SR.api.post('/api/stock/adjust', {
+                const posted = await SR.api.post('/api/stock/adjust', {
                   branch_id: SR.state.activeBranchId,
                   product_id: String(chosen.id),
                   adjustment_type: v.adjustment_type,
@@ -925,6 +933,23 @@
                   unit_code: v.unit_code || 'PIECE',
                   reason: v.reason,
                 }, { queue: 'auto' });
+                if (posted && (posted.queued || posted.offline) && SR.shelf && SR.shelf.adjustLine) {
+                  const units = await SR.store.all('product_units', {
+                    where: (row) => !Number(row.is_deleted) && String(row.product_id) === String(chosen.id),
+                  }).catch(() => []);
+                  const batches = await SR.store.all('stock_batches', {
+                    where: (row) => !Number(row.is_deleted) && String(row.product_id) === String(chosen.id)
+                      && String(row.branch_id) === String(SR.state.activeBranchId),
+                  }).catch(() => []);
+                  const changed = SR.shelf.adjustLine(batches, {
+                    product_id: String(chosen.id),
+                    branch_id: SR.state.activeBranchId,
+                    adjustment_type: v.adjustment_type,
+                    quantity,
+                    unit_code: v.unit_code || 'PIECE',
+                  }, units);
+                  if (changed.length) await SR.store.putMany('stock_batches', changed);
+                }
                 ui.ok('Adjustment recorded and posted to the ledger.');
                 m.close();
                 load();

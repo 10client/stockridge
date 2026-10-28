@@ -1152,6 +1152,12 @@
 
     async function fillLineFacts(line, product) {
       if (!line.nafdacCatalogId && product && product.nafdac_catalog_id) line.nafdacCatalogId = product.nafdac_catalog_id;
+      if (!(Number(line.unitFactor) > 0)) {
+        const units = await SR.store.all('product_units', {
+          where: (row) => !Number(row.is_deleted) && String(row.product_id) === String(line.productId),
+        }).catch(() => []);
+        if (units.length && SR.shelf && SR.shelf.factorFor) line.unitFactor = SR.shelf.factorFor(line.unitCode, units, 1);
+      }
       if (!line.categoryCode && (line.categoryId || product.category_id)) {
         const cats = await SR.store.all('product_categories').catch(() => []);
         const cat = (cats || []).find((c) => String(c.id) === String(line.categoryId || product.category_id));
@@ -2498,38 +2504,30 @@
      * "applyLocalSale is not defined" after the receipt was already in Sales.
      * A failure here must not look like a failed sale.
      */
-    async function applyLocalSale(lines) {
+    async function applyLocalSale(lines, extra) {
       try {
+        if (!SR.shelf || !SR.shelf.consumeLines) return;
         const branchId = SR.state.activeBranchId;
         const batches = await SR.store.all('stock_batches', {
-          where: (b) => !Number(b.is_deleted)
-            && String(b.status || 'ACTIVE').toUpperCase() === 'ACTIVE'
-            && (!branchId || String(b.branch_id) === String(branchId)),
+          where: (b) => !Number(b.is_deleted) && (!branchId || String(b.branch_id) === String(branchId)),
         });
-        batches.sort((a, b) => String(a.received_at || '').localeCompare(String(b.received_at || '')));
-        const need = new Map();
-        for (const line of lines || []) {
-          const factor = Number(line.unitFactor) > 0 ? Number(line.unitFactor) : 1;
-          const base = (Number(line.quantity) || 0) * factor;
-          if (!(base > 0) || !line.productId) continue;
-          const id = String(line.productId);
-          need.set(id, (need.get(id) || 0) + base);
+        const ids = new Set((lines || []).map((line) => String(line.productId || line.product_id || '')).filter(Boolean));
+        const units = await SR.store.all('product_units', {
+          where: (row) => !Number(row.is_deleted) && ids.has(String(row.product_id)),
+        }).catch(() => []);
+        const unitsByProduct = new Map();
+        for (const row of units) {
+          const id = String(row.product_id);
+          const list = unitsByProduct.get(id) || [];
+          list.push(row);
+          unitsByProduct.set(id, list);
         }
-        const changed = [];
-        for (const batch of batches) {
-          const id = String(batch.product_id);
-          const left = need.get(id) || 0;
-          if (!(left > 0)) continue;
-          const qty = Number(batch.quantity) || 0;
-          const take = Math.min(Math.max(0, qty), left);
-          if (!(take > 0)) continue;
-          need.set(id, left - take);
-          const nextQty = Math.max(0, qty - take);
-          changed.push(Object.assign({}, batch, {
-            quantity: nextQty,
-            status: nextQty <= 0 ? 'DEPLETED' : batch.status,
-          }));
-        }
+        const asOf = (SR.util && SR.util.nowWatSql ? String(SR.util.nowWatSql()) : new Date().toISOString()).slice(0, 10);
+        const changed = SR.shelf.consumeLines(batches, lines, {
+          unitsByProduct,
+          asOf,
+          holds: (extra && (extra.holds || extra.stockHolds)) || [],
+        });
         if (changed.length) await SR.store.putMany('stock_batches', changed);
       } catch (err) {
         void err;

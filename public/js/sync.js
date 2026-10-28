@@ -305,6 +305,43 @@
     return { ok: true, rows, cursor, truncated };
   }
 
+  async function replayUnsyncedShelf() {
+    if (!SR.shelf || !SR.store || !SR.store.pending) return;
+    const pending = await SR.store.pending().catch(() => []);
+    const writes = pending.filter((row) => row && (row.type === 'SALE' || row.type === 'STOCK_ADJUST') && row.payload);
+    if (!writes.length) return;
+    writes.sort((a, b) => String(a.occurred_at || a.at || '').localeCompare(String(b.occurred_at || b.at || '')));
+    const units = await SR.store.all('product_units').catch(() => []);
+    const unitsByProduct = new Map();
+    for (const row of units) {
+      const id = String(row.product_id);
+      const list = unitsByProduct.get(id) || [];
+      list.push(row);
+      unitsByProduct.set(id, list);
+    }
+    let batches = await SR.store.all('stock_batches').catch(() => []);
+    const changed = new Map();
+    for (const item of writes) {
+      const payload = item.payload || {};
+      const asOf = String(item.occurred_at || payload.sold_at || '').slice(0, 10);
+      const next = item.type === 'SALE'
+        ? SR.shelf.consumeLines(batches, payload.lines || [], {
+          unitsByProduct,
+          asOf: asOf || null,
+          holds: payload.stock_holds || payload.stockHolds || [],
+        })
+        : SR.shelf.adjustLine(batches, payload, unitsByProduct.get(String(payload.product_id)) || []);
+      if (!next.length) continue;
+      for (const row of next) {
+        changed.set(String(row.id), row);
+        const index = batches.findIndex((batch) => String(batch.id) === String(row.id));
+        if (index >= 0) batches[index] = row;
+        else batches.push(row);
+      }
+    }
+    if (changed.size) await SR.store.putMany('stock_batches', [...changed.values()]);
+  }
+
   async function pullRequest({ full = false, tables = null, saveCursor = true, stamp = true } = {}) {
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
     const branchId = SR.state.activeBranchId;
@@ -357,6 +394,7 @@
         const wrote = await SR.store.putMany(table, payload.rows);
         rows += Number(wrote) || 0;
         perTable.push({ table, count: Number(wrote) || 0 });
+        if (table === 'stock_batches') await replayUnsyncedShelf().catch(() => {});
       }
     } catch (err) {
       const reason = pullFailureReason(err);
@@ -496,7 +534,7 @@
 
   SR.sync = {
     PULL_TABLES, AUTO_INTERVAL_MS,
-    push, pull, runOnce, start, stop, status, on,
+    push, pull, replayUnsyncedShelf, runOnce, start, stop, status, on,
     queueStats, discard, retryFailed,
     get lastPushAt() { return lastPushAt; },
     get lastPullAt() { return lastPullAt; },

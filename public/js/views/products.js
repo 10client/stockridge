@@ -373,7 +373,13 @@
     async function load() {
       host.replaceChildren(ui.skeleton(6));
       let data; let offline = false;
-      try {
+      const pending = SR.store.pending ? await SR.store.pending().catch(() => []) : [];
+      const queuedShelf = pending.some((row) => row && (row.type === 'SALE' || row.type === 'STOCK_ADJUST'));
+      if (queuedShelf) {
+        offline = true;
+        const rows = await rowsFromMirror();
+        data = { data: rows, paging: { total: rows.length, limit: rows.length, offset: 0 } };
+      } else try {
         data = await SR.api.get('/api/products', {
           query: SR.state.query({
             sort: 'name',
