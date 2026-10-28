@@ -905,10 +905,11 @@
       const incomplete = await SR.store.metaGet('sync_incomplete_since');
       const pullError = await SR.store.metaGet('sync_pull_error');
       const catalogueEmpty = await SR.store.metaGet('catalogue_empty');
-      const salesCopied = await SR.store.metaGet('sales_copy_at');
-      const stock = await SR.store.all('stock_batches').catch(() => []);
-      const products = await SR.store.all('products').catch(() => []);
-      const report = SR.saveStatus.decide({
+      const facts = SR.sync.saveFacts ? await SR.sync.saveFacts() : null;
+      const salesCopied = facts ? facts.salesCopied : await SR.store.metaGet('sales_copy_at');
+      const stock = facts ? { length: facts.stockRows } : await SR.store.all('stock_batches').catch(() => []);
+      const products = facts ? { length: facts.productRows } : await SR.store.all('products').catch(() => []);
+      const report = SR.saveStatus.decide(facts || {
         running: status.running,
         online: SR.api.isOnline(),
         pending: stats.pending,

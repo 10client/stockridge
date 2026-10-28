@@ -252,6 +252,52 @@
   async function rememberPullError(reason) {
     lastError = reason;
     try { await SR.store.metaSet('sync_pull_error', reason); } catch (err) { /* the chip still has lastError */ }
+    if (/did not accept this session/i.test(String(reason || ''))) {
+      try { await SR.store.metaSet('sales_copy_at', null); } catch (err) { /* Saved must not survive a refused session */ }
+    }
+  }
+
+  function catalogueVisible(row) {
+    return row && !Number(row.is_deleted) && Number(row.is_active) !== 0;
+  }
+
+  async function countCatalogueProducts() {
+    const rows = await SR.store.all('products').catch(() => []);
+    return (rows || []).filter(catalogueVisible).length;
+  }
+
+  // The catalogue screen is the count the shop actually has. A till that
+  // stored 20 and then said Saved, while that screen has 50, was using an
+  // old copy. Ask the shop, and if this till is short, download the names
+  // again with no cursor before anyone is told they can disconnect.
+  async function ensureCatalogue() {
+    if (!SR.api.isOnline() || !SR.api.hasToken()) return null;
+    let data;
+    try {
+      data = await SR.api.get('/api/products', { query: SR.state.query({ limit: 1 }), timeoutMs: 25000 });
+    } catch (err) {
+      await rememberPullError(pullFailureReason(err));
+      return { refused: true };
+    }
+    const shopCount = data && data.paging ? Number(data.paging.total) : null;
+    if (!Number.isFinite(shopCount)) return null;
+    await SR.store.metaSet('shop_product_count', shopCount);
+    let localCount = await countCatalogueProducts();
+    if (localCount < shopCount) {
+      const refill = await pullRequest({
+        full: true,
+        tables: ['products', 'product_categories', 'product_units', 'product_variants', 'product_barcodes', 'product_measures'],
+        saveCursor: false,
+        stamp: false,
+      });
+      if (!refill || !refill.ok) return { refused: true, short: true, shopCount, localCount };
+      localCount = await countCatalogueProducts();
+    }
+    if (localCount < shopCount) {
+      await rememberPullError('The shop has ' + shopCount + ' products. This till stored ' + localCount + ', so the catalogue was not copied in full.');
+      return { refused: false, short: true, shopCount, localCount };
+    }
+    return { refused: false, short: false, shopCount, localCount };
   }
 
   async function pull({ full = false, tables = null } = {}) {
@@ -294,11 +340,18 @@
       emit('change', status());
       return { ok: false, rows, error: failed.error };
     }
+    const catalogue = await ensureCatalogue();
+    if (catalogue && (catalogue.refused || catalogue.short)) {
+      try { await SR.store.metaSet('sync_incomplete_since', await SR.store.metaGet('sync_cursor', null)); } catch (err) { /* the sentence is already stored */ }
+      emit('change', status());
+      return { ok: false, rows, error: new Error(lastError || 'The catalogue was not copied in full.') };
+    }
     if (cursor) await SR.store.metaSet('sync_cursor', cursor);
     const savedAt = SR.util.nowIso();
     await SR.store.metaSet('last_pull_at', savedAt);
     await SR.store.metaSet('sync_truncated', truncated);
     await SR.store.metaSet('sync_pull_error', null);
+    lastError = null;
     await SR.store.metaSet('sync_incomplete_since', softErrors.length ? (await SR.store.metaGet('sync_cursor', null)) : null);
     const products = await SR.store.all('products').catch(() => []);
     const stock = await SR.store.all('stock_batches').catch(() => []);
@@ -525,9 +578,9 @@
         // not leave the chip on Saving, and must not throw away a sale already
         // written on this till.
         let pullResult = { ok: false, rows: 0 };
-        try { pullResult = await pull({ full }); } catch (err) { lastError = err.message; }
-        if (SR.api.isOnline()) {
-          try { await copySalesBook(); } catch (err) { lastError = err.message; }
+        try { pullResult = await pull({ full }); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+        if (pullResult && pullResult.ok && SR.api.isOnline()) {
+          try { await copySalesBook(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
         }
         if (!silent) {
           const bits = [];
@@ -603,10 +656,71 @@
     return failed.length;
   }
 
+  let shopCountCheckedAt = 0;
+  function refreshShopCount() {
+    if (!SR.api.isOnline() || !SR.api.hasToken()) return;
+    if (Date.now() - shopCountCheckedAt < 20000) return;
+    shopCountCheckedAt = Date.now();
+    SR.api.get('/api/products', { query: SR.state.query({ limit: 1 }), timeoutMs: 20000 }).then(async (data) => {
+      const shopCount = data && data.paging ? Number(data.paging.total) : null;
+      if (!Number.isFinite(shopCount)) return;
+      await SR.store.metaSet('shop_product_count', shopCount);
+      const localCount = await countCatalogueProducts();
+      if (localCount < shopCount) {
+        const current = await SR.store.metaGet('sync_pull_error').catch(() => null);
+        if (!current || /not copied in full/.test(String(current))) {
+          await rememberPullError('The shop has ' + shopCount + ' products. This till stored ' + localCount + ', so the catalogue was not copied in full.');
+        }
+        if (!running) runOnce({ silent: true }).catch(() => {});
+      } else {
+        const current = await SR.store.metaGet('sync_pull_error').catch(() => null);
+        if (current && /not copied in full/.test(String(current))) {
+          await SR.store.metaSet('sync_pull_error', null);
+          if (lastError && /not copied in full/.test(String(lastError))) lastError = null;
+        }
+      }
+      emit('change', status());
+    }).catch(async (err) => {
+      if (err && (err.isAuth || err.code === 'SESSION_SUPERSEDED' || err.code === 'NO_TOKEN' || err.status === 401)) {
+        await rememberPullError(pullFailureReason(err));
+        emit('change', status());
+      }
+    });
+  }
+
+  async function saveFacts() {
+    refreshShopCount();
+    const syncStatus = status();
+    const stats = await queueStats().catch(() => ({ pending: 0, failed: 0 }));
+    const products = await SR.store.all('products').catch(() => []);
+    const stock = await SR.store.all('stock_batches').catch(() => []);
+    const visibleProducts = (products || []).filter(catalogueVisible).length;
+    const shopProductCount = Number(await SR.store.metaGet('shop_product_count').catch(() => 0)) || 0;
+    const storedError = await SR.store.metaGet('sync_pull_error').catch(() => null);
+    const memoryError = syncStatus.lastError ? String(syncStatus.lastError.message || syncStatus.lastError) : '';
+    const pullError = storedError || (/did not accept this session|not copied in full|was not copied/i.test(memoryError) ? memoryError : '');
+    return {
+      running: syncStatus.running,
+      online: SR.api.isOnline(),
+      pending: stats.pending,
+      failed: stats.failed,
+      lastPullAt: await SR.store.metaGet('last_pull_at').catch(() => null),
+      truncated: await SR.store.metaGet('sync_truncated').catch(() => []),
+      incomplete: await SR.store.metaGet('sync_incomplete_since').catch(() => null),
+      pullError,
+      catalogueEmpty: await SR.store.metaGet('catalogue_empty').catch(() => null),
+      salesCopied: Boolean(await SR.store.metaGet('sales_copy_at').catch(() => null)),
+      stockRows: (stock || []).length,
+      productRows: (products || []).length,
+      visibleProducts,
+      shopProductCount,
+    };
+  }
+
   SR.sync = {
     PULL_TABLES, AUTO_INTERVAL_MS,
     push, pull, replayUnsyncedShelf, runOnce, start, stop, status, on,
-    queueStats, discard, retryFailed,
+    queueStats, discard, retryFailed, saveFacts,
     get lastPushAt() { return lastPushAt; },
     get lastPullAt() { return lastPullAt; },
     get lastError() { return lastError; },

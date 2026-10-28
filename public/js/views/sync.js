@@ -92,36 +92,20 @@
       body.appendChild(ui.h('div', { class: 'kpis' },
         ui.kpi({ label: 'Last upload', value: s.lastPushAt ? U.relTime(s.lastPushAt) : 'never', small: true }),
         ui.kpi({ label: 'Last download', value: s.lastPullAt ? U.relTime(s.lastPullAt) : 'never', small: true }),
-        ui.kpi({ label: 'Last error', value: s.lastError ? String(s.lastError.message || s.lastError).slice(0, 60) : 'none', tone: s.lastError ? 'bad' : 'good', small: true })));
+        ui.kpi({ label: 'Last error', value: s.lastError ? String(s.lastError.message || s.lastError) : 'none', tone: s.lastError ? 'bad' : 'good', small: true })));
       statusCard.replaceChildren(card);
       void paintFinishedSaving(statusCard);
     }
 
     async function paintFinishedSaving(host) {
-      if (!SR.saveStatus) return;
-      const status = SR.sync.status();
-      const stats = await SR.sync.queueStats().catch(() => ({ pending: 0, failed: 0 }));
-      const lastPullAt = await SR.store.metaGet('last_pull_at').catch(() => null);
-      const truncated = await SR.store.metaGet('sync_truncated').catch(() => []);
-      const incomplete = await SR.store.metaGet('sync_incomplete_since').catch(() => null);
-      const pullError = await SR.store.metaGet('sync_pull_error').catch(() => null);
-      const catalogueEmpty = await SR.store.metaGet('catalogue_empty').catch(() => null);
-      const stock = await SR.store.all('stock_batches').catch(() => []);
-      const products = await SR.store.all('products').catch(() => []);
-      const report = SR.saveStatus.decide({
-        running: status.running,
-        online: SR.api.isOnline(),
-        pending: stats.pending,
-        failed: stats.failed,
-        lastPullAt,
-        truncated,
-        incomplete,
-        pullError,
-        catalogueEmpty,
-        stockRows: stock.length,
-        productRows: products.length,
-      });
-      const when = lastPullAt ? String(lastPullAt).replace('T', ' ').slice(0, 16) : 'not yet';
+      if (!SR.saveStatus || !SR.sync.saveFacts) return;
+      const facts = await SR.sync.saveFacts();
+      const report = SR.saveStatus.decide(facts);
+      const when = facts.lastPullAt ? String(facts.lastPullAt).replace('T', ' ').slice(0, 16) : 'not yet';
+      const copyLabel = report.finished ? 'Catalogue saved' : 'Last copy';
+      const productLine = facts.shopProductCount
+        ? facts.visibleProducts + ' of ' + facts.shopProductCount + ' products'
+        : facts.productRows + ' products';
       document.querySelectorAll('[id="save-status-card"]').forEach((el) => el.remove());
       host.prepend(ui.h('section', {
         id: 'save-status-card',
@@ -130,7 +114,7 @@
       }, ui.h('div', { class: 'card-body' },
         ui.h('h2', {}, report.label),
         ui.h('p', {}, report.detail),
-        ui.h('p', { class: 'sub' }, 'Catalogue saved: ' + when + ' · ' + products.length + ' products · ' + stock.length + ' stock rows · ' + (stats.pending || 0) + ' waiting · ' + (stats.failed || 0) + ' refused'))));
+        ui.h('p', { class: 'sub' }, copyLabel + ': ' + when + ' · ' + productLine + ' · ' + facts.stockRows + ' stock rows · ' + (facts.pending || 0) + ' waiting · ' + (facts.failed || 0) + ' refused'))));
     }
 
     // -------------------------------------------------------------- queue

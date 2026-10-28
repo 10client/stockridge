@@ -22,8 +22,12 @@
       if (failed > 0) return { state: 'attention', label: 'Not finished', finished: false, detail: failed + ' item' + (failed === 1 ? '' : 's') + ' ' + (failed === 1 ? 'was' : 'were') + ' refused. ' + (failed === 1 ? 'It is' : 'They are') + ' still on this till. Open Sync and read the reason.' };
       if (pending > 0 && online) return { state: 'waiting', label: 'Sending…', finished: false, detail: pending + ' sale' + (pending === 1 ? '' : 's') + ' ' + (pending === 1 ? 'is' : 'are') + ' saved here and still waiting to upload.' };
       if (pending > 0) return { state: 'held', label: 'Saved here', finished: false, detail: pending + ' sale' + (pending === 1 ? '' : 's') + ' ' + (pending === 1 ? 'is' : 'are') + ' saved on this till. ' + (pending === 1 ? 'It' : 'They') + ' will upload when the line returns.' };
-      if (onTill && (pullError || !row.lastPullAt || truncated.length || row.incomplete)) {
-        const why = pullError || 'The last download did not finish.';
+      const shopProducts = Number(row.shopProductCount) || 0;
+      const storedProducts = Number(row.visibleProducts != null ? row.visibleProducts : row.productRows) || 0;
+      if (pullError) return { state: onTill ? 'partial' : 'empty', label: onTill ? 'Part saved' : 'Not saved', finished: false, detail: pullError };
+      if (shopProducts > 0 && storedProducts < shopProducts) return { state: 'partial', label: 'Part saved', finished: false, detail: 'The shop has ' + shopProducts + ' products. This till has ' + storedProducts + '. Leave it connected until the counts match. Do not disconnect on this copy.' };
+      if (onTill && (!row.lastPullAt || truncated.length || row.incomplete)) {
+        const why = 'The last download did not finish.';
         return { state: 'partial', label: 'Part saved', finished: false, detail: 'Some of the catalogue is already on this till. ' + why + ' You can sell from what is here.' };
       }
       if (!catalogue) {
