@@ -80,8 +80,10 @@
   function noteReachable(up) {
     if (up) {
       probeMisses = 0;
+      const was = probeUp;
       probeUp = true;
       setOnline(true);
+      if (!was) emit('net', { online: true, confirmed: true });
     }
     return online;
   }
@@ -131,6 +133,11 @@
   // till stays open while the follower catches up to the shop.
   function reconnecting() {
     return lineReturnedAt > 0 && Date.now() - lineReturnedAt < 20000;
+  }
+
+  function pageJustChanged() {
+    const at = global.SR && global.SR._navigatedAt;
+    return Boolean(at && Date.now() - at < 45000);
   }
 
   // A browser offline event is not the shop. Ask the shop before changing the chip.
@@ -370,7 +377,7 @@
       // and the shell confirms that before leaving. A missing token on one
       // path is a dropped header, not a logout.
       const fatalAuth = err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED';
-      if (err.isAuth && fatalAuth && !quiet && !reconnecting()) {
+      if (err.isAuth && fatalAuth && !quiet && !reconnecting() && !pageJustChanged()) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
       }
@@ -379,6 +386,9 @@
       // shell draws a bar from those settings — so it has to be told. The refusal itself
       // is still thrown: the caller shows the server's message where the person tried.
       if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
+      if (method === 'GET' && err.isAuth && (reconnecting() || pageJustChanged())) {
+        throw new ApiError('The line just returned. Showing the books saved on this till.', { status: 0, code: 'OFFLINE', retryable: true });
+      }
       throw err;
     }
     let parsed = {};
@@ -389,8 +399,10 @@
     // not the shop. Do not mark the till online from it.
     if (!parsed || parsed.offline !== true) {
       probeMisses = 0;
+      const was = probeUp;
       probeUp = true;
       setOnline(true);
+      if (!was) emit('net', { online: true, confirmed: true });
     }
     return parsed;
   }

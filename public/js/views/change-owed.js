@@ -305,11 +305,17 @@
           }),
         }));
       } catch (err) {
-        if (err && err.isOffline) {
-          // A CASHIER OFFLINE CANNOT PAY OUT — and must be told why rather than shown
-          // a cached figure that may already have been collected at another branch.
-          host.replaceChildren(ui.h('div', { class: 'alert alert-warn' },
-            'Offline — change owed is deliberately not mirrored on this device. A claim may already have been paid at another branch, so paying it out from a stale copy would hand over money twice.'));
+        if (err && (err.isOffline || (err.isAuth && SR.state.user))) {
+          const saved = await SR.store.all('change_owed').catch(() => []);
+          const wanted = String(status.value || 'OUTSTANDING').toUpperCase();
+          const rows = (saved || []).filter((row) => row && !Number(row.is_deleted) && (wanted === 'ALL' || String(row.status || 'OUTSTANDING').toUpperCase() === wanted));
+          host.replaceChildren(ui.h('div', { class: 'stack' },
+            ui.h('div', { class: 'alert alert-warn' }, 'Offline — these are the claims saved on this till. Do not pay one out until the shop accepts it, or the money can be handed over twice.'),
+            rows.length ? ui.h('div', { class: 'list' }, rows.slice(0, 50).map((row) => ui.h('div', { class: 'row' },
+              ui.h('div', { class: 'grow' },
+                ui.h('div', { class: 'row-title' }, row.claim_code || 'Claim'),
+                ui.h('div', { class: 'row-meta' }, row.customer_name || '')),
+              ui.h('div', { class: 'row-value' }, U.money(row.amount))))) : ui.h('p', {}, 'No saved claim is on this till yet.')));
           return;
         }
         host.replaceChildren(ui.errorBlock(err));

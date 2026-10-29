@@ -210,6 +210,36 @@
         ui.h('button', { class: 'btn btn-sm', onClick: openSafeScreen }, 'Open the safe')));
     }
 
+    function drawerCard(row) {
+      if (!row) return null;
+      const opening = Number(row.opening_cash) || 0;
+      const cashSales = Number(row.cash_sales_total) || 0;
+      const refunds = Number(row.refund_total) || 0;
+      return {
+        openingCash: opening,
+        cashSales,
+        expectedCash: opening + cashSales - refunds,
+        saleCount: Number(row.sale_count) || 0,
+        openedAt: row.opened_at || null,
+      };
+    }
+
+    async function mirroredDrawer(branchId) {
+      const rows = await SR.store.all('till_sessions').catch(() => []);
+      const open = (rows || []).filter((row) => row && String(row.status).toUpperCase() === 'OPEN' && !Number(row.is_deleted));
+      const mineId = SR.state.user && SR.state.user.id;
+      const mine = open.find((row) => String(row.user_id) === String(mineId) && (!branchId || String(row.branch_id) === String(branchId)))
+        || open.find((row) => String(row.user_id) === String(mineId))
+        || null;
+      const others = open.filter((row) => row !== mine).slice(0, 5).map((row) => ({
+        cashier: row.cashier_name || row.full_name || 'Unassigned',
+        branch: row.branch_name || '',
+        openedAt: row.opened_at || null,
+        grandTotal: Number(row.grand_total) || 0,
+      }));
+      return { myTill: drawerCard(mine), openTills: others };
+    }
+
     async function fromMirror() {
       // Rebuild the essentials from the device mirror. Deliberately NOT a full
       // replica of the server's dashboard: everything here is something a till
@@ -240,7 +270,7 @@
           period: null,
           stock: { products: products.length, lowStockCount, atCost },
           debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
-          cash: { safeBalance: await mirroredSafe(branchId), myTill: null, openTills: [] },
+          cash: Object.assign({ safeBalance: await mirroredSafe(branchId) }, await mirroredDrawer(branchId)),
           topProducts: [],
           actions: [],
           plan: null,
@@ -272,7 +302,7 @@
         period: null,
         stock: { products: products.length, lowStockCount, atCost },
         debtors: { count: 0, totalOwed: 0, likelyBad: 0, overdueInvoices: 0 },
-        cash: { safeBalance: await mirroredSafe(branchId), myTill: null, openTills: [] },
+        cash: Object.assign({ safeBalance: await mirroredSafe(branchId) }, await mirroredDrawer(branchId)),
         topProducts: [],
         actions: [],
         plan: null,

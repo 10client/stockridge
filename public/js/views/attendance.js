@@ -122,9 +122,11 @@
       try {
         data = await SR.api.get('/api/attendance/today', { query: SR.state.query() });
       } catch (err) {
-        if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderToday } })); return; }
+        if (!err.isOffline && !(err.isAuth && SR.state.user)) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderToday } })); return; }
         offline = true;
-        data = { data: [], summary: {} };
+        const saved = await SR.store.all('staff_attendance').catch(() => []);
+        const records = (saved || []).filter((row) => row && !Number(row.is_deleted));
+        data = { records, data: records, summary: { shifts: records.length } };
       }
       // `/attendance/today` answers with `records`, not `data` — it is a roster
       // for one day rather than a paginated list, and the key says so.
@@ -135,7 +137,7 @@
       const inNow = rows.filter((r) => r.clock_in_at && !r.clock_out_at);
 
       host.replaceChildren();
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — a clock-in is stamped with a location and a device, so it has to reach the server. If you are offline the entry is queued with its original time.'));
+      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — showing the attendance saved on this till. A clock-in from here is queued and sent when the line returns.'));
 
       const me = SR.state.user || {};
       const todayMine = rows.find((r) => String(r.user_id) === String(me.id));
@@ -233,11 +235,13 @@
       try {
         data = await SR.api.get('/api/attendance', { query: SR.state.query({ from: state.from, to: state.to, user_id: state.userId || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
       } catch (err) {
-        if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderHistory } })); return; }
+        if (!err.isOffline && !(err.isAuth && SR.state.user)) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderHistory } })); return; }
         offline = true;
-        const all = await SR.store.all('attendance', { where: (a) => !Number(a.is_deleted) });
-        const rows = all.filter((a) => String(a.work_date) >= state.from && String(a.work_date) <= state.to)
-          .sort((a, b) => String(b.work_date).localeCompare(String(a.work_date)));
+        const all = await SR.store.all('staff_attendance', { where: (a) => !Number(a.is_deleted) }).catch(() => []);
+        const rows = all.filter((a) => {
+          const day = String(a.clock_in_at || a.work_date || '').slice(0, 10);
+          return day >= state.from && day <= state.to;
+        }).sort((a, b) => String(b.clock_in_at || '').localeCompare(String(a.clock_in_at || '')));
         data = { data: rows, paging: { total: rows.length, limit: rows.length, offset: 0 }, summary: {} };
       }
       const rows = data.data || [];

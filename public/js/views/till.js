@@ -110,11 +110,13 @@
         if (current && current.till) renderCurrent(current, false);
         else renderNoOpenTill(current && current.message, current && current.safeBalance);
       } catch (err) {
-        if (!err.isOffline) renderNoOpenTill(String(err.message || 'Could not read the current till.'));
+        if (!err.isOffline && !(err.isAuth && SR.state.user)) renderNoOpenTill(String(err.message || 'Could not read the current till.'));
         else {
           offline = true;
           const open = await SR.store.all('till_sessions', { where: (t) => String(t.status) === 'OPEN' && !Number(t.is_deleted) });
-          if (open.length) renderCurrent({ till: open[0] }, true); else renderNoOpenTill();
+          const mineId = SR.state.user && SR.state.user.id;
+          const mine = open.find((row) => String(row.user_id) === String(mineId)) || open[0];
+          if (mine) renderCurrent({ till: mine }, true); else renderNoOpenTill();
         }
       }
 
@@ -324,6 +326,24 @@
               notes: v.notes || undefined,
               branch_id: SR.state.activeBranchId,
             }, { idempotencyKey: SR.util.localId('till-open') });
+            const opened = res && res.id
+              ? await SR.api.get('/api/tills/' + encodeURIComponent(res.id), { timeoutMs: 15000 }).catch(() => null)
+              : null;
+            const saved = (opened && opened.till) || {
+              id: res && res.id,
+              branch_id: SR.state.activeBranchId,
+              business_id: SR.state.activeBusinessId,
+              user_id: SR.state.user && SR.state.user.id,
+              cashier_name: SR.state.user && SR.state.user.fullName,
+              status: 'OPEN',
+              opening_cash: Number(v.opening_cash) || 0,
+              cash_sales_total: 0,
+              refund_total: 0,
+              sale_count: 0,
+              opened_at: SR.util.nowIso(),
+              is_deleted: 0,
+            };
+            if (saved && saved.id) await SR.store.putMany('till_sessions', [saved]).catch(() => {});
             m.close();
             ui.ok(res.message || 'Till opened.');
             load();

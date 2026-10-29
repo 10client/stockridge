@@ -344,7 +344,16 @@
     return route.roles.includes(String((SR.state.user && SR.state.user.role) || '').toUpperCase());
   }
 
+  const OFFLINE_VIEWS = new Set(['pos', 'sales', 'stock', 'till', 'attendance', 'change-owed']);
+
+  function offlineBooksOnly() {
+    if (!SR.state || !SR.state.user) return false;
+    if (SR.api && SR.api.shopConfirmed && SR.api.shopConfirmed()) return false;
+    return true;
+  }
+
   function navigate(path, { replace = false, silent = false } = {}) {
+    SR._navigatedAt = Date.now();
     const url = new URL(path, global.location.origin);
     if (replace) history.replaceState({}, '', url.pathname + url.search);
     else history.pushState({}, '', url.pathname + url.search);
@@ -365,6 +374,10 @@
     closeNav();
 
     if (!SR.state.user) { ui.endPageNow(); showLogin(); return; }
+    if (hit && offlineBooksOnly() && !OFFLINE_VIEWS.has(hit.route.view)) {
+      navigate('/pos', { replace: true });
+      return;
+    }
 
     if (!hit) {
       showShell();
@@ -432,8 +445,12 @@
       host.scrollTop = 0;
     } catch (err) {
       if (token !== renderToken) return;
-      if (err && err.isAuth && (err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED')) {
-        void handleAuthFailure({ reason: err.code, token: err.token, message: err.message });
+      if (err && err.isAuth && SR.state.user) {
+        host.replaceChildren();
+        const kept = new Error('You are still signed in. This page will use the books saved on this till.');
+        kept.code = 'OFFLINE';
+        kept.isOffline = true;
+        host.appendChild(ui.errorBlock(kept, { retry: { label: 'Try again', run: () => render() } }));
         return;
       }
       host.replaceChildren();
@@ -706,6 +723,7 @@
       if (route.nav === false) continue;
       if (!route.roles || !route.roles.includes(role)) continue;
       if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) continue;
+      if (offlineBooksOnly() && !OFFLINE_VIEWS.has(route.view)) continue;
       const group = route.group || 'Other';
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(route);
@@ -1472,6 +1490,7 @@
         message: detail && detail.message,
         hasLocalSession,
         reconnecting: Boolean(SR.api.reconnecting && SR.api.reconnecting()),
+        navigated: Boolean(SR._navigatedAt && Date.now() - SR._navigatedAt < 45000),
         shopConfirmed: Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed()),
         confirmedTwice: Boolean(detail && detail.confirmedTwice),
       })
@@ -1972,7 +1991,7 @@
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
     SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });
-    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); updateSubscriptionChrome(); });
+    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); updateSubscriptionChrome(); buildNav(); });
     // A REFUSED WRITE IS THE MOST RELIABLE SIGNAL THERE IS. The cached settings can be
     // minutes or days old (they are mirrored for offline use); a 402 naming the
     // suspension is the server saying it just now. Re-read and repaint rather than trust

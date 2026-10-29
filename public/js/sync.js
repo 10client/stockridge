@@ -512,6 +512,36 @@
   // The live shop already answers GET /api/sales. Copy that book into the
   // same tables the pull writes, so a till built before the shop knows the
   // new tables still has the receipts, the lines, and the payments offline.
+  async function copyCounterBooks() {
+    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
+    const query = (extra) => (SR.state && SR.state.query ? SR.state.query(extra) : extra);
+    const tills = [];
+    for (const status of ['OPEN', undefined]) {
+      const data = await SR.api.get('/api/tills', { query: query({ status, from: '2020-01-01', to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
+      for (const row of (data && data.data) || []) if (row && row.id != null) tills.push(row);
+    }
+    const current = await SR.api.get('/api/tills/current', { query: query({}), timeoutMs: 15000 }).catch(() => null);
+    if (current && current.till && current.till.id != null) tills.push(current.till);
+    if (tills.length) await SR.store.putMany('till_sessions', tills);
+    const attendance = [];
+    const today = await SR.api.get('/api/attendance/today', { query: query({}), timeoutMs: 15000 }).catch(() => null);
+    for (const row of (today && (today.records || today.data)) || []) if (row && row.id != null) attendance.push(row);
+    if (today && today.myOpen && today.myOpen.id != null) attendance.push(today.myOpen);
+    const history = await SR.api.get('/api/attendance', { query: query({ from: '2020-01-01', to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
+    for (const row of (history && history.data) || []) if (row && row.id != null) attendance.push(row);
+    if (attendance.length) await SR.store.putMany('staff_attendance', attendance);
+    const owed = [];
+    let offset = 0;
+    for (let page = 0; page < 6; page += 1) {
+      const data = await SR.api.get('/api/change-owed', { query: query({ status: 'ALL', limit: 200, offset }), timeoutMs: 20000 }).catch(() => null);
+      const rows = (data && data.data) || [];
+      owed.push(...rows.filter((row) => row && row.id != null));
+      if (!rows.length || !data.paging || !data.paging.hasMore) break;
+      offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+    }
+    if (owed.length) await SR.store.putMany('change_owed', owed);
+  }
+
   async function copySalesBook() {
     if (!SR.api.isOnline()) return { ok: false, count: 0 };
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
@@ -579,8 +609,11 @@
         // written on this till.
         let pullResult = { ok: false, rows: 0 };
         try { pullResult = await pull({ full }); } catch (err) { await rememberPullError(pullFailureReason(err)); }
-        if (pullResult && pullResult.ok && SR.api.isOnline()) {
-          try { await copySalesBook(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+        if (SR.api.isOnline()) {
+          if (pullResult && pullResult.ok) {
+            try { await copySalesBook(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+          }
+          try { await copyCounterBooks(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
         }
         if (!silent) {
           const bits = [];
