@@ -11,8 +11,9 @@
     if (foreign) return { signOut: false, keep: true, why: 'The other shop host does not share this session. This till stays open.' };
     if (row && row.navigated && hasLocal) return { signOut: false, keep: true, why: 'A page change is not a sign-out. This till stays open.' };
     if (row && row.reconnecting && hasLocal) return { signOut: false, keep: true, why: 'The line just returned. This till stays signed in and will catch up.' };
+    if (row && row.uploading && hasLocal) return { signOut: false, keep: true, why: 'Queued sales are still uploading. This till stays signed in.' };
     if (hasLocal && row && !row.shopConfirmed) return { signOut: false, keep: true, why: 'The shop has not given a stable answer. The saved till stays open.' };
-    const confirmed = Boolean(row && row.confirmedTwice && row.shopConfirmed && !row.reconnecting);
+    const confirmed = Boolean(row && row.confirmedTwice && row.shopConfirmed && !row.reconnecting && !row.uploading);
     if (confirmed && (reason === 'SESSION_SUPERSEDED' || reason === 'SESSION_REVOKED' || reason === 'USER_GONE')) {
       return { signOut: true, keep: false, why: reason === 'SESSION_SUPERSEDED' ? 'This account is signed in on another device.' : 'This session was ended.' };
     }

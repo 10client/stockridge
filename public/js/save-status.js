@@ -18,6 +18,7 @@
       const online = Boolean(row.online);
       const pullError = row.pullError ? String(row.pullError) : '';
       const catalogueEmpty = Boolean(row.catalogueEmpty);
+      if (running && pending > 0 && online) return { state: 'waiting', label: 'Sending…', finished: false, detail: pending + ' sale' + (pending === 1 ? '' : 's') + ' ' + (pending === 1 ? 'is' : 'are') + ' saved here and uploading. Stay on this till.' };
       if (running) return { state: 'saving', label: 'Saving…', finished: false, detail: 'The till is still writing the latest stock and sales. Leave it open until this says Saved.' };
       if (failed > 0) return { state: 'attention', label: 'Not finished', finished: false, detail: failed + ' item' + (failed === 1 ? '' : 's') + ' ' + (failed === 1 ? 'was' : 'were') + ' refused. ' + (failed === 1 ? 'It is' : 'They are') + ' still on this till. Open Sync and read the reason.' };
       if (pending > 0 && online) return { state: 'waiting', label: 'Sending…', finished: false, detail: pending + ' sale' + (pending === 1 ? '' : 's') + ' ' + (pending === 1 ? 'is' : 'are') + ' saved here and still waiting to upload.' };

@@ -591,29 +591,46 @@
   // -------------------------------------------------------------------
   // THE CYCLE
   // -------------------------------------------------------------------
-  async function runOnce({ full = false, silent = false } = {}) {
+  function sessionBlipError(err) {
+    return Boolean(err && (err.isAuth || err.code === 'SESSION_SUPERSEDED' || err.code === 'NO_TOKEN' || err.status === 401));
+  }
+
+  async function runOnce({ full = false, silent = false, catchUp = false } = {}) {
     if (running) return running;
     running = (async () => {
+      let refresh = Boolean(catchUp || SR._catchingUp);
+      SR._uploading = true;
       try {
         if (!SR.api.isOnline()) await SR.api.probe({ force: true });
         if (!SR.api.isOnline()) {
+          refresh = false;
           await pull({ full });
           return { ok: false, offline: true };
         }
         emit('change', status());
         let pushResult = { applied: 0, rejected: 0 };
-        try { pushResult = await push(); } catch (err) { lastError = err.message; }
+        try { pushResult = await push(); } catch (err) {
+          lastError = err.message;
+        }
+        if (pushResult.applied) refresh = true;
         // PUSH first, then pull — always. Pulling first would fetch stock figures
         // that do not include the sales this device just made. A failed pull must
         // not leave the chip on Saving, and must not throw away a sale already
         // written on this till.
         let pullResult = { ok: false, rows: 0 };
-        try { pullResult = await pull({ full }); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+        try { pullResult = await pull({ full }); } catch (err) {
+          if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
+        }
+        if (pullResult && pullResult.rows) refresh = true;
         if (SR.api.isOnline()) {
           if (pullResult && pullResult.ok) {
-            try { await copySalesBook(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+            try { await copySalesBook(); } catch (err) {
+              if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
+            }
           }
-          try { await copyCounterBooks(); } catch (err) { await rememberPullError(pullFailureReason(err)); }
+          try { await copyCounterBooks(); } catch (err) {
+            if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
+          }
         }
         if (!silent) {
           const bits = [];
@@ -623,10 +640,12 @@
           if (bits.length) SR.ui.ok(`Synced: ${bits.join(', ')}.`);
           else if (pullResult && pullResult.ok) SR.ui.info('Everything is already up to date.');
         }
-        return { ok: true, push: pushResult, pull: pullResult };
+        return { ok: true, push: pushResult, pull: pullResult, refresh };
       } finally {
+        SR._uploading = false;
         running = null;
         emit('change', status());
+        if (refresh && SR.state && SR.state.user) emit('settled', { refresh: true });
       }
     })();
     try { return await running; } finally {
@@ -636,9 +655,20 @@
   }
 
   async function resumeAfterLine() {
-    const up = await SR.api.probe({ force: true }).catch(() => false);
-    if (!up) return { ok: false, offline: true, role: 'follower' };
-    return runOnce({ silent: true });
+    SR._catchingUp = true;
+    try {
+      const up = await SR.api.probe({ force: true }).catch(() => false);
+      if (!up) return { ok: false, offline: true, role: 'follower' };
+      if (running) await running.catch(() => {});
+      return await runOnce({ silent: true, catchUp: true });
+    } finally {
+      // Leave the hold up while the open page reloads. A reload request is
+      // not a sign-out either.
+      setTimeout(() => {
+        SR._catchingUp = false;
+        clearTimeout(SR._catchUpTimer);
+      }, 20000);
+    }
   }
 
   function start({ intervalMs = AUTO_INTERVAL_MS } = {}) {

@@ -366,6 +366,20 @@
   }
 
   let renderToken = 0;
+  let refreshWait = null;
+
+  function refreshOpenPage(attempt) {
+    if (!SR.state.user || signingOut) return;
+    const modal = document.getElementById('modal-root');
+    const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    if ((modal && !modal.hidden) || typing) {
+      if (attempt) return;
+      clearTimeout(refreshWait);
+      refreshWait = setTimeout(() => refreshOpenPage(1), 4000);
+      return;
+    }
+    render();
+  }
 
   async function render() {
     const token = ++renderToken;
@@ -1381,7 +1395,7 @@
   }
 
   async function watchSession() {
-    if (signingOut || !SR.api.hasToken()) return;
+    if (signingOut || !SR.api.hasToken() || SR._uploading || SR._catchingUp) return;
     try {
       await SR.api.me();
     } catch (err) {
@@ -1452,7 +1466,10 @@
     if (sessionConfirmTimer) return;
     sessionConfirmTimer = setTimeout(async () => {
       sessionConfirmTimer = null;
-      if (SR.api.reconnecting && SR.api.reconnecting()) return;
+      if ((SR.api.reconnecting && SR.api.reconnecting()) || SR._uploading || SR._catchingUp) {
+        scheduleSessionConfirm(detail);
+        return;
+      }
       try {
         const me = await SR.api.me({ quiet: true });
         if (me && (me.user || me.offline)) return;
@@ -1490,6 +1507,7 @@
         message: detail && detail.message,
         hasLocalSession,
         reconnecting: Boolean(SR.api.reconnecting && SR.api.reconnecting()),
+        uploading: Boolean(SR._uploading || SR._catchingUp),
         navigated: Boolean(SR._navigatedAt && Date.now() - SR._navigatedAt < 45000),
         shopConfirmed: Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed()),
         confirmedTwice: Boolean(detail && detail.confirmedTwice),
@@ -1988,6 +2006,7 @@
 
     startBellPolling();
     SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); });
+    SR.sync.on('settled', (detail) => { if (detail && detail.refresh) refreshOpenPage(); });
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
     SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });

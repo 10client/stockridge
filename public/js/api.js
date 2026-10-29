@@ -125,7 +125,14 @@
     const was = online;
     if (value === online) return;
     online = value;
-    if (value && !was) lineReturnedAt = Date.now();
+    if (value && !was) {
+      lineReturnedAt = Date.now();
+      // The first requests after the line returns include the queued-sale
+      // upload. That upload is not a sign-out, even after the short window.
+      global.SR._catchingUp = true;
+      clearTimeout(global.SR._catchUpTimer);
+      global.SR._catchUpTimer = setTimeout(() => { global.SR._catchingUp = false; }, 90000);
+    }
     if (!silent) emit('net', { online, returned: value && !was });
   }
 
@@ -138,6 +145,10 @@
   function pageJustChanged() {
     const at = global.SR && global.SR._navigatedAt;
     return Boolean(at && Date.now() - at < 45000);
+  }
+
+  function catchingUp() {
+    return Boolean(global.SR && (global.SR._catchingUp || global.SR._uploading));
   }
 
   // A browser offline event is not the shop. Ask the shop before changing the chip.
@@ -377,7 +388,7 @@
       // and the shell confirms that before leaving. A missing token on one
       // path is a dropped header, not a logout.
       const fatalAuth = err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED';
-      if (err.isAuth && fatalAuth && !quiet && !reconnecting() && !pageJustChanged()) {
+      if (err.isAuth && fatalAuth && !quiet && !reconnecting() && !pageJustChanged() && !catchingUp()) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
       }
@@ -386,7 +397,7 @@
       // shell draws a bar from those settings — so it has to be told. The refusal itself
       // is still thrown: the caller shows the server's message where the person tried.
       if (err.code === 'SUBSCRIPTION_NOT_ACTIVE') emit('plan', { code: err.code, status: err.status });
-      if (method === 'GET' && err.isAuth && (reconnecting() || pageJustChanged())) {
+      if (method === 'GET' && err.isAuth && (reconnecting() || pageJustChanged() || catchingUp())) {
         throw new ApiError('The line just returned. Showing the books saved on this till.', { status: 0, code: 'OFFLINE', retryable: true });
       }
       throw err;
@@ -491,7 +502,7 @@
     get, post, put, patch, del, request,
     login, me, logout,
     setToken, hasToken, loadToken,
-    isOnline, noteReachable, shopConfirmed, reconnecting, probe, on, emit, canQueue, classify,
+    isOnline, noteReachable, shopConfirmed, reconnecting, catchingUp, probe, on, emit, canQueue, classify,
     TOKEN_KEY,
   };
 }(window));
