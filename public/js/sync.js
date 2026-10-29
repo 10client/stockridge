@@ -118,7 +118,7 @@
 
     let result;
     try {
-      result = await SR.api.post('/api/sync/push', body, { timeoutMs: 45000 });
+      result = await SR.api.post('/api/sync/push', body, { timeoutMs: 45000, quiet: true });
     } catch (err) {
       lastError = err.message;
       // A machine-level failure (offline, timeout, 5xx) leaves everything in the
@@ -967,6 +967,8 @@
     running = (async () => {
       let refresh = false;
       SR._uploading = true;
+      const waitingNow = await SR.store.outboxCount().catch(() => 0);
+      if ((waitingNow > 0 || catchUp) && SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
       try {
         if (!SR.api.isOnline()) await SR.api.probe({ force: true });
         if (!SR.api.isOnline()) {
@@ -980,11 +982,26 @@
           lastError = err.message;
         }
         if (pushResult.applied) refresh = true;
+        const pushBlip = Boolean(pushResult && pushResult.error && sessionBlipError(pushResult.error));
+        if (pushBlip) {
+          SR._pushBlips = (SR._pushBlips || 0) + 1;
+          if (SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
+        } else if (pushResult && pushResult.applied) {
+          SR._pushBlips = 0;
+        }
         // PUSH first, then pull — always. Pulling first would fetch stock figures
-        // that do not include the sales this device just made. A failed pull must
-        // not leave the chip on Saving, and must not throw away a sale already
-        // written on this till.
+        // that do not include the sales this device just made. A refused upload
+        // is not a reason to open the rest of the shop, or to sign the till out.
         let pullResult = { ok: false, rows: 0 };
+        if (pushBlip) {
+          if (SR._pushBlips <= 3 && !SR._pushRetry) {
+            SR._pushRetry = setTimeout(() => {
+              SR._pushRetry = null;
+              runOnce({ silent: true, catchUp: true }).catch(() => {});
+            }, 5000);
+          }
+          return { ok: false, push: pushResult, pull: pullResult, refresh: false };
+        }
         try { pullResult = await pull({ full }); } catch (err) {
           if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
         }
@@ -1032,20 +1049,27 @@
     }
   }
 
+  async function releaseHoldWhenSent() {
+    const waiting = await SR.store.outboxCount().catch(() => 1);
+    if (waiting > 0) {
+      if (SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
+      return;
+    }
+    if (SR.api.holdCatchUp) SR.api.holdCatchUp(30000, { shorten: true });
+  }
+
   async function resumeAfterLine() {
-    SR._catchingUp = true;
+    if (SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
+    else SR._catchingUp = true;
     try {
       const up = await SR.api.probe({ force: true }).catch(() => false);
       if (!up) return { ok: false, offline: true, role: 'follower' };
       if (running) await running.catch(() => {});
       return await runOnce({ silent: true, catchUp: true });
     } finally {
-      // Leave the hold up while the open page reloads. A reload request is
-      // not a sign-out either.
-      setTimeout(() => {
-        SR._catchingUp = false;
-        clearTimeout(SR._catchUpTimer);
-      }, 20000);
+      // Do not drop the hold while sales are still waiting. A page refresh
+      // after the cycle is not a sign-out either.
+      setTimeout(() => { releaseHoldWhenSent().catch(() => {}); }, 30000);
     }
   }
 

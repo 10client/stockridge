@@ -12,6 +12,7 @@
     if (row && row.navigated && hasLocal) return { signOut: false, keep: true, why: 'A page change is not a sign-out. This till stays open.' };
     if (row && row.reconnecting && hasLocal) return { signOut: false, keep: true, why: 'The line just returned. This till stays signed in and will catch up.' };
     if (row && row.uploading && hasLocal) return { signOut: false, keep: true, why: 'Queued sales are still uploading. This till stays signed in.' };
+    if (row && row.pendingUpload && hasLocal) return { signOut: false, keep: true, why: 'Sales saved on this till have not uploaded yet. Sending them is not a sign-out.' };
     if (hasLocal && row && !row.shopConfirmed) return { signOut: false, keep: true, why: 'The shop has not given a stable answer. The saved till stays open.' };
     const confirmed = Boolean(row && row.confirmedTwice && row.shopConfirmed && !row.reconnecting && !row.uploading);
     if (confirmed && (reason === 'SESSION_SUPERSEDED' || reason === 'SESSION_REVOKED' || reason === 'USER_GONE')) {

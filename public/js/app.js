@@ -1395,7 +1395,7 @@
   }
 
   async function watchSession() {
-    if (signingOut || !SR.api.hasToken() || SR._uploading || SR._catchingUp) return;
+    if (signingOut || !SR.api.hasToken() || SR._uploading || (SR.api.catchingUp && SR.api.catchingUp())) return;
     try {
       await SR.api.me();
     } catch (err) {
@@ -1466,7 +1466,8 @@
     if (sessionConfirmTimer) return;
     sessionConfirmTimer = setTimeout(async () => {
       sessionConfirmTimer = null;
-      if ((SR.api.reconnecting && SR.api.reconnecting()) || SR._uploading || SR._catchingUp) {
+      const waiting = await SR.store.outboxCount().catch(() => 0);
+      if ((SR.api.reconnecting && SR.api.reconnecting()) || SR._uploading || (SR.api.catchingUp && SR.api.catchingUp()) || waiting > 0) {
         scheduleSessionConfirm(detail);
         return;
       }
@@ -1501,13 +1502,15 @@
     if (!fatal) return;
     const saved = await SR.store.metaGet('me').catch(() => null);
     const hasLocalSession = Boolean(SR.state.user) || Boolean(saved && saved.user);
+    const pendingUpload = (await SR.store.outboxCount().catch(() => 0)) > 0;
     const decision = (SR.sessionHold && SR.sessionHold.decide)
       ? SR.sessionHold.decide({
         reason,
         message: detail && detail.message,
         hasLocalSession,
         reconnecting: Boolean(SR.api.reconnecting && SR.api.reconnecting()),
-        uploading: Boolean(SR._uploading || SR._catchingUp),
+        uploading: Boolean(SR._uploading || (SR.api.catchingUp && SR.api.catchingUp()) || pendingUpload),
+        pendingUpload,
         navigated: Boolean(SR._navigatedAt && Date.now() - SR._navigatedAt < 45000),
         shopConfirmed: Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed()),
         confirmedTwice: Boolean(detail && detail.confirmedTwice),
@@ -1953,7 +1956,11 @@
           // the queue stays tagged to this account so the next person does not
           // upload it as themselves.
           const reachable = await SR.api.probe({ force: true });
-          if (reachable) {
+          const waiting = await SR.store.outboxCount().catch(() => 0);
+          if (reachable && waiting > 0) {
+            restored = Boolean(await SR.state.loadFromMirror());
+            if (SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
+          } else if (reachable) {
             if (err.code === 'SESSION_SUPERSEDED') {
               try { sessionStorage.setItem('sr.displaced', '1'); } catch (e) { /* fine */ }
               await stampDisplacedQueue();

@@ -120,26 +120,34 @@
     }, 4000);
   }
 
+  function holdCatchUp(ms, options) {
+    const until = Date.now() + (Number(ms) || 180000);
+    const shorten = Boolean(options && options.shorten);
+    if (!shorten) lineReturnedAt = Date.now();
+    global.SR._catchingUp = true;
+    const current = Number(global.SR._holdUntil) || 0;
+    global.SR._holdUntil = shorten ? until : Math.max(current, until);
+    clearTimeout(global.SR._catchUpTimer);
+    global.SR._catchUpTimer = setTimeout(() => {
+      if (Date.now() < (Number(global.SR._holdUntil) || 0)) return;
+      global.SR._catchingUp = false;
+    }, Math.max(1000, until - Date.now()));
+  }
+
   function setOnline(next, { silent = false } = {}) {
     const value = Boolean(next);
     const was = online;
     if (value === online) return;
     online = value;
-    if (value && !was) {
-      lineReturnedAt = Date.now();
-      // The first requests after the line returns include the queued-sale
-      // upload. That upload is not a sign-out, even after the short window.
-      global.SR._catchingUp = true;
-      clearTimeout(global.SR._catchUpTimer);
-      global.SR._catchUpTimer = setTimeout(() => { global.SR._catchingUp = false; }, 90000);
-    }
+    if (value && !was) holdCatchUp(180000);
     if (!silent) emit('net', { online, returned: value && !was });
   }
 
   // The first requests after the line returns are not a sign-out. The saved
-  // till stays open while the follower catches up to the shop.
+  // till stays open while the follower catches up to the shop. Twenty seconds
+  // was shorter than the upload.
   function reconnecting() {
-    return lineReturnedAt > 0 && Date.now() - lineReturnedAt < 20000;
+    return lineReturnedAt > 0 && Date.now() - lineReturnedAt < 90000;
   }
 
   function pageJustChanged() {
@@ -148,11 +156,16 @@
   }
 
   function catchingUp() {
+    if (global.SR && Number(global.SR._holdUntil) > Date.now()) return true;
     return Boolean(global.SR && (global.SR._catchingUp || global.SR._uploading));
   }
 
   // A browser offline event is not the shop. Ask the shop before changing the chip.
-  global.addEventListener('online', () => { probe({ force: true }).catch(() => {}); });
+  // The online event is the catch-up, even when the flag was already true.
+  global.addEventListener('online', () => {
+    holdCatchUp(180000);
+    probe({ force: true }).catch(() => {});
+  });
   global.addEventListener('offline', () => { probe({ force: true }).catch(() => {}); });
 
   /**
@@ -502,7 +515,7 @@
     get, post, put, patch, del, request,
     login, me, logout,
     setToken, hasToken, loadToken,
-    isOnline, noteReachable, shopConfirmed, reconnecting, catchingUp, probe, on, emit, canQueue, classify,
+    isOnline, noteReachable, shopConfirmed, reconnecting, catchingUp, holdCatchUp, probe, on, emit, canQueue, classify,
     TOKEN_KEY,
   };
 }(window));
