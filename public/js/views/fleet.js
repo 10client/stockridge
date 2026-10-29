@@ -218,8 +218,13 @@
       try {
         setup = await SR.api.get('/api/dispatch', { query: SR.state.query({}) });
       } catch (err) {
-        host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
-        return;
+        const vehicles = await SR.store.all('delivery_vehicles').catch(() => []);
+        const saved = (vehicles || []).filter((row) => row && !Number(row.is_deleted));
+        if (!(err && (err.isOffline || (err.isAuth && SR.state.user))) || !saved.length) {
+          host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
+          return;
+        }
+        setup = { enabled: true, confirmed: true, vehicles: saved, offline: true };
       }
       if (!setup.enabled) {
         host.replaceChildren(ui.empty({ title: 'No dispatch vehicles', message: 'This business does not sell from a vehicle.' }));

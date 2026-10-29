@@ -50,13 +50,30 @@
           rows,
           onRowClick: (r) => openOne(r),
         }));
-      } catch (err) { ui.apiError(err); }
+      } catch (err) {
+        if (!(err && (err.isOffline || (err.isAuth && SR.state.user)))) { ui.apiError(err); return; }
+        const saved = await SR.store.all('asset_agreements').catch(() => []);
+        const wanted = String(state.status || '').toUpperCase();
+        const rows = (saved || []).filter((row) => row && !Number(row.is_deleted) && (!wanted || String(row.status).toUpperCase() === wanted));
+        host.replaceChildren(rows.length ? ui.renderTable({
+          columns: [
+            { key: 'kind', label: 'Kind' },
+            { key: 'customer', label: 'Customer', render: (r) => r.customer_name || 'Walk-in' },
+            { key: 'when', label: 'Window', render: (r) => `${r.starts_on || ''} to ${r.ends_on || ''}` },
+            { key: 'state', label: 'State', render: (r) => r.status },
+          ],
+          rows,
+        }) : ui.h('p', { class: 'hint' }, 'No hire or lease agreement is saved on this till yet.'));
+      }
     }
 
     async function openOne(row) {
       let detail;
       try { detail = await SR.api.get(`/api/agreements/${encodeURIComponent(row.id)}`); }
-      catch (err) { ui.apiError(err); return; }
+      catch (err) {
+        const lines = await SR.store.all('asset_agreement_lines').catch(() => []);
+        detail = { agreement: row, lines: (lines || []).filter((line) => String(line.agreement_id) === String(row.id)), schedule: [] };
+      }
       const a = detail.agreement;
       const body = ui.h('div', { class: 'stack' },
         ui.h('p', {}, `${a.kind} · ${a.starts_on} to ${a.ends_on}`),

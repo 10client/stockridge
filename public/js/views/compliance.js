@@ -222,11 +222,19 @@
     async function load() {
       const branchId = SR.state.activeBranchId;
       const branchQuery = branchId ? `&branch_id=${encodeURIComponent(branchId)}` : '';
-      const [checklist, alerts, records] = await Promise.all([
-        SR.api.get(`/api/compliance/checklist${branchId ? `?branch_id=${encodeURIComponent(branchId)}` : ''}`),
-        SR.api.get(`/api/compliance/alerts${branchId ? `?branch_id=${encodeURIComponent(branchId)}` : ''}`),
-        SR.api.get(`/api/compliance/records?limit=200${branchQuery}`),
-      ]);
+      let checklist; let alerts; let records;
+      try {
+        [checklist, alerts, records] = await Promise.all([
+          SR.api.get(`/api/compliance/checklist${branchId ? `?branch_id=${encodeURIComponent(branchId)}` : ''}`),
+          SR.api.get(`/api/compliance/alerts${branchId ? `?branch_id=${encodeURIComponent(branchId)}` : ''}`),
+          SR.api.get(`/api/compliance/records?limit=200${branchQuery}`),
+        ]);
+      } catch (err) {
+        const saved = await SR.store.all('branch_compliance_records').catch(() => []);
+        checklist = { data: [], library: {} };
+        alerts = { counts: {} };
+        records = { data: (saved || []).filter((row) => row && !Number(row.is_deleted)) };
+      }
       state.checklist = checklist.data || [];
       state.alerts = alerts;
       state.records = records.data || [];

@@ -167,13 +167,14 @@
       try {
         data = await SR.api.get('/api/warranty-claims', { query: SR.state.query({ status: state.status || undefined, q: state.q || undefined, limit: state.pageSize }) });
       } catch (err) {
-        if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderClaims } })); return; }
+        if (!err.isOffline && !(err.isAuth && SR.state.user)) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderClaims } })); return; }
         offline = true;
-        data = { data: [] };
+        const saved = await SR.store.all('warranty_claims').catch(() => []);
+        data = { data: (saved || []).filter((row) => row && !Number(row.is_deleted)) };
       }
       const rows = data.data || [];
       host.replaceChildren();
-      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — warranty claims live on the server.'));
+      if (offline) host.appendChild(ui.h('div', { class: 'alert alert-warn' }, 'Offline — these are the warranty claims saved on this till.'));
 
       const toolbar = ui.h('div', { class: 'row' });
       const qInput = ui.h('input', { type: 'search', placeholder: 'Claim, serial, product or customer…', style: { minWidth: '220px' } });

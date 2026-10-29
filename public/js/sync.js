@@ -512,6 +512,201 @@
   // The live shop already answers GET /api/sales. Copy that book into the
   // same tables the pull writes, so a till built before the shop knows the
   // new tables still has the receipts, the lines, and the payments offline.
+  function rowsOf(data) {
+    if (!data) return [];
+    if (Array.isArray(data)) return data;
+    if (Array.isArray(data.data)) return data.data;
+    if (Array.isArray(data.records)) return data.records;
+    if (Array.isArray(data.rows)) return data.rows;
+    if (Array.isArray(data.vehicles)) return data.vehicles;
+    if (Array.isArray(data.assets)) return data.assets;
+    return [];
+  }
+
+  async function businessesInScope() {
+    const seen = new Map();
+    const local = await SR.store.all('businesses').catch(() => []);
+    const live = (SR.state && SR.state.businesses) ? SR.state.businesses() : [];
+    for (const row of [...live, ...(local || [])]) {
+      if (row && row.id != null) seen.set(String(row.id), row);
+    }
+    if (!seen.size && SR.state && SR.state.activeBusinessId) {
+      seen.set(String(SR.state.activeBusinessId), { id: SR.state.activeBusinessId });
+    }
+    return [...seen.values()];
+  }
+
+  async function copyPaged(path, query, pages) {
+    const out = [];
+    let offset = 0;
+    for (let page = 0; page < (pages || 4); page += 1) {
+      const data = await SR.api.get(path, { query: Object.assign({ limit: 200, offset }, query || {}), timeoutMs: 20000 }).catch(() => null);
+      const rows = rowsOf(data).filter((row) => row && row.id != null);
+      out.push(...rows);
+      if (!rows.length || !data || !data.paging || !data.paging.hasMore) break;
+      offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+    }
+    return out;
+  }
+
+  async function saveRows(table, rows) {
+    const list = (rows || []).filter((row) => row && row.id != null);
+    if (!list.length || !SR.store || !SR.store.putMany) return 0;
+    await SR.store.putMany(table, list);
+    return list.length;
+  }
+
+  function stamp(row, businessId) {
+    if (!row || row.id == null) return null;
+    if (row.business_id == null && businessId) row.business_id = businessId;
+    return row;
+  }
+
+  // Every vertical's own books, through the shop routes that are already live.
+  // A phone shop's hire route answers 403. That is not a missing catalogue.
+  // The full row is stored. Turso stays behind the Worker.
+  async function copyVerticalBooks() {
+    const businesses = await businessesInScope();
+    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
+    for (const business of businesses) {
+      const q = { business_id: business.id };
+      const agreements = (await copyPaged('/api/agreements', q, 1)).map((row) => stamp(row, business.id));
+      await saveRows('asset_agreements', agreements);
+      const lines = [];
+      const agreementSchedule = [];
+      for (let i = 0; i < agreements.slice(0, 40).length; i += 4) {
+        const chunk = agreements.slice(i, i + 4);
+        const details = await Promise.all(chunk.map((row) => SR.api.get('/api/agreements/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+        for (const detail of details) {
+          if (!detail) continue;
+          if (detail.agreement) await saveRows('asset_agreements', [stamp(detail.agreement, business.id)]);
+          for (const row of detail.lines || []) if (row && row.id != null) lines.push(stamp(row, business.id));
+          for (const row of detail.schedule || []) if (row && row.id != null) agreementSchedule.push(stamp(row, business.id));
+        }
+      }
+      await saveRows('asset_agreement_lines', lines);
+      await saveRows('asset_agreement_schedule', agreementSchedule);
+
+      const jobs = [];
+      for (const status of [undefined, 'DELIVERED', 'CANCELLED', 'RETURNED', 'ASSIGNED', 'IN_TRANSIT']) {
+        jobs.push(...await copyPaged('/api/deliveries', Object.assign({ status }, q), 3));
+      }
+      await saveRows('delivery_jobs', jobs.map((row) => stamp(row, business.id)));
+      const jobItems = [];
+      const installs = [];
+      for (let i = 0; i < jobs.slice(0, 30).length; i += 4) {
+        const chunk = jobs.slice(i, i + 4);
+        const details = await Promise.all(chunk.map((row) => SR.api.get('/api/deliveries/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+        for (const detail of details) {
+          if (!detail) continue;
+          if (detail.job) await saveRows('delivery_jobs', [stamp(detail.job, business.id)]);
+          for (const row of detail.items || []) if (row && row.id != null) jobItems.push(row);
+          for (const row of detail.installations || []) if (row && row.id != null) installs.push(stamp(row, business.id));
+        }
+      }
+      await saveRows('delivery_job_items', jobItems);
+      await saveRows('installation_jobs', installs);
+
+      await saveRows('warranty_claims', (await copyPaged('/api/warranty-claims', q, 4)).map((row) => stamp(row, business.id)));
+      await saveRows('sale_returns', (await copyPaged('/api/returns', q, 4)).map((row) => stamp(row, business.id)));
+      await saveRows('deposits', (await copyPaged('/api/deposits', q, 4)).map((row) => stamp(row, business.id)));
+      const plans = (await copyPaged('/api/instalments', q, 4)).map((row) => stamp(row, business.id));
+      await saveRows('instalment_plans', plans);
+      const planLines = [];
+      const planPays = [];
+      for (let i = 0; i < plans.slice(0, 30).length; i += 4) {
+        const chunk = plans.slice(i, i + 4);
+        const details = await Promise.all(chunk.map((row) => SR.api.get('/api/instalments/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+        for (const detail of details) {
+          if (!detail) continue;
+          if (detail.plan) await saveRows('instalment_plans', [stamp(detail.plan, business.id)]);
+          for (const row of detail.schedule || []) if (row && row.id != null) planLines.push(row);
+          for (const row of detail.payments || []) if (row && row.id != null) planPays.push(row);
+        }
+      }
+      await saveRows('instalment_schedule', planLines);
+      await saveRows('instalment_payments', planPays);
+
+      await saveRows('product_recalls', (await copyPaged('/api/recalls', q, 3)).map((row) => stamp(row, business.id)));
+      const transfers = (await copyPaged('/api/transfers', q, 4)).map((row) => stamp(row, business.id));
+      await saveRows('stock_transfers', transfers);
+      const transferItems = [];
+      for (let i = 0; i < transfers.slice(0, 20).length; i += 4) {
+        const chunk = transfers.slice(i, i + 4);
+        const details = await Promise.all(chunk.map((row) => SR.api.get('/api/transfers/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+        for (const detail of details) {
+          const items = (detail && (detail.items || detail.lines)) || [];
+          for (const row of items) if (row && row.id != null) transferItems.push(row);
+        }
+      }
+      await saveRows('stock_transfer_items', transferItems);
+
+      const counts = (await copyPaged('/api/stocktakes', q, 3)).map((row) => stamp(row, business.id));
+      await saveRows('stocktake_sessions', counts);
+      const countLines = [];
+      for (let i = 0; i < counts.slice(0, 15).length; i += 3) {
+        const chunk = counts.slice(i, i + 3);
+        const details = await Promise.all(chunk.map((row) => SR.api.get('/api/stocktakes/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+        for (const detail of details) {
+          const lines = (detail && (detail.lines || detail.items)) || [];
+          for (const row of lines) if (row && row.id != null) countLines.push(row);
+        }
+      }
+      await saveRows('stocktake_lines', countLines);
+
+      await saveRows('stock_adjustments', (await copyPaged('/api/adjustments', Object.assign({ from: '2020-01-01', to }, q), 4)).map((row) => stamp(row, business.id)));
+      await saveRows('expenses', (await copyPaged('/api/expenses', Object.assign({ from: '2020-01-01', to }, q), 6)).map((row) => stamp(row, business.id)));
+      await saveRows('branch_compliance_records', (await copyPaged('/api/compliance/records', q, 3)).map((row) => stamp(row, business.id)));
+      await saveRows('creditor_ledger', (await copyPaged('/api/creditors', q, 3)).map((row) => stamp(row, business.id)));
+      await saveRows('debtor_ledger', (await copyPaged('/api/customers/debtors', q, 3)).map((row) => stamp(row, business.id)));
+      await saveRows('controlled_substance_register', (await copyPaged('/api/pharmacy/register', q, 2)).map((row) => stamp(row, business.id)));
+
+      const fleet = await SR.api.get('/api/dispatch', { query: q, timeoutMs: 15000 }).catch(() => null);
+      await saveRows('delivery_vehicles', rowsOf(fleet).map((row) => stamp(row, business.id)));
+      const duties = await SR.api.get('/api/dispatch/duties', { query: Object.assign({ active: 0, mine: 0 }, q), timeoutMs: 15000 }).catch(() => null);
+      await saveRows('vehicle_duties', rowsOf(duties).map((row) => stamp(row, business.id)));
+      const plant = await SR.api.get('/api/plant', { query: q, timeoutMs: 20000 }).catch(() => null);
+      const assets = ((plant && plant.assets) || []).map((row) => row && row.id != null ? {
+        id: row.id,
+        business_id: business.id,
+        name: row.name,
+        kind: row.kind,
+        acquired_at: row.acquiredAt || row.acquired_at,
+        purchase_price: row.purchasePrice != null ? row.purchasePrice : row.purchase_price,
+        supplier_name: row.supplierName || row.supplier_name,
+        serial_no: row.serialNo || row.serial_no,
+        status: row.status,
+        stopped_at: row.stoppedAt || row.stopped_at,
+        stopped_reason: row.stoppedReason || row.stopped_reason,
+        notes: row.notes,
+        is_deleted: row.retired ? 1 : 0,
+        maintenance_total: row.maintenanceTotal,
+      } : null).filter(Boolean);
+      await saveRows('plant_assets', assets);
+    }
+
+    const products = await SR.store.all('products').catch(() => []);
+    const needsDetail = (products || []).filter((row) => row && row.id != null && (
+      row.nafdac_catalog_id || Number(row.is_controlled) || Number(row.requires_serial) || Number(row.offers_hire) || Number(row.offers_lease) || row.stock_role === 'INPUT'
+    )).slice(0, 80);
+    const registrations = [];
+    for (let i = 0; i < needsDetail.length; i += 4) {
+      const chunk = needsDetail.slice(i, i + 4);
+      const details = await Promise.all(chunk.map((row) => SR.api.get('/api/products/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
+      for (const detail of details) {
+        if (!detail || !detail.product || detail.product.id == null) continue;
+        await saveRows('products', [detail.product]);
+        for (const row of detail.registrations || []) if (row && row.id != null) registrations.push(row);
+        for (const row of detail.units || []) if (row && row.id != null) await saveRows('product_units', [row]);
+        for (const row of detail.variants || []) if (row && row.id != null) await saveRows('product_variants', [row]);
+        for (const row of detail.barcodes || []) if (row && row.id != null) await saveRows('product_barcodes', [row]);
+        const measures = Array.isArray(detail.measures) ? detail.measures : (detail.measures ? [detail.measures] : []);
+        for (const row of measures) if (row && row.id != null) await saveRows('product_measures', [row]);
+      }
+    }
+    await saveRows('product_registrations', registrations);
+  }
+
   async function copyCounterBooks() {
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const query = (extra) => (SR.state && SR.state.query ? SR.state.query(extra) : extra);
@@ -559,6 +754,8 @@
     const payments = [];
     const serials = [];
     const owed = [];
+    const prescriptions = [];
+    const register = [];
     const recent = headers.slice(0, 120);
     for (let i = 0; i < recent.length; i += 4) {
       const chunk = recent.slice(i, i + 4);
@@ -570,12 +767,16 @@
         for (const row of detail.payments || []) if (row && row.id != null) payments.push(row);
         for (const row of detail.serials || []) if (row && row.id != null) serials.push(row);
         for (const row of detail.changeOwed || []) if (row && row.id != null) owed.push(row);
+        for (const row of detail.prescriptions || []) if (row && row.id != null) prescriptions.push(row);
+        for (const row of detail.controlledRegister || []) if (row && row.id != null) register.push(row);
       }
     }
     if (items.length) await SR.store.putMany('sale_items', items);
     if (payments.length) await SR.store.putMany('sale_payments', payments);
     if (serials.length) await SR.store.putMany('sale_serials', serials);
     if (owed.length) await SR.store.putMany('change_owed', owed);
+    if (prescriptions.length) await SR.store.putMany('prescriptions', prescriptions);
+    if (register.length) await SR.store.putMany('controlled_substance_register', register);
     const bills = [];
     for (const status of ['OPEN', 'PAYING', 'PAID', 'CANCELLED']) {
       const data = await SR.api.get('/api/bills', { query: { status }, timeoutMs: 20000 }).catch(() => null);
@@ -631,6 +832,7 @@
           try { await copyCounterBooks(); } catch (err) {
             if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
           }
+          try { await copyVerticalBooks(); } catch (err) { /* a feature this vertical does not use is not a short catalogue */ }
         }
         if (!silent) {
           const bits = [];

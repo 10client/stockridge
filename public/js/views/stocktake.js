@@ -89,9 +89,13 @@
           query: SR.state.query({ status: state.status || undefined, limit: state.pageSize, offset: state.page * state.pageSize }),
         });
       } catch (err) {
-        host.replaceChildren();
-        host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
-        return;
+        if (!(err && (err.isOffline || (err.isAuth && SR.state.user)))) {
+          host.replaceChildren();
+          host.appendChild(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
+          return;
+        }
+        const saved = await SR.store.all('stocktake_sessions').catch(() => []);
+        data = { data: (saved || []).filter((row) => row && !Number(row.is_deleted)), paging: {} };
       }
       const rows = data.data || [];
       const paging = data.paging || {};
