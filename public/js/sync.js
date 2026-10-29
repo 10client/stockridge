@@ -42,6 +42,10 @@
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;
   const DEBOUNCE_AFTER_QUEUE_MS = 2500;
+  const COUNTER_COPY_MS = 10 * 60 * 1000;
+  const VERTICAL_COPY_MS = 15 * 60 * 1000;
+  const SALES_FULL_MS = 6 * 60 * 60 * 1000;
+  const DETAIL_BATCH = 24;
 
   let running = null;
   let timer = null;
@@ -401,12 +405,15 @@
   async function pullRequest({ full = false, tables = null, saveCursor = true, stamp = true } = {}) {
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
     const branchId = SR.state.activeBranchId;
-    // Stock and the orders it came from are always pulled in full. A cursor
-    // from before a receipt must not hide the cartons that are on the shelf.
+    // The shelf is copied in full the first time and about every 15 minutes.
+    // A cursor still brings a receipt that moved updated_at. Coming back
+    // online inside that window does not read every carton again.
     const asking = tables || PULL_TABLES;
     const fullTables = [];
-    if (asking.includes('stock_batches')) fullTables.push('stock_batches');
-    if (asking.includes('purchase_orders')) fullTables.push('purchase_orders');
+    const shelfAt = await SR.store.metaGet('shelf_full_at').catch(() => null);
+    const shelfDue = Boolean(full || copyDue(shelfAt, Date.now(), 15 * 60 * 1000));
+    if (shelfDue && asking.includes('stock_batches')) fullTables.push('stock_batches');
+    if (shelfDue && asking.includes('purchase_orders')) fullTables.push('purchase_orders');
     const pulledSales = await SR.store.metaGet('pulled_sales_tables').catch(() => null);
     const gap = await SR.store.metaGet('pull_gap').catch(() => []);
     const gapNames = Array.isArray(gap) ? gap : [];
@@ -448,12 +455,14 @@
 
     let rows = 0;
     let sent = 0;
+    let acknowledged = false;
     const perTable = [];
     try {
       for (const [table, payload] of Object.entries(result.tables || {})) {
         if (!payload || !Array.isArray(payload.rows)) continue;
         sent += payload.rows.length;
         const wrote = await SR.store.putMany(table, payload.rows);
+        if (wrote != null) acknowledged = true;
         rows += Number(wrote) || 0;
         perTable.push({ table, count: Number(wrote) || 0 });
         if (table === 'stock_batches') {
@@ -466,7 +475,7 @@
       await rememberPullError(reason);
       return { ok: false, error: err, rows, fast: false };
     }
-    if (sent > 0 && rows === 0) {
+    if (sent > 0 && rows === 0 && !acknowledged) {
       const reason = 'The shop sent catalogue rows, but this till could not store them.';
       await rememberPullError(reason);
       return { ok: false, error: new Error(reason), rows: 0, fast: false };
@@ -483,6 +492,9 @@
     await SR.store.metaSet('pull_gap', gaps);
     if (result && result.tables && result.tables.sales && !result.tables.sales.error) {
       await SR.store.metaSet('pulled_sales_tables', true);
+    }
+    if (shelfDue && result.tables && result.tables.stock_batches && !result.tables.stock_batches.error) {
+      await SR.store.metaSet('shelf_full_at', new Date().toISOString());
     }
     if (saveCursor && result && result.cursor && !hardErrors.length) {
       await SR.store.metaSet('sync_cursor', result.cursor);
@@ -549,11 +561,68 @@
     return out;
   }
 
+  function copyDue(lastAt, now, minMs) {
+    if (!lastAt) return true;
+    const then = Date.parse(String(lastAt).replace(' ', 'T'));
+    if (!Number.isFinite(then)) return true;
+    return (Number(now) || 0) - then >= Number(minMs);
+  }
+
+  function dayBefore(iso) {
+    const day = String(iso || '').slice(0, 10);
+    const then = Date.parse(day + 'T00:00:00Z');
+    if (!Number.isFinite(then)) return '2020-01-01';
+    return new Date(then - 86400000).toISOString().slice(0, 10);
+  }
+
+  function saleFingerprint(row) {
+    if (!row) return '';
+    return [row.status, row.settlement, row.payment_method, row.total, row.amount_paid, row.balance_due, row.item_count, row.voided_at, row.change_owed, row.notes]
+      .map((value) => (value == null ? '' : String(value))).join('|');
+  }
+
+  async function changedOnly(table, rows) {
+    const out = [];
+    for (const row of rows || []) {
+      if (!row || row.id == null) continue;
+      const next = row.updated_at == null || row.updated_at === '' ? null : String(row.updated_at);
+      if (!next || !SR.store || !SR.store.get) { out.push(row); continue; }
+      const local = await SR.store.get(table, row.id).catch(() => null);
+      const prev = local && local.updated_at != null && local.updated_at !== '' ? String(local.updated_at) : null;
+      if (prev !== next) out.push(row);
+    }
+    return out;
+  }
+
   async function saveRows(table, rows) {
-    const list = (rows || []).filter((row) => row && row.id != null);
+    const list = await changedOnly(table, rows);
     if (!list.length || !SR.store || !SR.store.putMany) return 0;
-    await SR.store.putMany(table, list);
-    return list.length;
+    const wrote = await SR.store.putMany(table, list);
+    return Number(wrote) || list.length;
+  }
+
+  async function takeChanged(table, rows, cap) {
+    const book = await SR.store.metaGet('detail_done_' + table).catch(() => null) || {};
+    const out = [];
+    for (const row of rows || []) {
+      if (!row || row.id == null) continue;
+      const next = row.updated_at == null || row.updated_at === '' ? 'listed' : String(row.updated_at);
+      if (book[String(row.id)] === next) continue;
+      out.push(row);
+    }
+    return out.slice(0, cap);
+  }
+
+  async function markDetailed(table, rows) {
+    if (!SR.store || !rows || !rows.length) return;
+    const book = await SR.store.metaGet('detail_done_' + table).catch(() => null) || {};
+    for (const row of rows) {
+      if (!row || row.id == null) continue;
+      book[String(row.id)] = row.updated_at == null || row.updated_at === '' ? 'listed' : String(row.updated_at);
+    }
+    const trimmed = {};
+    for (const id of Object.keys(book).slice(-1500)) trimmed[id] = book[id];
+    await SR.store.metaSet('detail_done_' + table, trimmed);
   }
 
   function stamp(row, businessId) {
@@ -566,105 +635,141 @@
   // A phone shop's hire route answers 403. That is not a missing catalogue.
   // The full row is stored. Turso stays behind the Worker.
   async function copyVerticalBooks() {
+    const now = Date.now();
+    const last = await SR.store.metaGet('vertical_copy_at').catch(() => null);
+    if (!copyDue(last, now, VERTICAL_COPY_MS)) return 0;
+    const first = !last;
+    const listPages = first ? 4 : 1;
+    const from = first ? '2020-01-01' : dayBefore(last);
+    let wrote = 0;
     const businesses = await businessesInScope();
+    if (!businesses.length) return 0;
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     for (const business of businesses) {
       const q = { business_id: business.id };
-      const agreements = (await copyPaged('/api/agreements', q, 1)).map((row) => stamp(row, business.id));
-      await saveRows('asset_agreements', agreements);
+      const agreements = (await copyPaged('/api/agreements', q, listPages)).map((row) => stamp(row, business.id));
+      const agreeTargets = await takeChanged('asset_agreements', agreements, first ? 40 : 8);
+      wrote += await saveRows('asset_agreements', agreements);
       const lines = [];
       const agreementSchedule = [];
-      for (let i = 0; i < agreements.slice(0, 40).length; i += 4) {
-        const chunk = agreements.slice(i, i + 4);
+      const agreeDone = [];
+      for (let i = 0; i < agreeTargets.length; i += 4) {
+        const chunk = agreeTargets.slice(i, i + 4);
         const details = await Promise.all(chunk.map((row) => SR.api.get('/api/agreements/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
-        for (const detail of details) {
+        for (let n = 0; n < details.length; n += 1) {
+          const detail = details[n];
           if (!detail) continue;
+          agreeDone.push(chunk[n]);
           if (detail.agreement) await saveRows('asset_agreements', [stamp(detail.agreement, business.id)]);
           for (const row of detail.lines || []) if (row && row.id != null) lines.push(stamp(row, business.id));
           for (const row of detail.schedule || []) if (row && row.id != null) agreementSchedule.push(stamp(row, business.id));
         }
       }
-      await saveRows('asset_agreement_lines', lines);
-      await saveRows('asset_agreement_schedule', agreementSchedule);
+      await markDetailed('asset_agreements', agreeDone);
+      wrote += await saveRows('asset_agreement_lines', lines);
+      wrote += await saveRows('asset_agreement_schedule', agreementSchedule);
 
       const jobs = [];
-      for (const status of [undefined, 'DELIVERED', 'CANCELLED', 'RETURNED', 'ASSIGNED', 'IN_TRANSIT']) {
-        jobs.push(...await copyPaged('/api/deliveries', Object.assign({ status }, q), 3));
+      const statuses = first ? [undefined, 'DELIVERED', 'CANCELLED', 'RETURNED', 'ASSIGNED', 'IN_TRANSIT'] : [undefined];
+      for (const status of statuses) {
+        jobs.push(...await copyPaged('/api/deliveries', Object.assign({ status }, q), first ? 3 : 1));
       }
-      await saveRows('delivery_jobs', jobs.map((row) => stamp(row, business.id)));
+      const jobTargets = await takeChanged('delivery_jobs', jobs, first ? 30 : 8);
+      wrote += await saveRows('delivery_jobs', jobs.map((row) => stamp(row, business.id)));
       const jobItems = [];
       const installs = [];
-      for (let i = 0; i < jobs.slice(0, 30).length; i += 4) {
-        const chunk = jobs.slice(i, i + 4);
+      const jobDone = [];
+      for (let i = 0; i < jobTargets.length; i += 4) {
+        const chunk = jobTargets.slice(i, i + 4);
         const details = await Promise.all(chunk.map((row) => SR.api.get('/api/deliveries/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
-        for (const detail of details) {
+        for (let n = 0; n < details.length; n += 1) {
+          const detail = details[n];
           if (!detail) continue;
+          jobDone.push(chunk[n]);
           if (detail.job) await saveRows('delivery_jobs', [stamp(detail.job, business.id)]);
           for (const row of detail.items || []) if (row && row.id != null) jobItems.push(row);
           for (const row of detail.installations || []) if (row && row.id != null) installs.push(stamp(row, business.id));
         }
       }
-      await saveRows('delivery_job_items', jobItems);
-      await saveRows('installation_jobs', installs);
+      await markDetailed('delivery_jobs', jobDone);
+      wrote += await saveRows('delivery_job_items', jobItems);
+      wrote += await saveRows('installation_jobs', installs);
 
-      await saveRows('warranty_claims', (await copyPaged('/api/warranty-claims', q, 4)).map((row) => stamp(row, business.id)));
-      await saveRows('sale_returns', (await copyPaged('/api/returns', q, 4)).map((row) => stamp(row, business.id)));
-      await saveRows('deposits', (await copyPaged('/api/deposits', q, 4)).map((row) => stamp(row, business.id)));
-      const plans = (await copyPaged('/api/instalments', q, 4)).map((row) => stamp(row, business.id));
-      await saveRows('instalment_plans', plans);
+      wrote += await saveRows('warranty_claims', (await copyPaged('/api/warranty-claims', q, listPages)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('sale_returns', (await copyPaged('/api/returns', q, listPages)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('deposits', (await copyPaged('/api/deposits', q, listPages)).map((row) => stamp(row, business.id)));
+      const plans = (await copyPaged('/api/instalments', q, listPages)).map((row) => stamp(row, business.id));
+      const planTargets = await takeChanged('instalment_plans', plans, first ? 30 : 8);
+      wrote += await saveRows('instalment_plans', plans);
       const planLines = [];
       const planPays = [];
-      for (let i = 0; i < plans.slice(0, 30).length; i += 4) {
-        const chunk = plans.slice(i, i + 4);
+      const planDone = [];
+      for (let i = 0; i < planTargets.length; i += 4) {
+        const chunk = planTargets.slice(i, i + 4);
         const details = await Promise.all(chunk.map((row) => SR.api.get('/api/instalments/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
-        for (const detail of details) {
+        for (let n = 0; n < details.length; n += 1) {
+          const detail = details[n];
           if (!detail) continue;
+          planDone.push(chunk[n]);
           if (detail.plan) await saveRows('instalment_plans', [stamp(detail.plan, business.id)]);
           for (const row of detail.schedule || []) if (row && row.id != null) planLines.push(row);
           for (const row of detail.payments || []) if (row && row.id != null) planPays.push(row);
         }
       }
-      await saveRows('instalment_schedule', planLines);
-      await saveRows('instalment_payments', planPays);
+      await markDetailed('instalment_plans', planDone);
+      wrote += await saveRows('instalment_schedule', planLines);
+      wrote += await saveRows('instalment_payments', planPays);
 
-      await saveRows('product_recalls', (await copyPaged('/api/recalls', q, 3)).map((row) => stamp(row, business.id)));
-      const transfers = (await copyPaged('/api/transfers', q, 4)).map((row) => stamp(row, business.id));
-      await saveRows('stock_transfers', transfers);
+      wrote += await saveRows('product_recalls', (await copyPaged('/api/recalls', q, first ? 3 : 1)).map((row) => stamp(row, business.id)));
+      const transfers = (await copyPaged('/api/transfers', q, listPages)).map((row) => stamp(row, business.id));
+      const transferTargets = await takeChanged('stock_transfers', transfers, first ? 20 : 6);
+      wrote += await saveRows('stock_transfers', transfers);
       const transferItems = [];
-      for (let i = 0; i < transfers.slice(0, 20).length; i += 4) {
-        const chunk = transfers.slice(i, i + 4);
+      const transferDone = [];
+      for (let i = 0; i < transferTargets.length; i += 4) {
+        const chunk = transferTargets.slice(i, i + 4);
         const details = await Promise.all(chunk.map((row) => SR.api.get('/api/transfers/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
-        for (const detail of details) {
-          const items = (detail && (detail.items || detail.lines)) || [];
+        for (let n = 0; n < details.length; n += 1) {
+          const detail = details[n];
+          if (!detail) continue;
+          transferDone.push(chunk[n]);
+          const items = (detail.items || detail.lines) || [];
           for (const row of items) if (row && row.id != null) transferItems.push(row);
         }
       }
-      await saveRows('stock_transfer_items', transferItems);
+      await markDetailed('stock_transfers', transferDone);
+      wrote += await saveRows('stock_transfer_items', transferItems);
 
-      const counts = (await copyPaged('/api/stocktakes', q, 3)).map((row) => stamp(row, business.id));
-      await saveRows('stocktake_sessions', counts);
+      const counts = (await copyPaged('/api/stocktakes', q, first ? 3 : 1)).map((row) => stamp(row, business.id));
+      const countTargets = await takeChanged('stocktake_sessions', counts, first ? 15 : 4);
+      wrote += await saveRows('stocktake_sessions', counts);
       const countLines = [];
-      for (let i = 0; i < counts.slice(0, 15).length; i += 3) {
-        const chunk = counts.slice(i, i + 3);
+      const countDone = [];
+      for (let i = 0; i < countTargets.length; i += 3) {
+        const chunk = countTargets.slice(i, i + 3);
         const details = await Promise.all(chunk.map((row) => SR.api.get('/api/stocktakes/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
-        for (const detail of details) {
-          const lines = (detail && (detail.lines || detail.items)) || [];
+        for (let n = 0; n < details.length; n += 1) {
+          const detail = details[n];
+          if (!detail) continue;
+          countDone.push(chunk[n]);
+          const lines = (detail.lines || detail.items) || [];
           for (const row of lines) if (row && row.id != null) countLines.push(row);
         }
       }
-      await saveRows('stocktake_lines', countLines);
+      await markDetailed('stocktake_sessions', countDone);
+      wrote += await saveRows('stocktake_lines', countLines);
 
-      await saveRows('stock_adjustments', (await copyPaged('/api/adjustments', Object.assign({ from: '2020-01-01', to }, q), 4)).map((row) => stamp(row, business.id)));
-      await saveRows('expenses', (await copyPaged('/api/expenses', Object.assign({ from: '2020-01-01', to }, q), 6)).map((row) => stamp(row, business.id)));
-      await saveRows('branch_compliance_records', (await copyPaged('/api/compliance/records', q, 3)).map((row) => stamp(row, business.id)));
-      await saveRows('creditor_ledger', (await copyPaged('/api/creditors', q, 3)).map((row) => stamp(row, business.id)));
-      await saveRows('debtor_ledger', (await copyPaged('/api/customers/debtors', q, 3)).map((row) => stamp(row, business.id)));
-      await saveRows('controlled_substance_register', (await copyPaged('/api/pharmacy/register', q, 2)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('stock_adjustments', (await copyPaged('/api/adjustments', Object.assign({ from, to }, q), listPages)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('expenses', (await copyPaged('/api/expenses', Object.assign({ from, to }, q), first ? 6 : 1)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('branch_compliance_records', (await copyPaged('/api/compliance/records', q, first ? 3 : 1)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('creditor_ledger', (await copyPaged('/api/creditors', q, first ? 3 : 1)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('debtor_ledger', (await copyPaged('/api/customers/debtors', q, first ? 3 : 1)).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('controlled_substance_register', (await copyPaged('/api/pharmacy/register', q, first ? 2 : 1)).map((row) => stamp(row, business.id)));
 
       const fleet = await SR.api.get('/api/dispatch', { query: q, timeoutMs: 15000 }).catch(() => null);
-      await saveRows('delivery_vehicles', rowsOf(fleet).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('delivery_vehicles', rowsOf(fleet).map((row) => stamp(row, business.id)));
       const duties = await SR.api.get('/api/dispatch/duties', { query: Object.assign({ active: 0, mine: 0 }, q), timeoutMs: 15000 }).catch(() => null);
-      await saveRows('vehicle_duties', rowsOf(duties).map((row) => stamp(row, business.id)));
+      wrote += await saveRows('vehicle_duties', rowsOf(duties).map((row) => stamp(row, business.id)));
       const plant = await SR.api.get('/api/plant', { query: q, timeoutMs: 20000 }).catch(() => null);
       const assets = ((plant && plant.assets) || []).map((row) => row && row.id != null ? {
         id: row.id,
@@ -681,88 +786,136 @@
         notes: row.notes,
         is_deleted: row.retired ? 1 : 0,
         maintenance_total: row.maintenanceTotal,
+        updated_at: row.updatedAt || row.updated_at || [row.status, row.purchasePrice, row.stoppedAt, row.retired ? 1 : 0].join('|'),
       } : null).filter(Boolean);
-      await saveRows('plant_assets', assets);
+      wrote += await saveRows('plant_assets', assets);
     }
 
+    await SR.store.metaSet('vertical_copy_at', new Date().toISOString());
+    return wrote;
+  }
+
+  async function copyProductDetails() {
+    if (!SR.store || !SR.store.all) return 0;
     const products = await SR.store.all('products').catch(() => []);
+    const detailStamps = await SR.store.metaGet('product_detail_stamps').catch(() => null) || {};
     const needsDetail = (products || []).filter((row) => row && row.id != null && (
       row.nafdac_catalog_id || Number(row.is_controlled) || Number(row.requires_serial) || Number(row.offers_hire) || Number(row.offers_lease) || row.stock_role === 'INPUT'
-    )).slice(0, 80);
+    )).filter((row) => String(detailStamps[row.id] || '') !== String(row.updated_at || row.id)).slice(0, 12);
+    if (!needsDetail.length) return 0;
+    let wrote = 0;
     const registrations = [];
     for (let i = 0; i < needsDetail.length; i += 4) {
       const chunk = needsDetail.slice(i, i + 4);
       const details = await Promise.all(chunk.map((row) => SR.api.get('/api/products/' + encodeURIComponent(row.id), { timeoutMs: 15000 }).catch(() => null)));
       for (const detail of details) {
         if (!detail || !detail.product || detail.product.id == null) continue;
-        await saveRows('products', [detail.product]);
+        wrote += await saveRows('products', [detail.product]);
         for (const row of detail.registrations || []) if (row && row.id != null) registrations.push(row);
-        for (const row of detail.units || []) if (row && row.id != null) await saveRows('product_units', [row]);
-        for (const row of detail.variants || []) if (row && row.id != null) await saveRows('product_variants', [row]);
-        for (const row of detail.barcodes || []) if (row && row.id != null) await saveRows('product_barcodes', [row]);
+        for (const row of detail.units || []) if (row && row.id != null) wrote += await saveRows('product_units', [row]);
+        for (const row of detail.variants || []) if (row && row.id != null) wrote += await saveRows('product_variants', [row]);
+        for (const row of detail.barcodes || []) if (row && row.id != null) wrote += await saveRows('product_barcodes', [row]);
         const measures = Array.isArray(detail.measures) ? detail.measures : (detail.measures ? [detail.measures] : []);
-        for (const row of measures) if (row && row.id != null) await saveRows('product_measures', [row]);
+        for (const row of measures) if (row && row.id != null) wrote += await saveRows('product_measures', [row]);
+        detailStamps[detail.product.id] = String(detail.product.updated_at || detail.product.id);
       }
     }
-    await saveRows('product_registrations', registrations);
+    wrote += await saveRows('product_registrations', registrations);
+    await SR.store.metaSet('product_detail_stamps', detailStamps);
+    return wrote;
   }
 
   async function copyCounterBooks() {
-    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const query = (extra) => (SR.state && SR.state.query ? SR.state.query(extra) : extra);
+    let wrote = 0;
+    const current = await SR.api.get('/api/tills/current', { query: query({}), timeoutMs: 15000 }).catch(() => null);
+    if (current && current.till && current.till.id != null) wrote += await saveRows('till_sessions', [current.till]);
+    const today = await SR.api.get('/api/attendance/today', { query: query({}), timeoutMs: 15000 }).catch(() => null);
+    const liveAttendance = [];
+    for (const row of (today && (today.records || today.data)) || []) if (row && row.id != null) liveAttendance.push(row);
+    if (today && today.myOpen && today.myOpen.id != null) liveAttendance.push(today.myOpen);
+    wrote += await saveRows('staff_attendance', liveAttendance);
+    const last = await SR.store.metaGet('counter_copy_at').catch(() => null);
+    if (!copyDue(last, Date.now(), COUNTER_COPY_MS)) return wrote;
+    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
+    const from = last ? dayBefore(last) : '2020-01-01';
     const tills = [];
     for (const status of ['OPEN', undefined]) {
-      const data = await SR.api.get('/api/tills', { query: query({ status, from: '2020-01-01', to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
+      const data = await SR.api.get('/api/tills', { query: query({ status, from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
       for (const row of (data && data.data) || []) if (row && row.id != null) tills.push(row);
     }
-    const current = await SR.api.get('/api/tills/current', { query: query({}), timeoutMs: 15000 }).catch(() => null);
-    if (current && current.till && current.till.id != null) tills.push(current.till);
-    if (tills.length) await SR.store.putMany('till_sessions', tills);
-    const attendance = [];
-    const today = await SR.api.get('/api/attendance/today', { query: query({}), timeoutMs: 15000 }).catch(() => null);
-    for (const row of (today && (today.records || today.data)) || []) if (row && row.id != null) attendance.push(row);
-    if (today && today.myOpen && today.myOpen.id != null) attendance.push(today.myOpen);
-    const history = await SR.api.get('/api/attendance', { query: query({ from: '2020-01-01', to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
-    for (const row of (history && history.data) || []) if (row && row.id != null) attendance.push(row);
-    if (attendance.length) await SR.store.putMany('staff_attendance', attendance);
+    wrote += await saveRows('till_sessions', tills);
+    const history = await SR.api.get('/api/attendance', { query: query({ from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
+    wrote += await saveRows('staff_attendance', (history && history.data) || []);
     const owed = [];
     let offset = 0;
-    for (let page = 0; page < 6; page += 1) {
+    const pages = last ? 1 : 6;
+    for (let page = 0; page < pages; page += 1) {
       const data = await SR.api.get('/api/change-owed', { query: query({ status: 'ALL', limit: 200, offset }), timeoutMs: 20000 }).catch(() => null);
       const rows = (data && data.data) || [];
       owed.push(...rows.filter((row) => row && row.id != null));
       if (!rows.length || !data.paging || !data.paging.hasMore) break;
       offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
     }
-    if (owed.length) await SR.store.putMany('change_owed', owed);
+    wrote += await saveRows('change_owed', owed);
+    await SR.store.metaSet('counter_copy_at', new Date().toISOString());
+    return wrote;
   }
 
   async function copySalesBook() {
-    if (!SR.api.isOnline()) return { ok: false, count: 0 };
+    if (!SR.api.isOnline()) return { ok: false, count: 0, wrote: 0 };
+    const prior = await SR.store.metaGet('sales_copy_at').catch(() => null);
+    const fullAt = await SR.store.metaGet('sales_full_at').catch(() => null);
+    const left = await SR.store.metaGet('sales_detail_left').catch(() => null) || [];
+    const fullDue = !prior || copyDue(fullAt, Date.now(), SALES_FULL_MS);
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const headers = [];
-    let offset = 0;
-    for (let page = 0; page < 12; page += 1) {
-      const data = await SR.api.get('/api/sales', { query: { from: '2020-01-01', to, limit: 500, offset }, timeoutMs: 25000 });
-      const rows = (data && data.data) || [];
-      headers.push(...rows.filter((row) => row && row.id != null));
-      if (!rows.length || !data.paging || !data.paging.hasMore) break;
-      offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+    let wrote = 0;
+    const listAt = await SR.store.metaGet('sales_list_at').catch(() => null);
+    const listDue = fullDue || copyDue(listAt, Date.now(), 10 * 60 * 1000);
+    if (listDue) {
+      const from = fullDue ? '2020-01-01' : dayBefore(prior);
+      const pages = fullDue ? 12 : 2;
+      let offset = 0;
+      for (let page = 0; page < pages; page += 1) {
+        const data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 });
+        const rows = (data && data.data) || [];
+        headers.push(...rows.filter((row) => row && row.id != null));
+        if (!rows.length || !data.paging || !data.paging.hasMore) break;
+        offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+      }
+      await SR.store.metaSet('sales_list_at', new Date().toISOString());
+      if (fullDue) await SR.store.metaSet('sales_full_at', new Date().toISOString());
     }
-    if (headers.length) await SR.store.putMany('sales', headers);
+    const fps = await SR.store.metaGet('sale_list_fp').catch(() => null) || {};
+    const headerFp = await SR.store.metaGet('sale_header_fp').catch(() => null) || {};
+    const freshHeaders = headers.filter((row) => headerFp[row.id] !== saleFingerprint(row));
+    wrote += await saveRows('sales', freshHeaders);
+    for (const row of freshHeaders) headerFp[row.id] = saleFingerprint(row);
+    const queued = headers.filter((row) => fps[row.id] !== saleFingerprint(row)).map((row) => ({ id: row.id, fp: saleFingerprint(row), tries: 0 }));
+    const seen = new Set(queued.map((row) => row.id));
+    const pending = queued.concat((left || []).filter((row) => row && row.id != null && !seen.has(row.id)));
+    const batch = pending.slice(0, DETAIL_BATCH);
+    const rest = pending.slice(DETAIL_BATCH, 200);
     const items = [];
     const payments = [];
     const serials = [];
     const owed = [];
     const prescriptions = [];
     const register = [];
-    const recent = headers.slice(0, 120);
-    for (let i = 0; i < recent.length; i += 4) {
-      const chunk = recent.slice(i, i + 4);
+    const failed = [];
+    for (let i = 0; i < batch.length; i += 4) {
+      const chunk = batch.slice(i, i + 4);
       const details = await Promise.all(chunk.map((row) => SR.api.get('/api/sales/' + encodeURIComponent(row.id), { timeoutMs: 20000 }).catch(() => null)));
-      for (const detail of details) {
-        if (!detail || !detail.sale || detail.sale.id == null) continue;
-        await SR.store.putMany('sales', [detail.sale]);
+      for (let n = 0; n < details.length; n += 1) {
+        const detail = details[n];
+        const asked = chunk[n];
+        if (!detail || !detail.sale || detail.sale.id == null) {
+          if ((asked.tries || 0) < 2) failed.push(Object.assign({}, asked, { tries: (asked.tries || 0) + 1 }));
+          continue;
+        }
+        wrote += await saveRows('sales', [detail.sale]);
+        fps[asked.id] = asked.fp;
         for (const row of detail.items || []) if (row && row.id != null) items.push(row);
         for (const row of detail.payments || []) if (row && row.id != null) payments.push(row);
         for (const row of detail.serials || []) if (row && row.id != null) serials.push(row);
@@ -771,22 +924,35 @@
         for (const row of detail.controlledRegister || []) if (row && row.id != null) register.push(row);
       }
     }
-    if (items.length) await SR.store.putMany('sale_items', items);
-    if (payments.length) await SR.store.putMany('sale_payments', payments);
-    if (serials.length) await SR.store.putMany('sale_serials', serials);
-    if (owed.length) await SR.store.putMany('change_owed', owed);
-    if (prescriptions.length) await SR.store.putMany('prescriptions', prescriptions);
-    if (register.length) await SR.store.putMany('controlled_substance_register', register);
-    const bills = [];
-    for (const status of ['OPEN', 'PAYING', 'PAID', 'CANCELLED']) {
-      const data = await SR.api.get('/api/bills', { query: { status }, timeoutMs: 20000 }).catch(() => null);
-      for (const row of (data && data.data) || []) if (row && row.id != null) bills.push(row);
+    wrote += await saveRows('sale_items', items);
+    wrote += await saveRows('sale_payments', payments);
+    wrote += await saveRows('sale_serials', serials);
+    wrote += await saveRows('change_owed', owed);
+    wrote += await saveRows('prescriptions', prescriptions);
+    wrote += await saveRows('controlled_substance_register', register);
+    const billsAt = await SR.store.metaGet('bills_copy_at').catch(() => null);
+    if (copyDue(billsAt, Date.now(), fullDue ? 0 : 15 * 60 * 1000)) {
+      const bills = [];
+      const statuses = fullDue || !billsAt ? ['OPEN', 'PAYING', 'PAID', 'CANCELLED'] : ['OPEN', 'PAYING'];
+      for (const status of statuses) {
+        const data = await SR.api.get('/api/bills', { query: { status }, timeoutMs: 20000 }).catch(() => null);
+        for (const row of (data && data.data) || []) if (row && row.id != null) bills.push(row);
+      }
+      wrote += await saveRows('customer_bills', bills);
+      await SR.store.metaSet('bills_copy_at', new Date().toISOString());
     }
-    if (bills.length) await SR.store.putMany('customer_bills', bills);
     const savedAt = SR.util.nowIso();
+    function trimMap(map) {
+      const trimmed = {};
+      for (const id of Object.keys(map).slice(-1000)) trimmed[id] = map[id];
+      return trimmed;
+    }
+    await SR.store.metaSet('sales_detail_left', failed.concat(rest).slice(0, 200));
+    await SR.store.metaSet('sale_list_fp', trimMap(fps));
+    await SR.store.metaSet('sale_header_fp', trimMap(headerFp));
     await SR.store.metaSet('sales_copy_at', savedAt);
-    await SR.store.metaSet('sales_copy_count', headers.length);
-    return { ok: true, count: headers.length };
+    if (fullDue) await SR.store.metaSet('sales_copy_count', headers.length);
+    return { ok: true, count: headers.length, wrote };
   }
 
   // -------------------------------------------------------------------
@@ -799,7 +965,7 @@
   async function runOnce({ full = false, silent = false, catchUp = false } = {}) {
     if (running) return running;
     running = (async () => {
-      let refresh = Boolean(catchUp || SR._catchingUp);
+      let refresh = false;
       SR._uploading = true;
       try {
         if (!SR.api.isOnline()) await SR.api.probe({ force: true });
@@ -825,14 +991,24 @@
         if (pullResult && pullResult.rows) refresh = true;
         if (SR.api.isOnline()) {
           if (pullResult && pullResult.ok) {
-            try { await copySalesBook(); } catch (err) {
+            try {
+              const salesCopy = await copySalesBook();
+              if (salesCopy && salesCopy.wrote) refresh = true;
+            } catch (err) {
               if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
             }
           }
-          try { await copyCounterBooks(); } catch (err) {
+          try {
+            if (await copyCounterBooks()) refresh = true;
+          } catch (err) {
             if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
           }
-          try { await copyVerticalBooks(); } catch (err) { /* a feature this vertical does not use is not a short catalogue */ }
+          try {
+            if (await copyVerticalBooks()) refresh = true;
+          } catch (err) { /* a feature this vertical does not use is not a short catalogue */ }
+          try {
+            if (await copyProductDetails()) refresh = true;
+          } catch (err) { /* a product this vertical does not register is not a short catalogue */ }
         }
         if (!silent) {
           const bits = [];
