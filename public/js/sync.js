@@ -969,6 +969,7 @@
   }
 
   async function runOnce({ full = false, silent = false, catchUp = false } = {}) {
+    if (SR._explicitSignOut) return { ok: false, signedOut: true };
     if (running) return running;
     running = (async () => {
       let refresh = false;
@@ -1065,6 +1066,14 @@
   }
 
   async function resumeAfterLine() {
+    // A sign-out must not be undone by the line returning. The queue stays.
+    // The sign-in page is the door; do not raise a second PIN box over it.
+    if (SR._explicitSignOut) return { ok: false, signedOut: true };
+    if (!SR.api.hasToken()) {
+      const waiting = await SR.store.outboxCount().catch(() => 0);
+      if (waiting > 0) emit('needs-sign-in', { waiting });
+      return { ok: false, needsAuth: true };
+    }
     if (SR.api.holdCatchUp) SR.api.holdCatchUp(180000);
     else SR._catchingUp = true;
     try {
@@ -1086,6 +1095,7 @@
   }
 
   async function catchUpWaiting() {
+    if (SR._explicitSignOut) return { ok: false, signedOut: true };
     const waiting = await waitingForMe().catch(() => 0);
     if (!waiting) return { ok: true, empty: true };
     if (!SR.api.isOnline()) {
@@ -1118,7 +1128,7 @@
     // start that in the same tick as the line returning: the first answer was
     // being read as a sign-out.
     SR.api.on('net', ({ online }) => {
-      if (!online) return;
+      if (!online || SR._explicitSignOut || !SR.api.hasToken()) return;
       setTimeout(() => resumeAfterLine().catch(() => {}), 1500);
     });
     SR.api.on('queue', () => {

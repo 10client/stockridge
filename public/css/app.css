@@ -135,6 +135,11 @@ button, input, select, textarea { font: inherit; color: inherit; }
 /* ------------------------------ login ------------------------------- */
 .login-screen { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; background: var(--page); }
 #login-screen[hidden], #shell[hidden] { display: none !important; }
+/* Sign-out used to clear the person and leave the shell up: the side nav
+   went empty and Save beside Sync vanished, and the sign-in page never
+   appeared. This class is the door. A later paint cannot put the shell back. */
+body.is-signed-out #shell { display: none !important; }
+body.is-signed-out #login-screen { display: grid !important; }
 .login-card {
   width: min(440px, 100%); background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius-lg); padding: 28px 26px 22px; box-shadow: var(--shadow-2);

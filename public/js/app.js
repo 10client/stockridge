@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261030-1945-catchup';
+  SR.BUILD = 'ridge-20261030-0910-7f185a1';
 
   // -------------------------------------------------------------------
   // INSTALL
@@ -387,7 +387,9 @@
     const hit = matchRoute(path);
     closeNav();
 
-    if (!SR.state.user) { ui.endPageNow(); showLogin(); return; }
+    // A signed-out till must not paint the shell. Empty nav and a missing Save
+    // chip are what that looks like when the sign-in page never comes up.
+    if (explicitSignOut || !SR.state.user) { showLogin(); return; }
     if (hit && offlineBooksOnly() && !OFFLINE_VIEWS.has(hit.route.view)) {
       navigate('/pos', { replace: true });
       return;
@@ -494,7 +496,8 @@
   // SHELL
   // -------------------------------------------------------------------
   function showBoot(show = true) {
-    document.getElementById('boot').hidden = !show;
+    const boot = document.getElementById('boot');
+    if (boot) boot.hidden = !show;
   }
   function setBootLine(text, progress = null) {
     const line = document.getElementById('boot-line');
@@ -611,41 +614,80 @@
     if (box) box.checked = !till || till.remember !== false;
   }
 
-  function showLogin() {
-    stopSessionWatch();
-    ui.endPageNow();
-    showBoot(false);
+  function shellIsOpen() {
+    const shell = document.getElementById('shell');
+    if (!shell || shell.hidden) return false;
+    return shell.style.display !== 'none';
+  }
+
+  function presentLogin() {
+    // The door first. Anything after this can throw — a missing boot node, a
+    // veil, a brand paint — and must not be able to leave the shell up with
+    // nobody signed in. That screen is an empty side nav and no Save chip.
     const shell = document.getElementById('shell');
     const login = document.getElementById('login-screen');
+    document.body.classList.add('is-signed-out');
+    document.body.classList.remove('is-signed-in');
     if (shell) {
       shell.hidden = true;
       shell.style.setProperty('display', 'none', 'important');
+      shell.setAttribute('aria-hidden', 'true');
+      shell.setAttribute('inert', '');
     }
     if (login) {
       login.hidden = false;
-      login.style.removeProperty('display');
+      login.style.setProperty('display', 'grid', 'important');
+      login.removeAttribute('aria-hidden');
+      login.removeAttribute('inert');
     }
-    paintDisplacedNotice();
-    applyRememberedLogin();
+    try { stopSessionWatch(); } catch (e) { /* the door is already up */ }
+    try { ui.endPageNow(); } catch (e) { /* a veil must not cover the sign-in page */ }
+    try { showBoot(false); } catch (e) { /* boot is decoration */ }
+    try { closeUserMenu(); } catch (e) {}
+    try { closeBell(); } catch (e) {}
+    try { closeNav(); } catch (e) {}
+    const modal = document.getElementById('modal-root');
+    if (modal) {
+      modal.replaceChildren();
+      modal.hidden = true;
+    }
+    const pinBox = document.getElementById('sr-native-pin');
+    if (pinBox && pinBox.remove) pinBox.remove();
+    try { paintDisplacedNotice(); } catch (e) {}
+    try { applyRememberedLogin(); } catch (e) {}
     const u = document.getElementById('login-username');
-    if (u && !u.value) setTimeout(() => u.focus(), 60);
-    updateNetChrome();
-    paintInstallButton();
+    if (u && !u.value) setTimeout(() => { try { u.focus(); } catch (err) {} }, 60);
+    try { updateNetChrome(); } catch (e) {}
+    try { paintInstallButton(); } catch (e) {}
+  }
+
+  function showLogin() {
+    presentLogin();
   }
 
   function showShell() {
+    if (explicitSignOut || !SR.state.user) {
+      presentLogin();
+      return;
+    }
+    document.body.classList.remove('is-signed-out');
+    document.body.classList.add('is-signed-in');
     showBoot(false);
     const login = document.getElementById('login-screen');
     const shell = document.getElementById('shell');
     // .login-screen sets display:grid. That author rule can beat the hidden
     // attribute, so the form stays on screen after a successful sign-in.
+    // removeProperty does not always clear an inline !important, so the shell
+    // is shown with the same priority the login page uses to stay hidden.
     if (login) {
       login.hidden = true;
       login.style.setProperty('display', 'none', 'important');
     }
     if (shell) {
       shell.hidden = false;
-      shell.style.removeProperty('display');
+      shell.style.setProperty('display', 'grid', 'important');
+      shell.removeAttribute('aria-hidden');
+      shell.removeAttribute('inert');
     }
     startSessionWatch();
     // paintIdentity() is decoration: the header, the chips, the user menu. The
@@ -731,6 +773,12 @@
   function buildNav() {
     const list = document.getElementById('nav-list');
     if (!list) return;
+    // Do not empty the list into a shell that is still on screen. That is the
+    // sign-out that looks like the side nav disappeared and the sign-in page did not.
+    if (explicitSignOut || !SR.state.user) {
+      if (explicitSignOut || shellIsOpen()) presentLogin();
+      return;
+    }
     const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
     const groups = new Map();
     for (const route of ROUTES) {
@@ -924,11 +972,24 @@
 
   async function updateSaveChrome() {
     const chip = document.getElementById('save-chip');
-    const label = document.getElementById('save-chip-label');
-    if (!chip || !label || !SR.saveStatus || !SR.state.user) {
-      if (chip) chip.hidden = true;
+    if (!chip) return;
+    if (explicitSignOut || !SR.state.user) {
+      chip.hidden = true;
+      if (explicitSignOut || shellIsOpen()) presentLogin();
       return;
     }
+    let label = document.getElementById('save-chip-label');
+    if (!label) {
+      chip.replaceChildren();
+      const dot = document.createElement('span');
+      dot.className = 'net-dot';
+      dot.setAttribute('aria-hidden', 'true');
+      label = document.createElement('span');
+      label.id = 'save-chip-label';
+      label.textContent = 'Checking…';
+      chip.append(dot, label);
+    }
+    if (!SR.saveStatus) return;
     try {
       const status = SR.sync.status();
       const stats = await SR.sync.queueStats();
@@ -955,6 +1016,11 @@
         productRows: products.length,
         salesCopied: Boolean(salesCopied),
       });
+      if (explicitSignOut || !SR.state.user) {
+        chip.hidden = true;
+        if (explicitSignOut || shellIsOpen()) presentLogin();
+        return;
+      }
       chip.hidden = false;
       chip.dataset.state = report.state;
       chip.classList.add('chip-save');
@@ -968,6 +1034,11 @@
     const parts = ensureQueueChip();
     if (!parts) return;
     const { chip, count, label } = parts;
+    if (explicitSignOut || !SR.state.user) {
+      chip.hidden = true;
+      if (explicitSignOut || shellIsOpen()) presentLogin();
+      return;
+    }
     try {
       const stats = await SR.sync.queueStats();
       const waiting = Number(stats.pending || 0) + Number(stats.failed || 0);
@@ -1365,9 +1436,77 @@
   let sessionWatchTimer = null;
   let sessionWatchBound = false;
   let signingOut = false;
+  // Set before the session is cleared. While this is true, a late sync, a
+  // Welcome toast, or a net event must not put the shell back. The symptom of
+  // that race is an empty side nav and no Save chip beside Sync.
+  let explicitSignOut = false;
   // A shop 401 in the same breath as a successful sign-in was signing the till
   // straight back out. The welcome toast stayed. The login page stayed too.
   let loginGraceUntil = 0;
+
+  function markSignedOut() {
+    explicitSignOut = true;
+    signingOut = true;
+    SR._explicitSignOut = true;
+  }
+
+  function allowShell() {
+    explicitSignOut = false;
+    signingOut = false;
+    SR._explicitSignOut = false;
+    const note = document.getElementById('login-signed-out');
+    if (note) note.remove();
+  }
+
+  function noteSalesKept(waiting) {
+    const form = document.getElementById('login-form');
+    if (!form) return;
+    let note = document.getElementById('login-signed-out');
+    if (!waiting) {
+      if (note) note.remove();
+      return;
+    }
+    if (!note) {
+      note = document.createElement('div');
+      note.id = 'login-signed-out';
+      note.className = 'alert alert-warn';
+      note.style.marginBottom = '12px';
+      form.prepend(note);
+    }
+    note.textContent = 'Signed out. Sales saved on this till are still here. They upload when this account signs in on this till again. They are not deleted, and they are not sent as the next person.';
+  }
+
+  function retireServerSession() {
+    let token = '';
+    try { token = SR.api.loadToken() || ''; } catch (e) { token = ''; }
+    try { SR.api.setToken(null); } catch (e) {}
+    if (!token) return;
+    const headers = {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    };
+    try {
+      const device = SR.device && SR.device.current ? SR.device.current() : null;
+      if (device && device.id && device.id !== 'SR-UNKNOWN') headers['X-Device-Id'] = device.id;
+    } catch (e) {}
+    // Logout retires the server session only. The offline queue is not in this body.
+    fetch('/api/auth/logout', { method: 'POST', headers, body: '{}', cache: 'no-store' }).catch(() => {});
+  }
+
+  function endLocalSession() {
+    markSignedOut();
+    presentLogin();
+    const till = readTill();
+    if (till) writeTill({ username: till.username, remember: false });
+    // clear() does not touch the outbox. Sales recorded here stay on this device.
+    try { SR.state.clear(); } catch (e) {}
+    try { SR.sync.stop(); } catch (e) {}
+    if (bellPollTimer) { clearInterval(bellPollTimer); bellPollTimer = null; }
+    const badge = document.getElementById('bell-count');
+    if (badge) { badge.hidden = true; badge.textContent = '0'; }
+    presentLogin();
+  }
 
   function onSessionVisible() {
     if (document.visibilityState === 'hidden') return;
@@ -1554,6 +1693,10 @@
   }
 
   async function handleAuthFailure(detail) {
+    if (explicitSignOut) {
+      presentLogin();
+      return;
+    }
     if (signingOut) return;
     // The sign-in just succeeded. A parallel sync or dashboard read can still
     // be refused while the device id catches up. Do not pull the login page
@@ -1606,18 +1749,14 @@
         await stampDisplacedQueue();
       }
     } finally {
-      SR.api.setToken(null);
-      SR.state.clear();
-      SR.sync.stop();
-      // No token, no alerts — and a poll that keeps running after sign-out is a poll that
-      // keeps 401-ing, which the API layer would report as the session having ended again.
-      if (bellPollTimer) { clearInterval(bellPollTimer); bellPollTimer = null; }
-      const badge = document.getElementById('bell-count');
-      if (badge) { badge.hidden = true; badge.textContent = '0'; }
-      closeBell();
-      showLogin();
-      ui.warn(superseded ? (detail.message || displacedNotice()) : 'Your session has ended. Sign in again to continue.');
-      signingOut = false;
+      // The door is not optional. A throw between clear() and showLogin() used
+      // to leave the shell up with an empty side nav and no Save chip.
+      endLocalSession();
+      retireServerSession();
+      try {
+        ui.warn(superseded ? (detail.message || displacedNotice()) : 'Your session has ended. Sign in again to continue.');
+      } catch (e) { /* the sign-in page is already up */ }
+      presentLogin();
     }
   }
 
@@ -1676,6 +1815,7 @@
         updateSubscriptionChrome();
         SR.sync.start();
         loginGraceUntil = Date.now() + 12000;
+        allowShell();
         showShell();
         navigate('/dashboard', { replace: true });
         ui.warn(result.token
@@ -1696,6 +1836,7 @@
       // Leave the login page before the toast. A later refusal must not be
       // able to put the form back on top of "Welcome".
       loginGraceUntil = Date.now() + 12000;
+      allowShell();
       showShell();
       navigate('/dashboard', { replace: true });
       // The mirror is refreshed after the shell is open, not before it.
@@ -1745,6 +1886,7 @@
           }
           SR.sync.start();
           loginGraceUntil = Date.now() + 12000;
+          allowShell();
           showShell();
           navigate('/dashboard', { replace: true });
           ui.warn(verified
@@ -1766,33 +1908,51 @@
   }
 
   async function doLogout(ev) {
+    if (explicitSignOut) {
+      presentLogin();
+      return;
+    }
     const btn = ev && ev.currentTarget;
     if (btn) btn.disabled = true;
     try {
-    const pending = await SR.sync.queueStats().catch(() => ({ pending: 0, failed: 0 }));
-    if (pending.pending > 0) {
-      const go = await ui.confirmDialog({
-        title: 'Work still waiting to sync',
-        message: `There ${pending.pending === 1 ? 'is 1 item' : `are ${pending.pending} items`} on this device that the server has not seen yet.`,
-        detail: 'Signing out does not delete them. Sales recorded by this account stay on this device and upload when this account signs in here again. They are not sent as the next person. Sync first if the line is up.',
-        confirmLabel: 'Sync now, then sign out',
-        cancelLabel: 'Stay signed in',
-      });
-      if (!go) return;
+      const pending = await SR.sync.queueStats().catch(() => ({ pending: 0, failed: 0 }));
+      const waiting = Number(pending.pending || 0) + Number(pending.failed || 0);
+      if (waiting > 0) {
+        let go = true;
+        try {
+          go = await ui.confirmDialog({
+            title: 'Sales still on this till',
+            message: `There ${waiting === 1 ? 'is 1 item' : `are ${waiting} items`} on this device that the server has not seen yet.`,
+            detail: 'Signing out does not delete them. They stay on this till and upload when this account signs in here again. They are not sent as the next person.',
+            confirmLabel: 'Sign out',
+            cancelLabel: 'Stay signed in',
+          });
+        } catch (e) {
+          go = true;
+        }
+        if (!go) {
+          if (SR.state.user && !explicitSignOut) {
+            try { buildNav(); } catch (err) {}
+            void updateSaveChrome();
+            void updateQueueChrome();
+          }
+          return;
+        }
+      }
+      // Show the sign-in page before any network call. A hung logout, or a
+      // sync that clears the person and rebuilds the nav, must not be the screen
+      // they are left on. The outbox is not cleared.
+      endLocalSession();
+      noteSalesKept(waiting);
+      retireServerSession();
       try {
-        await SR.sync.runOnce({ silent: true });
-      } catch (e) { /* the queue survives either way */ }
-    }
-    await SR.api.logout();
-    const till = readTill();
-    if (till) writeTill({ username: till.username, remember: false });
-    SR.state.clear();
-    SR.sync.stop();
-    closeUserMenu();
-    showLogin();
-    ui.info('Signed out.');
+        ui.info(waiting
+          ? 'Signed out. Sales saved on this till are still here. They upload when this account signs in again.'
+          : 'Signed out.');
+      } catch (e) { /* the sign-in page is the message */ }
     } finally {
       if (btn && btn.isConnected) btn.disabled = false;
+      if (explicitSignOut) presentLogin();
     }
   }
 
@@ -2086,7 +2246,17 @@
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
     SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });
-    SR.api.on('net', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); updateSubscriptionChrome(); buildNav(); });
+    SR.api.on('net', () => {
+      if (explicitSignOut || !SR.state.user) {
+        if (explicitSignOut || shellIsOpen()) presentLogin();
+        return;
+      }
+      updateNetChrome();
+      updateQueueChrome();
+      updateSaveChrome();
+      updateSubscriptionChrome();
+      buildNav();
+    });
     // A REFUSED WRITE IS THE MOST RELIABLE SIGNAL THERE IS. The cached settings can be
     // minutes or days old (they are mirrored for offline use); a 402 naming the
     // suspension is the server saying it just now. Re-read and repaint rather than trust
@@ -2097,9 +2267,18 @@
     SR.api.on('auth', (detail) => { void handleAuthFailure(detail || {}); });
     SR.state.on('branch', () => { paintIdentity(); void updateQueueChrome(); void updateSaveChrome(); });
     SR.state.on('business', () => {
+      if (explicitSignOut || !SR.state.user) {
+        presentLogin();
+        return;
+      }
       paintIdentity();
       buildNav();
       if (currentRoute && currentRoute.module && !(SR.state.moduleOn && SR.state.moduleOn(currentRoute.module))) navigate('/dashboard');
+    });
+    // Any clear of the person opens the sign-in page. The outbox is not part of that clear.
+    SR.state.on('cleared', () => {
+      markSignedOut();
+      presentLogin();
     });
   }
 
@@ -2181,6 +2360,7 @@
         return;
       }
       SR.sync.start();
+      allowShell();
       showShell();
       const pos = { path: '/pos', roles: ['STAFF', 'MANAGER', 'OWNER'] };
       navigate(allowed(pos) ? '/pos' : '/dashboard', { replace: true });
