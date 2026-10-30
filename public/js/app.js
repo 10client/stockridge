@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261028-0933-a211d23';
+  SR.BUILD = 'ridge-20261030-1945-catchup';
 
   // -------------------------------------------------------------------
   // INSTALL
@@ -1462,6 +1462,73 @@
     ui.warn('The line is back. You are still signed in on this till. Sales saved here will upload when the shop accepts this session.');
   }
 
+  let pinUploadOpen = false;
+  let pinUploadDismissedUntil = 0;
+
+  function askPinToUpload() {
+    if (pinUploadOpen || Date.now() < pinUploadDismissedUntil) return;
+    const shell = document.getElementById('shell');
+    const login = document.getElementById('login-screen');
+    if (!SR.state.user || !shell || shell.hidden || (login && !login.hidden)) return;
+    const till = readTill();
+    const username = (SR.state.user && SR.state.user.username) || (till && till.username);
+    if (!username) return;
+    pinUploadOpen = true;
+    const pin = ui.h('input', {
+      type: 'password',
+      inputmode: 'numeric',
+      autocomplete: 'current-password',
+      name: 'upload-pin',
+      id: 'upload-pin',
+    });
+    const err = ui.h('div', { class: 'alert alert-bad', hidden: true });
+    const body = ui.h('div', { class: 'stack' });
+    body.appendChild(ui.h('p', {}, 'The line is back. Sales saved on this till have not uploaded yet. Enter your PIN to send them. You stay on this screen. You do not sign out. This account can be on one device, so this sign-in ends it on any other device.'));
+    body.appendChild(ui.h('label', { for: 'upload-pin' }, 'PIN'));
+    body.appendChild(pin);
+    body.appendChild(err);
+    const send = ui.h('button', { class: 'btn btn-primary', type: 'button' }, 'Send the sales');
+    const stay = ui.h('button', { class: 'btn', type: 'button' }, 'Not now');
+    const modal = ui.openModal({
+      title: 'Send the offline sales',
+      body,
+      footer: [stay, send],
+      onClose: () => {
+        pinUploadOpen = false;
+        pinUploadDismissedUntil = Date.now() + 120000;
+      },
+    });
+    stay.addEventListener('click', () => modal.close());
+    send.addEventListener('click', async () => {
+      const value = String(pin.value || '').trim();
+      pin.value = '';
+      if (!value) {
+        err.hidden = false;
+        err.textContent = 'Enter your PIN.';
+        return;
+      }
+      send.disabled = true;
+      try {
+        const result = await SR.api.login({ username, pin: value, remember: true });
+        if (!result || result.offline || !result.token) {
+          err.hidden = false;
+          err.textContent = 'The shop did not accept that PIN. The sales are still on this till.';
+          send.disabled = false;
+          return;
+        }
+        pinUploadDismissedUntil = Date.now() + 120000;
+        modal.close();
+        if (SR.api.noteReachable) SR.api.noteReachable(true);
+        await SR.sync.runOnce({ silent: true, catchUp: true });
+        ui.ok('The offline sales were sent. You stayed signed in.');
+      } catch (e) {
+        err.hidden = false;
+        err.textContent = (e && e.message) || 'That PIN was not accepted. The sales are still on this till.';
+        send.disabled = false;
+      }
+    });
+  }
+
   function scheduleSessionConfirm(detail) {
     if (sessionConfirmTimer) return;
     sessionConfirmTimer = setTimeout(async () => {
@@ -2014,6 +2081,8 @@
     startBellPolling();
     SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); });
     SR.sync.on('settled', (detail) => { if (detail && detail.refresh) refreshOpenPage(); });
+    SR._pinUploadOwned = true;
+    SR.sync.on('needs-sign-in', () => { void askPinToUpload(); });
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
     SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });

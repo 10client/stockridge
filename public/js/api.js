@@ -206,8 +206,14 @@
         const up = reached(res.status, text);
         if (up) {
           probeMisses = 0;
+          const became = probeUp !== true || online !== true || lineCatchUp;
+          const returned = online !== true || lineCatchUp;
           probeUp = true;
+          lineCatchUp = false;
           setOnline(true);
+          // setOnline emits only when the flag flips. A till that never marked
+          // itself offline still has sales to send when the shop answers.
+          if (became) emit('net', { online: true, confirmed: true, returned });
           return true;
         }
         probeMisses += 1;

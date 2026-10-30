@@ -41,6 +41,7 @@
   const SALES_TABLES = ['sales', 'sale_items', 'sale_payments', 'sale_serials', 'sale_returns', 'sale_return_items', 'customer_bills', 'bill_holds', 'sale_issues', 'change_owed', 'till_sessions', 'serial_numbers'];
 
   const AUTO_INTERVAL_MS = 3 * 60 * 1000;
+  const WAITING_RETRY_MS = 20 * 1000;
   const DEBOUNCE_AFTER_QUEUE_MS = 2500;
   const COUNTER_COPY_MS = 10 * 60 * 1000;
   const VERTICAL_COPY_MS = 15 * 60 * 1000;
@@ -90,7 +91,10 @@
    */
   async function push({ batchSize = 100 } = {}) {
     if (!SR.api.isOnline()) return { ok: false, offline: true, applied: 0, rejected: 0 };
-    if (!SR.api.hasToken()) return { ok: false, offline: false, needsAuth: true, applied: 0, rejected: 0 };
+    if (!SR.api.hasToken()) {
+      emit('needs-sign-in', { waiting: true });
+      return { ok: false, offline: false, needsAuth: true, applied: 0, rejected: 0 };
+    }
 
     const me = SR.state.user && SR.state.user.id;
     const queued = (await SR.store.pending()).filter((item) => !me || !item.user_id || item.user_id === me).slice(0, batchSize);
@@ -121,6 +125,8 @@
       result = await SR.api.post('/api/sync/push', body, { timeoutMs: 45000, quiet: true });
     } catch (err) {
       lastError = err.message;
+      const deadToken = err && (err.code === 'TOKEN_EXPIRED' || err.code === 'BAD_TOKEN' || err.code === 'NO_TOKEN' || err.code === 'SESSION_SUPERSEDED');
+      if (deadToken) emit('needs-sign-in', { waiting: true, code: err.code });
       // A machine-level failure (offline, timeout, 5xx) leaves everything in the
       // queue for the next attempt.
       if (err.retryable || err.isOffline || err.isAuth) {
@@ -1073,12 +1079,39 @@
     }
   }
 
+  async function waitingForMe() {
+    const me = SR.state && SR.state.user && SR.state.user.id;
+    const list = await SR.store.pending().catch(() => []);
+    return list.filter((item) => !me || !item.user_id || String(item.user_id) === String(me)).length;
+  }
+
+  async function catchUpWaiting() {
+    const waiting = await waitingForMe().catch(() => 0);
+    if (!waiting) return { ok: true, empty: true };
+    if (!SR.api.isOnline()) {
+      const up = await SR.api.probe({ force: true }).catch(() => false);
+      if (!up) return { ok: false, offline: true };
+    }
+    if (!SR.api.hasToken()) {
+      emit('needs-sign-in', { waiting });
+      return { ok: false, needsAuth: true };
+    }
+    if (running) return running;
+    return runOnce({ silent: true, catchUp: true });
+  }
+
   function start({ intervalMs = AUTO_INTERVAL_MS } = {}) {
     stop();
     timer = setInterval(() => {
       if (!SR.api.hasToken()) return;
       runOnce({ silent: true }).catch(() => {});
     }, intervalMs);
+    // A sale must not wait for the three-minute pass, or for a sign-out and a
+    // fresh sign-in. While this account has rows waiting, ask the shop and send
+    // them. An empty queue does not add a pull.
+    waitTimer = setInterval(() => {
+      catchUpWaiting().catch(() => {});
+    }, WAITING_RETRY_MS);
     // Coming back online is the follower catching up to the leader. Turso stays
     // behind the Worker. This till never opens it. The person stays signed in.
     // Push the local outbox first, then copy the leader's catalogue. Do not
@@ -1101,6 +1134,8 @@
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    if (waitTimer) clearInterval(waitTimer);
+    waitTimer = null;
   }
 
   async function queueStats() {
@@ -1196,7 +1231,7 @@
 
   SR.sync = {
     PULL_TABLES, AUTO_INTERVAL_MS,
-    push, pull, replayUnsyncedShelf, runOnce, start, stop, status, on,
+    push, pull, replayUnsyncedShelf, runOnce, resumeAfterLine, catchUpWaiting, start, stop, status, on,
     queueStats, discard, retryFailed, saveFacts,
     get lastPushAt() { return lastPushAt; },
     get lastPullAt() { return lastPullAt; },

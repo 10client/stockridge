@@ -120,10 +120,11 @@
    * An owner who can see every shop is not locked to a home shop.
    */
   function lockedToOneShop() {
+    // The pin is on the account. An offline till copies every business into
+    // its catalogue. That copy is not permission to leave the shop this
+    // person was given, and it must not paint Switch business.
     if (canSeeAllBranches()) return false;
-    const pinned = state.user && state.user.branch && state.user.branch.id;
-    if (!pinned) return false;
-    return branches().some((b) => String(b.id) === String(pinned));
+    return Boolean(state.user && state.user.branch && state.user.branch.id);
   }
 
   /** Shops of the business in view, or every shop this account reaches. */
@@ -245,8 +246,62 @@
   // -------------------------------------------------------------------
   // active business / branch
   // -------------------------------------------------------------------
-  function businesses() { return state.businessRows || []; }
-  function branches() { return state.branchRows || []; }
+  function idSet(list) {
+    const out = new Set();
+    for (const id of list || []) {
+      if (id != null && id !== '') out.add(String(id));
+    }
+    return out;
+  }
+
+  // The sync copy stores every business so the books can be completed.
+  // The shell may offer only the businesses this account reaches. A staff
+  // member of one branch must not see the rest just because the till is offline.
+  function reachableBusinesses() {
+    const rows = (state.businessRows || []).filter((row) => row && row.id != null);
+    const scope = state.scope || {};
+    if (scope.allBusinesses) return rows;
+    const user = state.user || {};
+    const ids = idSet(scope.businessIds);
+    if (user.business && user.business.id) ids.add(String(user.business.id));
+    if (scope.pinnedBusinessId) ids.add(String(scope.pinnedBusinessId));
+    const pin = user.branch && user.branch.id;
+    if (pin) {
+      const branch = (state.branchRows || []).find((row) => row && String(row.id) === String(pin));
+      if (branch && branch.business_id) ids.add(String(branch.business_id));
+    }
+    if (!ids.size) {
+      const role = String(user.role || '').toUpperCase();
+      if (role === 'OWNER' || role === 'ADMIN') return rows;
+      if (user.business && user.business.id) {
+        return [{ id: user.business.id, name: user.business.name || 'Business' }];
+      }
+      return [];
+    }
+    const filtered = rows.filter((row) => ids.has(String(row.id)));
+    if (filtered.length) return filtered;
+    if (user.business && user.business.id) {
+      return [{ id: user.business.id, name: user.business.name || 'Business' }];
+    }
+    return [];
+  }
+
+  function reachableBranches() {
+    const rows = (state.branchRows || []).filter((row) => row && row.id != null);
+    const scope = state.scope || {};
+    if (scope.allBranches) return rows;
+    const user = state.user || {};
+    const ids = idSet(scope.branchIds);
+    if (user.branch && user.branch.id) ids.add(String(user.branch.id));
+    if (scope.pinnedBranchId) ids.add(String(scope.pinnedBranchId));
+    if (ids.size) return rows.filter((row) => ids.has(String(row.id)));
+    const bizIds = new Set(reachableBusinesses().map((row) => String(row.id)));
+    if (!bizIds.size) return [];
+    return rows.filter((row) => bizIds.has(String(row.business_id)));
+  }
+
+  function businesses() { return reachableBusinesses(); }
+  function branches() { return reachableBranches(); }
 
   function branchesFor(businessId) {
     if (!businessId) return branches();
@@ -303,6 +358,7 @@
   }
 
   function canSwitchBusiness() {
+    if (lockedToOneShop()) return false;
     return businesses().length > 1;
   }
 

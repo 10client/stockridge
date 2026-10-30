@@ -339,7 +339,7 @@
     <tr><td>2. Worker</td><td>The web folder. Wrangler is this client's Cloudflare account.</td><td><span class="inline">/api/health</span> is JSON, and the Worker name is this client's.</td></tr>
     <tr><td>3. Turso</td><td>The web folder. Token stays in <span class="inline">.env.deploy</span>.</td><td>Migrations applied. The token was not printed, and it is not in the shell.</td></tr>
     <tr><td>4. Electron</td><td>The shell folder. Node.js 22.12 or newer.</td><td><span class="inline">dist\win-unpacked\StockRidge.exe</span> opens. The portable exe was not opened.</td></tr>
-    <tr><td>5. Android</td><td>The same shell folder. JDK 17 and Android SDK 35.</td><td>The script printed <span class="inline">ANDROID_FLOW 1</span>. One phone shows StockRidge with no Install button.</td></tr>
+    <tr><td>5. Android</td><td>The same shell folder. JDK 17 and Android SDK 35.</td><td>The script printed <span class="inline">ANDROID_FLOW 2</span>. One phone shows StockRidge with no Install button.</td></tr>
   </table>
   <div class="dont">
     <span class="kicker">Office machine</span>
@@ -963,25 +963,21 @@ $env:JAVA_HOME = "C:\Users\Mohammed Hayatudeen\AndroidSetup\jdk-17.0.20.1+1"
 $env:Path = "$env:JAVA_HOME\bin;" + $env:Path
 java -version
 node -v</pre>
-  <pre>$toolsZip = Join-Path $setup "commandlinetools-win-15859902_latest.zip"
-$toolsUrl = "https://dl.google.com/android/repository/commandlinetools-win-15859902_latest.zip"
-curl.exe -L --fail -o $toolsZip $toolsUrl
-(Get-FileHash -Path $toolsZip -Algorithm SHA256).Hash</pre>
-  <p>The hash must be <span class="inline">90AE805D20434428BFFCB699C290860F19BB5F66A67E6B330067E3DE801FB04A</span>. If it is not, delete that zip and stop.</p>
-  <pre>$sdk = "$env:LOCALAPPDATA\Android\Sdk"
-New-Item -ItemType Directory -Force -Path "$sdk\cmdline-tools" | Out-Null
-Expand-Archive -Path $toolsZip -DestinationPath "$sdk\cmdline-tools" -Force
-Rename-Item "$sdk\cmdline-tools\cmdline-tools" "$sdk\cmdline-tools\latest"
-$env:ANDROID_HOME = $sdk
-$env:ANDROID_SDK_ROOT = $sdk
-$sm = "$sdk\cmdline-tools\latest\bin\sdkmanager.bat"
-$yes = ("y" + [char]13 + [char]10) * 50
-$yes | &amp; $sm --sdk_root=$sdk --licenses
-&amp; $sm --sdk_root=$sdk "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-Test-Path "$sdk\platforms\android-35"
-Test-Path "$sdk\build-tools\35.0.0"
-Test-Path "$sdk\platform-tools\adb.exe"</pre>
-  <p>Those three <span class="inline">Test-Path</span> lines must print True. The SDK download can take several minutes. Do not cancel it, and do not delete the till file because it is slow.</p>
+  <p><span class="inline">sdkmanager</span> is deprecated. Do not use it, and do not download the old command-line tools zip for a new machine. Android CLI is the installer. It is a separate download. It is not inside that zip. The download page does not publish a SHA-256 for that file. Install it only with the Google command below. Do not take the file from another site.</p>
+  <pre>$cli = "https://dl.google.com/android/cli/latest/" +
+  "windows_x86_64/install.cmd"
+curl.exe -fsSL $cli -o "$env:TEMP\i.cmd"
+&amp; "$env:TEMP\i.cmd"</pre>
+  <p>That is the local install, for this Windows user. It does not need an administrator. If android is not recognised, close the window and open a new one. Do not go back to sdkmanager.</p>
+  <pre>$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:ANDROID_SDK_ROOT = $env:ANDROID_HOME
+android --sdk="$env:ANDROID_HOME" sdk install platforms/android-35
+android --sdk="$env:ANDROID_HOME" sdk install build-tools/35.0.0
+android --sdk="$env:ANDROID_HOME" sdk install platform-tools
+Test-Path "$env:ANDROID_HOME\platforms\android-35"
+Test-Path "$env:ANDROID_HOME\build-tools\35.0.0"
+Test-Path "$env:ANDROID_HOME\platform-tools\adb.exe"</pre>
+  <p>Those three <span class="inline">Test-Path</span> lines must print True. Package names use slashes. There is no <span class="inline">--licenses</span> flag. The download can take several minutes. Do not cancel it, and do not delete the till file because it is slow.</p>
   <h3>18.2 Build the debug APK</h3>
   <p>A client APK must name that client's Worker, the same URL baked into that client's unpacked exe. The script puts the origin into the APK and then restores <span class="inline">strings.xml</span>, so the demonstration address is not committed by mistake. The demonstration build omits <span class="inline">-Origin</span>.</p>
   <pre>Set-Location $Shell
@@ -993,7 +989,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\tools\android-from-electron.ps1</pre>
   <div class="expected">
     <span class="kicker">Expected</span>
-    The first line is <span class="inline">ANDROID_FLOW 1</span>. The last lines say this was not a deploy and that <span class="inline">stockridge.db</span> was not opened. The APK is <span class="inline">android\app\build\outputs\apk\debug\app-debug.apk</span>. A client build also copies a named APK under that same build folder. <span class="inline">git status</span> does not show <span class="inline">strings.xml</span>.
+    The first line is <span class="inline">ANDROID_FLOW 2</span>. The last lines say this was not a deploy and that <span class="inline">stockridge.db</span> was not opened. The APK is <span class="inline">android\app\build\outputs\apk\debug\app-debug.apk</span>. A client build also copies a named APK under that same build folder. <span class="inline">git status</span> does not show <span class="inline">strings.xml</span>.
   </div>
   <h3>18.3 Install it on one phone</h3>
   <p>Android 7 or newer. Settings, About phone, tap Build number seven times, then turn on USB debugging. Use a data cable. Accept the prompt. Unplug every other phone and close any emulator.</p>
@@ -1072,7 +1068,7 @@ Get-Content .\build\desktop-config.json
 Get-Item .\dist\win-unpacked\StockRidge.exe
 Get-Item .\dist\StockRidge-0.1.0-win-x64.exe -ErrorAction SilentlyContinue
 
-# Phone build. ANDROID_FLOW 1 must have been printed. No till file was opened.
+# Phone build. ANDROID_FLOW 2 must have been printed. No till file was opened.
 Test-Path .\tools\android-from-electron.ps1
 Get-Item .\android\app\build\outputs\apk\debug\app-debug.apk -ErrorAction SilentlyContinue
 node -v
@@ -1109,7 +1105,7 @@ java -version</pre>
       <li>A client's APK still names <span class="inline">sample.stockridge.workers.dev</span>, or the office host, in <span class="inline">strings.xml</span>.</li>
       <li>You are about to run <span class="inline">npm run rebuild</span>, compile the SQL library, or install Electron 45 or electron-builder 27.</li>
       <li>You are about to delete <span class="inline">stockridge.db</span> or <span class="inline">stockridge.key</span> so the exe or the phone will start.</li>
-      <li>The Android script did not print <span class="inline">ANDROID_FLOW 1</span>, or it was run from the parent <span class="inline">C:\Users\Mohammed Hayatudeen\stockridge</span>.</li>
+      <li>The Android script did not print <span class="inline">ANDROID_FLOW 2</span>, or it was run from the parent <span class="inline">C:\Users\Mohammed Hayatudeen\stockridge</span>.</li>
       <li><span class="inline">node -v</span> is below v22.12 after a Java install. Put Node.js 22.12 back before the next exe build.</li>
     </ul>
   </div>
