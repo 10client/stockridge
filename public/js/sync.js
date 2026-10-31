@@ -51,6 +51,11 @@
   let running = null;
   let timer = null;
   let debounceTimer = null;
+  // Declared here. `start()` calls `stop()` first, and `stop()` reads this.
+  // A missing declaration throws "waitTimer is not defined" in strict mode
+  // and the cycle never starts, so the chips never say Syncing or Saving
+  // and the offline queue is never sent. Both clients load this file.
+  let waitTimer = null;
   const listeners = new Map();
 
   function on(event, fn) {
@@ -1050,6 +1055,10 @@
         if (refresh && SR.state && SR.state.user) emit('settled', { refresh: true });
       }
     })();
+    // The assignment has to finish before this emit. An emit inside the cycle,
+    // before the first await, still sees running as empty, so the chips never
+    // say Syncing or Saving.
+    emit('change', status());
     try { return await running; } finally {
       running = null;
       emit('change', status());

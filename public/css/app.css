@@ -324,6 +324,7 @@ button.chip:disabled {
 #login-install { margin-top: 10px; }
 @media (max-width: 620px) {
   .chip-net span:last-child { display: none; }
+  .chip-net[data-state="syncing"] span:last-child { display: inline; }
   .chip-net { padding: 0 9px; }
   .chip-branch, .chip-business { max-width: 108px; }
 }

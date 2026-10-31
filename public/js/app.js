@@ -499,6 +499,15 @@
     const boot = document.getElementById('boot');
     if (boot) boot.hidden = !show;
   }
+  function startSync() {
+    try {
+      SR.sync.start();
+    } catch (err) {
+      // A throw here used to stop offline sign-in and the shop screen.
+      // The queue is already on the device. The cycle can be asked again.
+      console.error('[sync] did not start', err);
+    }
+  }
   function setBootLine(text, progress = null) {
     const line = document.getElementById('boot-line');
     if (line) line.textContent = text;
@@ -1813,7 +1822,7 @@
           return;
         }
         updateSubscriptionChrome();
-        SR.sync.start();
+        startSync();
         loginGraceUntil = Date.now() + 12000;
         allowShell();
         showShell();
@@ -1840,7 +1849,7 @@
       showShell();
       navigate('/dashboard', { replace: true });
       // The mirror is refreshed after the shell is open, not before it.
-      SR.sync.start();
+      startSync();
       SR.sync.runOnce({ silent: true }).catch(() => {});
       ui.ok(result.otherDevice
         ? `Welcome. This account was signed in on another device — that device has been signed out.`
@@ -1884,7 +1893,7 @@
             errEl.hidden = false;
             return;
           }
-          SR.sync.start();
+          startSync();
           loginGraceUntil = Date.now() + 12000;
           allowShell();
           showShell();
@@ -2216,11 +2225,19 @@
     // 4. a look at the server, either way
     setBootLine(restored ? 'Syncing…' : 'Looking for the server…', 70);
     const reachable = await SR.api.probe({ force: true });
+    // Bind before the first cycle. A cycle that starts first paints Syncing
+    // and Saving into a listener that is not there yet, and the chips stay blank.
+    if (!SR._syncChromeBound) {
+      SR._syncChromeBound = true;
+      SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); });
+      SR.sync.on('settled', (detail) => { if (detail && detail.refresh) refreshOpenPage(); });
+      SR.sync.on('needs-sign-in', () => { void askPinToUpload(); });
+    }
     if (restored && reachable) {
-      SR.sync.start();
+      startSync();
       await SR.sync.runOnce({ silent: true }).catch(() => {});
     } else if (restored) {
-      SR.sync.start(); // it will fire the moment the line returns
+      startSync(); // it will fire the moment the line returns
     }
 
     // 5. draw
@@ -2239,10 +2256,7 @@
     updateSaveChrome();
 
     startBellPolling();
-    SR.sync.on('change', () => { updateNetChrome(); updateQueueChrome(); updateSaveChrome(); });
-    SR.sync.on('settled', (detail) => { if (detail && detail.refresh) refreshOpenPage(); });
     SR._pinUploadOwned = true;
-    SR.sync.on('needs-sign-in', () => { void askPinToUpload(); });
     // A sale queued offline never passes through the sync engine, so `change` does
     // not fire. `queue` is what `store.enqueue` emits the moment the row is stored.
     SR.api.on('queue', () => { void updateQueueChrome(); void updateSaveChrome(); });
@@ -2359,7 +2373,7 @@
         ui.warn('This device has no saved till yet. Connect once and sign in.');
         return;
       }
-      SR.sync.start();
+      startSync();
       allowShell();
       showShell();
       const pos = { path: '/pos', roles: ['STAFF', 'MANAGER', 'OWNER'] };
