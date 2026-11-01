@@ -326,7 +326,10 @@
               ui.h('button', { class: 'btn btn-primary btn-sm', type: 'button', onClick: () => SR.app.navigate('/pos') }, 'Sell'),
               SR.state.moduleOn('dispatch') ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => SR.app.navigate('/fleet') }, 'Vehicles') : null))));
       }
-      const sub = document.getElementById('dash-sub');
+      // The page is not in the document yet. render() returns wrap, and the
+      // router attaches it after this paint. A document lookup misses the
+      // subtitle, so it stayed "Loading the position…" after the figures arrived.
+      const sub = wrap.querySelector('#dash-sub');
       if (sub) {
         const period = data.period ? `${U.date(data.period.from)} → ${U.date(data.period.to)}` : U.date(U.nowIso());
         // The server's scope is the truth. The chip can say a branch while the figures

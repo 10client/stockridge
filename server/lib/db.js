@@ -272,6 +272,38 @@ function createCollector(db) {
  * only surfaces months later as a column that exists on some databases and
  * not others.
  */
+/**
+ * Views that mention a table being dropped must be removed first. SQLite
+ * refuses the drop, and the message names the view rather than the migration.
+ * The view text is the one already stored, so a later migration that changed
+ * a view is what gets put back, not a copy typed here.
+ */
+async function parkViewsForRebuild(db, sql) {
+  if (!/\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?branches\b/i.test(sql)) return [];
+  let views = [];
+  try {
+    views = await db.all("SELECT name, sql FROM sqlite_master WHERE type = 'view' AND sql LIKE '%branches%'");
+  } catch (e) {
+    return [];
+  }
+  const parked = [];
+  for (const view of views) {
+    if (!view || !view.name || !view.sql) continue;
+    if (!/\bbranches\b/i.test(view.sql)) continue;
+    await db.exec(`DROP VIEW IF EXISTS "${String(view.name).replace(/"/g, '')}"`);
+    parked.push(view);
+  }
+  return parked;
+}
+
+async function restoreParkedViews(db, parked) {
+  for (const view of parked || []) {
+    if (!view || !view.sql) continue;
+    const statement = /;\s*$/.test(view.sql) ? view.sql : `${view.sql};`;
+    await db.exec(statement);
+  }
+}
+
 async function migrate(db, { dir = MIGRATIONS_DIR, reset = false } = {}) {
   if (reset) {
     await db.exec('PRAGMA foreign_keys = OFF');
@@ -307,7 +339,12 @@ async function migrate(db, { dir = MIGRATIONS_DIR, reset = false } = {}) {
       result.skipped.push(id);
       continue;
     }
+    // A rebuild that drops `branches` fails on SQLite while a view still names
+    // that table: "error in view v_stock_value_by_branch: no such table".
+    // The applied SQL file is not edited. The views are parked and put back.
+    const parked = await parkViewsForRebuild(db, sql);
     await db.exec(sql);
+    await restoreParkedViews(db, parked);
     await db.run('INSERT INTO _migrations (id, checksum) VALUES (?, ?)', [id, checksum]);
     result.applied.push(id);
   }

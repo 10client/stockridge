@@ -132,8 +132,22 @@ async function applyTursoMigrations(db = tursoDb()) {
         const bare = statement.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '').trim();
         return bare && !/^\s*PRAGMA\b/i.test(bare);
       });
+      // Same door as the Node migrator. A drop of branches while a stock view
+      // still names it fails the rebuild. Park those views, then put them back.
+      const dropsBranches = body.some((statement) => /\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?branches\b/i.test(statement));
+      let parked = [];
+      if (dropsBranches) {
+        parked = await db.all("SELECT name, sql FROM sqlite_master WHERE type = 'view' AND sql LIKE '%branches%'");
+        parked = (parked || []).filter((view) => view && view.name && view.sql && /\bbranches\b/i.test(view.sql));
+        if (parked.length) {
+          await db.batch(parked.map((view) => ({ sql: `DROP VIEW IF EXISTS "${String(view.name).replace(/"/g, '')}"` })), { foreignKeys: false, timeoutMs: 60000 });
+        }
+      }
       process.stdout.write(`      ${id} (rebuild, ${body.length} statement(s), foreign keys off)\n`);
       await db.batch(body.map((statement) => ({ sql: statement })), { foreignKeys: false, timeoutMs: 60000 });
+      if (parked.length) {
+        await db.batch(parked.map((view) => ({ sql: /;\s*$/.test(view.sql) ? view.sql : `${view.sql};` })), { foreignKeys: false, timeoutMs: 60000 });
+      }
     } else {
       process.stdout.write(`      ${id} (${statements.length} statement(s))\n`);
       for (let i = 0; i < statements.length; i += 1) {
