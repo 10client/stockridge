@@ -214,14 +214,14 @@
       'aria-label': 'Scan or search',
     });
     const categorySelect = ui.h('select', { id: 'pos-retail-category' });
-    categorySelect.appendChild(ui.h('option', { value: '' }, 'Both sides'));
+    categorySelect.appendChild(ui.h('option', { value: '' }, 'All categories'));
     const scanBox = ui.h('div', { class: 'pos-scan' }, scanInput,
       ui.h('button', { class: 'btn btn-primary scan-btn', type: 'button', onClick: () => commitField(scanInput.value, { fast: wedgeCount >= 4 }) }, 'Find'));
     const results = ui.h('div', { class: 'pos-results', hidden: true });
     const categoryField = ui.h('label', { class: 'field pos-category' },
       ui.h('span', { class: 'field-label' }, 'Selling category'),
       categorySelect,
-      ui.h('span', { class: 'hint' }, 'A NAFDAC catalogue drug is pharmaceutical. A shop-added drug counts only when it is filed under a pharmaceutical category. Everything else is the other side.'));
+      ui.h('span', { class: 'hint' }, 'One list. Pick a category, or leave this on all categories. A NAFDAC catalogue drug stays pharmaceutical whichever category it is filed in.'));
     if (plant) categoryField.hidden = true;
     const scanCard = ui.h('div', { class: 'card' },
       ui.h('div', { class: 'card-body' },
@@ -325,8 +325,8 @@
         results.hidden = false;
         return;
       }
-      const group = categorySelect.value;
-      if (q.length < 2 && !group) { results.hidden = true; results.replaceChildren(); return; }
+      const categoryId = categorySelect.value;
+      if (q.length < 2 && !categoryId) { results.hidden = true; results.replaceChildren(); return; }
       const seq = ++searchSeq;
       let hits = []; let source = 'device';
       const offline = !SR.api.isOnline();
@@ -339,16 +339,16 @@
       // product. Stay on this till's shelf until that sale has been sent.
       if (!offline && !queuedShelf) {
         try {
-          const data = await SR.api.get('/api/products', { query: SR.state.query({ q: q.length >= 2 ? q : undefined, limit: 30, for_sale: '1', selling_group: group || undefined }) });
+          const data = await SR.api.get('/api/products', { query: SR.state.query({ q: q.length >= 2 ? q : undefined, limit: 30, for_sale: '1', category_id: categoryId || undefined }) });
           if (!data || !Array.isArray(data.data)) throw new Error('The till search did not return a list.');
           hits = data.data;
           source = 'server';
         } catch (err) {
-          hits = await searchMirror(q, group);
+          hits = await searchMirror(q, categoryId);
           source = 'device';
         }
       } else {
-        hits = await searchMirror(q, group);
+        hits = await searchMirror(q, categoryId);
         source = 'device';
       }
       if (seq !== searchSeq) return;
@@ -459,25 +459,28 @@
     }
 
     async function paintSellingCategories() {
-      const rows = await SR.store.all('product_categories').catch(() => []);
-      const groups = new Map();
-      for (const row of rows || []) {
-        if (Number(row.is_deleted) || Number(row.is_active) === 0) continue;
-        const group = U.sellingGroup(row);
-        const prev = groups.get(group.code) || { code: group.code, label: group.label, count: 0 };
-        prev.count += 1;
-        groups.set(group.code, prev);
+      let rows = [];
+      try {
+        const data = await SR.api.get('/api/categories', { query: SR.state.query() });
+        rows = data.data || [];
+      } catch (err) {
+        rows = await SR.store.all('product_categories', {
+          where: (row) => !Number(row.is_deleted) && Number(row.is_active) !== 0
+            && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()),
+        }).catch(() => []);
       }
+      rows = (rows || []).filter((row) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()))
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
       const current = categorySelect.value;
-      categorySelect.replaceChildren(ui.h('option', { value: '' }, 'Both sides'));
-      for (const group of U.sellingGroups()) {
-        const row = groups.get(group.code);
-        categorySelect.appendChild(ui.h('option', { value: group.code }, row ? `${group.label} · ${row.count}` : group.label));
+      categorySelect.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
+      for (const row of rows) {
+        categorySelect.appendChild(ui.h('option', { value: String(row.id) }, row.name));
       }
       if ([...categorySelect.options].some((opt) => opt.value === current)) categorySelect.value = current;
     }
 
-    async function searchMirror(term, groupCode) {
+    async function searchMirror(term, categoryId) {
       const needle = String(term || '').toLowerCase();
       const categories = await SR.store.all('product_categories').catch(() => []);
       const categoryById = new Map((categories || []).filter((c) => !Number(c.is_deleted)).map((c) => [String(c.id), c]));
@@ -511,12 +514,9 @@
         const ownBarcode = (product && product.barcode) || '';
         const blob = `${name} ${sku} ${brand} ${model} ${categoryName} ${codes} ${ownBarcode}`.toLowerCase();
         if (needle && !blob.includes(needle)) continue;
-        if (!needle && !groupCode) continue;
-        if (groupCode && U.sellingGroup({
-          code: categoryCode, name: categoryName,
-          parent_code: cat && cat.parent_id ? ((categoryById.get(String(cat.parent_id)) || {}).code) : null,
-          nafdac_catalog_id: (product && product.nafdac_catalog_id) || info.nafdacCatalogId,
-        }).code !== groupCode) continue;
+        if (!needle && !categoryId) continue;
+        const filedId = (product && product.category_id) || info.categoryId || '';
+        if (categoryId && String(filedId) !== String(categoryId)) continue;
         const price = product && Number(product.selling_price) > 0
           ? Number(product.selling_price)
           : (info.price || 0);

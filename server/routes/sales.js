@@ -524,6 +524,14 @@ function mount(app, base = '/api') {
     if (cashier) { where.push('s.salesperson_id = ?'); params.push(String(cashier)); }
     const customerId = ctx.req.queryParam('customer_id');
     if (customerId) { where.push('s.customer_id = ?'); params.push(String(customerId)); }
+    const categoryId = String(ctx.req.queryParam('category_id') || '').trim();
+    if (categoryId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM sale_items si
+        WHERE si.sale_id = s.id AND si.is_deleted = 0 AND si.category_id = ?
+      )`);
+      params.push(categoryId);
+    }
     const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
     if (sellingGroup) {
       const clause = selling.saleLineWhere(sellingGroup);

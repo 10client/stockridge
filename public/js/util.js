@@ -343,7 +343,7 @@
   // pharmaceutical category. Everything else is the other side.
   const SELLING_GROUPS = [
     { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
-    { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+    { code: 'NON_PHARMACEUTICALS', label: 'Others' },
   ];
   const PHARMACEUTICAL_CODES = new Set([
     'ALIMENTARY', 'ANALGESICS', 'ANTIPARASITIC', 'CARDIOVASCULAR', 'CONTROLLED',
@@ -365,7 +365,7 @@
     }
     const code = String((item && (item.code || item.category_code || item.categoryCode || item.product_category_code)) || '').trim().toUpperCase();
     if (PHARMACEUTICAL_CODES.has(code)) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
-    return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
+    return { code: 'NON_PHARMACEUTICALS', label: 'Others' };
   }
 
   function sellingGroups() { return SELLING_GROUPS.map((g) => ({ code: g.code, label: g.label })); }

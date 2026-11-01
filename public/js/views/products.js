@@ -103,10 +103,6 @@
     });
     qInput.value = state.q;
     toolbar.firstElementChild.appendChild(ui.h('div', { class: 'grow' }, qInput));
-    const sideSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.category = ''; state.page = 0; state.highlightId = null; fillCategories().then(load); } });
-    sideSel.appendChild(ui.h('option', { value: '' }, 'Both sides'));
-    for (const group of U.sellingGroups()) sideSel.appendChild(ui.h('option', { value: group.code }, group.label));
-    toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Side'), sideSel));
     const catSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; state.highlightId = null; load(); } });
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), catSel));
     wrap.appendChild(toolbar);
@@ -123,15 +119,14 @@
       try {
         const data = await SR.api.get('/api/categories', { query: SR.state.query() });
         shelfPayload = data;
-        const rows = byName(data.data || []).filter((c) => !state.sellingGroup || sideOf(c) === state.sellingGroup);
+        const rows = byName(data.data || []);
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, `${c.name} (${Number(c.product_count) || 0})`));
         if (state.category) catSel.value = state.category;
         paintShelves(rows, data.unfiled || { product_count: 0, products: [] });
         return rows;
       } catch (err) {
-        const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) }))
-          .filter((c) => !state.sellingGroup || sideOf(c) === state.sellingGroup);
+        const rows = byName(await SR.store.all('product_categories', { where: (c) => !Number(c.is_deleted) && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(c.code || '').toUpperCase()) }));
         catSel.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
         for (const c of rows) catSel.appendChild(ui.h('option', { value: String(c.id) }, c.name));
         paintShelves(rows, { product_count: 0, products: [] });
@@ -149,16 +144,16 @@
     }
     async function editCategory(category) {
       const wrapEl = ui.h('div', {});
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The name is what the catalogue shows. The side is which major category this shelf sits under. Products already on the shelf stay on it. A NAFDAC catalogue medicine stays pharmaceutical even if the shelf moves.'));
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'The name is what the catalogue shows. Pharmaceuticals and others are the same list. Products already in the category stay in it. A NAFDAC catalogue medicine stays pharmaceutical even if the category moves.'));
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Category name', name: 'name', value: category.name, required: true }),
         ui.field({
-          label: 'Sits under',
+          label: 'Counts as',
           name: 'selling_group',
           value: sideOf(category),
           options: [
             { value: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
-            { value: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+            { value: 'NON_PHARMACEUTICALS', label: 'Others' },
           ],
         })));
       const m = ui.openModal({
@@ -199,7 +194,7 @@
           value: product.category_id || '',
           options: [{ value: '', label: 'Not in a category' }].concat(choices.map((c) => ({
             value: String(c.id),
-            label: `${c.name} · ${sideOf(c) === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} (${Number(c.product_count) || 0})`,
+            label: `${c.name} (${Number(c.product_count) || 0})`,
           }))),
         })));
       const m = ui.openModal({
@@ -240,7 +235,7 @@
           ui.h('div', { class: 'card-head' },
             ui.h('h2', {}, category.name),
             ui.h('span', { class: 'badge' }, `${count} product${count === 1 ? '' : 's'}`),
-            side === 'PHARMACEUTICALS' ? ui.badge('Pharmaceuticals', 'badge-info') : (side ? ui.badge('Non-pharmaceuticals', 'badge-mute') : null)),
+            side === 'PHARMACEUTICALS' ? ui.badge('Pharmaceuticals', 'badge-info') : (side ? ui.badge('Others', 'badge-mute') : null)),
           Number(category.nafdac_count) > 0
             ? ui.h('p', { class: 'hint' }, 'Products copied from the NAFDAC catalogue stay pharmaceutical, even if this shelf moves.')
             : null,
@@ -251,50 +246,40 @@
             category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => openCategory(category.id) }, more ? `Show all ${count}` : 'Show in the list') : null,
             canOrganize() && category.id ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => editCategory(category) }, 'Edit') : null)));
     }
-    function majorSection(code, label, rows) {
-      const cards = rows.map((row) => shelfCard(row, row.products || [], Number(row.product_count) || 0));
-      const count = rows.reduce((sum, row) => sum + (Number(row.product_count) || 0), 0);
-      return ui.h('section', { class: 'stack' },
-        ui.h('div', { class: 'card-head' },
-          ui.h('h2', {}, label),
-          ui.h('span', { class: 'badge' }, `${rows.length} categor${rows.length === 1 ? 'y' : 'ies'} · ${count} product${count === 1 ? '' : 's'}`)),
-        cards.length
-          ? ui.h('div', { class: 'stack' }, ...cards)
-          : ui.h('p', { class: 'hint' }, `No category sits under ${label} yet.`));
-    }
     function paintShelves(rows, unfiled) {
-      const pharma = rows.filter((row) => sideOf(row) === 'PHARMACEUTICALS');
-      const other = rows.filter((row) => sideOf(row) !== 'PHARMACEUTICALS');
+      const ordered = byName(rows);
+      const cards = ordered.map((row) => shelfCard(row, row.products || [], Number(row.product_count) || 0));
+      const count = ordered.reduce((sum, row) => sum + (Number(row.product_count) || 0), 0);
       const loose = unfiled && Number(unfiled.product_count)
         ? shelfCard({ id: '', name: 'Not in a category' }, unfiled.products || [], Number(unfiled.product_count) || 0)
         : null;
-      const sections = [];
-      if (!state.sellingGroup || state.sellingGroup === 'PHARMACEUTICALS') sections.push(majorSection('PHARMACEUTICALS', 'Pharmaceuticals', pharma));
-      if (!state.sellingGroup || state.sellingGroup === 'NON_PHARMACEUTICALS') sections.push(majorSection('NON_PHARMACEUTICALS', 'Non-pharmaceuticals', other));
       shelvesHost.replaceChildren(
         ui.h('div', { class: 'card' },
           ui.h('div', { class: 'card-body' },
             ui.h('h2', {}, 'Categories'),
             ui.h('p', { class: 'hint' }, canOrganize()
-              ? 'Pharmaceuticals and non-pharmaceuticals are the two major categories. Every other category sits under one of them. Edit a category to rename it or move it to the other side. The products stay on that shelf. A NAFDAC catalogue medicine stays pharmaceutical.'
-              : 'Pharmaceuticals and non-pharmaceuticals are the two major categories. Every other category sits under one of them.'))),
-        ...sections,
+              ? 'One list. A category counts as pharmaceuticals or as others. Add a category, or edit one to rename it or change which it counts as. The products stay in it. A NAFDAC catalogue medicine stays pharmaceutical.'
+              : 'One list. A category counts as pharmaceuticals or as others.'),
+            ui.h('p', { class: 'hint' }, `${ordered.length} categor${ordered.length === 1 ? 'y' : 'ies'} · ${count} product${count === 1 ? '' : 's'}`))),
+        cards.length
+          ? ui.h('div', { class: 'stack' }, ...cards)
+          : ui.h('p', { class: 'hint' }, 'No category yet.'),
         loose || null);
     }
     fillCategories();
 
     async function addCategory() {
       const wrapEl = ui.h('div', {});
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A category sits under one of the two major categories. Provisions, fabrics and drinks go under non-pharmaceuticals. Analgesics, vitamins and injections go under pharmaceuticals.'));
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A category joins the same list as the others. Provisions, fabrics and drinks count as others. Analgesics, vitamins and injections count as pharmaceuticals.'));
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
         ui.field({ label: 'Category name', name: 'name', required: true }),
         ui.field({
-          label: 'Sits under',
+          label: 'Counts as',
           name: 'selling_group',
           value: 'NON_PHARMACEUTICALS',
           options: [
             { value: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
-            { value: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+            { value: 'NON_PHARMACEUTICALS', label: 'Others' },
           ],
         })));
       const m = ui.openModal({
@@ -332,13 +317,6 @@
       const cats = await SR.store.all('product_categories').catch(() => []);
       const catById = new Map(cats.map((c) => [String(c.id), c]));
       const catName = new Map(cats.map((c) => [String(c.id), c.name]));
-      if (state.sellingGroup) {
-        rows = rows.filter((p) => {
-          const cat = catById.get(String(p.category_id)) || {};
-          const parent = cat.parent_id ? catById.get(String(cat.parent_id)) : null;
-          return U.sellingGroup(Object.assign({}, cat, { parent_code: parent && parent.code, nafdac_catalog_id: p.nafdac_catalog_id })).code === state.sellingGroup;
-        });
-      }
       if (state.category) rows = rows.filter((p) => String(p.category_id) === String(state.category));
       if (needle) rows = rows.filter((p) => `${p.name} ${p.sku || ''} ${p.brand || ''} ${p.model_no || ''}`.toLowerCase().includes(needle));
       const storedBatches = await SR.store.all('stock_batches').catch(() => []);
@@ -397,7 +375,6 @@
             sort: 'name',
             q: state.q || undefined,
             category_id: state.category || undefined,
-            selling_group: state.sellingGroup || undefined,
             limit: state.pageSize,
             offset: state.page * state.pageSize,
             nafdac: SR.state.moduleOn('nafdac') ? '1' : undefined,
@@ -625,7 +602,7 @@
     }
     const fields = [
       ui.field({ label: 'Name', name: 'name', value: base.name || '', required: true, span: true, placeholder: 'e.g. Hisense 1.5HP Split Air Conditioner' }),
-      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', hint: greenbook ? 'Optional. The NAFDAC catalogue link already makes this pharmaceutical, whichever shelf you file it under.' : 'File it under a category. The category’s side — pharmaceuticals or non-pharmaceuticals — is what the books use. A NAFDAC catalogue medicine stays pharmaceutical.', options: [{ value: '', label: '— none —' }].concat(categories.filter((c) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(c.code || '').toUpperCase())).slice().sort((a, b) => String(U.sellingGroup(a).label).localeCompare(String(U.sellingGroup(b).label)) || String(a.name).localeCompare(String(b.name), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: `${U.sellingGroup(c).code === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Non-pharmaceuticals'} · ${c.name}` }))) }),
+      ui.field({ label: 'Category', name: 'category_id', value: base.category_id || '', hint: greenbook ? 'Optional. The NAFDAC catalogue link already makes this pharmaceutical, whichever category you file it in.' : 'One list. Pick the category. Pharmaceuticals and others are not a second tree. A NAFDAC catalogue medicine stays pharmaceutical.', options: [{ value: '', label: '— none —' }].concat(categories.filter((c) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(c.code || '').toUpperCase())).slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })).map((c) => ({ value: String(c.id), label: c.name }))) }),
       ui.field({ label: 'Brand', name: 'brand', value: base.brand || '' }),
       ui.field({ label: 'Model number', name: 'model_no', value: base.model_no || '' }),
       ui.field({ label: 'SKU', name: 'sku', value: base.sku || '', hint: greenbook ? 'Left blank, one is taken from the NAFDAC number.' : 'Left blank, one is suggested from the name.' }),

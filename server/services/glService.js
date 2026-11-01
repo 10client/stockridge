@@ -1057,11 +1057,13 @@ async function revenueByCategory(db, { businessId = null, branchId = null, start
   if (endDate) { where.push('e.entry_date <= ?'); params.push(String(endDate)); }
   const rows = await db.all(`
     SELECT c.id AS category_id, c.name AS category_name, c.code AS category_code,
+           parent.code AS category_parent_code,
            SUM(l.credit) - SUM(l.debit) AS revenue_net_of_vat
     FROM gl_journal_lines l
     JOIN gl_journal_entries e ON e.id = l.journal_entry_id
     JOIN gl_accounts a ON a.id = l.account_id
     LEFT JOIN product_categories c ON c.id = l.category_id
+    LEFT JOIN product_categories parent ON parent.id = c.parent_id AND parent.is_deleted = 0
     WHERE ${where.join(' AND ')} AND a.account_type = 'REVENUE'
     GROUP BY c.id ORDER BY revenue_net_of_vat DESC`, params);
   return rows.map((r) => ({ ...r, revenue_net_of_vat: round2(Number(r.revenue_net_of_vat) || 0) }));
@@ -1119,7 +1121,7 @@ async function booksBySellingGroup(db, { businessId = null, branchId = null, sta
   for (const row of rows || []) {
     let group = journalSide(row);
     const text = String(row.description || '');
-    if (!text.startsWith('Pharmaceuticals') && !text.startsWith('Non-pharmaceuticals')) {
+    if (!text.startsWith('Pharmaceuticals') && !text.startsWith('Non-pharmaceuticals') && !text.startsWith('Others')) {
       const found = itemSides.get(`${row.source_id}|${row.category_id || ''}`);
       if (found && found.size === 1) {
         const code = [...found][0];
@@ -1145,7 +1147,7 @@ async function booksBySellingGroup(db, { businessId = null, branchId = null, sta
  */
 function journalSide(row) {
   const text = String((row && row.description) || '');
-  if (text.startsWith('Non-pharmaceuticals')) return { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' };
+  if (text.startsWith('Non-pharmaceuticals') || text.startsWith('Others')) return { code: 'NON_PHARMACEUTICALS', label: 'Others' };
   if (text.startsWith('Pharmaceuticals')) return { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' };
   const selling = require('../../domain/selling');
   return selling.sellingGroup(row);

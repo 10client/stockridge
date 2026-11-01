@@ -31,7 +31,7 @@
     const state = {
       tab: ctx.query.tab || 'on-hand',
       filter: ctx.query.filter || '',
-      sellingGroup: ctx.query.selling_group || '',
+      category: ctx.query.category_id || '',
       q: '',
       page: 0,
       pageSize: 50,
@@ -111,18 +111,34 @@
       return renderOnHand();
     }
 
+    async function fillStockCategories(select) {
+      let rows = [];
+      try {
+        const data = await SR.api.get('/api/categories', { query: SR.state.query() });
+        rows = data.data || [];
+      } catch (err) {
+        rows = await SR.store.all('product_categories', {
+          where: (row) => !Number(row.is_deleted) && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()),
+        }).catch(() => []);
+      }
+      rows = (rows || []).filter((row) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()))
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+      const current = state.category || select.value;
+      select.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
+      for (const row of rows) select.appendChild(ui.h('option', { value: String(row.id), selected: String(row.id) === String(current) }, row.name));
+    }
+
     async function renderOnHand() {
       const toolbar = ui.h('div', { class: 'row' });
       const qInput = ui.h('input', { type: 'search', placeholder: 'Product or SKU…', style: { minWidth: '190px' } });
       qInput.value = state.q;
       qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; renderOnHand(); }, 320));
       toolbar.appendChild(qInput);
-      const sideSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.page = 0; renderOnHand(); } });
-      sideSel.appendChild(ui.h('option', { value: '', selected: !state.sellingGroup }, 'Both sides'));
-      for (const group of U.sellingGroups()) {
-        sideSel.appendChild(ui.h('option', { value: group.code, selected: group.code === state.sellingGroup }, group.label));
-      }
+      const sideSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; renderOnHand(); } });
+      sideSel.appendChild(ui.h('option', { value: '', selected: !state.category }, 'All categories'));
       toolbar.appendChild(sideSel);
+      fillStockCategories(sideSel);
       const filterSel = ui.h('select', { onchange: (e) => { state.filter = e.target.value; state.page = 0; renderOnHand(); } });
       for (const [v, l] of [['', 'Everything'], ['low', 'At or below reorder level'], ['out', 'Out of stock'], ['overstock', 'Overstocked'], ['quarantined', 'Quarantined']]) {
         filterSel.appendChild(ui.h('option', { value: v, selected: v === state.filter }, l));
@@ -138,7 +154,7 @@
         data = await fromMirror();
       } else {
         try {
-          data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, selling_group: state.sellingGroup || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
+          data = await SR.api.get('/api/stock', { query: SR.state.query({ q: state.q || undefined, filter: state.filter || undefined, category_id: state.category || undefined, limit: state.pageSize, offset: state.page * state.pageSize }) });
         } catch (err) {
           if (!err.isOffline) { host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: renderOnHand } })); return; }
           offline = true;
@@ -210,7 +226,7 @@
           });
         })
         .filter((row) => {
-          if (state.sellingGroup && U.sellingGroup(row).code !== state.sellingGroup) return false;
+          if (state.category && String(row.category_id) !== String(state.category)) return false;
           if (state.filter === 'low') return row.low_stock;
           if (state.filter === 'out') return row.out_of_stock;
           return true;
@@ -254,6 +270,7 @@
           const available = s.on_shelf - s.reserved;
           return {
             product_id: p.id, branch_id: branchId, name: p.name, sku: p.sku,
+            category_id: p.category_id || null,
             category_name: (catById.get(String(p.category_id)) || {}).name || null,
             category_code: (catById.get(String(p.category_id)) || {}).code || null,
             nafdac_catalog_id: p.nafdac_catalog_id || null,
@@ -281,7 +298,7 @@
           };
         })
         .filter((r) => {
-          if (state.sellingGroup && U.sellingGroup(r).code !== state.sellingGroup) return false;
+          if (state.category && String(r.category_id) !== String(state.category)) return false;
           if (state.filter === 'low') return r.low_stock;
           if (state.filter === 'out') return r.out_of_stock;
           return true;
@@ -324,36 +341,20 @@
         ui.kpi({ label: 'At retail', value: U.money(t.atRetail || t.at_retail), small: true }),
         ui.kpi({ label: 'Margin if all sold', value: U.money(t.potentialMargin || (Number(t.atRetail || t.at_retail || 0) - Number(t.atCost || t.at_cost || 0))), tone: 'good', small: true }),
         ui.kpi({ label: 'Units on hand', value: U.qty(t.units), foot: `${U.plural(t.products || 0, 'product')}`, small: true })));
-      if (Array.isArray(data.bySellingGroup) && data.bySellingGroup.length) {
-        host.appendChild(ui.dataCard({
-          title: 'Pharmacy and supermarket',
-          table: ui.renderTable({
-            columns: [
-              { key: 'label', label: 'Side', render: (r) => r.label || r.name },
-              { key: 'units', label: 'Units', align: 'right', render: (r) => U.qty(r.units) },
-              { key: 'at_cost', label: 'At cost', align: 'right', render: (r) => U.money(r.at_cost || r.atCost) },
-              { key: 'at_retail', label: 'At retail', align: 'right', render: (r) => U.money(r.at_retail || r.atRetail) },
-              { key: 'margin', label: 'Margin', align: 'right', render: (r) => U.money(Number(r.at_retail || r.atRetail || 0) - Number(r.at_cost || r.atCost || 0)) },
-            ],
-            rows: data.bySellingGroup,
-            emptyTitle: 'No stock valued yet',
-            emptyMessage: 'Receive goods and each side of the shop is valued on its own.',
-          }),
-        }));
-      }
       if (Array.isArray(data.byCategory) && data.byCategory.length) {
         host.appendChild(ui.dataCard({
-          title: 'By shelf category',
+          title: 'Categories',
           table: ui.renderTable({
             columns: [
               { key: 'name', label: 'Category', className: 'wrap' },
+              { key: 'kind', label: 'Counts as', render: (r) => r.kind || U.sellingGroup(r).label },
               { key: 'units', label: 'Units', align: 'right', render: (r) => U.qty(r.units) },
               { key: 'at_cost', label: 'At cost', align: 'right', render: (r) => U.money(r.at_cost || r.atCost) },
               { key: 'at_retail', label: 'At retail', align: 'right', render: (r) => U.money(r.at_retail || r.atRetail) },
               { key: 'margin', label: 'Margin', align: 'right', render: (r) => U.money(Number(r.at_retail || r.atRetail || 0) - Number(r.at_cost || r.atCost || 0)) },
             ],
             rows: data.byCategory,
-            foot: ['Total', '', U.money(t.atCost || t.at_cost), U.money(t.atRetail || t.at_retail), U.money(Number(t.atRetail || t.at_retail || 0) - Number(t.atCost || t.at_cost || 0))],
+            foot: ['Total', '', U.qty(t.units), U.money(t.atCost || t.at_cost), U.money(t.atRetail || t.at_retail), U.money(Number(t.atRetail || t.at_retail || 0) - Number(t.atCost || t.at_cost || 0))],
           }),
         }));
       }

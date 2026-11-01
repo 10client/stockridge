@@ -211,40 +211,27 @@
       }
       stack.appendChild(groupTable('Cost of goods sold', data.cogs || [], data.totalCogs, 'Cost of sales follows the stock you sold, valued at what it cost to land.'));
       stack.appendChild(groupTable('Operating expenses', data.expenses || [], data.totalExpenses, 'Rent, diesel, wages — everything that is not stock.'));
-      if ((data.bySellingGroup || []).length) {
-        stack.appendChild(ui.h('p', { class: 'sub' }, 'One shop, two records. These takings and costs come from the ledger. A discount or a delivery fee stays in the profit and loss above, because it is not a side of the shelf.'));
+      const categoryRows = (data.byCategory || []).map((row) => Object.assign({}, row, {
+        kind: U.sellingGroup({ code: row.category_code, parent_code: row.category_parent_code }).label,
+      }));
+      if (categoryRows.length || (data.bySellingGroup || []).length) {
+        stack.appendChild(ui.h('p', { class: 'sub' }, 'One list. Each category counts as pharmaceuticals or as others. A discount or a delivery fee stays in the profit and loss above, because it is not a category.'));
         stack.appendChild(ui.dataCard({
-          title: 'Pharmacy and supermarket',
+          title: 'Categories',
           table: ui.renderTable({
             columns: [
-              { key: 'label', label: 'Side' },
-              { key: 'revenue', label: 'Takings', align: 'right', render: (r) => U.money(r.revenue) },
-              { key: 'cogs', label: 'Cost of goods', align: 'right', render: (r) => U.money(r.cogs) },
-              { key: 'grossProfit', label: 'Gross profit', align: 'right', render: (r) => U.money(r.grossProfit) },
-            ],
-            rows: data.bySellingGroup,
-            foot: ['Both sides', U.money(U.sum(data.bySellingGroup, (r) => r.revenue)), U.money(U.sum(data.bySellingGroup, (r) => r.cogs)), U.money(U.sum(data.bySellingGroup, (r) => r.grossProfit))],
-            emptyTitle: 'No categorised takings yet',
-            emptyMessage: 'A sale posts each side to the ledger. Drugs stay apart from supermarket goods.',
-          }),
-        }));
-      }
-      if ((data.byCategory || []).length) {
-        stack.appendChild(ui.dataCard({
-          title: 'Takings by shelf',
-          table: ui.renderTable({
-            columns: [
-              { key: 'category_name', label: 'Shelf', render: (r) => r.category_name || r.category_code || 'Uncategorised' },
+              { key: 'category_name', label: 'Category', render: (r) => r.category_name || r.category_code || 'Uncategorised' },
+              { key: 'kind', label: 'Counts as' },
               { key: 'revenue_net_of_vat', label: 'Takings', align: 'right', render: (r) => U.money(r.revenue_net_of_vat) },
             ],
-            rows: data.byCategory,
-            emptyTitle: 'No shelf takings',
-            emptyMessage: 'A sale posts each shelf on its own line. Provisions and fabrics do not share one figure.',
+            rows: categoryRows,
+            emptyTitle: 'No category takings yet',
+            emptyMessage: 'A sale posts the category it was rung under. Add or edit categories in the catalogue.',
           }),
         }));
         stack.appendChild(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
-          ui.h('h2', {}, 'The same shelves, as bars'),
-          ui.h('p', { class: 'sub' }, 'The same ledger lines. A shop that sells two kinds of goods can see which side earned the period.'),
+          ui.h('h2', {}, 'The same categories, as bars'),
+          ui.h('p', { class: 'sub' }, 'The same ledger lines, in one list.'),
           ui.bars((data.byCategory || []).map((c) => ({
             label: c.category_name || c.category || c.name || 'Uncategorised',
             value: c.revenue_net_of_vat != null ? c.revenue_net_of_vat : (c.revenue || c.amount || 0),

@@ -36,7 +36,7 @@ const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
 const { fileGreenbook, syntheticBarcode } = require('../services/provisioningService');
-const { ensureMajors, isMajorCode } = require('../services/categorySides');
+const { ensureMajors, isMajorCode, normalizeSide, sideLabel } = require('../services/categorySides');
 
 async function saveProductMeasure(db, productId, axisCode) {
   const key = String(axisCode || '').trim().toUpperCase();
@@ -1090,12 +1090,12 @@ function mount(app, base = '/api') {
     const body = await ctx.req.json();
     const name = strField(body.name != null ? body.name : before.name, { field: 'Category name', maxLength: 120, required: true });
     if (!name || name.length < 2) throw new HttpError('A category needs a name of at least two characters.', { status: 400, code: 'CATEGORY_NAME' });
-    const side = body.selling_group != null ? String(body.selling_group).toUpperCase() : null;
-    if (side && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(side)) {
-      throw new HttpError('A shelf sits under Pharmaceuticals or Non-pharmaceuticals.', { status: 400, code: 'SELLING_GROUP' });
+    const side = body.selling_group != null ? normalizeSide(body.selling_group) : null;
+    if (body.selling_group != null && !side) {
+      throw new HttpError('A category counts as Pharmaceuticals or Others.', { status: 400, code: 'SELLING_GROUP' });
     }
     if (isMajorCode(before.code) && side && side !== before.code) {
-      throw new HttpError('Those two categories are the sides. A shelf moves under one of them. The side itself does not move.', { status: 400, code: 'MAJOR_CATEGORY' });
+      throw new HttpError('Pharmaceuticals and Others are how a category is counted. Edit the category itself. Those two rows are not shelves.', { status: 400, code: 'MAJOR_CATEGORY' });
     }
     const majors = await ensureMajors(db, before.business_id);
     const parentId = !isMajorCode(before.code) && side ? majors.byCode[side] : before.parent_id;
@@ -1127,9 +1127,7 @@ function mount(app, base = '/api') {
       before: { name: before.name, parent_id: before.parent_id },
       after: { name, parent_id: isMajorCode(before.code) ? null : parentId, products: Number(held) || 0 },
     });
-    const sideLabel = side === 'PHARMACEUTICALS' || before.code === 'PHARMACEUTICALS'
-      ? 'Pharmaceuticals'
-      : 'Non-pharmaceuticals';
+    const shownSide = sideLabel(isMajorCode(before.code) ? before.code : side);
     ctx.json({
       ok: true,
       id,
@@ -1137,7 +1135,7 @@ function mount(app, base = '/api') {
       selling_group: isMajorCode(before.code) ? before.code : side,
       product_count: Number(held) || 0,
       message: sideChanged
-        ? `“${name}” is now under ${sideLabel}. ${Number(held) || 0} product${Number(held) === 1 ? '' : 's'} on that shelf follow it. A Greenbook medicine stays pharmaceutical.`
+        ? `“${name}” now counts as ${shownSide}. ${Number(held) || 0} product${Number(held) === 1 ? '' : 's'} on that category follow it. A Greenbook medicine stays pharmaceutical.`
         : (Number(held)
           ? `“${before.name}” is now “${name}”. ${Number(held)} product${Number(held) === 1 ? '' : 's'} stay in it.`
           : `“${before.name}” is now “${name}”.`),
@@ -1152,13 +1150,13 @@ function mount(app, base = '/api') {
     const branch = await resolveBranch(db, ctx, { required: false });
     const business = await resolveBusiness(db, ctx, branch || undefined);
     const name = requireField(body, 'name', 'Category name');
-    const side = String(body.selling_group || body.sellingGroup || '').toUpperCase();
-    if (!['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(side)) {
-      throw new HttpError('Say whether this shelf is under Pharmaceuticals or Non-pharmaceuticals.', { status: 400, code: 'SELLING_GROUP' });
+    const side = normalizeSide(body.selling_group || body.sellingGroup);
+    if (!side) {
+      throw new HttpError('Say whether this category counts as Pharmaceuticals or Others.', { status: 400, code: 'SELLING_GROUP' });
     }
     const code = String(body.code || String(name).toUpperCase().replace(/[^A-Z0-9]+/g, '_').slice(0, 40));
     if (isMajorCode(code)) {
-      throw new HttpError('That name is one of the two major categories. Add a shelf under it instead.', { status: 409, code: 'MAJOR_CATEGORY' });
+      throw new HttpError('That name is reserved. Add the category under its own name, and say whether it counts as Pharmaceuticals or Others.', { status: 409, code: 'MAJOR_CATEGORY' });
     }
 
     const dupe = await db.first('SELECT id FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0', [String(business.id), code]);

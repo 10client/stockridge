@@ -13,7 +13,7 @@
 
 const GROUPS = Object.freeze([
   { code: 'PHARMACEUTICALS', label: 'Pharmaceuticals' },
-  { code: 'NON_PHARMACEUTICALS', label: 'Non-pharmaceuticals' },
+  { code: 'NON_PHARMACEUTICALS', label: 'Others' },
 ]);
 
 const PHARMACEUTICAL_CODES = Object.freeze([

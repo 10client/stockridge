@@ -1,22 +1,37 @@
 'use strict';
-// The two categories above every shelf.
+// One category list, not two trees.
 //
-// Pharmaceuticals and non-pharmaceuticals are not a label guessed from a
-// shelf code. Each business has the two rows. Every other category sits
-// under one of them. A shelf with no parent yet is filed from the old code
-// list once, and an owner can move it afterwards. That move is what the
-// books read next.
+// Pharmaceuticals and Others are a property of a category, not a second
+// hierarchy sitting above the shelves. The two rows still exist so a category
+// can be filed under one of them, and so a book that already posted
+// "Non-pharmaceuticals" can still be read. The shop sees one list. An owner
+// creates a category and edits its name or which of the two it counts as.
+// A shelf with no parent yet is filed once, and an owner can move it afterwards.
 
 const selling = require('../../domain/selling');
 const { newId } = require('../../domain/crypto');
 
 const MAJORS = Object.freeze([
   { code: 'PHARMACEUTICALS', name: 'Pharmaceuticals' },
-  { code: 'NON_PHARMACEUTICALS', name: 'Non-pharmaceuticals' },
+  { code: 'NON_PHARMACEUTICALS', name: 'Others' },
 ]);
 
 function isMajorCode(code) {
   return MAJORS.some((major) => major.code === String(code || '').toUpperCase());
+}
+
+/** The stored side. Others is the same row the books used to call non-pharmaceuticals. */
+function normalizeSide(value) {
+  const side = String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (side === 'OTHERS' || side === 'OTHER' || side === 'NON_PHARMACEUTICALS' || side === 'NONPHARMACEUTICALS') {
+    return 'NON_PHARMACEUTICALS';
+  }
+  if (side === 'PHARMACEUTICALS' || side === 'PHARMACEUTICAL') return 'PHARMACEUTICALS';
+  return '';
+}
+
+function sideLabel(code) {
+  return normalizeSide(code) === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Others';
 }
 
 async function ensureMajors(db, businessId) {
@@ -25,7 +40,7 @@ async function ensureMajors(db, businessId) {
   const byCode = {};
   for (const major of MAJORS) {
     let row = await db.first(
-      'SELECT id, parent_id FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0',
+      'SELECT id, parent_id, name FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0',
       [id, major.code],
     );
     if (!row) {
@@ -35,11 +50,11 @@ async function ensureMajors(db, businessId) {
          VALUES (?,?,?,?,NULL,0,1, datetime('now'), datetime('now'))`,
         [majorId, id, major.code, major.name],
       );
-      row = { id: majorId, parent_id: null };
-    } else if (row.parent_id) {
+      row = { id: majorId, parent_id: null, name: major.name };
+    } else if (row.parent_id || row.name !== major.name) {
       await db.run(
-        "UPDATE product_categories SET parent_id = NULL, sort_order = 0, updated_at = datetime('now') WHERE id = ?",
-        [String(row.id)],
+        "UPDATE product_categories SET parent_id = NULL, name = ?, sort_order = 0, updated_at = datetime('now') WHERE id = ?",
+        [major.name, String(row.id)],
       );
     }
     byCode[major.code] = String(row.id);
@@ -61,4 +76,4 @@ async function ensureMajors(db, businessId) {
   return { byCode };
 }
 
-module.exports = { MAJORS, isMajorCode, ensureMajors };
+module.exports = { MAJORS, isMajorCode, normalizeSide, sideLabel, ensureMajors };

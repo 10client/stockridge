@@ -26,7 +26,7 @@
     if (ctx.params.id === 'issues') return renderIssues(ctx);
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Sales');
-    const state = { page: 0, pageSize: PAGE_SIZE, q: '', from: ctx.query.from || U.todayWat(-30), to: ctx.query.to || U.todayWat(), type: '', status: '', method: '', sellingGroup: '', sort: 'date' };
+    const state = { page: 0, pageSize: PAGE_SIZE, q: '', from: ctx.query.from || U.todayWat(-30), to: ctx.query.to || U.todayWat(), type: '', status: '', method: '', category: '', sort: 'date' };
 
     const wrap = ui.h('div', { class: 'stack' });
     const head = ui.h('div', { class: 'page-head' },
@@ -67,11 +67,10 @@
     const statusSel = ui.h('select', { onchange: (e) => { state.status = e.target.value; state.page = 0; load(); } });
     for (const [v, l] of [['', 'Any status'], ['COMPLETED', 'Completed'], ['VOIDED', 'Voided'], ['PENDING_DELIVERY', 'Pending delivery']]) statusSel.appendChild(ui.h('option', { value: v }, l));
     fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Status'), statusSel));
-    const groupSel = ui.h('select', { onchange: (e) => { state.sellingGroup = e.target.value; state.page = 0; load(); } });
-    groupSel.appendChild(ui.h('option', { value: '' }, 'Both sides'));
-    for (const group of U.sellingGroups()) groupSel.appendChild(ui.h('option', { value: group.code }, group.label));
-    if (state.sellingGroup) groupSel.value = state.sellingGroup;
+    const groupSel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; load(); } });
+    groupSel.appendChild(ui.h('option', { value: '' }, 'All categories'));
     fbody.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), groupSel));
+    fillSaleCategories(groupSel);
     filters.appendChild(fbody);
     wrap.appendChild(filters);
 
@@ -82,13 +81,32 @@
 
     qInput.addEventListener('input', U.debounce(() => { state.q = qInput.value; state.page = 0; load(); }, 320));
 
+    async function fillSaleCategories(select) {
+      let rows = [];
+      try {
+        const data = await SR.api.get('/api/categories', { query: SR.state.query() });
+        rows = data.data || [];
+      } catch (err) {
+        rows = await SR.store.all('product_categories', {
+          where: (row) => !Number(row.is_deleted) && !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()),
+        }).catch(() => []);
+      }
+      rows = (rows || []).filter((row) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()))
+        .slice()
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+      const current = select.value;
+      select.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
+      for (const row of rows) select.appendChild(ui.h('option', { value: String(row.id) }, row.name));
+      if ([...select.options].some((opt) => opt.value === current)) select.value = current;
+    }
+
     function filterQuery() {
       return Object.assign(SR.state.query({
         q: state.q || undefined,
         from: state.from, to: state.to,
         sale_type: state.type || undefined,
         status: state.status || undefined,
-        selling_group: state.sellingGroup || undefined,
+        category_id: state.category || undefined,
         limit: state.pageSize, offset: state.page * state.pageSize,
       }));
     }
@@ -168,7 +186,13 @@
       const stored = await SR.store.all('sales').catch(() => []);
       const seen = new Set(queued.map((row) => String(row.id)));
       const copied = (stored || []).filter((row) => row && row.id != null && !Number(row.is_deleted) && !seen.has(String(row.id)));
-      const rows = queued.concat(copied).sort((a, b) => String(b.sold_at || '').localeCompare(String(a.sold_at || '')));
+      let rows = queued.concat(copied);
+      if (state.category) {
+        const items = await SR.store.all('sale_items').catch(() => []);
+        const ids = new Set((items || []).filter((item) => !Number(item.is_deleted) && String(item.category_id) === String(state.category)).map((item) => String(item.sale_id)));
+        rows = rows.filter((row) => ids.has(String(row.id)));
+      }
+      rows.sort((a, b) => String(b.sold_at || '').localeCompare(String(a.sold_at || '')));
       return { data: rows, paging: { total: rows.length, limit: rows.length, offset: 0 } };
     }
 

@@ -68,6 +68,11 @@ function mount(app, base = '/api') {
     if (filter === 'quarantined') where.push("sb.status = 'QUARANTINED'");
     else where.push("sb.status NOT IN ('QUARANTINED','EXPIRED')");
     if (search) { where.push('(p.name LIKE ? OR p.sku LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
+    const categoryId = String(ctx.req.queryParam('category_id') || '').trim();
+    if (categoryId) {
+      where.push('p.category_id = ?');
+      params.push(categoryId);
+    }
     const sellingGroup = String(ctx.req.queryParam('selling_group') || '').trim();
     if (sellingGroup) {
       const clause = selling.productWhere(sellingGroup);
@@ -182,17 +187,19 @@ function mount(app, base = '/api') {
       : selling.PHARMACEUTICAL_CODES.slice();
     const shelfRows = await db.all(`
       SELECT c.code AS category_code, COALESCE(c.name, 'Uncategorised') AS category_name,
-             CASE WHEN p.nafdac_catalog_id IS NOT NULL OR c.code IN (${shelfMarks}) THEN 'PHARMACEUTICALS' ELSE 'NON_PHARMACEUTICALS' END AS side,
+             CASE WHEN p.nafdac_catalog_id IS NOT NULL OR c.code IN (${shelfMarks}) OR parent.code = 'PHARMACEUTICALS' THEN 'PHARMACEUTICALS' ELSE 'NON_PHARMACEUTICALS' END AS side,
              COALESCE(SUM(sb.quantity),0) AS units,
              COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost,
              COALESCE(SUM(sb.quantity * COALESCE(sb.selling_price_per_unit, 0)),0) AS at_retail
       FROM stock_batches sb JOIN products p ON p.id = sb.product_id
       LEFT JOIN product_categories c ON c.id = p.category_id
+      LEFT JOIN product_categories parent ON parent.id = c.parent_id AND parent.is_deleted = 0
       WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${named.branchId ? 'AND sb.branch_id = ?' : ''} ${f.sql ? `AND ${f.sql}` : ''}
       GROUP BY c.id, side ORDER BY at_cost DESC`, f.sql ? [...shelfParams, ...params] : shelfParams);
     const byCategory = shelfRows.slice(0, 20).map((row) => ({
       name: row.category_name,
       category_code: row.category_code,
+      kind: row.side === 'PHARMACEUTICALS' ? 'Pharmaceuticals' : 'Others',
       units: round2(Number(row.units)),
       at_cost: round2(Number(row.at_cost)),
       at_retail: round2(Number(row.at_retail)),
