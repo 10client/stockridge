@@ -21,7 +21,7 @@
 // The list is built once, in a fixed order, so a SKU means the same
 // good on every deployment. Those same rows are planted as shared
 // catalogue rows (business_id NULL, no price) by
-// schema/migrations/0010_nigerian_market.sql, so a deployment already
+// schema/migrations/0002_nigerian_market.sql, so a deployment already
 // has them. They are still not a business's own goods until somebody
 // adds a copy. A till that searched two thousand unpriced rows would
 // sell them at nothing, and the sale is refused.

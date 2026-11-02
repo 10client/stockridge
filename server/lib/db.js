@@ -323,12 +323,30 @@ async function migrate(db, { dir = MIGRATIONS_DIR, reset = false } = {}) {
   if (!fs.existsSync(dir)) return { applied: [], skipped: [] };
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
   const applied = new Map((await db.all('SELECT id, checksum FROM _migrations')).map((r) => [r.id, r.checksum]));
+  // The catalogues were numbered 0010, 0013 and 0014 while the schema was
+  // still a stack of alter files. They are 0002, 0003 and 0004 now. A database
+  // that already applied the old name has the same bytes. Rename the record.
+  // Do not run the file again.
+  const renamedFrom = {
+    '0002_nigerian_market': '0010_nigerian_market',
+    '0003_nafdac_catalog': '0013_nafdac_catalog',
+    '0004_mixed_pharmacy_categories': '0014_mixed_pharmacy_categories',
+  };
 
   const result = { applied: [], skipped: [] };
   for (const file of files) {
     const id = file.replace(/\.sql$/, '');
     const sql = fs.readFileSync(path.join(dir, file), 'utf8');
     const checksum = createHash('sha256').update(sql).digest('hex');
+    const previousId = renamedFrom[id];
+    if (!applied.has(id) && previousId && applied.has(previousId)) {
+      if (applied.get(previousId) && applied.get(previousId) !== checksum) {
+        throw new Error(`Migration "${id}" does not match the bytes already applied as "${previousId}". The file was renamed, not edited.`);
+      }
+      await db.run('UPDATE _migrations SET id = ? WHERE id = ?', [id, previousId]);
+      applied.delete(previousId);
+      applied.set(id, checksum);
+    }
     if (applied.has(id)) {
       if (applied.get(id) && applied.get(id) !== checksum) {
         throw new Error(

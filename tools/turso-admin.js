@@ -110,12 +110,26 @@ async function applyTursoMigrations(db = tursoDb()) {
     checksum    TEXT
   )`);
   const applied = new Map((await db.all('SELECT id, checksum FROM _migrations')).map((r) => [r.id, r.checksum]));
+  const renamedFrom = {
+    '0002_nigerian_market': '0010_nigerian_market',
+    '0003_nafdac_catalog': '0013_nafdac_catalog',
+    '0004_mixed_pharmacy_categories': '0014_mixed_pharmacy_categories',
+  };
   const files = fs.readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith('.sql')).sort();
   const result = { applied: [], skipped: [] };
   for (const file of files) {
     const id = file.replace(/\.sql$/, '');
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
     const sum = checksum(sql);
+    const previousId = renamedFrom[id];
+    if (!applied.has(id) && previousId && applied.has(previousId)) {
+      if (applied.get(previousId) && applied.get(previousId) !== sum) {
+        throw new Error(`Migration "${id}" does not match the bytes already applied as "${previousId}". The file was renamed, not edited.`);
+      }
+      await db.run('UPDATE _migrations SET id = ? WHERE id = ?', [id, previousId]);
+      applied.delete(previousId);
+      applied.set(id, sum);
+    }
     if (applied.has(id)) {
       if (applied.get(id) && applied.get(id) !== sum) {
         throw new Error(`Migration "${id}" has CHANGED since it was applied. Never edit an applied migration — add a new one.`);

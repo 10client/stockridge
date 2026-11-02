@@ -273,7 +273,7 @@ function buildEntry({ businessId, branchId = null, entryDate = null, sourceType,
  * shows revenue with no cost and every month looks enormously profitable
  * right up to the moment the owner counts the cash.
  */
-function postSaleStatements({ saleId, business, branch, totals, vat, payments, lines, isCredit, balanceDue, changeOwed, user, receiptNo, accountIds, customer, depositApplied = 0 }) {
+function postSaleStatements({ saleId, business, branch, totals, vat, payments, lines, isCredit, balanceDue, changeOwed, user, receiptNo, accountIds, customer, depositApplied = 0, entryDate = null }) {
   const statements = [];
   const { splitRevenue } = require('../../domain/trade');
   const netRevenue = round2(totals.subtotal - totals.discountAmount - vat.vatAmount);
@@ -347,6 +347,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
   const sides = [...new Set(revenueParts.map((part) => part.sellingGroupLabel).filter(Boolean))];
   statements.push(...buildEntry({
     businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
+    entryDate: entryDate || null,
     description: sides.length ? `Sale receipt ${receiptNo} — ${sides.join(' and ')}` : `Sale receipt ${receiptNo}`,
     postedBy: user && user.id, accountIds, lines: saleLines,
   }));
@@ -375,6 +376,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
     cogsLines.push({ accountCode: '1100', credit: totalCogs, description: 'Inventory relieved at cost' });
     statements.push(...buildEntry({
       businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
+      entryDate: entryDate || null,
       description: `Cost of goods sold, receipt ${receiptNo}${sides.length ? ` — ${sides.join(' and ')}` : ''}`, postedBy: user && user.id, accountIds, lines: cogsLines,
     }));
   }
@@ -393,6 +395,7 @@ function postSaleStatements({ saleId, business, branch, totals, vat, payments, l
       : [{ accountCode: '4000', credit: totals.discountAmount, description: 'Revenue reduced by discount' }];
     statements.push(...buildEntry({
       businessId: business.id, branchId: branch.id, sourceType: 'SALE', sourceId: saleId,
+      entryDate: entryDate || null,
       description: `Discounts allowed, receipt ${receiptNo}`, accountIds,
       lines: [
         { accountCode: '4300', debit: totals.discountAmount, description: 'Discounts allowed' },
@@ -535,6 +538,7 @@ function postExpenseStatements({ expense, business, branch, user, accountIds, va
   }
   return buildEntry({
     businessId: business.id, branchId: branch.id, sourceType: 'EXPENSE', sourceId: expense.id,
+    entryDate: expense.expense_date || null,
     description: expense.description, postedBy: user && user.id, accountIds, lines,
   });
 }

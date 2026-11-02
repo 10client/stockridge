@@ -1758,7 +1758,7 @@ async function complete(db, params) {
       saleId, business, branch, totals, vat, payments: revenueLegs,
       lines: prepared.lines, isCredit, balanceDue: paymentResult.balanceDue,
       changeOwed, user, receiptNo, customer, accountIds,
-      depositApplied,
+      depositApplied, entryDate: sold.day,
     });
     for (const s of glStatements) tx.queue(s.sql, s.params);
 
