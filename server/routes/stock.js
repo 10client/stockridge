@@ -792,7 +792,7 @@ function mount(app, base = '/api') {
   // TRANSFERS
   // -------------------------------------------------------------------
   // THE STATUS VOCABULARY OF A STOCK TRANSFER, taken from the table's own CHECK constraint in
-  // `schema/migrations/0001_initial_schema.sql`:
+  // `schema/migrations/0001_schema.sql`:
   //
   //     status TEXT NOT NULL CHECK (status IN ('INITIATED','IN_TRANSIT','PARTIALLY_RECEIVED',
   //                                             'RECEIVED','CANCELLED'))
