@@ -972,6 +972,92 @@
     });
   }
 
+  async function addSharedToShop(product) {
+    if (!product || !product.sku) { ui.warn('That row has no SKU to copy.'); return; }
+    if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
+    try {
+      const res = await SR.api.post('/api/market-catalogue/adopt', {
+        items: [{ sku: product.sku, serial: Number(product.requires_serial) ? 1 : 0 }],
+        business_id: SR.state.activeBusinessId,
+      }, { query: SR.state.query({}) });
+      ui.ok((res && res.message) || 'Added to this shop. Set a price before selling.');
+      const added = res && res.added && res.added[0];
+      if (added && added.id) SR.app.navigate(`/products/${encodeURIComponent(added.id)}`);
+    } catch (err) { ui.apiError(err); }
+  }
+
+  async function wholesaleCard(product, units) {
+    if (!product || !product.business_id) return null;
+    let lists = [];
+    try {
+      const res = await SR.api.get('/api/price-lists', { query: SR.state.query({}) });
+      lists = (res.data || []).filter((row) => String(row.business_id || '') === String(product.business_id) && String(row.code || '') !== 'RETAIL');
+    } catch (err) {
+      return ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },
+        ui.h('h2', {}, 'Wholesale'),
+        ui.h('p', { class: 'hint' }, (err && err.message) || 'Wholesale prices could not be loaded.')));
+    }
+    if (!lists.length) return null;
+    const card = ui.h('div', { class: 'card' });
+    card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Wholesale and other lists')));
+    const body = ui.h('div', { class: 'card-body stack' });
+    body.appendChild(ui.h('p', { class: 'hint' }, 'The shelf price is the catalogue price. A customer class points at one of these lists, and the till uses the highest quantity break the order reaches.'));
+    for (const list of lists) {
+      const row = ui.h('div', { class: 'totals-row' },
+        ui.h('div', {},
+          ui.h('strong', {}, list.name || list.code),
+          ui.h('div', { class: 'hint' }, `${list.item_count || 0} priced`)),
+        ui.h('button', { class: 'btn btn-sm', onClick: () => wholesaleForm(product, units, list) }, 'Set a price'));
+      body.appendChild(row);
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  function wholesaleForm(product, units, list) {
+    const unitOptions = (units && units.length ? units : [{ code: 'PIECE', name: product.base_unit_name || 'Piece' }])
+      .filter((u) => !Number(u.is_deleted))
+      .map((u) => ({ value: u.code, label: u.name || u.code }));
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, `${product.name} on ${list.name}. A minimum of 1 is the price from the first unit. A higher minimum is the carton break.`));
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      ui.field({ label: 'Price (₦)', name: 'price', type: 'number', min: '0', step: '0.01', required: true }),
+      ui.field({ label: 'From this quantity', name: 'min_quantity', type: 'number', min: '0', step: '1', value: '1' }),
+      ui.field({ label: 'Unit', name: 'unit_code', value: unitOptions[0] ? unitOptions[0].value : 'PIECE', options: unitOptions })));
+    const m = ui.openModal({
+      title: list.name || 'Price list',
+      body: wrapEl,
+      size: 'narrow',
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            const price = Number(v.price);
+            if (!(price >= 0) || v.price == null) { ui.warn('Enter the price.'); return; }
+            ev.currentTarget.disabled = true;
+            try {
+              const res = await SR.api.post(`/api/price-lists/${encodeURIComponent(list.id)}/items`, {
+                product_id: product.id,
+                price,
+                min_quantity: Number(v.min_quantity) || 0,
+                unit_code: v.unit_code || 'PIECE',
+                business_id: SR.state.activeBusinessId,
+              }, { query: SR.state.query({}) });
+              ui.ok((res && res.message) || 'Price set.');
+              m.close();
+              SR.app.navigate(`/products/${encodeURIComponent(product.id)}`);
+            } catch (err) {
+              ui.apiError(err);
+              ev.currentTarget.disabled = false;
+            }
+          },
+        }, 'Save the price'),
+      ],
+    });
+  }
+
   async function renderDetail(ctx) {
     ctx.setTitle('Product');
     const wrap = ui.h('div', { class: 'stack' });
@@ -1017,6 +1103,7 @@
           ui.h('p', { class: 'sub' }, [p.sku, primaryCode ? `barcode ${primaryCode}` : null, p.brand, p.model_no, data.category ? data.category.name : p.category_name].filter(Boolean).join(' · '))),
         ui.h('div', { class: 'actions' },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/products') }, 'Back'),
+          !p.business_id ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => addSharedToShop(p) }, 'Add to this shop') : null,
           ui.h('button', { class: 'btn btn-sm', onClick: async () => {
             try {
               await setSerial(p, !Number(p.requires_serial));
@@ -1203,7 +1290,7 @@
         sections: [
           { id: 'overview', label: 'Overview', nodes: overview },
           { id: 'stock', label: 'Stock', nodes: stockNodes },
-          { id: 'prices', label: 'Prices', nodes: [priceCard] },
+          { id: 'prices', label: 'Prices', nodes: [priceCard, await wholesaleCard(p, units)] },
         ],
       }));
     }

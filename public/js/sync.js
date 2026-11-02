@@ -94,6 +94,28 @@
    * counter. Results are applied per item, so one rejected sale does not hold up
    * the ninety-nine behind it.
    */
+  /**
+   * Say this device is still here.
+   *
+   * A push and a pull already stamp last seen. This is the path for a cycle
+   * that did not finish a pull: a refused upload, or a pull that failed. It
+   * does not copy the shop, and a miss must not sign the till out.
+   */
+  async function heartbeat() {
+    if (!SR.api.isOnline() || !SR.api.hasToken()) return { ok: false };
+    const branchId = SR.state.activeBranchId;
+    if (!branchId || !SR.device || !SR.device.current) return { ok: false };
+    const device = SR.device.current();
+    if (!device || !device.id) return { ok: false };
+    const waiting = await SR.store.outboxCount().catch(() => 0);
+    return SR.api.post('/api/sync/heartbeat', {
+      device_id: device.id,
+      app_version: SR.APP_VERSION,
+      pending_push_count: waiting,
+      branch_id: branchId,
+    }, { query: { branch_id: branchId }, quiet: true });
+  }
+
   async function push({ batchSize = 100 } = {}) {
     if (!SR.api.isOnline()) return { ok: false, offline: true, applied: 0, rejected: 0 };
     if (!SR.api.hasToken()) {
@@ -1012,11 +1034,15 @@
               runOnce({ silent: true, catchUp: true }).catch(() => {});
             }, 5000);
           }
+          // A refused upload must not open the books. It must still say this
+          // device is here, or last seen stays on the last successful pull.
+          await heartbeat().catch(() => {});
           return { ok: false, push: pushResult, pull: pullResult, refresh: false };
         }
         try { pullResult = await pull({ full }); } catch (err) {
           if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
         }
+        if (!(pullResult && pullResult.ok)) await heartbeat().catch(() => {});
         if (pullResult && pullResult.rows) refresh = true;
         if (SR.api.isOnline()) {
           if (pullResult && pullResult.ok) {

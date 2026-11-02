@@ -34,6 +34,7 @@
         ui.h('p', { class: 'sub' }, 'Contact records, credit limits and what is owed.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a customer'),
+        SR.state.atLeast && SR.state.atLeast('OWNER') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openClass() }, 'Add a class') : null,
         SR.exporter.buttons((format) => exportList(format)))));
 
     const tabs = ui.h('div', { class: 'tabs' });
@@ -216,9 +217,82 @@
       });
     }
 
-    function openCreate() {
+    async function classField(selected) {
+      try {
+        const res = await SR.api.get('/api/customer-classes', { query: SR.state.query({}) });
+        const rows = res.data || [];
+        if (!rows.length) return null;
+        return ui.field({
+          label: 'Class',
+          name: 'customer_class_id',
+          value: selected || '',
+          options: [{ value: '', label: 'No class' }].concat(rows.map((row) => ({
+            value: row.id,
+            label: [row.name, Number(row.discount_pct) ? `${row.discount_pct}%` : null, Number(row.credit_allowed) ? 'credit' : 'cash'].filter(Boolean).join(' · '),
+          }))),
+          hint: 'The class sets the discount, and whether this customer can buy on credit.',
+        });
+      } catch (err) {
+        return null;
+      }
+    }
+
+    function openClass() {
       const wrapEl = ui.h('div', {});
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'Name', name: 'name', required: true }),
+        ui.field({ label: 'Discount %', name: 'discount_pct', type: 'number', min: '0', max: '100', step: '0.01', value: '0' }),
+        ui.field({ label: 'Credit allowed', name: 'credit_allowed', type: 'checkbox' }),
+        ui.field({ label: 'Default credit limit (₦)', name: 'default_credit_limit', type: 'number', min: '0', step: '0.01', value: '0' }),
+        ui.field({ label: 'Payment terms (days)', name: 'payment_terms_days', type: 'number', min: '0', max: '365', step: '1', value: '0' })));
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A class that cannot buy on credit cannot carry a limit or payment terms. Allow credit, or leave both at zero.'));
+      const m = ui.openModal({
+        title: 'Add a customer class',
+        body: wrapEl,
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              if (!v.name) { ui.warn('A class needs a name.'); return; }
+              const credit = wrapEl.querySelector('[name=credit_allowed]');
+              const creditAllowed = Boolean(credit && credit.checked);
+              const limit = Number(v.default_credit_limit) || 0;
+              const terms = Number(v.payment_terms_days) || 0;
+              if (!creditAllowed && (limit > 0 || terms > 0)) {
+                ui.warn('A class that cannot buy on credit cannot carry a limit or payment terms. Allow credit, or leave both at zero.');
+                return;
+              }
+              if (SR.app.guardWorkingBusiness && !SR.app.guardWorkingBusiness()) return;
+              ev.currentTarget.disabled = true;
+              try {
+                const created = await SR.api.post('/api/customer-classes', {
+                  name: v.name,
+                  discount_pct: Number(v.discount_pct) || 0,
+                  credit_allowed: creditAllowed ? 1 : 0,
+                  default_credit_limit: creditAllowed ? limit : 0,
+                  payment_terms_days: creditAllowed ? terms : 0,
+                  business_id: SR.state.activeBusinessId,
+                }, { query: SR.state.query({}) });
+                ui.ok((created && created.message) || `${v.name} added.`);
+                m.close();
+                load();
+              } catch (err) {
+                ui.apiError(err);
+                ev.currentTarget.disabled = false;
+              }
+            },
+          }, 'Add the class'),
+        ],
+      });
+    }
+
+    async function openCreate() {
+      const wrapEl = ui.h('div', {});
+      const klass = await classField('');
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        klass,
         ui.field({ label: 'Name', name: 'name', required: true }),
         ui.field({ label: 'Company', name: 'company_name' }),
         ui.field({ label: 'Phone', name: 'phone', hint: 'A phone number is how a balance gets chased.' }),
@@ -352,6 +426,9 @@
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/customers') }, 'Back'),
           ui.h('button', { class: 'btn btn-sm', onClick: () => edit(c) }, 'Edit'),
           Number(c.credit_balance) > 0 ? ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.views.customers.payment(c, load) }, 'Take payment') : null,
+          Number(c.credit_balance) > 0 && SR.state.atLeast && SR.state.atLeast('OWNER')
+            ? ui.h('button', { class: 'btn btn-sm', onClick: () => writeOff(c, load) }, 'Write off')
+            : null,
           ui.h('button', { class: 'btn btn-sm', onClick: () => statement(c, ledgerRows) }, 'Statement'))));
 
       host.appendChild(ui.h('div', { class: 'grid grid-4' },
@@ -452,9 +529,11 @@
       return card;
     }
 
-    function edit(c) {
+    async function edit(c) {
       const wrapEl = ui.h('div', {});
+      const klass = await classField(c.customer_class_id || '');
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        klass,
         ui.field({ label: 'Name', name: 'name', value: c.name, required: true }),
         ui.field({ label: 'Company', name: 'company_name', value: c.company_name || '' }),
         ui.field({ label: 'Phone', name: 'phone', value: c.phone || '' }),
@@ -488,20 +567,73 @@
       });
     }
 
-    function statement(c, rows) {
+    function writeOff(c, onDone) {
+      const owed = Number(c.credit_balance) || 0;
+      const wrapEl = ui.h('div', {});
+      wrapEl.appendChild(ui.h('div', { class: 'alert alert-warn' },
+        `Writing off removes ${c.name} from the debtors and posts the amount as a bad debt. It does not undo the sale.`));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        ui.field({ label: 'Amount to write off (₦)', name: 'amount', type: 'number', step: '0.01', min: '0.01', value: U.numInput(owed), required: true }),
+        ui.field({ label: 'Reason', name: 'reason', type: 'textarea', required: true, span: true, hint: 'At least a sentence. An auditor will ask.' })));
+      const m = ui.openModal({
+        title: 'Write off a debt',
+        body: wrapEl,
+        size: 'narrow',
+        footer: [
+          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+          ui.h('button', {
+            class: 'btn btn-primary',
+            onClick: async (ev) => {
+              const v = ui.readFormStrings(wrapEl);
+              const amount = Number(v.amount);
+              const reason = String(v.reason || '').trim();
+              if (!(amount > 0)) { ui.warn('Enter the amount to write off.'); return; }
+              if (reason.length < 10) { ui.warn('Give a real reason — at least a sentence.'); return; }
+              ev.currentTarget.disabled = true;
+              try {
+                const res = await SR.api.post(`/api/customers/${encodeURIComponent(c.id)}/write-off`, {
+                  amount, reason, branch_id: SR.state.activeBranchId, business_id: SR.state.activeBusinessId,
+                }, { query: SR.state.query({}) });
+                ui.ok((res && res.message) || 'Written off.');
+                m.close();
+                if (onDone) onDone();
+              } catch (err) {
+                ui.apiError(err);
+                ev.currentTarget.disabled = false;
+              }
+            },
+          }, 'Write it off'),
+        ],
+      });
+    }
+
+    async function statement(c, rows) {
       const brand = (SR.state.settings || {}).business_name || 'StockRidge';
+      let entries = rows || [];
+      let subtitle = `${c.name}${c.phone ? ` · ${c.phone}` : ''} · balance ${U.money(c.credit_balance)}`;
+      let closing = c.credit_balance;
+      try {
+        const printed = await SR.api.get(`/api/customers/${encodeURIComponent(c.id)}/statement`, { query: SR.state.query({}) });
+        entries = printed.entries || entries;
+        closing = printed.closing != null ? printed.closing : closing;
+        const range = printed.range || {};
+        subtitle = `${c.name}${c.phone ? ` · ${c.phone}` : ''} · ${range.from || ''} to ${range.to || ''} · opening ${U.money(printed.opening)} · closing ${U.money(printed.closing)}`;
+      } catch (err) {
+        if (!err.isOffline) ui.warn((err && err.message) || 'The statement was printed from this device.');
+      }
+      if (!entries.length) entries = [{ created_at: null, entry_type: '—', notes: 'No movement in this window.', amount: 0, balance_after: closing }];
       SR.print.printReport({
         title: `${brand} — Statement of account`,
-        subtitle: `${c.name}${c.phone ? ` · ${c.phone}` : ''} · balance ${U.money(c.credit_balance)}`,
+        subtitle,
         columns: [
-          { key: 'created_at', label: 'Date', value: (r) => U.watClock(r.created_at) },
+          { key: 'created_at', label: 'Date', value: (r) => (r.created_at ? U.watClock(r.created_at) : '') },
           { key: 'entry_type', label: 'Type' },
           { key: 'notes', label: 'Detail' },
           { key: 'amount', label: 'Amount', value: (r) => U.amount(r.amount) },
           { key: 'balance_after', label: 'Balance', value: (r) => U.amount(r.balance_after) },
         ],
-        rows,
-        foot: ['', '', 'BALANCE OWED', '', U.amount(c.credit_balance)],
+        rows: entries,
+        foot: ['', '', 'CLOSING', '', U.amount(closing)],
       });
     }
 

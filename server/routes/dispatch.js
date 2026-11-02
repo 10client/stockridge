@@ -1193,7 +1193,10 @@ function mount(app, base = '/api') {
     }, 201);
   }));
 
-  app.post(`${base}/duties/:id/end`, idempotent(async (ctx) => {
+  // Both paths are the same end. The fleet screen posts under /api/dispatch,
+  // with the other vehicle calls. The short path stays so an older till that
+  // already learned it still ends the assignment.
+  const endDuty = idempotent(async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('A manager changes the driver.', { status: 403, code: 'FORBIDDEN' });
@@ -1204,7 +1207,9 @@ function mount(app, base = '/api') {
       after: { vehicleId: duty.vehicle_id, userId: duty.user_id, endsOn: duty.ends_on },
     });
     ctx.json({ ok: true, duty, message: `${duty.vehicle_name} is no longer assigned to ${duty.full_name || duty.username}.` });
-  }));
+  });
+  app.post(`${base}/duties/:id/end`, endDuty);
+  app.post(`${base}/dispatch/duties/:id/end`, endDuty);
 
   app.get(`${base}/dispatch/vehicles/:id/record`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;

@@ -30,6 +30,7 @@
     ['journal', 'Journal'],
     ['vat', 'VAT'],
     ['wht', 'Withholding tax'],
+    ['banking', 'Cash & bank'],
     ['accounts', 'Chart of accounts'],
   ];
 
@@ -123,6 +124,7 @@
         }));
         if (state.tab === 'vat') return renderVat(await SR.api.get('/api/accounting/vat', { query: scopeQuery({}) }));
         if (state.tab === 'wht') return renderWht(await SR.api.get('/api/accounting/wht', { query: scopeQuery({}) }));
+        if (state.tab === 'banking') return renderBanking(await SR.api.get('/api/banking', { query: SR.state.query({}) }));
         if (state.tab === 'accounts') return renderAccounts(await SR.api.get('/api/accounting/accounts', { query: SR.state.query({}) }));
       } catch (err) {
         host.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: load } }));
@@ -238,6 +240,46 @@
           })), { format: (v) => U.money(v) }))));
       }
       host.replaceChildren(stack);
+    }
+
+    // ---------------------------------------------------------- cash and bank
+    function renderBanking(data) {
+      const accounts = data.accounts || [];
+      host.replaceChildren(ui.h('div', { class: 'stack' },
+        ui.h('div', { class: 'alert alert-info' }, data.message || 'Cash and bank, as the ledger has them.'),
+        ui.h('div', { class: 'kpis' },
+          ui.kpi({ label: 'Cash and bank', value: U.money(data.totalCash), tone: Number(data.totalCash) < 0 ? 'bad' : 'good' }),
+          ui.kpi({ label: 'Accounts', value: String(accounts.length), small: true })),
+        ui.dataCard({
+          title: 'Where the money sits',
+          table: ui.renderTable({
+            columns: [
+              { key: 'code', label: 'Code' },
+              { key: 'name', label: 'Account' },
+              { key: 'balance', label: 'Balance', align: 'right', render: (r) => U.money(r.balance) },
+            ],
+            rows: accounts,
+            foot: ['', 'Total', U.money(data.totalCash)],
+            emptyTitle: 'No cash or bank accounts',
+            emptyMessage: 'The chart has not been seeded for this business yet.',
+          }),
+        }),
+        ui.dataCard({
+          title: 'Recent money movements',
+          table: ui.renderTable({
+            columns: [
+              { key: 'entry_date', label: 'Date', render: (r) => U.date(r.entry_date) },
+              { key: 'entry_no', label: 'Entry' },
+              { key: 'source_type', label: 'From', render: (r) => U.humanise(String(r.source_type || '').toLowerCase()) },
+              { key: 'description', label: 'Detail' },
+              { key: 'branch_name', label: 'Branch' },
+              { key: 'total_debit', label: 'Amount', align: 'right', render: (r) => U.money(r.total_debit) },
+            ],
+            rows: data.recent || [],
+            emptyTitle: 'No banking yet',
+            emptyMessage: 'A till banking, a customer payment, a supplier payment, or a journal will show here.',
+          }),
+        })));
     }
 
     // -------------------------------------------------------- balance sheet
