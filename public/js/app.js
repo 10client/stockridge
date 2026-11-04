@@ -347,9 +347,15 @@
     const api = SR.roleScreens;
     if (!api || typeof api.navigationFor !== 'function' || typeof api.applyOwnerCuts !== 'function') return null;
     const role = String((user && user.role) || '').toUpperCase();
+    // An empty role is not a decision. An empty list is truthy in JavaScript,
+    // and treating it as the screen list denied the first click without the
+    // roles fallback. Not ready falls through to the role list.
+    if (!role) return null;
     const proprietor = Boolean(SR.state && SR.state.isProprietor && SR.state.isProprietor());
     const coOwner = role === 'OWNER' && !proprietor && Boolean(user && (user.coOwner === true || user.owner_limited === true || user.proprietor === false));
-    return api.applyOwnerCuts(api.navigationFor(role), { role, proprietor, coOwner });
+    const list = api.applyOwnerCuts(api.navigationFor(role), { role, proprietor, coOwner });
+    if (!list || !list.length) return null;
+    return list;
   }
 
   function allowed(route) {
@@ -357,7 +363,7 @@
     if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) return false;
     if (route.view === 'account') return Boolean(SR.state.user);
     const keys = screenKeysFor(SR.state.user);
-    if (keys && route.screens && route.screens.length) return route.screens.some((key) => keys.includes(key));
+    if (keys && keys.length && route.screens && route.screens.length) return route.screens.some((key) => keys.includes(key));
     if (!route.roles) return false;
     return route.roles.includes(String((SR.state.user && SR.state.user.role) || '').toUpperCase());
   }
@@ -452,9 +458,12 @@
         return;
       }
     }
-    if (!allowed(hit.route)) {
+    const wrongModule = hit.route.module && !(SR.state.moduleOn && SR.state.moduleOn(hit.route.module));
+    // The sidebar just offered this path. The first click must open it.
+    // Recomputing keys on that click used to warn, and the second click worked.
+    const shown = !wrongModule && hit.route.nav !== false && offeredPaths.has(hit.route.path);
+    if (!allowed(hit.route) && !shown) {
       showShell();
-      const wrongModule = hit.route.module && !(SR.state.moduleOn && SR.state.moduleOn(hit.route.module));
       const seq = ui.beginPage(hit.route.title || 'Opening');
       ui.warn(wrongModule ? 'That belongs to another kind of business.' : 'Your role does not include that screen.');
       setActiveNav(null);
@@ -829,6 +838,8 @@
     if (el) el.textContent = text === null || text === undefined ? '' : String(text);
   }
 
+  let offeredPaths = new Set();
+
   function buildNav() {
     const list = document.getElementById('nav-list');
     if (!list) return;
@@ -839,22 +850,32 @@
       return;
     }
     const groups = new Map();
+    const nextOffered = new Set();
     for (const route of ROUTES) {
       if (route.nav === false) continue;
       if (!allowed(route)) continue;
       if (offlineBooksOnly() && !OFFLINE_VIEWS.has(route.view)) continue;
+      nextOffered.add(route.path);
       const group = route.group || 'Other';
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(route);
     }
+    offeredPaths = nextOffered;
     const frag = document.createDocumentFragment();
     for (const [group, routes] of groups) {
       frag.appendChild(ui.h('div', { class: 'nav-group' }, group));
       for (const route of routes) {
         const btn = ui.h('button', {
           class: 'nav-item',
+          type: 'button',
           dataset: { path: route.path },
-          onClick: () => navigate(route.path),
+          onClick: (ev) => {
+            if (ev) {
+              ev.preventDefault();
+              ev.stopPropagation();
+            }
+            navigate(route.path);
+          },
           html: `${icon(route.icon)}<span>${U.esc(route.title)}</span>`,
         });
         frag.appendChild(btn);
@@ -870,13 +891,36 @@
     }
   }
 
+  let navClickShield = null;
+  function armNavClickShield() {
+    const until = Date.now() + 450;
+    if (navClickShield) document.removeEventListener('click', navClickShield, true);
+    navClickShield = (ev) => {
+      if (Date.now() > until) {
+        document.removeEventListener('click', navClickShield, true);
+        navClickShield = null;
+        return;
+      }
+      const nav = document.getElementById('sidenav');
+      if (nav && ev.target && nav.contains(ev.target)) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    document.addEventListener('click', navClickShield, true);
+  }
+
   function closeNav() {
     const nav = document.getElementById('sidenav');
     const scrim = document.getElementById('scrim');
+    const wasOpen = Boolean(nav && nav.classList.contains('is-open'));
     if (nav) nav.classList.remove('is-open');
     if (scrim) scrim.hidden = true;
     const toggle = document.getElementById('nav-toggle');
     if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    // Closing the overlay during the tap lets that same tap land on whatever
+    // is underneath. On a phone that second hit opened a screen this role
+    // cannot use, and the warning looked like the nav item itself was refused.
+    if (wasOpen) armNavClickShield();
   }
 
   // -------------------------------------------------------------------

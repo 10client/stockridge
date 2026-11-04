@@ -100,9 +100,35 @@
       return { data, changeOwed, offline: false };
     }
 
+    function copyInFlight() {
+      try { return Boolean(SR.sync && SR.sync.status && SR.sync.status().running); }
+      catch (e) { return false; }
+    }
+
+    // A dashboard read that times out while the till is still copying is not
+    // the shop being down. The chips stay on Syncing and Saving for that whole
+    // copy. Painting "the shop did not answer" beside them is a lie. Wait for
+    // the copy to finish, then read the live page once.
+    let settleRetry = null;
+    function retryWhenCopyEnds() {
+      if (settleRetry || !SR.sync || typeof SR.sync.on !== 'function') return;
+      const off = SR.sync.on('change', () => {
+        if (copyInFlight()) return;
+        try { off(); } catch (e) { /* already removed */ }
+        settleRetry = null;
+        refresh();
+      });
+      settleRetry = off;
+      if (ctx.onCleanup) ctx.onCleanup(() => {
+        if (!settleRetry) return;
+        try { settleRetry(); } catch (e) { /* already removed */ }
+        settleRetry = null;
+      });
+    }
+
     async function refresh() {
       body.replaceChildren(ui.loading('Reading the position…'));
-      let data = null; let offline = false; let error = null;
+      let data = null; let offline = false; let catchingUp = false; let error = null;
       let changeOwed = null;
       try {
         const live = await readDashboard();
@@ -111,31 +137,43 @@
       } catch (err) {
         error = err;
         const knownUp = Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed());
+        const copying = copyInFlight();
         // "The shop is up" is only true after a probe answered. An offline
         // sign-in used to land here while the chip still said online, and the
-        // page was replaced by Try again.
-        if (knownUp && err && err.code === 'SHOP_READ_FAILED') {
+        // page was replaced by Try again. A copy that is still running is
+        // also not that sentence: the till has not given up on the shop.
+        if (copying) {
+          catchingUp = true;
+          offline = false;
+          data = await fromMirror().catch(() => null);
+          retryWhenCopyEnds();
+        } else if (knownUp && err && err.code === 'SHOP_READ_FAILED') {
           body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
           return;
-        }
-        if (knownUp && !shopMiss(err)) {
+        } else if (knownUp && !shopMiss(err)) {
           body.replaceChildren(ui.errorBlock(err, { retry: { label: 'Try again', run: refresh } }));
           return;
-        }
-        if (knownUp) {
+        } else if (knownUp) {
           try {
             const again = await readDashboard();
             data = again.data;
             changeOwed = again.changeOwed;
             offline = false;
           } catch (againErr) {
-            if (againErr && againErr.code === 'SHOP_READ_FAILED') {
+            if (copyInFlight()) {
+              catchingUp = true;
+              offline = false;
+              data = await fromMirror().catch(() => null);
+              retryWhenCopyEnds();
+            } else if (againErr && againErr.code === 'SHOP_READ_FAILED') {
               body.replaceChildren(ui.errorBlock(againErr, { retry: { label: 'Try again', run: refresh } }));
               return;
+            } else if (!shopMiss(againErr)) {
+              throw againErr;
+            } else {
+              offline = true;
+              data = await fromMirror();
             }
-            if (!shopMiss(againErr)) throw againErr;
-            offline = true;
-            data = await fromMirror();
           }
         } else {
           offline = true;
@@ -143,6 +181,11 @@
         }
       }
       if (!data) {
+        if (catchingUp || copyInFlight()) {
+          body.replaceChildren(ui.loading('The till is still saving the latest copy. This page will load when that finishes.'));
+          retryWhenCopyEnds();
+          return;
+        }
         const missed = !(SR.api.shopConfirmed && SR.api.shopConfirmed());
         const fallback = new Error(missed
           ? 'The shop did not answer, and this device has no saved figures yet. Connect once so this page can load.'
@@ -150,12 +193,13 @@
         body.replaceChildren(ui.errorBlock(missed ? fallback : (error || fallback), { retry: { label: 'Try again', run: refresh } }));
         return;
       }
-      // Saved figures are not an offline banner while the shop has answered.
-      if (offline && SR.api.shopConfirmed && SR.api.shopConfirmed()) {
+      // Saved figures are not an offline banner while the shop has answered,
+      // and not while the till is still copying them.
+      if (offline && !catchingUp && SR.api.shopConfirmed && SR.api.shopConfirmed()) {
         body.replaceChildren(ui.errorBlock(error || new Error('The shop is up, but this screen did not load. Try again.'), { retry: { label: 'Try again', run: refresh } }));
         return;
       }
-      paint(body, data, { offline, changeOwed });
+      paint(body, data, { offline: offline && !catchingUp, catchingUp, changeOwed });
     }
 
     function localSales(items) {
@@ -309,7 +353,7 @@
       };
     }
 
-    function paint(host, data, { offline, changeOwed = null }) {
+    function paint(host, data, { offline, catchingUp = false, changeOwed = null }) {
       const todayNodes = [];
       const tradingNodes = [];
       const attentionNodes = [];
@@ -353,7 +397,11 @@
 
       const today = data.today || {};
       const period = data.period || {};
-      if (offline) {
+      if (catchingUp) {
+        todayNodes.push(ui.h('div', { class: 'alert' },
+          ui.h('strong', {}, 'Still saving — '),
+          'These figures are from the stock already on this till. The latest copy is still coming in.'));
+      } else if (offline) {
         const sales = Number(today.count) || 0;
         const queued = Number(today.queued) || 0;
         const savedHere = Number(today.gross) || 0;
@@ -490,7 +538,7 @@
               ui.h('div', { class: 'row-meta' }, `${t.branch || ''}${t.openedAt ? ` · opened ${U.date(t.openedAt)}` : ''}`)),
             ui.h('div', { class: 'row-value' }, U.money(t.grandTotal))));
         }
-        tillBody.appendChild(ui.h('p', { class: 'hint' }, offline
+        tillBody.appendChild(ui.h('p', { class: 'hint' }, offline && !catchingUp
           ? 'The shop did not answer. This drawer is a copy saved on this device. It is not a till open at the branch, and its total is not today\'s takings.'
           : `You have no till of your own open. ${U.plural(otherTills.length, 'till')} open at this branch:`));
         tillBody.appendChild(list);

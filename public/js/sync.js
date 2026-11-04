@@ -310,16 +310,13 @@
   // again with no cursor before anyone is told they can disconnect.
   async function ensureCatalogue() {
     if (!SR.api.isOnline() || !SR.api.hasToken()) return null;
-    let data;
-    try {
-      data = await SR.api.get('/api/products', { query: SR.state.query({ limit: 1 }), timeoutMs: 25000 });
-    } catch (err) {
-      await rememberPullError(pullFailureReason(err));
-      return { refused: true };
-    }
-    const shopCount = data && data.paging ? Number(data.paging.total) : null;
-    if (!Number.isFinite(shopCount)) return null;
+    // The unfiltered product total counts other businesses. A miss on that
+    // probe is not proof this shop failed to answer, and it must not leave
+    // Saving on Not saved after the catalogue groups already landed.
+    const shopCount = await ownedProductCount();
+    if (shopCount == null) return { refused: false, unchecked: true };
     await SR.store.metaSet('shop_product_count', shopCount);
+    if (shopCount === 0) await SR.store.metaSet('catalogue_empty', true);
     let localCount = await countCatalogueProducts();
     if (localCount < shopCount) {
       const refill = await pullRequest({
@@ -342,7 +339,10 @@
     if (!SR.api.isOnline()) {
       const products = await SR.store.all('products').catch(() => []);
       const stock = await SR.store.all('stock_batches').catch(() => []);
-      if (!products.length && !stock.length) {
+      const already = await SR.store.metaGet('last_pull_at').catch(() => null);
+      // A later probe miss must not wipe a catalogue this till already saved.
+      // That is what left Saving on Not saved after the copy had finished.
+      if (!products.length && !stock.length && !already) {
         await rememberPullError('The shop did not answer, so the catalogue was not copied onto this till.');
       }
       return { ok: false, offline: true, rows: 0 };
@@ -1232,25 +1232,26 @@
             try {
               const salesCopy = await copySalesBook();
               if (salesCopy && salesCopy.wrote) refresh = true;
-            } catch (err) {
-              if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
-            }
+            } catch (err) { /* a sales-book miss is not a missing catalogue */ }
           }
           try {
             if (await copyCounterBooks()) refresh = true;
-          } catch (err) {
-            if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
-          }
+          } catch (err) { /* a counter book is not the catalogue */ }
           const storedProducts = await SR.store.all('products').catch(() => []);
           const storedStock = await SR.store.all('stock_batches').catch(() => []);
           if (!(storedProducts || []).length && !(storedStock || []).length) {
             await SR.store.metaSet('catalogue_empty', true);
           }
-          // The catalogue answer is in. Hire, plant and delivery copies must
-          // not keep the chip on Saving, and must not hide a second sign-in.
-          catalogueSettled = true;
-          SR._uploading = false;
-          emit('change', status());
+          // The catalogue answer is in only when the pull itself finished.
+          // Dropping Saving while the pull failed is what flashed Not saved
+          // and then started another copy. Hire, plant and delivery copies
+          // must not keep the chip on Saving after a finished answer, and
+          // must not hide a second sign-in.
+          if (pullResult && pullResult.ok) {
+            catalogueSettled = true;
+            SR._uploading = false;
+            emit('change', status());
+          }
           try {
             if (await copyVerticalBooks()) refresh = true;
           } catch (err) { /* a feature this vertical does not use is not a short catalogue */ }
@@ -1418,13 +1419,10 @@
       await SR.store.metaSet('shop_product_count', shopCount);
       const localRows = await SR.store.all('products').catch(() => []);
       const localCount = (localRows || []).filter((row) => catalogueVisible(row) && row.business_id).length;
-      if (localCount < shopCount) {
-        const current = await SR.store.metaGet('sync_pull_error').catch(() => null);
-        if (!current || /not copied in full/.test(String(current))) {
-          await rememberPullError('The shop has ' + shopCount + ' products. This till stored ' + localCount + ', so the catalogue was not copied in full.');
-        }
-        if (!running) runOnce({ silent: true }).catch(() => {});
-      } else {
+      // A chip refresh must not write Not saved, and must not start another
+      // full copy just to clear it. The scheduled cycle already does that.
+      // A matching owned count may clear a stale short-copy sentence.
+      if (localCount >= shopCount || shopCount === 0) {
         const current = await SR.store.metaGet('sync_pull_error').catch(() => null);
         if (current && /not copied in full/.test(String(current))) {
           await SR.store.metaSet('sync_pull_error', null);
@@ -1432,12 +1430,7 @@
         }
       }
       emit('change', status());
-    }).catch(async (err) => {
-      if (err && (err.isAuth || err.code === 'SESSION_SUPERSEDED' || err.code === 'NO_TOKEN' || err.status === 401)) {
-        await rememberPullError(pullFailureReason(err));
-        emit('change', status());
-      }
-    });
+    }).catch(() => { /* a failed count is not a failed catalogue */ });
   }
 
   async function saveFacts() {
