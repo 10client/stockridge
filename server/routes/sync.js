@@ -624,6 +624,15 @@ function mount(app, base = '/api') {
     // stop at 2,000 and then treat that slice as the whole book.
     const fullLimit = Number(body.limit) || 12000;
     const deltaLimit = Number(body.limit) || 2000;
+    // One response of every product, variant and barcode is what the Worker
+    // and the till proxy cut off. The till then said the shop did not finish
+    // sending the catalogue. A page is a slice the shop can finish. `after`
+    // is the last id already stored, so the next page does not repeat it and
+    // does not skip a row that arrived between pages.
+    const pageSizeRaw = Number(body.page_size || body.pageSize);
+    const paging = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0;
+    const pageSize = paging ? Math.min(400, Math.max(1, Math.floor(pageSizeRaw))) : 0;
+    const afterMap = body.after && typeof body.after === 'object' && !Array.isArray(body.after) ? body.after : {};
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
@@ -692,11 +701,19 @@ function mount(app, base = '/api') {
         where.push(`${cursorColumn} > ?`);
         params.push(since);
       }
+      const afterRaw = paging ? afterMap[table] : null;
+      const afterId = afterRaw == null ? '' : String(afterRaw).trim();
+      if (paging && afterId && afterId.length <= 80 && /^[A-Za-z0-9_-]+$/.test(afterId)) {
+        where.push('id > ?');
+        params.push(afterId);
+      }
       const cols = spec.columns ? spec.columns.join(', ') : '*';
-      const tableLimit = (fullSync || fullTables.has(table)) ? fullLimit : deltaLimit;
+      const tableLimit = paging ? pageSize : ((fullSync || fullTables.has(table)) ? fullLimit : deltaLimit);
+      // Pages walk id, not name. Name order plus an id cursor skips and repeats.
+      const order = paging ? 'id' : (spec.orderBy || 'updated_at DESC, id');
       let rows;
       try {
-        rows = await db.all(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${spec.orderBy || 'updated_at DESC, id'} LIMIT ?`, [...params, tableLimit]);
+        rows = await db.all(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`, [...params, tableLimit]);
       } catch (e) {
         out[table] = { error: e.message, rows: [] };
         continue;
@@ -713,6 +730,15 @@ function mount(app, base = '/api') {
       const settings = await db.first('SELECT * FROM client_settings LIMIT 1');
       if (settings) {
         out.client_settings = { rows: [redactSettings(settings)], count: 1, truncated: false };
+      }
+    }
+
+    const next = {};
+    if (paging) {
+      for (const [name, item] of Object.entries(out)) {
+        if (!item || !item.truncated || !Array.isArray(item.rows) || !item.rows.length) continue;
+        const last = item.rows[item.rows.length - 1];
+        if (last && last.id != null) next[name] = String(last.id);
       }
     }
 
@@ -738,6 +764,7 @@ function mount(app, base = '/api') {
       // Told to the device explicitly, because a truncated table means the
       // mirror is incomplete and pricing against it could be wrong.
       truncatedTables: Object.entries(out).filter(([, v]) => v.truncated).map(([k]) => k),
+      next,
     });
   });
 

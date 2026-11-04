@@ -455,28 +455,165 @@
     if (!pulledSales || String(reconcileMark || '') !== '1' || gapNames.some((name) => SALES_TABLES.includes(name))) {
       for (const name of SALES_TABLES) if (asking.includes(name) && !fullTables.includes(name)) fullTables.push(name);
     }
-    let result;
+    // One send of every name, variant and barcode is what the shop could not
+    // finish. A page is small enough to arrive. The next page starts after the
+    // last id stored, so a row is not skipped and not written twice. A page
+    // that dies is asked again before the till says the shop did not finish.
+    const PAGE = 300;
     const started = Date.now();
-    try {
-      result = await SR.api.post('/api/sync/pull', {
+    function wait(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+    function transient(err) {
+      const msg = String((err && (err.message || err.code)) || '');
+      return Boolean(err && (err.isOffline || err.code === 'OFFLINE' || err.code === 'SHOP_UNCONFIRMED' || err.code === 'SHOP_READ_FAILED'))
+        || /did not answer|could not be reached|in time|timed out|timeout|failed to fetch|shop_read_failed/i.test(msg);
+    }
+    function pageBody(tables, after) {
+      return {
         device_id: SR.device.current().id,
         app_version: SR.APP_VERSION,
         since: since || undefined,
         branch_id: branchId || undefined,
         include_all_branches: true,
         include_all_businesses: true,
-        tables: asking,
+        tables,
         full_tables: fullTables.length ? fullTables : undefined,
-      }, { timeoutMs: 70000 });
-    } catch (err) {
-      const reason = pullFailureReason(err);
-      await rememberPullError(reason);
-      await SR.store.log({ kind: 'PULL', status: 'FAILED', count: 0, message: reason }).catch(() => {});
-      emit('change', status());
-      return { ok: false, error: err, rows: 0, fast: Date.now() - started < 8000 };
+        page_size: PAGE,
+        after: after && Object.keys(after).length ? after : undefined,
+      };
     }
-    if (!result || !result.tables) {
+    async function postWithRetry(body) {
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          return { ok: true, result: await SR.api.post('/api/sync/pull', body, { timeoutMs: 40000 }) };
+        } catch (err) {
+          lastErr = err;
+          if (!transient(err) || attempt === 2) break;
+          await wait(800 * (attempt + 1));
+        }
+      }
+      return { ok: false, error: lastErr };
+    }
+    async function fetchPage(tables, after) {
+      const posted = await postWithRetry(pageBody(tables, after));
+      if (posted.ok || tables.length <= 1) return posted;
+      const tablesOut = {};
+      const next = {};
+      const truncatedTables = [];
+      let cursor = null;
+      let fullSyncFlag = false;
+      for (const table of tables) {
+        const oneAfter = after && after[table] ? { [table]: after[table] } : undefined;
+        const one = await postWithRetry(pageBody([table], oneAfter));
+        if (!one.ok) return { ok: false, error: one.error, partial: { tables: tablesOut, cursor, next, truncatedTables } };
+        const got = one.result || {};
+        Object.assign(tablesOut, got.tables || {});
+        if (got.cursor) cursor = got.cursor;
+        if (got.fullSync) fullSyncFlag = true;
+        const oneNext = got.next && typeof got.next === 'object' ? got.next : {};
+        for (const name of Object.keys(oneNext)) if (oneNext[name]) next[name] = String(oneNext[name]);
+        for (const name of got.truncatedTables || []) if (!truncatedTables.includes(name)) truncatedTables.push(name);
+      }
+      return { ok: true, result: { tables: tablesOut, cursor, fullSync: fullSyncFlag, next, truncatedTables } };
+    }
+    const merged = {};
+    let cursor = null;
+    let fullSyncFlag = !since;
+    let after = {};
+    let askingNow = asking.slice();
+    let ignoredPaging = false;
+    let stuck = false;
+    let open = false;
+    const seenAfter = new Set();
+    let result = null;
+    for (let page = 0; page < 50 && askingNow.length; page++) {
+      const posted = await fetchPage(askingNow, after);
+      const pageResult = posted.ok ? posted.result : (posted.partial || null);
+      if (pageResult && pageResult.tables) {
+        if (pageResult.cursor) cursor = pageResult.cursor;
+        if (pageResult.fullSync) fullSyncFlag = true;
+        if (page === 0) {
+          ignoredPaging = Object.values(pageResult.tables).some((item) => item && Array.isArray(item.rows) && item.rows.length > PAGE);
+        }
+        const settingsRow = pageResult.tables.client_settings && pageResult.tables.client_settings.rows && pageResult.tables.client_settings.rows[0];
+        if (settingsRow && settingsRow.data_reset_at) await honourReset(settingsRow.data_reset_at);
+        for (const [table, payload] of Object.entries(pageResult.tables)) {
+          if (!merged[table]) merged[table] = { rows: [], error: null, truncated: false, wrote: 0, acknowledged: false };
+          if (payload && payload.error) merged[table].error = payload.error;
+          if (!payload || !Array.isArray(payload.rows) || !payload.rows.length) continue;
+          merged[table].rows = merged[table].rows.concat(payload.rows);
+          if (payload.truncated) merged[table].truncated = true;
+          try {
+            const wrote = await SR.store.putMany(table, payload.rows);
+            merged[table].wrote += Number(wrote) || 0;
+            if (wrote != null) merged[table].acknowledged = true;
+          } catch (err) {
+            const reason = pullFailureReason(err);
+            await rememberPullError(reason);
+            return { ok: false, error: err, rows: merged[table].wrote, fast: false };
+          }
+        }
+      }
+      if (!posted.ok) {
+        const reason = pullFailureReason(posted.error);
+        await rememberPullError(reason);
+        await SR.store.log({ kind: 'PULL', status: 'FAILED', count: 0, message: reason }).catch(() => {});
+        emit('change', status());
+        return { ok: false, error: posted.error, rows: 0, fast: Date.now() - started < 8000 };
+      }
+      result = posted.result;
+      if (!result || !result.tables) {
+        const reason = 'The shop answered without a catalogue, so nothing was written.';
+        await rememberPullError(reason);
+        return { ok: false, error: new Error(reason), rows: 0, fast: false };
+      }
+      if (ignoredPaging) break;
+      const next = result.next && typeof result.next === 'object' ? result.next : {};
+      const cont = Object.keys(next).filter((name) => next[name]);
+      const truncatedNames = (result.truncatedTables || []).filter(Boolean);
+      if (!cont.length) {
+        open = false;
+        if (truncatedNames.length) {
+          stuck = true;
+          for (const name of truncatedNames) if (merged[name]) merged[name].truncated = true;
+        } else {
+          for (const table of Object.keys(merged)) merged[table].truncated = false;
+        }
+        break;
+      }
+      open = true;
+      const mark = cont.map((name) => name + ':' + next[name]).join('|');
+      if (seenAfter.has(mark)) {
+        stuck = true;
+        for (const name of cont) if (merged[name]) merged[name].truncated = true;
+        break;
+      }
+      seenAfter.add(mark);
+      after = {};
+      for (const name of cont) after[name] = String(next[name]);
+      askingNow = cont;
+    }
+    if (open && !stuck && !ignoredPaging) {
+      stuck = true;
+      for (const name of Object.keys(after)) if (merged[name]) merged[name].truncated = true;
+    }
+    result = {
+      tables: {},
+      cursor,
+      fullSync: fullSyncFlag,
+      truncatedTables: [],
+    };
+    for (const [table, item] of Object.entries(merged)) {
+      result.tables[table] = { rows: item.rows, error: item.error, truncated: Boolean(item.truncated) };
+      if (item.truncated) result.truncatedTables.push(table);
+    }
+    if (!result.tables || !Object.keys(result.tables).length) {
       const reason = 'The shop answered without a catalogue, so nothing was written.';
+      await rememberPullError(reason);
+      return { ok: false, error: new Error(reason), rows: 0, fast: false };
+    }
+    if (stuck) {
+      const reason = 'The shop did not finish sending the catalogue. Leave the till open and connected so it can try again.';
       await rememberPullError(reason);
       return { ok: false, error: new Error(reason), rows: 0, fast: false };
     }
@@ -496,14 +633,12 @@
     const perTable = [];
     let replayShelf = false;
     try {
-      for (const [table, payload] of Object.entries(result.tables || {})) {
-        if (!payload || !Array.isArray(payload.rows)) continue;
-        sent += payload.rows.length;
-        const wrote = await SR.store.putMany(table, payload.rows);
-        if (wrote != null) acknowledged = true;
-        rows += Number(wrote) || 0;
-        perTable.push({ table, count: Number(wrote) || 0 });
-        if (table === 'stock_batches') replayShelf = true;
+      for (const [table, item] of Object.entries(merged)) {
+        sent += (item.rows || []).length;
+        rows += Number(item.wrote) || 0;
+        if (item.acknowledged) acknowledged = true;
+        perTable.push({ table, count: Number(item.wrote) || 0 });
+        if (table === 'stock_batches' && item.rows && item.rows.length) replayShelf = true;
       }
       // An incremental answer is a delta. An empty delta means "nothing
       // changed", not "the table is empty". Only a full, uncut answer may
@@ -548,7 +683,7 @@
     if (result && result.tables && result.tables.sales && !result.tables.sales.error) {
       await SR.store.metaSet('pulled_sales_tables', true);
     }
-    if (shelfDue && result.tables && result.tables.stock_batches && !result.tables.stock_batches.error) {
+    if (shelfDue && result.tables && result.tables.stock_batches && !result.tables.stock_batches.error && !result.tables.stock_batches.truncated) {
       await SR.store.metaSet('shelf_full_at', new Date().toISOString());
     }
     if (saveCursor && result && result.cursor && !hardErrors.length) {
@@ -607,10 +742,27 @@
     const out = [];
     let offset = 0;
     for (let page = 0; page < (pages || 4); page += 1) {
-      const data = await SR.api.get(path, { query: Object.assign({ limit: 200, offset }, query || {}), timeoutMs: 20000 }).catch(() => null);
+      let data = null;
+      let missed = false;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          data = await SR.api.get(path, { query: Object.assign({ limit: 200, offset }, query || {}), timeoutMs: 20000 });
+          missed = false;
+          break;
+        } catch (err) {
+          const transport = !err || err.isOffline || err.status === 0 || /did not answer|in time|timed out|failed to fetch/i.test(String(err && err.message || ''));
+          data = null;
+          missed = transport;
+          if (!transport) break;
+        }
+      }
+      // A line that died is not an empty page. A 403 is a book this shop does
+      // not use, and that is not the catalogue failing to send.
+      if (missed) throw new Error('The shop did not finish sending this list.');
+      if (!data) break;
       const rows = rowsOf(data).filter((row) => row && row.id != null);
       out.push(...rows);
-      if (!rows.length || !data || !data.paging || !data.paging.hasMore) break;
+      if (!rows.length || !data.paging || !data.paging.hasMore) break;
       offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
     }
     return out;
@@ -1087,7 +1239,8 @@
       let complete = false;
       let failed = false;
       for (let page = 0; page < pages; page += 1) {
-        const data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 }).catch(() => null);
+        let data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 }).catch(() => null);
+        if (!data) data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 }).catch(() => null);
         if (!data) { failed = true; break; }
         const rows = (data.data || []).filter((row) => row && row.id != null);
         headers.push(...rows);
