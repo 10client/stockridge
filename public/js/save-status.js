@@ -32,7 +32,7 @@
         return { state: 'partial', label: 'Part saved', finished: false, detail: 'Some of the catalogue is already on this till. ' + why + ' You can sell from what is here.' };
       }
       if (!catalogue) {
-        if (catalogueEmpty) return { state: 'empty', label: 'Not saved', finished: false, detail: 'The shop answered and has no products or stock to copy onto this till. That is why this says Not saved.' };
+        if (catalogueEmpty && row.lastPullAt) return { state: 'saved', label: 'Saved', finished: true, detail: 'The shop has no goods yet, and this till has that answer. Add a product when you are ready. You can disconnect.' };
         if (pullError) return { state: 'empty', label: 'Not saved', finished: false, detail: 'The catalogue did not save. ' + pullError };
         return { state: 'empty', label: 'Not saved', finished: false, detail: 'This till has not downloaded the catalogue yet. Leave it open and connected until this says Saved.' };
       }

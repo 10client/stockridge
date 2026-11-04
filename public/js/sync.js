@@ -69,10 +69,11 @@
     for (const fn of set) { try { fn(detail); } catch (e) { /* keep going */ } }
   }
 
+  let catalogueSettled = false;
   function status() {
     return {
       online: SR.api.isOnline(),
-      running: Boolean(running),
+      running: Boolean(running) && !catalogueSettled,
       lastPushAt: lastPushAt,
       lastPullAt: lastPullAt,
       lastError: lastError,
@@ -688,10 +689,26 @@
   // Every vertical's own books, through the shop routes that are already live.
   // A phone shop's hire route answers 403. That is not a missing catalogue.
   // The full row is stored. Turso stays behind the Worker.
+  async function ownedProductCount() {
+    const data = await SR.api.get('/api/products', { query: { owned: 1, limit: 1 }, timeoutMs: 12000 }).catch(() => null);
+    const total = data && data.paging ? Number(data.paging.total) : null;
+    return Number.isFinite(total) ? total : null;
+  }
+
   async function copyVerticalBooks() {
     const now = Date.now();
     const last = await SR.store.metaGet('vertical_copy_at').catch(() => null);
     if (!copyDue(last, now, VERTICAL_COPY_MS)) return 0;
+    // An empty shop has no hire book, no plant, and no delivery book. Walking
+    // every business for those routes is what kept Saving on the screen after
+    // the catalogue had already answered. The market list is not "goods on
+    // this shop".
+    const owned = await ownedProductCount();
+    if (owned === 0) {
+      await SR.store.metaSet('catalogue_empty', true);
+      await SR.store.metaSet('shop_product_count', 0);
+      return 0;
+    }
     const first = !last;
     const listPages = first ? 4 : 1;
     const from = first ? '2020-01-01' : dayBefore(last);
@@ -1224,6 +1241,16 @@
           } catch (err) {
             if (!(SR._catchingUp && sessionBlipError(err))) await rememberPullError(pullFailureReason(err));
           }
+          const storedProducts = await SR.store.all('products').catch(() => []);
+          const storedStock = await SR.store.all('stock_batches').catch(() => []);
+          if (!(storedProducts || []).length && !(storedStock || []).length) {
+            await SR.store.metaSet('catalogue_empty', true);
+          }
+          // The catalogue answer is in. Hire, plant and delivery copies must
+          // not keep the chip on Saving, and must not hide a second sign-in.
+          catalogueSettled = true;
+          SR._uploading = false;
+          emit('change', status());
           try {
             if (await copyVerticalBooks()) refresh = true;
           } catch (err) { /* a feature this vertical does not use is not a short catalogue */ }
@@ -1242,6 +1269,7 @@
         return { ok: true, push: pushResult, pull: pullResult, refresh };
       } finally {
         SR._uploading = false;
+        catalogueSettled = false;
         running = null;
         emit('change', status());
         if (refresh && SR.state && SR.state.user) emit('settled', { refresh: true });
@@ -1384,11 +1412,12 @@
     if (!SR.api.isOnline() || !SR.api.hasToken()) return;
     if (Date.now() - shopCountCheckedAt < 20000) return;
     shopCountCheckedAt = Date.now();
-    SR.api.get('/api/products', { query: SR.state.query({ limit: 1 }), timeoutMs: 20000 }).then(async (data) => {
+    SR.api.get('/api/products', { query: SR.state.query({ owned: 1, limit: 1 }), timeoutMs: 20000 }).then(async (data) => {
       const shopCount = data && data.paging ? Number(data.paging.total) : null;
       if (!Number.isFinite(shopCount)) return;
       await SR.store.metaSet('shop_product_count', shopCount);
-      const localCount = await countCatalogueProducts();
+      const localRows = await SR.store.all('products').catch(() => []);
+      const localCount = (localRows || []).filter((row) => catalogueVisible(row) && row.business_id).length;
       if (localCount < shopCount) {
         const current = await SR.store.metaGet('sync_pull_error').catch(() => null);
         if (!current || /not copied in full/.test(String(current))) {

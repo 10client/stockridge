@@ -312,9 +312,14 @@ function mount(app, base = '/api') {
     // is how a purchase order is raised. The till passes for_sale=1 and must
     // not be offered those rows, or a name that was never received.
     const forSale = ctx.req.queryParam('for_sale') === '1';
+    // owned=1 is the shop's own goods, not the shared market list. A till
+    // uses it to tell "this shop has nothing to copy" from "the market
+    // catalogue has thousands of rows".
+    const ownedOnly = ctx.req.queryParam('owned') === '1';
     const branch = (lowStock || forSale) ? await resolveBranch(db, ctx) : null;
 
     const where = ['p.is_deleted = 0'];
+    if (ownedOnly) where.push('p.business_id IS NOT NULL');
     const params = [];
     if (businessId) { where.push('(p.business_id = ? OR p.business_id IS NULL)'); params.push(String(businessId)); }
     else if (scope.businessIds) { where.push('(p.business_id IS NULL OR p.business_id IN (' + [...scope.businessIds].map(() => '?').join(',') + '))'); params.push(...[...scope.businessIds]); }

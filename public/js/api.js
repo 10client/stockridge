@@ -407,7 +407,10 @@
       // and the shell confirms that before leaving. A missing token on one
       // path is a dropped header, not a logout.
       const fatalAuth = err.code === 'SESSION_REVOKED' || err.code === 'BAD_TOKEN' || err.code === 'TOKEN_EXPIRED' || err.code === 'USER_GONE' || err.code === 'SESSION_SUPERSEDED';
-      if (err.isAuth && fatalAuth && !quiet && !reconnecting() && !pageJustChanged() && !catchingUp()) {
+      // Another device taking this account is not a dropped header and not a
+      // line coming back. It must reach the shell even while a sync is running.
+      const displaced = err.code === 'SESSION_SUPERSEDED' || err.code === 'SESSION_REVOKED' || err.code === 'USER_GONE';
+      if (err.isAuth && fatalAuth && (displaced || !quiet) && (displaced || (!reconnecting() && !pageJustChanged() && !catchingUp()))) {
         err.token = auth;
         emit('auth', { reason: err.code, token: auth, message: err.message });
       }

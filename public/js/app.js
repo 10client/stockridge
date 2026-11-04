@@ -1543,7 +1543,9 @@
   }
 
   async function watchSession() {
-    if (signingOut || !SR.api.hasToken() || SR._uploading || (SR.api.catchingUp && SR.api.catchingUp())) return;
+    // A long sync must not hide a second sign-in. One account, one device:
+    // the shop's answer is checked even while Saving is on the screen.
+    if (signingOut || !SR.api.hasToken()) return;
     try {
       const me = await SR.api.me();
       const stamp = me && me.settings && me.settings.data_reset_at;
@@ -1714,7 +1716,7 @@
     // be refused while the device id catches up. Do not pull the login page
     // back over the welcome toast. After this window, one account, one device
     // still signs the other session out.
-    if (Date.now() < loginGraceUntil) return;
+    if (Date.now() < loginGraceUntil && reason !== 'SESSION_SUPERSEDED' && reason !== 'SESSION_REVOKED' && reason !== 'USER_GONE') return;
     const reason = detail && detail.reason;
     const fatal = reason === 'SESSION_REVOKED' || reason === 'BAD_TOKEN' || reason === 'TOKEN_EXPIRED' || reason === 'USER_GONE' || reason === 'SESSION_SUPERSEDED' || reason === 'TOKEN_BAD_SIGNATURE';
     // Navigating to a page must not sign the till out. A 401 from a dropped
@@ -1734,7 +1736,7 @@
         uploading: Boolean(SR._uploading || (SR.api.catchingUp && SR.api.catchingUp()) || pendingUpload),
         pendingUpload,
         navigated: Boolean(SR._navigatedAt && Date.now() - SR._navigatedAt < 45000),
-        shopConfirmed: Boolean(SR.api.shopConfirmed && SR.api.shopConfirmed()),
+        shopConfirmed: Boolean((SR.api.shopConfirmed && SR.api.shopConfirmed()) || reason === 'SESSION_SUPERSEDED' || reason === 'SESSION_REVOKED' || reason === 'USER_GONE'),
         confirmedTwice: Boolean(detail && detail.confirmedTwice),
       })
       : { signOut: !hasLocalSession };
