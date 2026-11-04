@@ -121,6 +121,10 @@
     // shows the ring beside it. Hiding the label (the old takeover) made a
     // button look idle until the handler later wrote "Saving…", which is after
     // the request — the ring was the only signal, and a blank button is not one.
+    // A side-nav item is a route, not a save. The busy lock sets
+    // pointer-events:none, so the press that should open the screen is dropped.
+    // Picker rows reuse the class. They are not this lock.
+    if (cls.contains('nav-item') && el.closest && el.closest('#nav-list')) return 'press';
     if (cls.contains('icon-btn') || cls.contains('avatar') || cls.contains('field-reveal')) return 'icon';
     return 'inline';
   }

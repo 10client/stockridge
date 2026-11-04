@@ -344,6 +344,11 @@
    * a co-owner does not get settings, the plan, or a data cleanup.
    */
   function screenKeysFor(user) {
+    // Login and /me already applied the proprietor and co-owner cuts. Painting
+    // a second list from a flag the row did not have yet is how an owner saw
+    // one set, then the set their role can open. An empty array is not a list.
+    const listed = user && Array.isArray(user.navigation) ? user.navigation.filter((key) => key) : null;
+    if (listed && listed.length) return listed.slice();
     const api = SR.roleScreens;
     if (!api || typeof api.navigationFor !== 'function' || typeof api.applyOwnerCuts !== 'function') return null;
     const role = String((user && user.role) || '').toUpperCase();
@@ -394,10 +399,18 @@
   }
 
   const OFFLINE_VIEWS = new Set(['pos', 'sales', 'stock', 'till', 'attendance', 'change-owed']);
+  // The short list is only a till that continued from saved stock. A live
+  // sign-in must not borrow "the shop has not answered this instant" as a
+  // role cut. Once the role list has been shown, a later probe miss must not
+  // shrink it. Sign-out clears the hold.
+  let roleNavHeld = false;
+  let sellingOffline = false;
 
   function offlineBooksOnly() {
     if (!SR.state || !SR.state.user) return false;
     if (SR.api && SR.api.shopConfirmed && SR.api.shopConfirmed()) return false;
+    if (roleNavHeld && !sellingOffline) return false;
+    if (!sellingOffline && SR.api && SR.api.isOnline && SR.api.isOnline()) return false;
     return true;
   }
 
@@ -419,6 +432,15 @@
 
   function refreshOpenPage(attempt) {
     if (!SR.state.user || signingOut) return;
+    // A settle that starts a second render in the same moment as a press
+    // wins the token. The press's render then returns without painting, and
+    // the press looks like it did nothing.
+    if (SR._navigatedAt && Date.now() - SR._navigatedAt < 800) {
+      if (attempt) return;
+      clearTimeout(refreshWait);
+      refreshWait = setTimeout(() => refreshOpenPage(1), 800);
+      return;
+    }
     const modal = document.getElementById('modal-root');
     const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
     if ((modal && !modal.hidden) || typing) {
@@ -439,7 +461,9 @@
     // A signed-out till must not paint the shell. Empty nav and a missing Save
     // chip are what that looks like when the sign-in page never comes up.
     if (explicitSignOut || !SR.state.user) { showLogin(); return; }
-    if (hit && offlineBooksOnly() && !OFFLINE_VIEWS.has(hit.route.view)) {
+    // A path the sidebar is showing must open. Bouncing it to the counter
+    // because a probe missed is the press that looks like it did nothing.
+    if (hit && offlineBooksOnly() && !OFFLINE_VIEWS.has(hit.route.view) && !offeredPaths.has(hit.route.path)) {
       navigate('/pos', { replace: true });
       return;
     }
@@ -839,6 +863,50 @@
   }
 
   let offeredPaths = new Set();
+  let navSignature = '';
+  let navPressDepth = 0;
+  let navRebuildWait = false;
+  let navPress = null;
+
+  function navPathOf(node) {
+    const btn = node && node.closest ? node.closest('.nav-item') : null;
+    return btn && btn.dataset ? (btn.dataset.path || '') : '';
+  }
+
+  function releaseNavPress() {
+    navPressDepth = 0;
+    navPress = null;
+    if (!navRebuildWait) return;
+    navRebuildWait = false;
+    buildNav();
+  }
+
+  function bindNavPress() {
+    const list = document.getElementById('nav-list');
+    if (!list || list.dataset.pressBound) return;
+    list.dataset.pressBound = '1';
+    list.addEventListener('pointerdown', (ev) => {
+      navPressDepth += 1;
+      const path = navPathOf(ev.target);
+      navPress = path ? { path, at: Date.now() } : null;
+    }, true);
+    // A rebuild between press and release used to destroy the button, so the
+    // click never fired. The press still names the screen. If the button under
+    // the finger changed, open the one that was pressed. The click opens it
+    // when the button is still there.
+    list.addEventListener('pointerup', (ev) => {
+      const pressed = navPress;
+      const now = navPathOf(ev.target);
+      if (pressed && pressed.path && now !== pressed.path) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        navigate(pressed.path);
+      }
+    }, true);
+    list.addEventListener('pointercancel', () => { navPress = null; }, true);
+    document.addEventListener('pointerup', () => { setTimeout(releaseNavPress, 0); }, true);
+    document.addEventListener('pointercancel', () => { setTimeout(releaseNavPress, 0); }, true);
+  }
 
   function buildNav() {
     const list = document.getElementById('nav-list');
@@ -849,18 +917,35 @@
       if (explicitSignOut || shellIsOpen()) presentLogin();
       return;
     }
+    // Do not replace the button under a finger. The click has not fired yet.
+    // The rebuild waits until that press has opened its screen.
+    if (navPressDepth) {
+      navRebuildWait = true;
+      return;
+    }
+    if (SR.api && SR.api.shopConfirmed && SR.api.shopConfirmed()) sellingOffline = false;
+    const booksOnly = offlineBooksOnly();
     const groups = new Map();
     const nextOffered = new Set();
+    const parts = [];
     for (const route of ROUTES) {
       if (route.nav === false) continue;
       if (!allowed(route)) continue;
-      if (offlineBooksOnly() && !OFFLINE_VIEWS.has(route.view)) continue;
+      if (booksOnly && !OFFLINE_VIEWS.has(route.view)) continue;
       nextOffered.add(route.path);
+      parts.push(route.path);
       const group = route.group || 'Other';
       if (!groups.has(group)) groups.set(group, []);
       groups.get(group).push(route);
     }
     offeredPaths = nextOffered;
+    if (!booksOnly) roleNavHeld = true;
+    const signature = parts.join('\n');
+    if (signature === navSignature && list.querySelector('.nav-item')) {
+      setActiveNav(currentRoute);
+      return;
+    }
+    navSignature = signature;
     const frag = document.createDocumentFragment();
     for (const [group, routes] of groups) {
       frag.appendChild(ui.h('div', { class: 'nav-group' }, group));
@@ -1556,6 +1641,13 @@
     explicitSignOut = true;
     signingOut = true;
     SR._explicitSignOut = true;
+    roleNavHeld = false;
+    sellingOffline = false;
+    navSignature = '';
+    offeredPaths = new Set();
+    navPressDepth = 0;
+    navRebuildWait = false;
+    navPress = null;
   }
 
   function allowShell() {
@@ -1931,6 +2023,7 @@
         updateSubscriptionChrome();
         startSync();
         loginGraceUntil = Date.now() + 12000;
+        sellingOffline = true;
         allowShell();
         showShell();
         navigate(homePath(), { replace: true });
@@ -1952,6 +2045,18 @@
       // Leave the login page before the toast. A later refusal must not be
       // able to put the form back on top of "Welcome".
       loginGraceUntil = Date.now() + 12000;
+      // The shop just accepted the PIN. Do not paint the till-only list and
+      // then swap it for the owner list when the next probe agrees.
+      sellingOffline = false;
+      if (result && result.profile && SR.state.user) {
+        const profile = result.profile;
+        if (!(Array.isArray(SR.state.user.navigation) && SR.state.user.navigation.length) && Array.isArray(profile.navigation) && profile.navigation.length) {
+          SR.state.user.navigation = profile.navigation.slice();
+        }
+        if (SR.state.user.proprietor == null && profile.proprietor === true) SR.state.user.proprietor = true;
+        if (SR.state.user.coOwner !== true && profile.coOwner === true) SR.state.user.coOwner = true;
+      }
+      if (SR.api.noteReachable) SR.api.noteReachable(true);
       allowShell();
       showShell();
       navigate(homePath(), { replace: true });
@@ -2002,6 +2107,7 @@
           }
           startSync();
           loginGraceUntil = Date.now() + 12000;
+          sellingOffline = true;
           allowShell();
           showShell();
           navigate(homePath(), { replace: true });
@@ -2372,6 +2478,7 @@
         if (explicitSignOut || shellIsOpen()) presentLogin();
         return;
       }
+      if (SR.api.shopConfirmed && SR.api.shopConfirmed()) sellingOffline = false;
       updateNetChrome();
       updateQueueChrome();
       updateSaveChrome();
@@ -2404,6 +2511,7 @@
   }
 
   function wireChrome() {
+    bindNavPress();
     document.getElementById('nav-toggle').addEventListener('click', () => {
       const nav = document.getElementById('sidenav');
       const scrim = document.getElementById('scrim');
@@ -2481,6 +2589,7 @@
         return;
       }
       startSync();
+      sellingOffline = true;
       allowShell();
       showShell();
       const pos = { path: '/pos', roles: ['STAFF', 'MANAGER', 'OWNER'] };
