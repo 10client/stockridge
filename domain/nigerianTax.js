@@ -38,6 +38,14 @@ const DEFAULT_VAT_RATE_PERCENT = 7.5;
 const SMALL_COMPANY_MONTHLY_THRESHOLD = 2000000;
 
 // WHT is remitted by the 21st day of the FOLLOWING month.
+// VAT returns are due the same day. Checked 4 Nov 2026 against the Nigeria
+// Revenue Service restatement of 27 Oct 2026 (rate still 7.5%) and the
+// September 2026 rate tables that still apply the 2024 WHT schedule.
+// The Nigeria Tax Act 2025, in force from 1 Jan 2026, did not move these
+// rates or this deadline. Its small-company test (turnover of ₦50 million
+// or less, and fixed assets of ₦250 million or less, excluding professional
+// services) is the company-tax and VAT-registration test. It is not a
+// replacement for the ₦2,000,000 monthly WHT exemption below.
 const WHT_REMITTANCE_DAY_OF_MONTH = 21;
 
 // ---------------------------------------------------------------------

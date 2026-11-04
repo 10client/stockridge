@@ -128,6 +128,7 @@ function mount(app, base = '/api/auth', makeEnv = null) {
         },
         scope: serialiseScope(result.scope),
         otherDevice: Boolean(result.otherDevice),
+        dataResetAt: (ctx.get('settings') && ctx.get('settings').data_reset_at) || null,
       });
     } catch (e) {
       await recordLoginAttempt(db, { username, userId: null, succeeded: false, ipAddress, userAgent });
@@ -375,6 +376,9 @@ function publicSettings(settings) {
     // and it should be deciding with the same numbers the server would.
     'credit_grace_days', 'instalment_default_after_days', 'instalment_default_after_missed',
     'admin_contact_name', 'admin_contact_phone', 'admin_contact_email',
+    // A format of the shop changes this. A till that still has last month's
+    // drawer must see the new stamp and drop that copy. It is not a secret.
+    'data_reset_at',
   ];
   const out = {};
   for (const k of keys) if (settings[k] !== undefined) out[k] = settings[k];

@@ -137,7 +137,12 @@
             end_date: dates.end_date ? dates.end_date.value : null,
           });
           const kept = res.continuity || {};
-          ui.ok(`${res.label || mode.label}: ${U.qty(res.total)} row(s) removed. Still trading with ${U.qty(kept.stock_batches || 0)} batch(es) holding ${U.qty(kept.stock_base_units || 0)} unit(s).`);
+          const failed = (res.failed || []).filter((f) => f && f.table);
+          if (!res.ok || failed.length) {
+            ui.error(`Cleanup did not finish. Still blocked: ${failed.map((f) => f.table).join(', ') || 'see the log'}. Do not treat the shop as cleared.`);
+          } else {
+            ui.ok(`${res.label || mode.label}: ${U.qty(res.total)} row(s) removed. Still trading with ${U.qty(kept.stock_batches || 0)} batch(es) holding ${U.qty(kept.stock_base_units || 0)} unit(s).`);
+          }
           finish(res);
         } catch (err) {
           const message = (err && err.message) || 'The cleanup did not run.';

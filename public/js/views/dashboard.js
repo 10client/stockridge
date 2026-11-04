@@ -490,7 +490,9 @@
               ui.h('div', { class: 'row-meta' }, `${t.branch || ''}${t.openedAt ? ` · opened ${U.date(t.openedAt)}` : ''}`)),
             ui.h('div', { class: 'row-value' }, U.money(t.grandTotal))));
         }
-        tillBody.appendChild(ui.h('p', { class: 'hint' }, `You have no till of your own open. ${U.plural(otherTills.length, 'till')} open at this branch:`));
+        tillBody.appendChild(ui.h('p', { class: 'hint' }, offline
+          ? 'The shop did not answer. This drawer is a copy saved on this device. It is not a till open at the branch, and its total is not today\'s takings.'
+          : `You have no till of your own open. ${U.plural(otherTills.length, 'till')} open at this branch:`));
         tillBody.appendChild(list);
         tillBody.appendChild(ui.h('div', { class: 'btn-row', style: { marginTop: '10px' } },
           ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/till') }, 'Open a till')));

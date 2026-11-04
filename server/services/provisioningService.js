@@ -96,7 +96,25 @@ async function recordOpeningFloat(db, { businessId, branchId, branchName, amount
  * Provision a business: categories, chart of accounts, customer classes and
  * default price lists. Returns what was created and what already existed.
  */
-async function provisionBusiness(db, business, { withCatalogue = true, createdBy = null } = {}) {
+async function ensureWhtSchedule(db) {
+  // The 2024 withholding schedule is deployment data, not a per-shop setting.
+  // Business create used to provision the shop and leave wht_rates empty, so
+  // the first purchase order refused until somebody ran a full deployment seed.
+  const { WHT_SCHEDULE_2024 } = require('../../domain/nigerianTax');
+  const haveRates = new Set((await db.all('SELECT code FROM wht_rates')).map((r) => r.code));
+  let added = 0;
+  for (const rate of WHT_SCHEDULE_2024) {
+    if (haveRates.has(rate.code)) continue;
+    await db.run(`INSERT INTO wht_rates (id, code, name, rate_percent, direction, is_system, is_active, note, created_at, updated_at)
+                  VALUES (?,?,?,?,?,1,1,?, datetime('now'), datetime('now'))`,
+    [newId(), rate.code, rate.name, rate.rate_percent, rate.direction, rate.note]);
+    added += 1;
+  }
+  return added;
+}
+
+async function provisionBusiness(db, business, { withCatalogue = true, withGreenbook = true, createdBy = null } = {}) {
+  await ensureWhtSchedule(db);
   const profile = profileForBusiness(business);
   const businessId = String(business.id);
 
@@ -348,7 +366,7 @@ async function provisionBusiness(db, business, { withCatalogue = true, createdBy
     void createdBy;
   });
 
-  if (withCatalogue && profile.code === 'PHARMACEUTICAL') {
+  if (withCatalogue && withGreenbook && profile.code === 'PHARMACEUTICAL') {
     summary.greenbook = await fileGreenbook(db, businessId);
   }
   const { ensureMajors } = require('./categorySides');
@@ -809,4 +827,4 @@ async function provisionDeployment(db, {
   };
 }
 
-module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku, fileGreenbook, recordOpeningFloat };
+module.exports = { provisionBusiness, provisionDeployment, provisionPlatform, profileForBusiness, parseOverrides, variantCombinations, syntheticBarcode, variantSku, fileGreenbook, recordOpeningFloat, ensureWhtSchedule };

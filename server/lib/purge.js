@@ -92,9 +92,20 @@ const TRADING = [
   { t: 'stock_adjustments', biz: true, date: 'created_at' },
   { t: 'stocktake_sessions', biz: true, date: 'opened_at' },
   { t: 'serial_events', via: ['serial_numbers', 'serial_id'] },
+  // A serial sold outside this period still has a sale_serials row. Delete that
+  // link before the serial, or the period delete stops on the foreign key.
+  { t: 'sale_serials', via: ['serial_numbers', 'serial_id'] },
   { t: 'serial_numbers', via: ['branches', 'branch_id'], date: 'created_at' },
   { t: 'sale_items', via: ['sales', 'sale_id'] },
+  // A held bill pins a batch. The hold is not a sale, and it was missing from
+  // the plan, so a cleanup that had already taken the bill still could not
+  // take the batch.
+  { t: 'bill_holds', via: ['stock_batches', 'batch_id'] },
   { t: 'stock_batches', biz: true, date: 'created_at' },
+  // A posted sale can raise a sale_issues row. That row references the sale
+  // and was not in the plan, so DELETE FROM sales failed and the cleanup
+  // still answered as if the trading data had gone.
+  { t: 'sale_issues', biz: true, date: 'detected_at' },
   { t: 'sales', biz: true, date: 'sold_at' },
   { t: 'purchase_orders', biz: true, date: 'ordered_at' },
   { t: 'debtor_ledger', biz: true, date: 'created_at' },
@@ -326,7 +337,16 @@ function scopeFor(step, plan, { startDate = null, endDate = null } = {}) {
       ? effectiveWhere(parentStep, plan, { startDate, endDate })
       : parentScope(parent, plan);
     if (!parentCond) return null;
-    return { where: `${column} IN (SELECT id FROM ${parent} WHERE ${parentCond.where})`, params: parentCond.params };
+    // A via-scoped row still has its own date. PERIOD must honour it. Dropping it
+    // made a period cleanup delete every serial for the business, then fail the
+    // foreign key on the ones a sale outside the window still held.
+    let where = `${column} IN (SELECT id FROM ${parent} WHERE ${parentCond.where})`;
+    const params = [...parentCond.params];
+    if (plan.spec.dated && step.date && startDate && endDate) {
+      where += ` AND ${step.date} >= ? AND ${step.date} < ?`;
+      params.push(startDate, endDate);
+    }
+    return { where, params };
   }
 
   if (!ids.length) return null;

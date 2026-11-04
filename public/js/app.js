@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261102-0854-7b850c3';
+  SR.BUILD = 'ridge-20261103-0742-728c64f';
 
   // -------------------------------------------------------------------
   // INSTALL
@@ -1545,7 +1545,9 @@
   async function watchSession() {
     if (signingOut || !SR.api.hasToken() || SR._uploading || (SR.api.catchingUp && SR.api.catchingUp())) return;
     try {
-      await SR.api.me();
+      const me = await SR.api.me();
+      const stamp = me && me.settings && me.settings.data_reset_at;
+      if (stamp && SR.sync && SR.sync.honourReset) await SR.sync.honourReset(stamp);
     } catch (err) {
       if (err && err.isAuth) {
         void handleAuthFailure({ reason: err.code, token: err.token || SR.api.loadToken(), message: err.message });
@@ -1801,6 +1803,9 @@
         throw missed;
       }
       const result = await SR.api.login({ username, pin, remember });
+      if (result && result.dataResetAt && SR.sync && SR.sync.honourReset) {
+        await SR.sync.honourReset(result.dataResetAt);
+      }
       writeTill({ username, remember });
       try { sessionStorage.removeItem('sr.displaced'); } catch (e) { /* fine */ }
       // A desktop till can accept the PIN against the verifier it saved last

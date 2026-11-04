@@ -858,6 +858,28 @@
     return wrote;
   }
 
+  async function honourReset(stamp) {
+    if (!stamp || !SR.store || !SR.store.clearAll || !SR.store.metaGet) return false;
+    const seen = await SR.store.metaGet('seen_reset_at').catch(() => null);
+    if (String(seen || '') === String(stamp)) return false;
+    await SR.store.clearAll();
+    await SR.store.metaSet('seen_reset_at', String(stamp));
+    await SR.store.metaSet('sync_cursor', null);
+    await SR.store.metaSet('pulled_sales_tables', null);
+    return true;
+  }
+
+  async function dropOpenTillsNotOnServer(live) {
+    if (!SR.store || !SR.store.all || !SR.store.remove) return;
+    const local = await SR.store.all('till_sessions').catch(() => []);
+    const liveIds = new Set((live || []).map((row) => String(row.id)));
+    for (const row of local || []) {
+      if (!row || row.id == null) continue;
+      if (String(row.status || '').toUpperCase() !== 'OPEN') continue;
+      if (!liveIds.has(String(row.id))) await SR.store.remove('till_sessions', row.id);
+    }
+  }
+
   async function copyCounterBooks() {
     const query = (extra) => (SR.state && SR.state.query ? SR.state.query(extra) : extra);
     let wrote = 0;
@@ -873,10 +895,14 @@
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const from = last ? dayBefore(last) : '2020-01-01';
     const tills = [];
+    let openAnswered = false;
     for (const status of ['OPEN', undefined]) {
       const data = await SR.api.get('/api/tills', { query: query({ status, from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
+      if (!data) continue;
+      if (status === 'OPEN') openAnswered = true;
       for (const row of (data && data.data) || []) if (row && row.id != null) tills.push(row);
     }
+    if (openAnswered) await dropOpenTillsNotOnServer(tills.filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN'));
     wrote += await saveRows('till_sessions', tills);
     const history = await SR.api.get('/api/attendance', { query: query({ from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
     wrote += await saveRows('staff_attendance', (history && history.data) || []);
@@ -1276,7 +1302,7 @@
 
   SR.sync = {
     PULL_TABLES, AUTO_INTERVAL_MS,
-    push, pull, replayUnsyncedShelf, runOnce, resumeAfterLine, catchUpWaiting, start, stop, status, on,
+    push, pull, honourReset, replayUnsyncedShelf, runOnce, resumeAfterLine, catchUpWaiting, start, stop, status, on,
     queueStats, discard, retryFailed, saveFacts,
     get lastPushAt() { return lastPushAt; },
     get lastPullAt() { return lastPullAt; },
