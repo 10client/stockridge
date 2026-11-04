@@ -24,6 +24,7 @@
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast, canOrganizeCatalogue } = require('../../domain/roles');
+const { requireScreen } = require('../lib/screenGuard');
 const selling = require('../../domain/selling');
 const { resolveBranch, resolveBusiness, scopeFilter, pagination, listResponse, requireField, valid, numField, strField, boolField, searchTerm } = require('../lib/respond');
 const { validateLadder } = require('../../domain/uom');
@@ -1150,7 +1151,7 @@ function mount(app, base = '/api') {
   app.post(`${base}/categories`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can add a category.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!canOrganizeCatalogue(user)) throw new HttpError('Only the owner or a general manager can add a category. A branch manager sells from the catalogue; they do not reorganise it.', { status: 403, code: 'ROLE_REQUIRED' });
     const body = await ctx.req.json();
     const branch = await resolveBranch(db, ctx, { required: false });
     const business = await resolveBusiness(db, ctx, branch || undefined);
@@ -1324,6 +1325,7 @@ function mount(app, base = '/api') {
   // SUPPLIERS
   // -------------------------------------------------------------------
   app.get(`${base}/suppliers`, async (ctx) => {
+    requireScreen(ctx, 'suppliers');
     const db = ctx.env.DB || ctx.env.db;
     const { limit, offset } = pagination(ctx);
     const search = searchTerm(ctx);
@@ -1346,6 +1348,7 @@ function mount(app, base = '/api') {
    * than no balance at all.
    */
   app.get(`${base}/suppliers/:id`, async (ctx) => {
+    requireScreen(ctx, 'suppliers');
     const db = ctx.env.DB || ctx.env.db;
     const id = String(ctx.req.param('id'));
     const supplier = await db.first(`SELECT s.*,

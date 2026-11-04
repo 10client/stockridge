@@ -28,7 +28,7 @@ const { recordFromCtx, verifyAuditChain, anchorAudit } = require('../lib/audit')
 // EVERY BRANCH CHANGE GOES THROUGH THIS, including the ones made from this file — see
 // the module header in services/assignmentService.js for why a move is a handover.
 const assignments = require('../services/assignmentService');
-const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, navigationFor, canAppointCoOwner, canChangeDeployment, isProprietor } = require('../../domain/roles');
+const { atLeast, isRole, ROLES, ROLE_ORDER, canManageUser, canResetPin, canChangeRole, roleLabel, screensFor, canAppointCoOwner, canChangeDeployment, isProprietor } = require('../../domain/roles');
 const { canAccessBusiness } = require('../../domain/access');
 const { TOKEN_TTL_SECONDS } = require('../middleware/auth');
 const { resolveBranch, resolveBusiness, inScope, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid, assertRowAccess, searchTerm } = require('../lib/respond');
@@ -430,8 +430,14 @@ function mount(app, base = '/api') {
     const body = await ctx.req.json();
     const business = await db.first('SELECT * FROM businesses WHERE id = ? AND is_deleted = 0', [id]);
     if (!business) throw new HttpError('That business does not exist.', { status: 404, code: 'BUSINESS_NOT_FOUND' });
-    if (!atLeast(user.role, 'ADMIN') && String(user.business_id) !== id) {
-      throw new HttpError('You can only edit your own business.', { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
+    // The proprietor has no business on the row, so comparing the pin used to
+    // refuse every edit. A co-owner reaches the businesses they were given,
+    // not only the one named on the row, and not a business left unticked.
+    if (!atLeast(user.role, 'OWNER')) {
+      throw new HttpError('Only an owner can edit a business.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
+    if (!canAccessBusiness(ctx.get('scope'), id)) {
+      throw new HttpError('You can only edit a business you own.', { status: 403, code: 'BUSINESS_SCOPE_VIOLATION' });
     }
     // Changing the vertical profile after trading has begun would invalidate the
     // catalogue and the unit ladders built from it, so it is refused rather than
@@ -740,7 +746,7 @@ function mount(app, base = '/api') {
         // hash.
         revenue_30d: round2(Number(r.revenue_30d)),
         roleLabel: roleLabel(r.role, r),
-        navigation: navigationFor(r.role),
+        navigation: screensFor(r),
       })), { limit, offset }, total),
     });
   });

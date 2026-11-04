@@ -35,7 +35,7 @@
         ui.h('p', { class: 'sub' }, 'Every receipt rung through the branches you can see.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => SR.app.navigate('/pos') }, 'New sale'),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales/issues') }, 'Flagged sales'),
+        SR.app.canScreen && SR.app.canScreen('flagged') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.app.navigate('/sales/issues') }, 'Flagged sales') : null,
         SR.exporter.buttons((format) => SR.exporter.list({
           format,
           title: 'Sales',
@@ -49,7 +49,7 @@
             { key: 'status', label: 'Status' },
           ],
         })),
-        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.exporter.reportDialog() }, 'Server reports')));
+        SR.app.canScreen && SR.app.canScreen('reports') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.exporter.reportDialog() }, 'Server reports') : null));
     wrap.appendChild(head);
 
     // ---- filters

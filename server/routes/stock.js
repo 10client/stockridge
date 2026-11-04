@@ -24,6 +24,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
+const { requireScreen } = require('../lib/screenGuard');
 // `valid` was missing from this list while POST /api/stock/adjust called it at
 // the adjustment-type line, so every stock adjustment — the write-off that
 // records a broken TV — answered 500 "valid is not defined".
@@ -809,6 +810,7 @@ function mount(app, base = '/api') {
   const TRANSFER_RECEIVABLE = ['IN_TRANSIT', 'PARTIALLY_RECEIVED'];
 
   app.get(`${base}/transfers`, async (ctx) => {
+    requireScreen(ctx, 'transfers');
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
@@ -872,6 +874,7 @@ function mount(app, base = '/api') {
    * list payload.
    */
   app.get(`${base}/transfers/:id`, async (ctx) => {
+    requireScreen(ctx, 'transfers');
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const id = String(ctx.req.param('id'));

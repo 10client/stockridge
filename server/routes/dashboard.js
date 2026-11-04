@@ -21,7 +21,7 @@
 const { resolveBranch, resolveBusiness, scopeFilter, branchFilter, dateRange, numField } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { watToday, watNow, addDays, utcToWat } = require('../../domain/time');
-const { atLeast, navigationFor } = require('../../domain/roles');
+const { atLeast, screensFor } = require('../../domain/roles');
 const { planUsage, getSettings } = require('../../domain/planLimits');
 const { ageBalance } = require('../../domain/credit');
 const glService = require('../services/glService');
@@ -392,7 +392,7 @@ function mount(app, base = '/api') {
         business: business ? business.name : 'All businesses',
         branch: focused ? focused.name : 'All branches',
       },
-      user: { id: user.id, name: user.full_name || user.username, role: user.role, navigation: navigationFor(user.role) },
+      user: { id: user.id, name: user.full_name || user.username, role: user.role, navigation: screensFor(user) },
 
       today: {
         sales: Number(todaySales.count) || 0,
@@ -525,7 +525,7 @@ function mount(app, base = '/api') {
       grossToday: round2(Number(t.gross)),
       lowStockCount: Number(lowCount) || 0,
       role: user.role,
-      navigation: navigationFor(user.role),
+      navigation: screensFor(user),
     });
   });
 }

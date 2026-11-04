@@ -170,7 +170,7 @@
     const dm = data.dataManagement || {};
     const modes = dm.modes || [];
     if (!modes.length) return null;
-    const canRun = SR.state.atLeast('OWNER');
+    const canRun = Boolean((SR.state.isAdmin && SR.state.isAdmin()) || (SR.state.isProprietor && SR.state.isProprietor()));
 
     const list = ui.h('div', { class: 'stack' });
     for (const m of modes) {

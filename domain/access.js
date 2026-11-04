@@ -56,7 +56,11 @@ function buildScope(user, { businessIds = null, grantIds = null, allBranchIds = 
   // names the business they were created against. No fifth stored role, and
   // no rewrite of those older rows.
   const limitedOwner = role === ROLES.OWNER && Boolean(pinnedBusinessId) && grants.size > 0;
-  const allBusinesses = isAdminVendor || !limitedOwner && (role === ROLES.OWNER || pinnedBusinessId === null);
+  // A missing business pin is the proprietor, and only the proprietor.
+  // Treating "no business on the row" as every business also handed a
+  // cashier or a manager with a blank pin the whole deployment. A manager
+  // with no pin is still limited to the businesses they were given.
+  const allBusinesses = isAdminVendor || (role === ROLES.OWNER && !limitedOwner);
   const allBranches = isAdminVendor || (role === ROLES.OWNER && !limitedOwner) || (role === ROLES.MANAGER && pinnedBranchId === null);
 
   const scope = {

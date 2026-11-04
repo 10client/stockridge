@@ -26,7 +26,7 @@
 
 const { resolveBusiness } = require('../lib/respond');
 const { HttpError } = require('../lib/http');
-const { atLeast } = require('../../domain/roles');
+const { canChangeDeployment } = require('../../domain/roles');
 const { recordFromCtx } = require('../lib/audit');
 const { runPurge, countStep, planFor, describeSchema, NEVER_REMOVED } = require('../lib/purge');
 
@@ -76,8 +76,8 @@ function mount(app, base = '/api', { modes = [], notice = '' } = {}) {
   app.post(`${base}/data-management/purge/preview`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!user || !atLeast(user.role, 'OWNER')) {
-      throw new HttpError('Only the owner or the platform administrator can preview or run a data cleanup.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!user || !canChangeDeployment(user)) {
+      throw new HttpError('Only the proprietor or the platform administrator can preview or run a data cleanup. A co-owner does not wipe the books.', { status: 403, code: 'ROLE_REQUIRED' });
     }
     const body = await ctx.req.json().catch(() => ({}));
     const mode = String(body.mode || '').toUpperCase();
@@ -129,8 +129,8 @@ function mount(app, base = '/api', { modes = [], notice = '' } = {}) {
   app.post(`${base}/data-management/purge`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
-    if (!user || !atLeast(user.role, 'OWNER')) {
-      throw new HttpError('Only the owner or the platform administrator can run a data cleanup.', { status: 403, code: 'ROLE_REQUIRED' });
+    if (!user || !canChangeDeployment(user)) {
+      throw new HttpError('Only the proprietor or the platform administrator can run a data cleanup. A co-owner does not wipe the books.', { status: 403, code: 'ROLE_REQUIRED' });
     }
 
     const body = await ctx.req.json().catch(() => ({}));

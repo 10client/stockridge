@@ -80,7 +80,7 @@
         ui.h('h1', {}, `Good ${greeting()}, ${firstName()}`),
         ui.h('p', { class: 'sub', id: 'dash-sub' }, 'Loading the position…')),
       ui.h('div', { class: 'actions' },
-        ui.h('button', { class: 'btn btn-sm', onClick: () => SR.exporter.reportDialog() }, 'Export'),
+        SR.app.canScreen && SR.app.canScreen('reports') ? ui.h('button', { class: 'btn btn-sm', onClick: () => SR.exporter.reportDialog() }, 'Export') : null,
         ui.h('button', { class: 'btn btn-sm', onClick: () => refresh() }, 'Refresh')));
     wrap.appendChild(head);
 
@@ -566,7 +566,10 @@
         const card = ui.h('div', { class: 'card' });
         card.appendChild(ui.h('div', { class: 'card-head' }, ui.h('h2', {}, 'Needs attention')));
         const list = ui.h('div', { class: 'card-body tight' });
-        for (const a of actions) list.appendChild(actionRow(a));
+        for (const a of actions) {
+          if (a.route && SR.app.routeAllowed && !SR.app.routeAllowed(a.route)) continue;
+          list.appendChild(actionRow(a));
+        }
         card.appendChild(list);
         attentionNodes.push(card);
       }
@@ -598,7 +601,7 @@
           ].join(' and '),
           ` on the ${plan.plan} plan${plan.renewalDate ? `, renewing ${U.date(plan.renewalDate)}` : ''}. `,
           over.length ? 'Nothing has been removed, but the next one will be refused until one is deactivated or the plan is raised. ' : '',
-          ui.h('button', { class: 'link-btn', onClick: () => SR.app.navigate('/plan') }, 'See the plan')));
+          SR.app.canScreen && SR.app.canScreen('plan') ? ui.h('button', { class: 'link-btn', onClick: () => SR.app.navigate('/plan') }, 'See the plan') : null));
       }
       if (!tradingNodes.length) {
         tradingNodes.push(ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body' },

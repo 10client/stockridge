@@ -183,26 +183,27 @@ function canChangeRole(actor, target, newRole) {
 }
 
 /**
- * Which screens a role can even see. Enforced in the router AND in the
- * navigation, so the two cannot disagree — a nav item that leads to a 403
- * is a support ticket.
+ * Which screens a person can even see. The list lives in
+ * public/js/role-screens.js so the sidebar and this module cannot drift.
+ * A co-owner is the same stored role as the proprietor; the cut is the
+ * business pin, not a fifth role. A nav item that leads to a 403 is a
+ * support ticket, so the router must use screensFor, not a second list.
  */
-const NAVIGATION_BY_ROLE = Object.freeze({
-  ADMIN: ['admin', 'businesses', 'branches', 'users', 'plan', 'settings', 'data-management', 'sync', 'compliance'],
-  OWNER: ['dashboard', 'pos', 'sales', 'products', 'stock', 'customers', 'purchase-orders', 'suppliers',
-    'transfers', 'stocktake', 'till', 'safe', 'expenses', 'debtors', 'creditors', 'instalments', 'layaway',
-    'warranty', 'deliveries', 'attendance', 'accounting', 'wht', 'reports', 'change-owed', 'recalls',
-    'businesses', 'branches', 'users', 'plan', 'settings', 'sync', 'audit', 'compliance'],
-  MANAGER: ['dashboard', 'pos', 'sales', 'products', 'stock', 'customers', 'purchase-orders', 'suppliers',
-    'transfers', 'stocktake', 'till', 'safe', 'expenses', 'debtors', 'creditors', 'instalments', 'layaway',
-    'warranty', 'deliveries', 'attendance', 'accounting', 'wht', 'reports', 'change-owed', 'recalls',
-    'branches', 'users', 'sync', 'audit', 'compliance'],
-  STAFF: ['dashboard', 'pos', 'sales', 'stock', 'customers', 'stocktake', 'till', 'deliveries', 'layaway',
-    'warranty', 'change-owed', 'attendance'],
-});
+const roleScreens = require('../public/js/role-screens');
+const NAVIGATION_BY_ROLE = roleScreens.NAVIGATION_BY_ROLE;
 
 function navigationFor(role) {
-  return NAVIGATION_BY_ROLE[String(role || '').toUpperCase()] || [];
+  return roleScreens.navigationFor(role);
+}
+
+/** The screens THIS person may open, after the co-owner and proprietor cuts. */
+function screensFor(user) {
+  const role = user && user.role;
+  return roleScreens.applyOwnerCuts(navigationFor(role), {
+    role,
+    proprietor: isProprietor(user),
+    coOwner: isCoOwner(user),
+  });
 }
 
 module.exports = {
@@ -211,5 +212,5 @@ module.exports = {
   managerJobTitle, roleLabel,
   isProprietor, isCoOwner, canAppointCoOwner, canChangeDeployment,
   canManageUser, canResetPin, canChangeRole, canOrganizeCatalogue,
-  NAVIGATION_BY_ROLE, navigationFor,
+  NAVIGATION_BY_ROLE, navigationFor, screensFor,
 };

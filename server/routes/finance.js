@@ -27,6 +27,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
+const { requireScreen } = require('../lib/screenGuard');
 const { resolveBranch, resolveBusiness, readBusinessId, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
@@ -46,6 +47,7 @@ function mount(app, base = '/api') {
   // PURCHASE ORDERS
   // -------------------------------------------------------------------
   app.get(`${base}/purchase-orders`, async (ctx) => {
+    requireScreen(ctx, 'purchase-orders');
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);
@@ -286,6 +288,7 @@ function mount(app, base = '/api') {
   }));
 
   app.get(`${base}/purchase-orders/:id`, async (ctx) => {
+    requireScreen(ctx, 'purchase-orders');
     const db = ctx.env.DB || ctx.env.db;
     const id = String(ctx.req.param('id'));
     const po = await db.first(`SELECT po.*, s.name AS supplier_name, s.contact_person, s.phone AS supplier_phone,
@@ -590,6 +593,7 @@ function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   /** The creditor book: who the business owes, aged. */
   app.get(`${base}/creditors`, async (ctx) => {
+    requireScreen(ctx, 'creditors');
     const db = ctx.env.DB || ctx.env.db;
     const biz = await readBusinessId(db, ctx);
     const asAt = strField(ctx.req.queryParam('as_at'), { field: 'As-at date', maxLength: 10 }) || watToday();

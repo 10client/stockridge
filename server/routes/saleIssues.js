@@ -9,6 +9,7 @@
 // =====================================================================
 
 const { HttpError } = require('../lib/http');
+const { atLeast } = require('../../domain/roles');
 const saleIssues = require('../services/saleIssues');
 
 function mount(app, base = '/api') {
@@ -16,6 +17,11 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const status = ctx.req.queryParam('status') || 'OPEN';
     const saleId = ctx.req.queryParam('sale_id') || null;
+    // The queue is a manager's review. A cashier can still load the flags on
+    // one receipt they rang, which is how they correct it.
+    if (!saleId && !atLeast(ctx.get('user') && ctx.get('user').role, 'MANAGER')) {
+      throw new HttpError('Only a manager or above can open the flagged sales list. A cashier can still correct a receipt they rang.', { status: 403, code: 'ROLE_REQUIRED' });
+    }
     try {
       const data = await saleIssues.list(db, ctx, { status, saleId, scanFirst: !saleId });
       ctx.json({ ok: true, data, total: data.length });

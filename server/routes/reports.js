@@ -24,6 +24,7 @@
 
 const { HttpError } = require('../lib/http');
 const { atLeast } = require('../../domain/roles');
+const { requireScreen } = require('../lib/screenGuard');
 const { resolveBranch, resolveBusiness, readBusinessId, scopeFilter, pagination, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 // `newId` was used at the sales-target insert without being imported here, so
@@ -54,6 +55,7 @@ function mount(app, base = '/api') {
    * and six round trips on a mobile connection is six chances to fail.
    */
   app.get(`${base}/reports/sales`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     // The business this report covers: what the request named, or the caller's
@@ -219,6 +221,7 @@ function mount(app, base = '/api') {
    * milliseconds more and cannot drift.
    */
   app.get(`${base}/reports/inventory-movement`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     // `biz` behaves exactly like `bId` below — null means NO NARROWING — because
     // that is what "this caller reaches every business and named none" means.
@@ -335,6 +338,7 @@ function mount(app, base = '/api') {
 
   /** Fast and slow movers — the reorder decision, made from evidence. */
   app.get(`${base}/reports/movers`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -431,6 +435,7 @@ function mount(app, base = '/api') {
   // CUSTOMERS / STAFF
   // -------------------------------------------------------------------
   app.get(`${base}/reports/top-customers`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const biz = await readBusinessId(db, ctx);
     const { from, to } = dateRange(ctx, { defaultDays: 90 });
@@ -459,6 +464,7 @@ function mount(app, base = '/api') {
 
   /** Commission per salesperson — derived, so it always matches the sales report. */
   app.get(`${base}/reports/commission`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const biz = await readBusinessId(db, ctx);
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
@@ -506,6 +512,7 @@ function mount(app, base = '/api') {
    * is refused.
    */
   app.post(`${base}/reports/commission/post`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'OWNER')) {
@@ -558,6 +565,7 @@ function mount(app, base = '/api') {
   // TARGETS
   // -------------------------------------------------------------------
   app.get(`${base}/reports/targets`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const biz = await readBusinessId(db, ctx);
     const branch = await resolveBranch(db, ctx, { required: false });
@@ -603,6 +611,7 @@ function mount(app, base = '/api') {
   });
 
   app.post(`${base}/reports/targets`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const user = ctx.get('user');
     if (!atLeast(user.role, 'MANAGER')) throw new HttpError('Only a manager or above can set a sales target.', { status: 403, code: 'ROLE_REQUIRED' });
@@ -645,6 +654,7 @@ function mount(app, base = '/api') {
    * worse than no export.
    */
   app.get(`${base}/reports/export`, async (ctx) => {
+    requireScreen(ctx, 'reports');
     const db = ctx.env.DB || ctx.env.db;
     const what = valid(oneOf(ctx.req.queryParam('report') || 'SALES', ['SALES', 'SALES_DETAIL', 'STOCK', 'DEBTORS', 'CREDITORS', 'EXPENSES', 'ADJUSTMENTS', 'AUDIT'], { field: 'Report' }), 'report');
     // An export is a read: it covers what the caller reaches and what the request

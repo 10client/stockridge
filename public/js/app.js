@@ -28,7 +28,7 @@
   const ui = SR.ui;
 
   SR.APP_VERSION = '1.0.0';
-  SR.BUILD = 'ridge-20261104-1157-6d00ff6';
+  SR.BUILD = 'ridge-20261104-1125-7212c43';
 
   // -------------------------------------------------------------------
   // INSTALL
@@ -216,59 +216,60 @@
   // -------------------------------------------------------------------
   // `nav: false` means the route is reachable but does not appear in the sidebar
   // (it is opened from another screen: a till detail, a sale receipt, a product).
+  // `screens` is the key in public/js/role-screens.js. The sidebar and this
+  // guard both ask that list, so they cannot disagree. `roles` is only the
+  // fallback if that file failed to load.
   const ROUTES = [
-    { path: '/dashboard', title: 'Dashboard', group: 'Today', view: 'dashboard', icon: 'grid', roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
-    { path: '/pos', title: 'Sell', group: 'Today', view: 'pos', icon: 'cart', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/till', title: 'Till & safe', group: 'Today', view: 'till', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/sales', title: 'Sales', group: 'Today', view: 'sales', icon: 'receipt', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/sales/issues', title: 'Flagged sales', group: 'Today', view: 'sales', icon: 'receipt', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/hire-book', title: 'Hire book', group: 'Today', view: 'hire-book', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'hireBook' },
+    { path: '/dashboard', title: 'Dashboard', group: 'Today', view: 'dashboard', icon: 'grid', screens: ['dashboard'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/pos', title: 'Sell', group: 'Today', view: 'pos', icon: 'cart', screens: ['pos'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/till', title: 'Till & safe', group: 'Today', view: 'till', icon: 'cash', screens: ['till', 'safe'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/sales', title: 'Sales', group: 'Today', view: 'sales', icon: 'receipt', screens: ['sales'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/sales/issues', title: 'Flagged sales', group: 'Today', view: 'sales', icon: 'receipt', screens: ['flagged'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/hire-book', title: 'Hire book', group: 'Today', view: 'hire-book', icon: 'calendar', screens: ['hire-book'], roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'hireBook' },
 
-    { path: '/products', title: 'Catalogue', group: 'Stock', view: 'products', icon: 'tag', roles: ['MANAGER', 'OWNER'] },
-    { path: '/stock', title: 'Stock', group: 'Stock', view: 'stock', icon: 'box', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/stocktake', title: 'Stocktake', group: 'Stock', view: 'stocktake', icon: 'check', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/transfers', title: 'Transfers', group: 'Stock', view: 'transfers', icon: 'swap', roles: ['MANAGER', 'OWNER'] },
+    { path: '/products', title: 'Catalogue', group: 'Stock', view: 'products', icon: 'tag', screens: ['products'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/stock', title: 'Stock', group: 'Stock', view: 'stock', icon: 'box', screens: ['stock'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/stocktake', title: 'Stocktake', group: 'Stock', view: 'stocktake', icon: 'check', screens: ['stocktake'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/transfers', title: 'Transfers', group: 'Stock', view: 'transfers', icon: 'swap', screens: ['transfers'], roles: ['MANAGER', 'OWNER'] },
 
-    { path: '/purchase-orders', title: 'Purchase orders', group: 'Buying', view: 'purchase-orders', icon: 'inbox', roles: ['MANAGER', 'OWNER'] },
-    { path: '/suppliers', title: 'Suppliers', group: 'Buying', view: 'suppliers', icon: 'truck', roles: ['MANAGER', 'OWNER'] },
-    { path: '/expenses', title: 'Expenses', group: 'Buying', view: 'expenses', icon: 'wallet', roles: ['MANAGER', 'OWNER'] },
+    { path: '/purchase-orders', title: 'Purchase orders', group: 'Buying', view: 'purchase-orders', icon: 'inbox', screens: ['purchase-orders'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/suppliers', title: 'Suppliers', group: 'Buying', view: 'suppliers', icon: 'truck', screens: ['suppliers'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/expenses', title: 'Expenses', group: 'Buying', view: 'expenses', icon: 'wallet', screens: ['expenses'], roles: ['MANAGER', 'OWNER'] },
 
-    { path: '/customers', title: 'Customers', group: 'Customers', view: 'customers', icon: 'users', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    // The nav has listed 'change-owed' for every role since the navigation was written;
-    // this is the screen it was pointing at.
-    { path: '/change-owed', title: 'Change owed', group: 'Customers', view: 'change-owed', icon: 'cash', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'instalments' },
-    { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'deliveries' },
-    { path: '/fleet', title: 'Vehicles', group: 'Today', view: 'fleet', icon: 'truck', roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'], module: 'dispatch' },
-    { path: '/returns', title: 'Returns & warranty', group: 'Customers', view: 'returns', icon: 'back', roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/customers', title: 'Customers', group: 'Customers', view: 'customers', icon: 'users', screens: ['customers'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/change-owed', title: 'Change owed', group: 'Customers', view: 'change-owed', icon: 'cash', screens: ['change-owed'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/instalments', title: 'Instalments & layaway', group: 'Customers', view: 'instalments', icon: 'calendar', screens: ['instalments', 'layaway'], roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'instalments' },
+    { path: '/deliveries', title: 'Deliveries & installs', group: 'Customers', view: 'deliveries', icon: 'truck', screens: ['deliveries'], roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'deliveries' },
+    { path: '/fleet', title: 'Vehicles', group: 'Today', view: 'fleet', icon: 'truck', screens: ['fleet'], roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'dispatch' },
+    { path: '/returns', title: 'Returns & warranty', group: 'Customers', view: 'returns', icon: 'back', screens: ['warranty'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
 
-    { path: '/attendance', title: 'Attendance', group: 'People', view: 'attendance', icon: 'clock', roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/users', title: 'Staff', group: 'People', view: 'users', icon: 'idcard', roles: ['MANAGER', 'OWNER', 'ADMIN'] },
+    { path: '/attendance', title: 'Attendance', group: 'People', view: 'attendance', icon: 'clock', screens: ['attendance'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/users', title: 'Staff', group: 'People', view: 'users', icon: 'idcard', screens: ['users'], roles: ['MANAGER', 'OWNER', 'ADMIN'] },
 
-    { path: '/accounting', title: 'Accounting', group: 'Money', view: 'accounting', icon: 'ledger', roles: ['OWNER'] },
-    { path: '/reports', title: 'Reports', group: 'Money', view: 'reports', icon: 'chart', roles: ['MANAGER', 'OWNER'] },
+    { path: '/accounting', title: 'Accounting', group: 'Money', view: 'accounting', icon: 'ledger', screens: ['accounting', 'wht'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/reports', title: 'Reports', group: 'Money', view: 'reports', icon: 'chart', screens: ['reports'], roles: ['MANAGER', 'OWNER'] },
 
-    { path: '/branches', title: 'Branches', group: 'Business', view: 'admin', icon: 'building', section: 'branches', roles: ['MANAGER', 'OWNER', 'ADMIN'] },
-    { path: '/businesses', title: 'Businesses', group: 'Business', view: 'admin', icon: 'briefcase', section: 'businesses', roles: ['OWNER', 'ADMIN'] },
-    { path: '/plan', title: 'Subscription', group: 'Business', view: 'plan', icon: 'star', roles: ['OWNER', 'ADMIN'] },
-    { path: '/settings', title: 'Settings', group: 'Business', view: 'admin', icon: 'gear', section: 'settings', roles: ['OWNER', 'ADMIN'] },
-    { path: '/audit', title: 'Audit trail', group: 'Business', view: 'admin', icon: 'shield', section: 'audit', roles: ['MANAGER', 'OWNER'] },
-    { path: '/compliance', title: 'Compliance & licences', group: 'Business', view: 'compliance', icon: 'shield', roles: ['MANAGER', 'OWNER', 'ADMIN'] },
-    { path: '/sync', title: 'Sync & offline', group: 'Business', view: 'sync', icon: 'refresh', roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
-    { path: '/account', title: 'My account', group: 'Business', view: 'account', icon: 'user', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
+    { path: '/branches', title: 'Branches', group: 'Business', view: 'admin', icon: 'building', section: 'branches', screens: ['branches'], roles: ['MANAGER', 'OWNER', 'ADMIN'] },
+    { path: '/businesses', title: 'Businesses', group: 'Business', view: 'admin', icon: 'briefcase', section: 'businesses', screens: ['businesses'], roles: ['OWNER', 'ADMIN'] },
+    { path: '/plan', title: 'Subscription', group: 'Business', view: 'plan', icon: 'star', screens: ['plan', 'data-management'], roles: ['OWNER', 'ADMIN'] },
+    { path: '/settings', title: 'Settings', group: 'Business', view: 'admin', icon: 'gear', section: 'settings', screens: ['settings'], roles: ['OWNER', 'ADMIN'] },
+    { path: '/audit', title: 'Audit trail', group: 'Business', view: 'admin', icon: 'shield', section: 'audit', screens: ['audit'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/compliance', title: 'Compliance & licences', group: 'Business', view: 'compliance', icon: 'shield', screens: ['compliance'], roles: ['MANAGER', 'OWNER', 'ADMIN'] },
+    { path: '/sync', title: 'Sync & offline', group: 'Business', view: 'sync', icon: 'refresh', screens: ['sync'], roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
+    { path: '/account', title: 'My account', group: 'Business', view: 'account', icon: 'user', nav: false, screens: ['account'], roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'] },
 
-    // Detail screens, reached from another screen.
-    { path: '/sales/:id', view: 'sales', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/products/:id', view: 'products', nav: false, roles: ['MANAGER', 'OWNER'] },
-    { path: '/customers/:id', view: 'customers', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/tills/:id', view: 'till', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/deliveries/:id', view: 'deliveries', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/fleet/:id', view: 'fleet', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER', 'ADMIN'], module: 'dispatch' },
-    { path: '/instalments/:id', view: 'instalments', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/suppliers/:id', view: 'suppliers', nav: false, roles: ['MANAGER', 'OWNER'] },
-    { path: '/purchase-orders/:id', view: 'purchase-orders', nav: false, roles: ['MANAGER', 'OWNER'] },
-    { path: '/stocktakes/:id', view: 'stocktake', nav: false, roles: ['STAFF', 'MANAGER', 'OWNER'] },
-    { path: '/transfers/:id', view: 'transfers', nav: false, roles: ['MANAGER', 'OWNER'] },
+    // Detail screens, reached from another screen. Same screen key as the list.
+    { path: '/sales/:id', view: 'sales', nav: false, screens: ['sales'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/products/:id', view: 'products', nav: false, screens: ['products'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/customers/:id', view: 'customers', nav: false, screens: ['customers'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/tills/:id', view: 'till', nav: false, screens: ['till', 'safe'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/deliveries/:id', view: 'deliveries', nav: false, screens: ['deliveries'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/fleet/:id', view: 'fleet', nav: false, screens: ['fleet'], roles: ['STAFF', 'MANAGER', 'OWNER'], module: 'dispatch' },
+    { path: '/instalments/:id', view: 'instalments', nav: false, screens: ['instalments', 'layaway'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/suppliers/:id', view: 'suppliers', nav: false, screens: ['suppliers'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/purchase-orders/:id', view: 'purchase-orders', nav: false, screens: ['purchase-orders'], roles: ['MANAGER', 'OWNER'] },
+    { path: '/stocktakes/:id', view: 'stocktake', nav: false, screens: ['stocktake'], roles: ['STAFF', 'MANAGER', 'OWNER'] },
+    { path: '/transfers/:id', view: 'transfers', nav: false, screens: ['transfers'], roles: ['MANAGER', 'OWNER'] },
   ];
 
   const ICONS = {
@@ -338,10 +339,52 @@
     return null;
   }
 
+  /**
+   * The screens this person may open. Same cuts as domain/roles.js screensFor:
+   * a co-owner does not get settings, the plan, or a data cleanup.
+   */
+  function screenKeysFor(user) {
+    const api = SR.roleScreens;
+    if (!api || typeof api.navigationFor !== 'function' || typeof api.applyOwnerCuts !== 'function') return null;
+    const role = String((user && user.role) || '').toUpperCase();
+    const proprietor = Boolean(SR.state && SR.state.isProprietor && SR.state.isProprietor());
+    const coOwner = role === 'OWNER' && !proprietor && Boolean(user && (user.coOwner === true || user.owner_limited === true || user.proprietor === false));
+    return api.applyOwnerCuts(api.navigationFor(role), { role, proprietor, coOwner });
+  }
+
   function allowed(route) {
+    if (!route) return false;
     if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) return false;
-    if (!route.roles) return true;
+    if (route.view === 'account') return Boolean(SR.state.user);
+    const keys = screenKeysFor(SR.state.user);
+    if (keys && route.screens && route.screens.length) return route.screens.some((key) => keys.includes(key));
+    if (!route.roles) return false;
     return route.roles.includes(String((SR.state.user && SR.state.user.role) || '').toUpperCase());
+  }
+
+  function canScreen(key) {
+    const keys = screenKeysFor(SR.state.user);
+    return Boolean(keys && keys.includes(key));
+  }
+
+  function homePath() {
+    // A cashier opens on the counter's day. The platform administrator has no
+    // till, so their first screen is the businesses they provision.
+    for (const path of ['/dashboard', '/businesses', '/pos']) {
+      const hit = ROUTES.find((route) => route.path === path);
+      if (hit && allowed(hit)) return path;
+    }
+    for (const route of ROUTES) {
+      if (route.nav === false) continue;
+      if (allowed(route)) return route.path;
+    }
+    return '/account';
+  }
+
+  function routeAllowed(path) {
+    const pathname = String(path || '').split('?')[0] || '/';
+    const hit = matchRoute(pathname);
+    return Boolean(hit && allowed(hit.route));
   }
 
   const OFFLINE_VIEWS = new Set(['pos', 'sales', 'stock', 'till', 'attendance', 'change-owed']);
@@ -402,6 +445,13 @@
       if (token === renderToken) await ui.endPage(seq);
       return;
     }
+    if (!allowed(hit.route) && (path === '/' || path === '' || path === '/dashboard')) {
+      const home = homePath();
+      if (home && home !== path && home !== '/dashboard') {
+        navigate(home, { replace: true });
+        return;
+      }
+    }
     if (!allowed(hit.route)) {
       showShell();
       const wrongModule = hit.route.module && !(SR.state.moduleOn && SR.state.moduleOn(hit.route.module));
@@ -412,8 +462,8 @@
         title: wrongModule ? 'Not part of this business' : 'Not available to your role',
         message: wrongModule
           ? `${hit.route.title || 'That screen'} is only there for a business that uses it. Switch to that business, or stay on the screens this one has.`
-          : `${hit.route.title || 'That screen'} is for ${(hit.route.roles || []).join(', ')}. You are signed in as ${SR.state.user.role}.`,
-        action: { label: 'Back to the dashboard', run: () => navigate('/dashboard') },
+          : `${hit.route.title || 'That screen'} is not part of your role.`,
+        action: { label: 'Back to your screens', run: () => navigate(homePath()) },
         mark: 'lock',
       }));
       if (token === renderToken) await ui.endPage(seq);
@@ -487,7 +537,7 @@
     ui.mount('#view', ui.empty({
       title: 'No such screen',
       message: `${path} is not a page in StockRidge.`,
-      action: { label: 'Go to the dashboard', run: () => navigate('/dashboard') },
+      action: { label: 'Go to your screens', run: () => navigate(homePath()) },
       mark: 'search',
     }));
   }
@@ -788,12 +838,10 @@
       if (explicitSignOut || shellIsOpen()) presentLogin();
       return;
     }
-    const role = String((SR.state.user && SR.state.user.role) || '').toUpperCase();
     const groups = new Map();
     for (const route of ROUTES) {
       if (route.nav === false) continue;
-      if (!route.roles || !route.roles.includes(role)) continue;
-      if (route.module && !(SR.state.moduleOn && SR.state.moduleOn(route.module))) continue;
+      if (!allowed(route)) continue;
       if (offlineBooksOnly() && !OFFLINE_VIEWS.has(route.view)) continue;
       const group = route.group || 'Other';
       if (!groups.has(group)) groups.set(group, []);
@@ -894,7 +942,7 @@
     setText('subscription-bar-text', subscriptionLine(st));
     const link = document.getElementById('subscription-bar-link');
     if (link) {
-      const reachable = st.owner;   // the Subscription screen is OWNER+ only
+      const reachable = canScreen('plan') || canScreen('data-management');
       link.hidden = !reachable;
       link.textContent = st.vendor ? 'Subscription' : 'See what is affected';
     }
@@ -1167,7 +1215,14 @@
     } catch (err) { /* the alert is still worth acting on if marking it fails */ }
     await updateBell({ refreshPanel: true });
     const target = BELL_ROUTES[String(n.type || '').toUpperCase()];
-    if (target) { closeBell(); navigate(target); }
+    if (target) {
+      if (!routeAllowed(target)) {
+        ui.warn('That alert is for a screen your role does not open.');
+        return;
+      }
+      closeBell();
+      navigate(target);
+    }
   }
 
   async function markAllRead() {
@@ -1834,7 +1889,7 @@
         loginGraceUntil = Date.now() + 12000;
         allowShell();
         showShell();
-        navigate('/dashboard', { replace: true });
+        navigate(homePath(), { replace: true });
         ui.warn(result.token
           ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'
           : 'Signed in offline. The saved sign-in has expired, so these sales stay on this till until you sign in while connected.');
@@ -1855,7 +1910,7 @@
       loginGraceUntil = Date.now() + 12000;
       allowShell();
       showShell();
-      navigate('/dashboard', { replace: true });
+      navigate(homePath(), { replace: true });
       // The mirror is refreshed after the shell is open, not before it.
       startSync();
       SR.sync.runOnce({ silent: true }).catch(() => {});
@@ -1905,7 +1960,7 @@
           loginGraceUntil = Date.now() + 12000;
           allowShell();
           showShell();
-          navigate('/dashboard', { replace: true });
+          navigate(homePath(), { replace: true });
           ui.warn(verified
             ? 'Signed in offline from the stock saved on this till. Sales will sync when the line returns.'
             : 'Opened the stock saved on this till. The older program did not save a PIN check, so the next connected sign-in will lock that check in.');
@@ -2295,7 +2350,7 @@
       }
       paintIdentity();
       buildNav();
-      if (currentRoute && currentRoute.module && !(SR.state.moduleOn && SR.state.moduleOn(currentRoute.module))) navigate('/dashboard');
+      if (currentRoute && currentRoute.module && !(SR.state.moduleOn && SR.state.moduleOn(currentRoute.module))) navigate(homePath());
     });
     // Any clear of the person opens the sign-in page. The outbox is not part of that clear.
     SR.state.on('cleared', () => {
@@ -2470,7 +2525,7 @@
   SR.views = SR.views || {};
   SR.app = {
     ROUTES, ICONS, icon, iconPath,
-    boot, render, navigate, matchRoute, allowed,
+    boot, render, navigate, matchRoute, allowed, canScreen, homePath, routeAllowed,
     showLogin, showShell, paintIdentity, paintLoginBrand, buildNav, setActiveNav, closeNav,
     openBranchPicker, openBusinessPicker, guardWorkingBusiness,
     updateBell, openBell, closeBell, markAllRead, openMessageComposer,

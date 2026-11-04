@@ -29,6 +29,7 @@ const { idempotent } = require('../lib/idempotency');
 const { HttpError } = require('../lib/http');
 const { recordFromCtx } = require('../lib/audit');
 const { atLeast } = require('../../domain/roles');
+const { requireScreen } = require('../lib/screenGuard');
 const { resolveBranch, resolveBusiness, branchFilter, scopeFilter, pagination, listResponse, dateRange, numField, strField, boolField, valid } = require('../lib/respond');
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
@@ -1079,6 +1080,7 @@ function mount(app, base = '/api') {
   }));
 
   app.get(`${base}/expenses`, async (ctx) => {
+    requireScreen(ctx, 'expenses');
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const { limit, offset } = pagination(ctx);

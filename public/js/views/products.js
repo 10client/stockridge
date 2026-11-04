@@ -81,7 +81,7 @@
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
         SR.state.moduleOn('dispensing') ? ui.h('button', { class: 'btn btn-sm', onClick: () => openRegister() }, 'Controlled register') : null,
-        ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category'),
+        canOrganize() ? ui.h('button', { class: 'btn btn-sm', onClick: () => addCategory() }, 'Add a category') : null,
         SR.exporter.buttons((format) => exportList(format)),
         ui.h('button', { class: 'btn btn-sm', onClick: () => labelSheet() }, 'Print labels'))));
 

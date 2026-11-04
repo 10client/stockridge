@@ -34,7 +34,7 @@ const { assertLoginAllowed, recordLoginAttempt, clearLoginLock, getLockState, re
 const { recordFromCtx } = require('../lib/audit');
 const { hashPin, verifyPin } = require('../../domain/crypto');
 const { pin, username: usernameRule } = require('../../domain/validation');
-const { navigationFor, roleLabel, atLeast } = require('../../domain/roles');
+const { screensFor, roleLabel, atLeast, isProprietor, isCoOwner } = require('../../domain/roles');
 const { FEATURE_LABELS, planUsage } = require('../../domain/planLimits');
 const { getProfileOrDefault, describeProfile, resolveProfile } = require('../../domain/verticals');
 const { modulesFor } = require('../../domain/modules');
@@ -124,7 +124,9 @@ function mount(app, base = '/api/auth', makeEnv = null) {
           businessId: result.user.business_id || result.user.branch_business_id || null,
           businessName: result.user.business_name || null,
           profileCode: result.user.business_profile_code || null,
-          navigation: navigationFor(result.user.role),
+          proprietor: isProprietor(result.user),
+          coOwner: isCoOwner(result.user),
+          navigation: screensFor(result.user),
         },
         scope: serialiseScope(result.scope),
         otherDevice: Boolean(result.otherDevice),
@@ -187,7 +189,7 @@ function mount(app, base = '/api/auth', makeEnv = null) {
         commissionRatePct: user.commission_rate_pct == null ? null : Number(user.commission_rate_pct),
         branch: user.branch_id ? { id: user.branch_id, name: user.branch_name } : null,
         business: (user.business_id || user.branch_business_id) ? { id: user.business_id || user.branch_business_id, name: user.business_name } : null,
-        navigation: navigationFor(user.role),
+        navigation: screensFor(user),
       },
       scope: serialiseScope(scope),
       businesses,
