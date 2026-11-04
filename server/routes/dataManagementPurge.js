@@ -215,6 +215,15 @@ function mount(app, base = '/api', { modes = [], notice = '' } = {}) {
       },
     });
 
+    // A device that already copied yesterday's sales will not hear a DELETE.
+    // The stamp is what tells it to drop that copy. It is not set when the
+    // cleanup itself failed, and a dry run never reaches here.
+    if (!(result.failed || []).length && result.total > 0) {
+      try {
+        await db.run(`UPDATE client_settings SET data_reset_at = datetime('now'), updated_at = datetime('now') WHERE id = 1`);
+      } catch (err) { /* an old file without the column must not fail a cleanup that already finished */ }
+    }
+
     ctx.json({
       ok: (result.failed || []).length === 0,
       dry_run: false,

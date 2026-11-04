@@ -619,7 +619,11 @@ function mount(app, base = '/api') {
     // The Nigerian-market migration plants 4,828 shared goods. A cap of 5,000
     // would cut the tail of that list once a shop also has its own catalogue.
     const fullSync = !since;
-    const perTableLimit = fullSync ? Number(body.limit) || 12000 : Number(body.limit) || 2000;
+    // A named full table must not share the incremental cap. A till asking
+    // for every sale, while the rest of the request is a cursor, used to
+    // stop at 2,000 and then treat that slice as the whole book.
+    const fullLimit = Number(body.limit) || 12000;
+    const deltaLimit = Number(body.limit) || 2000;
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
@@ -689,15 +693,16 @@ function mount(app, base = '/api') {
         params.push(since);
       }
       const cols = spec.columns ? spec.columns.join(', ') : '*';
+      const tableLimit = (fullSync || fullTables.has(table)) ? fullLimit : deltaLimit;
       let rows;
       try {
-        rows = await db.all(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${spec.orderBy || 'updated_at DESC, id'} LIMIT ?`, [...params, perTableLimit]);
+        rows = await db.all(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${spec.orderBy || 'updated_at DESC, id'} LIMIT ?`, [...params, tableLimit]);
       } catch (e) {
         out[table] = { error: e.message, rows: [] };
         continue;
       }
       if (table === 'stock_batches' && rows.length) rows = await attachStockProductNames(db, rows);
-      out[table] = { rows, count: rows.length, truncated: rows.length >= perTableLimit };
+      out[table] = { rows, count: rows.length, truncated: rows.length >= tableLimit };
       totalRows += rows.length;
     }
 

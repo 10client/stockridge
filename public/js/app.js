@@ -1547,7 +1547,8 @@
     try {
       const me = await SR.api.me();
       const stamp = me && me.settings && me.settings.data_reset_at;
-      if (stamp && SR.sync && SR.sync.honourReset) await SR.sync.honourReset(stamp);
+      const cleared = stamp && SR.sync && SR.sync.honourReset ? await SR.sync.honourReset(stamp) : false;
+      if (cleared && SR.sync.runOnce) SR.sync.runOnce({ full: true, silent: true }).catch(() => {});
     } catch (err) {
       if (err && err.isAuth) {
         void handleAuthFailure({ reason: err.code, token: err.token || SR.api.loadToken(), message: err.message });

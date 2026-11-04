@@ -450,7 +450,8 @@
     const pulledSales = await SR.store.metaGet('pulled_sales_tables').catch(() => null);
     const gap = await SR.store.metaGet('pull_gap').catch(() => []);
     const gapNames = Array.isArray(gap) ? gap : [];
-    if (!pulledSales || gapNames.some((name) => SALES_TABLES.includes(name))) {
+    const reconcileMark = await SR.store.metaGet('mirror_reconcile_v').catch(() => null);
+    if (!pulledSales || String(reconcileMark || '') !== '1' || gapNames.some((name) => SALES_TABLES.includes(name))) {
       for (const name of SALES_TABLES) if (asking.includes(name) && !fullTables.includes(name)) fullTables.push(name);
     }
     let result;
@@ -485,11 +486,14 @@
       return { ok: false, error: new Error(reason), rows: 0, fast: false };
     }
     const softErrors = Object.entries(result.tables).filter(([, item]) => item && item.error).map(([name]) => name);
+    const settingsRow = result.tables.client_settings && result.tables.client_settings.rows && result.tables.client_settings.rows[0];
+    if (settingsRow && settingsRow.data_reset_at) await honourReset(settingsRow.data_reset_at);
 
     let rows = 0;
     let sent = 0;
     let acknowledged = false;
     const perTable = [];
+    let replayShelf = false;
     try {
       for (const [table, payload] of Object.entries(result.tables || {})) {
         if (!payload || !Array.isArray(payload.rows)) continue;
@@ -498,10 +502,27 @@
         if (wrote != null) acknowledged = true;
         rows += Number(wrote) || 0;
         perTable.push({ table, count: Number(wrote) || 0 });
-        if (table === 'stock_batches') {
-          if (SR.store && SR.store.engine === 'sqlite' && SR.store.replayShelf) await SR.store.replayShelf().catch(() => {});
-          else await replayUnsyncedShelf().catch(() => {});
+        if (table === 'stock_batches') replayShelf = true;
+      }
+      // An incremental answer is a delta. An empty delta means "nothing
+      // changed", not "the table is empty". Only a full, uncut answer may
+      // remove a local row the shop no longer has.
+      const authoritative = new Set(fullTables);
+      if (!since) for (const name of Object.keys(result.tables || {})) authoritative.add(name);
+      for (const [table, payload] of Object.entries(result.tables || {})) {
+        if (!authoritative.has(table)) continue;
+        if (!payload || payload.error || payload.truncated || !Array.isArray(payload.rows)) continue;
+        if (table === 'client_settings') continue;
+        if (table === 'sales') {
+          await dropSalesNotOnServer(payload.rows);
+          await SR.store.metaSet('mirror_reconcile_v', '1');
+        } else {
+          await dropAbsent(table, payload.rows);
         }
+      }
+      if (replayShelf) {
+        if (SR.store && SR.store.engine === 'sqlite' && SR.store.replayShelf) await SR.store.replayShelf().catch(() => {});
+        else await replayUnsyncedShelf().catch(() => {});
       }
     } catch (err) {
       const reason = pullFailureReason(err);
@@ -858,14 +879,91 @@
     return wrote;
   }
 
+  // A sale still in the outbox has not reached the shop. Its local id must
+  // survive a reconcile, or the next pull would delete the only copy.
+  async function idsHeldLocally() {
+    const ids = new Set();
+    if (!SR.store || !SR.store.outboxAll) return ids;
+    const list = await SR.store.outboxAll().catch(() => []);
+    for (const item of list || []) {
+      if (!item || item.status === 'SYNCED') continue;
+      if (item.client_id != null) ids.add(String(item.client_id));
+      const payload = item.payload || {};
+      for (const key of ['id', 'sale_id', 'saleId', 'till_session_id', 'tillSessionId', 'client_id', 'clientId']) {
+        if (payload[key] != null && payload[key] !== '') ids.add(String(payload[key]));
+      }
+    }
+    return ids;
+  }
+
+  async function dropAbsent(table, liveRows) {
+    if (!SR.store || !SR.store.all || !SR.store.remove) return 0;
+    const local = await SR.store.all(table).catch(() => []);
+    if (!local || !local.length) return 0;
+    const keep = new Set((liveRows || []).filter((row) => row && row.id != null).map((row) => String(row.id)));
+    const protect = await idsHeldLocally();
+    let removed = 0;
+    for (const row of local) {
+      if (!row || row.id == null) continue;
+      const id = String(row.id);
+      if (keep.has(id) || protect.has(id)) continue;
+      await SR.store.remove(table, row.id);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  async function dropChildrenNotIn(table, key, parentIds) {
+    if (!SR.store || !SR.store.all || !SR.store.remove) return 0;
+    const local = await SR.store.all(table).catch(() => []);
+    const protect = await idsHeldLocally();
+    let removed = 0;
+    for (const row of local || []) {
+      if (!row || row.id == null || row[key] == null || row[key] === '') continue;
+      if (parentIds.has(String(row[key])) || protect.has(String(row[key])) || protect.has(String(row.id))) continue;
+      await SR.store.remove(table, row.id);
+      removed += 1;
+    }
+    return removed;
+  }
+
+  async function dropSalesNotOnServer(liveSales) {
+    const removed = await dropAbsent('sales', liveSales);
+    const kept = new Set((liveSales || []).filter((row) => row && row.id != null).map((row) => String(row.id)));
+    const protect = await idsHeldLocally();
+    for (const id of protect) kept.add(id);
+    for (const [table, key] of [
+      ['sale_items', 'sale_id'],
+      ['sale_payments', 'sale_id'],
+      ['sale_serials', 'sale_id'],
+      ['sale_returns', 'sale_id'],
+      ['change_owed', 'sale_id'],
+    ]) await dropChildrenNotIn(table, key, kept);
+    return removed;
+  }
+
   async function honourReset(stamp) {
-    if (!stamp || !SR.store || !SR.store.clearAll || !SR.store.metaGet) return false;
+    if (!stamp || !SR.store || !SR.store.metaGet) return false;
     const seen = await SR.store.metaGet('seen_reset_at').catch(() => null);
     if (String(seen || '') === String(stamp)) return false;
-    await SR.store.clearAll();
+    // Clear the mirror, not the outbox. clearAll() also deletes sales that
+    // have not reached the shop yet.
+    if (SR.store.tableStats && SR.store.clearTable) {
+      const stats = await SR.store.tableStats().catch(() => null);
+      for (const item of (stats && stats.tables) || []) {
+        if (item && item.table) await SR.store.clearTable(item.table);
+      }
+    } else if (SR.store.clearAll) {
+      await SR.store.clearAll();
+    } else {
+      return false;
+    }
     await SR.store.metaSet('seen_reset_at', String(stamp));
     await SR.store.metaSet('sync_cursor', null);
     await SR.store.metaSet('pulled_sales_tables', null);
+    await SR.store.metaSet('mirror_reconcile_v', null);
+    await SR.store.metaSet('tills_reconcile_v', null);
+    await SR.store.metaSet('sales_full_at', null);
     return true;
   }
 
@@ -873,11 +971,33 @@
     if (!SR.store || !SR.store.all || !SR.store.remove) return;
     const local = await SR.store.all('till_sessions').catch(() => []);
     const liveIds = new Set((live || []).map((row) => String(row.id)));
+    const protect = await idsHeldLocally();
     for (const row of local || []) {
       if (!row || row.id == null) continue;
       if (String(row.status || '').toUpperCase() !== 'OPEN') continue;
+      if (protect.has(String(row.id))) continue;
       if (!liveIds.has(String(row.id))) await SR.store.remove('till_sessions', row.id);
     }
+  }
+
+  // The till list is date-windowed. A window of "since yesterday" does not
+  // contain a drawer opened last month, so it must not be used to decide
+  // which open drawers to delete. This asks for every open drawer, and
+  // returns null when the answer was cut short.
+  async function listTills(query, to, status) {
+    const tills = [];
+    let offset = 0;
+    for (let page = 0; page < 6; page += 1) {
+      const extra = { from: '2020-01-01', to, limit: 200, offset };
+      if (status) extra.status = status;
+      const data = await SR.api.get('/api/tills', { query: query(extra), timeoutMs: 20000 }).catch(() => null);
+      if (!data) return null;
+      const rows = (data.data || []).filter((row) => row && row.id != null);
+      tills.push(...rows);
+      if (!data.paging || !data.paging.hasMore) return tills;
+      offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
+    }
+    return null;
   }
 
   async function copyCounterBooks() {
@@ -890,19 +1010,29 @@
     for (const row of (today && (today.records || today.data)) || []) if (row && row.id != null) liveAttendance.push(row);
     if (today && today.myOpen && today.myOpen.id != null) liveAttendance.push(today.myOpen);
     wrote += await saveRows('staff_attendance', liveAttendance);
+    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
+    const openTills = await listTills(query, to, 'OPEN');
+    if (openTills) {
+      await dropOpenTillsNotOnServer(openTills);
+      wrote += await saveRows('till_sessions', openTills);
+    }
+    const tillMark = await SR.store.metaGet('tills_reconcile_v').catch(() => null);
+    if (String(tillMark || '') !== '1') {
+      const everyTill = await listTills(query, to, null);
+      if (everyTill) {
+        await dropAbsent('till_sessions', everyTill);
+        await SR.store.metaSet('tills_reconcile_v', '1');
+      }
+    }
     const last = await SR.store.metaGet('counter_copy_at').catch(() => null);
     if (!copyDue(last, Date.now(), COUNTER_COPY_MS)) return wrote;
-    const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const from = last ? dayBefore(last) : '2020-01-01';
     const tills = [];
-    let openAnswered = false;
-    for (const status of ['OPEN', undefined]) {
+    for (const status of [undefined]) {
       const data = await SR.api.get('/api/tills', { query: query({ status, from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
       if (!data) continue;
-      if (status === 'OPEN') openAnswered = true;
       for (const row of (data && data.data) || []) if (row && row.id != null) tills.push(row);
     }
-    if (openAnswered) await dropOpenTillsNotOnServer(tills.filter((row) => String(row.status || 'OPEN').toUpperCase() === 'OPEN'));
     wrote += await saveRows('till_sessions', tills);
     const history = await SR.api.get('/api/attendance', { query: query({ from, to, limit: 200 }), timeoutMs: 20000 }).catch(() => null);
     wrote += await saveRows('staff_attendance', (history && history.data) || []);
@@ -926,7 +1056,8 @@
     const prior = await SR.store.metaGet('sales_copy_at').catch(() => null);
     const fullAt = await SR.store.metaGet('sales_full_at').catch(() => null);
     const left = await SR.store.metaGet('sales_detail_left').catch(() => null) || [];
-    const fullDue = !prior || copyDue(fullAt, Date.now(), SALES_FULL_MS);
+    const reconcileMark = await SR.store.metaGet('mirror_reconcile_v').catch(() => null);
+    const fullDue = String(reconcileMark || '') !== '1' || !prior || copyDue(fullAt, Date.now(), SALES_FULL_MS);
     const to = (SR.util && SR.util.todayWat) ? SR.util.todayWat() : new Date().toISOString().slice(0, 10);
     const headers = [];
     let wrote = 0;
@@ -936,15 +1067,24 @@
       const from = fullDue ? '2020-01-01' : dayBefore(prior);
       const pages = fullDue ? 12 : 2;
       let offset = 0;
+      let complete = false;
+      let failed = false;
       for (let page = 0; page < pages; page += 1) {
-        const data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 });
-        const rows = (data && data.data) || [];
-        headers.push(...rows.filter((row) => row && row.id != null));
-        if (!rows.length || !data.paging || !data.paging.hasMore) break;
+        const data = await SR.api.get('/api/sales', { query: { from, to, limit: 500, offset }, timeoutMs: 25000 }).catch(() => null);
+        if (!data) { failed = true; break; }
+        const rows = (data.data || []).filter((row) => row && row.id != null);
+        headers.push(...rows);
+        if (!data.paging || !data.paging.hasMore) { complete = true; break; }
         offset = data.paging.nextOffset == null ? offset + rows.length : data.paging.nextOffset;
       }
-      await SR.store.metaSet('sales_list_at', new Date().toISOString());
-      if (fullDue) await SR.store.metaSet('sales_full_at', new Date().toISOString());
+      if (!failed) await SR.store.metaSet('sales_list_at', new Date().toISOString());
+      // A cut-short list is not the book. Stamping it would hide the tail
+      // for six hours, and deleting from it would remove real receipts.
+      if (fullDue && complete) {
+        await dropSalesNotOnServer(headers);
+        await SR.store.metaSet('sales_full_at', new Date().toISOString());
+        await SR.store.metaSet('mirror_reconcile_v', '1');
+      }
     }
     const fps = await SR.store.metaGet('sale_list_fp').catch(() => null) || {};
     const headerFp = await SR.store.metaGet('sale_header_fp').catch(() => null) || {};
