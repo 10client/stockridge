@@ -37,7 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_sync_till_sessions_branch_updated ON till_session
 CREATE INDEX IF NOT EXISTS idx_sync_serial_numbers_branch_updated ON serial_numbers(branch_id, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_sync_sale_payments_branch_updated ON sale_payments(branch_id, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_sync_sale_serials_branch_created ON sale_serials(branch_id, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_sync_bill_holds_branch_created ON bill_holds(branch_id, created_at, id);
+CREATE INDEX IF NOT EXISTS idx_sync_bill_holds_created ON bill_holds(created_at, id);
 CREATE INDEX IF NOT EXISTS idx_sync_product_price_overrides_branch_updated ON product_price_overrides(branch_id, updated_at, id);
 
 -- The stock gate is SELECT 1 FROM stock_batches WHERE business_id... AND branch_id... AND is_deleted=0 AND quantity>0 LIMIT 1
