@@ -26,7 +26,25 @@
       const shopProducts = Number(row.shopProductCount) || 0;
       const storedProducts = Number(row.visibleProducts != null ? row.visibleProducts : row.productRows) || 0;
       if (pullError) return { state: onTill ? 'partial' : 'empty', label: onTill ? 'Part saved' : 'Not saved', finished: false, detail: pullError };
-      if (shopProducts > 0 && storedProducts < shopProducts) return { state: 'partial', label: 'Part saved', finished: false, detail: 'The shop has ' + shopProducts + ' products. This till has ' + storedProducts + '. Leave it connected until the counts match. Do not disconnect on this copy.' };
+      // Stock-only: the shelf is stock_batches, not every product ever created.
+      // PharmaRidge has 6,804 shop products but 0 stock — the till correctly has
+      // 0, and that is Saved, not Part saved. The total-product count is no
+      // longer the mirror. Only when the till already has stock do we compare
+      // stocked names, and ensureCatalogue already handles a bare stock row.
+      if (shopProducts > 0 && storedProducts < shopProducts) {
+        // An empty shelf is the empty-shop case, handled by catalogueEmpty
+        // below. A shelf that already has stock but whose product names are
+        // missing is handled by ensureCatalogue's refill. Otherwise the total
+        // count is the old catalogue copy and must not keep the chip on Saving.
+        if (stockRows === 0 && productRows === 0 && catalogueEmpty) {
+          // let the catalogueEmpty path decide (Saved)
+        } else if (stockRows > 0) {
+          // Stock is present — the mirror is stock_batches and those names.
+          // A total-product gap (6,804 vs 10) is expected; do not stay Part saved.
+        } else {
+          return { state: 'partial', label: 'Part saved', finished: false, detail: 'The shop has ' + shopProducts + ' products. This till has ' + storedProducts + '. Leave it connected until the counts match. Do not disconnect on this copy.' };
+        }
+      }
       if (onTill && (!row.lastPullAt || truncated.length || row.incomplete)) {
         const why = 'The last download did not finish.';
         return { state: 'partial', label: 'Part saved', finished: false, detail: 'Some of the catalogue is already on this till. ' + why + ' You can sell from what is here.' };

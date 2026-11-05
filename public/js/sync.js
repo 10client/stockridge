@@ -1664,7 +1664,12 @@
   let shopCountCheckedAt = 0;
   function refreshShopCount() {
     if (!SR.api.isOnline() || !SR.api.hasToken()) return;
-    if (Date.now() - shopCountCheckedAt < 20000) return;
+    // A COUNT(*) on products where business_id IS NOT NULL scans every
+    // considered row — on Turso that is rows-read quota, not a cheap head.
+    // Doing it every 20s on a shop with 6,804 Pharma rows kept the device
+    // scanning the table all day. Once every 15 minutes is enough; the pull
+    // already knows if its own pages were truncated.
+    if (Date.now() - shopCountCheckedAt < 15 * 60 * 1000) return;
     shopCountCheckedAt = Date.now();
     SR.api.get('/api/products', { query: SR.state.query({ owned: 1, limit: 1 }), timeoutMs: 20000 }).then(async (data) => {
       const shopCount = data && data.paging ? Number(data.paging.total) : null;
