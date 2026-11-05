@@ -78,7 +78,8 @@ DB_NAME = "stockridge"
 # The office books are Turso, the same database as the sample PWA. The URL is
 # not a secret. TURSO_AUTH_TOKEN is a Worker secret and must not be written here.
 # The D1 binding stays so Wrangler can deploy. The Worker does not query it.
-TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
+# Swapped 2026-11-05 to stock2. Sample and production still share this one database.
+TURSO_DATABASE_URL = "https://stock2-mohammed-hayatudeen.aws-eu-central-1.turso.io"
 
 # ---------------------------------------------------------------------
 # OBSERVABILITY
@@ -127,7 +128,7 @@ migrations_dir = "../schema/migrations"
 # SAMPLE — the demonstration PWA.
 #
 # sample.stockridge.workers.dev and the office host stockridge.stockridge.workers.dev
-# read ONE Turso database, stockridge-10client. The desktop till and the Android
+# read ONE Turso database, stock2. The desktop till and the Android
 # app use that same database at the same time, through the Worker. Do not create
 # a second database for sample, for the office host, for the till, or for the APK.
 # Do not copy D1 onto this database. The Turso token is a Worker secret.
@@ -142,7 +143,7 @@ DB_NAME = "stockridge-sample"
 # be written into this file. The D1 binding stays so a local `wrangler dev`
 # without the secret still has a database to bind; the Worker refuses to
 # use it for sample once this URL is set.
-TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
+TURSO_DATABASE_URL = "https://stock2-mohammed-hayatudeen.aws-eu-central-1.turso.io"
 [[env.sample.d1_databases]]
 binding = "DB"
 database_name = "stockridge-sample"
@@ -154,9 +155,9 @@ name = "stockridge"
 [env.production.vars]
 ENVIRONMENT = "production"
 DB_NAME = "stockridge"
-# Same Turso database as the sample PWA. Do not point this at a second database
-# and do not copy D1 back onto it.
-TURSO_DATABASE_URL = "https://stockridge-10client.aws-eu-north-1.turso.io"
+# Same Turso database as the sample PWA. Do not point sample and production
+# at different databases, and do not copy D1 onto this one.
+TURSO_DATABASE_URL = "https://stock2-mohammed-hayatudeen.aws-eu-central-1.turso.io"
 [[env.production.d1_databases]]
 binding = "DB"
 database_name = "stockridge"

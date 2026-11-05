@@ -29,6 +29,19 @@ const saleIssues = require('../services/saleIssues');
 
 const COUNTS = "s.is_deleted = 0 AND s.status <> 'VOIDED'";
 
+// sold_at is a WAT wall-clock string. date(sold_at) returns the same day,
+// but it cannot use an index, so opening this screen scanned every sale.
+// A range on the column is the same day and can seek.
+function soldSpan(fromDay, toDay) {
+  const from = String(fromDay || '').slice(0, 10);
+  const to = String(toDay == null ? fromDay : toDay).slice(0, 10);
+  const end = addDays(to, 1) || to;
+  return {
+    sql: 's.sold_at >= ? AND s.sold_at < ?',
+    params: [`${from} 00:00:00`, `${end} 00:00:00`],
+  };
+}
+
 function mount(app, base = '/api') {
   app.get(`${base}/dashboard`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -92,19 +105,21 @@ function mount(app, base = '/api') {
 
     // ---- TODAY --------------------------------------------------------
     const sc = scopeClause('s');
+    const todaySpan = soldSpan(today);
+    const yesterday = addDays(today, -1);
+    const yesterdaySpan = soldSpan(yesterday);
     const todaySales = await db.first(`SELECT COUNT(*) AS count,
           COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat,
           COALESCE(SUM(s.balance_due),0) AS outstanding, COALESCE(SUM(s.delivery_fee),0) AS delivery,
           COALESCE(AVG(s.total),0) AS average
-        FROM sales s WHERE ${COUNTS} AND date(s.sold_at) = ? ${sc.sql}`, [today, ...sc.params]);
-    const yesterday = addDays(today, -1);
+        FROM sales s WHERE ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
     const yesterdaySales = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross
-        FROM sales s WHERE ${COUNTS} AND date(s.sold_at) = ? ${sc.sql}`, [yesterday, ...sc.params]);
+        FROM sales s WHERE ${COUNTS} AND ${yesterdaySpan.sql} ${sc.sql}`, [...yesterdaySpan.params, ...sc.params]);
     const todayCogs = await db.first(`SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) = ? ${sc.sql}`, [today, ...sc.params]);
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
     const todayVoids = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS value
-        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' AND date(s.sold_at) = ? ${sc.sql}`, [today, ...sc.params]);
+        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
 
     const grossToday = round2(Number(todaySales.gross));
     const vatToday = round2(Number(todaySales.vat));
@@ -116,17 +131,18 @@ function mount(app, base = '/api') {
     // ---- PAYMENT MIX (today) -----------------------------------------
     const byMethod = await db.all(`SELECT p.method, COALESCE(SUM(p.amount),0) AS amount, COUNT(*) AS count
         FROM sale_payments p JOIN sales s ON s.id = p.sale_id
-        WHERE p.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) = ? ${sc.sql}
-        GROUP BY p.method ORDER BY amount DESC`, [today, ...sc.params]);
+        WHERE p.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}
+        GROUP BY p.method ORDER BY amount DESC`, [...todaySpan.params, ...sc.params]);
 
     // ---- PERIOD (default 30 days) ------------------------------------
     const { from, to } = dateRange(ctx, { defaultDays: 30 });
+    const periodSpan = soldSpan(from, to);
     const period = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross,
           COALESCE(SUM(s.vat_amount),0) AS vat, COALESCE(SUM(s.balance_due),0) AS outstanding
-        FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}`, [from, to, ...sc.params]);
+        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, [...periodSpan.params, ...sc.params]);
     const periodCogs = await db.first(`SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}`, [from, to, ...sc.params]);
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, [...periodSpan.params, ...sc.params]);
     const periodNet = round2(Number(period.gross) - Number(period.vat));
     const periodMargin = round2(periodNet - Number(periodCogs.cogs));
 
@@ -134,8 +150,8 @@ function mount(app, base = '/api') {
     // so the chart and the headline numbers cannot disagree.
     const series = await db.all(`SELECT date(s.sold_at) AS day, COUNT(*) AS count,
           COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-        FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
-        GROUP BY day ORDER BY day ASC`, [from, to, ...sc.params]);
+        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
+        GROUP BY day ORDER BY day ASC`, [...periodSpan.params, ...sc.params]);
 
     // ---- STOCK --------------------------------------------------------
     const stockWhere = ['sb.is_deleted = 0', "sb.status NOT IN ('QUARANTINED','EXPIRED')"];
@@ -181,20 +197,20 @@ function mount(app, base = '/api') {
           COALESCE(SUM(si.quantity_in_base),0) AS units, COALESCE(SUM(si.line_total),0) AS revenue,
           COALESCE(SUM(si.margin),0) AS margin
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
-        GROUP BY si.product_id ORDER BY revenue DESC LIMIT 8`, [from, to, ...sc.params]);
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
+        GROUP BY si.product_id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
     const categorySales = await db.all(`SELECT COALESCE(c.name, 'Uncategorised') AS category_name,
           COALESCE(SUM(si.line_total),0) AS revenue, COALESCE(SUM(si.line_total - si.vat_amount),0) AS net,
           COUNT(DISTINCT s.id) AS sales
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
         LEFT JOIN product_categories c ON c.id = si.category_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
-        GROUP BY si.category_id ORDER BY revenue DESC LIMIT 8`, [from, to, ...sc.params]);
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
+        GROUP BY si.category_id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
     const topStaff = await db.all(`SELECT u.id, u.full_name, COUNT(s.id) AS sales, COALESCE(SUM(s.total),0) AS revenue
         FROM sales s JOIN users u ON u.id = s.salesperson_id
-        WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? ${sc.sql}
-        GROUP BY u.id ORDER BY revenue DESC LIMIT 8`, [from, to, ...sc.params]);
+        WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
+        GROUP BY u.id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
 
     // ---- CREDIT / DEBTORS --------------------------------------------
     let debtors = null;
@@ -290,7 +306,7 @@ function mount(app, base = '/api') {
     if (isGroup) {
         const businesses = await db.all('SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name');
         const periodRows = await db.all(`SELECT s.business_id, COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-            FROM sales s WHERE ${COUNTS} AND date(s.sold_at) BETWEEN ? AND ? GROUP BY s.business_id`, [from, to]);
+            FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} GROUP BY s.business_id`, periodSpan.params);
         const branchRows = await db.all('SELECT business_id, COUNT(*) AS n FROM branches WHERE is_deleted = 0 AND is_active = 1 GROUP BY business_id');
         const periodById = new Map(periodRows.map((row) => [String(row.business_id), row]));
         const branchesById = new Map(branchRows.map((row) => [String(row.business_id), Number(row.n) || 0]));
@@ -509,10 +525,11 @@ function mount(app, base = '/api') {
       business = await resolveBusiness(db, ctx, null, { required: false });
     }
     const today = watToday();
+    const todaySpan = soldSpan(today);
     const focusSql = branch ? 'AND s.branch_id = ?' : (business ? 'AND s.business_id = ?' : '');
     const focusParam = branch ? [String(branch.id)] : (business ? [String(business.id)] : []);
     const t = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross FROM sales s
-        WHERE ${COUNTS} AND date(s.sold_at) = ? ${focusSql}`, [today, ...focusParam]);
+        WHERE ${COUNTS} AND ${todaySpan.sql} ${focusSql}`, [...todaySpan.params, ...focusParam]);
     const stockSql = branch ? 'AND sb.branch_id = ?' : (business ? 'AND sb.business_id = ?' : '');
     const lowCount = await db.scalar(`SELECT COUNT(*) FROM (
         SELECT sb.product_id FROM stock_batches sb JOIN products p ON p.id = sb.product_id

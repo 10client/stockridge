@@ -458,6 +458,10 @@
 
   async function pullRequest({ full = false, tables = null, saveCursor = true, stamp = true } = {}) {
     const since = full ? null : await SR.store.metaGet('sync_cursor', null);
+    const storedRevisions = since ? await SR.store.metaGet('sync_revisions', null).catch(() => null) : null;
+    const revisionSend = storedRevisions && typeof storedRevisions === 'object' && !Array.isArray(storedRevisions)
+      ? storedRevisions
+      : null;
     const branchId = SR.state.activeBranchId;
     // The shelf is copied in full the first time and about every 15 minutes.
     // A cursor still brings a receipt that moved updated_at. Coming back
@@ -502,6 +506,9 @@
         // Ask for changed rows only. A shop that does not know the flag
         // ignores it and keeps the id walk.
         watermark: since ? 1 : undefined,
+        // The shop skips a table whose number has not moved. An older shop
+        // ignores the field and keeps the watermark page.
+        revisions: revisionSend || undefined,
         after: after && Object.keys(after).length ? after : undefined,
         after_at: afterAt && Object.keys(afterAt).length ? afterAt : undefined,
       };
@@ -551,6 +558,7 @@
     let cursor = null;
     let fullSyncFlag = !since;
     let sawWatermark = false;
+    let serverRevisions = null;
     let productChanges = 0;
     let after = {};
     let afterAt = {};
@@ -567,6 +575,7 @@
         if (pageResult.cursor) cursor = pageResult.cursor;
         if (pageResult.fullSync) fullSyncFlag = true;
         if (pageResult.watermark) sawWatermark = true;
+        if (pageResult.revisions && typeof pageResult.revisions === 'object') serverRevisions = pageResult.revisions;
         if (page === 0) {
           ignoredPaging = Object.values(pageResult.tables).some((item) => item && Array.isArray(item.rows) && item.rows.length > PAGE);
         }
@@ -758,6 +767,17 @@
       await SR.store.metaSet('shelf_full_at', new Date().toISOString());
     }
     if (sawWatermark) await SR.store.metaSet('pull_tombstones', '1');
+    // Store a revision only for a table this pull finished. A cut-off page
+    // keeps the old number, so the next cycle asks for that table again.
+    if (serverRevisions && saveCursor && !hardErrors.length && !stuck) {
+      const kept = revisionSend ? Object.assign({}, revisionSend) : {};
+      for (const name of Object.keys(serverRevisions)) {
+        const item = result.tables && result.tables[name];
+        if (item && (item.error || item.truncated)) continue;
+        kept[name] = serverRevisions[name];
+      }
+      await SR.store.metaSet('sync_revisions', kept);
+    }
     if (saveCursor && result && result.cursor && !hardErrors.length) {
       await SR.store.metaSet('sync_cursor', result.cursor);
       if (fullTables.includes('purchase_orders') && result.tables && result.tables.purchase_orders && !result.tables.purchase_orders.error) {

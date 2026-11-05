@@ -639,6 +639,19 @@ function mount(app, base = '/api') {
     // stays for a first copy and for a till that has not asked, so a shop
     // deploy does not skip rows on an older screen.
     const wantWatermark = body.watermark === true || body.watermark === 1 || body.watermark === '1';
+    // One row per mirrored table. A write bumps it. An idle till that already
+    // holds these numbers does not open the catalogue. A till that omits them
+    // keeps the watermark page, so an older screen is not skipped.
+    const askedRevisions = body.revisions && typeof body.revisions === 'object' && !Array.isArray(body.revisions)
+      ? body.revisions
+      : null;
+    let revisionMap = null;
+    try {
+      const revRows = await db.all('SELECT table_name, revision FROM sync_revisions');
+      revisionMap = new Map((revRows || []).map((row) => [String(row.table_name), Number(row.revision) || 0]));
+    } catch (e) {
+      revisionMap = null;
+    }
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
@@ -652,6 +665,16 @@ function mount(app, base = '/api') {
       if (!PULLABLE[table]) { out[table] = { error: 'not_syncable', rows: [] }; continue; }
       // Read once, below, and redact it. The loop used to read it as well.
       if (table === 'client_settings') continue;
+      // A named full read is the rare reconcile. Do not skip that. A matching
+      // revision means this table has not been written since the till stored
+      // the number, so opening it would scan rows the till already has.
+      if (revisionMap && askedRevisions && wantWatermark && since && !fullTables.has(table) && askedRevisions[table] != null && revisionMap.has(table)) {
+        const current = revisionMap.get(table);
+        if (Number(askedRevisions[table]) === current) {
+          out[table] = { rows: [], count: 0, truncated: false, unchanged: true };
+          continue;
+        }
+      }
       const spec = PULLABLE[table];
       const where = []; const params = [];
       const cursorColumn = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
@@ -790,14 +813,24 @@ function mount(app, base = '/api') {
     const cursor = utcNow();
     // Only a pull that actually belongs to a branch updates that branch's
     // heartbeat row. A branchless pull would otherwise claim a shop's status.
+    // A heartbeat is a write. An idle till used to write one on every
+    // three-minute pull. Fifteen minutes is still a live till. A pull that
+    // has no branch does not claim one.
     if (deviceId && branch) {
-      await db.run(`INSERT INTO branch_sync_status (branch_id, device_id, app_version, last_pull_at, last_heartbeat_at, updated_at)
-          VALUES (?,?,?, datetime('now'), datetime('now'), datetime('now'))
-          ON CONFLICT(branch_id, device_id) DO UPDATE SET
-            last_pull_at = datetime('now'), last_heartbeat_at = datetime('now'),
-            app_version = COALESCE(excluded.app_version, app_version), updated_at = datetime('now')`,
-      [branch ? String(branch.id) : null, deviceId, strField(body.app_version, { field: 'App version', maxLength: 40 })]);
+      const beat = await db.first(
+        'SELECT last_heartbeat_at FROM branch_sync_status WHERE branch_id = ? AND device_id = ?',
+        [String(branch.id), deviceId],
+      );
+      if (!beat || !beat.last_heartbeat_at || minutesSince(beat.last_heartbeat_at) >= 15) {
+        await db.run(`INSERT INTO branch_sync_status (branch_id, device_id, app_version, last_pull_at, last_heartbeat_at, updated_at)
+            VALUES (?,?,?, datetime('now'), datetime('now'), datetime('now'))
+            ON CONFLICT(branch_id, device_id) DO UPDATE SET
+              last_pull_at = datetime('now'), last_heartbeat_at = datetime('now'),
+              app_version = COALESCE(excluded.app_version, app_version), updated_at = datetime('now')`,
+        [String(branch.id), deviceId, strField(body.app_version, { field: 'App version', maxLength: 40 })]);
+      }
     }
+    const revisionPayload = revisionMap ? Object.fromEntries(revisionMap) : undefined;
 
     ctx.json({
       ok: true, cursor, since: since || null, fullSync,
@@ -811,6 +844,9 @@ function mount(app, base = '/api') {
       truncatedTables: Object.entries(out).filter(([, v]) => v.truncated).map(([k]) => k),
       next,
       next_at: wantWatermark ? nextAt : undefined,
+      // The numbers the till stores. Absent means this shop has no revision
+      // table yet. An older till ignores the field.
+      revisions: revisionPayload,
       // Told so the till can drop a tombstone and stop re-reading the shelf.
       // Absent means this shop did not send them. An older till ignores it.
       watermark: wantWatermark ? true : undefined,
