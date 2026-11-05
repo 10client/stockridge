@@ -313,43 +313,57 @@
   // stored 20 and then said Saved, while that screen has 50, was using an
   // old copy. Ask the shop, and if this till is short, download the names
   // again with no cursor before anyone is told they can disconnect.
-  async function ensureCatalogue(hint) {
-    if (!SR.api.isOnline() || !SR.api.hasToken()) return null;
-    // A finished delta that changed no product does not need another count.
-    // The count scans the catalogue. The short-copy refill still runs when
-    // this till is behind, or when a product row actually moved.
-    if (hint && hint.incremental && !hint.productChanges) {
-      const known = Number(await SR.store.metaGet('shop_product_count').catch(() => null));
-      const countedAt = await SR.store.metaGet('shop_count_at').catch(() => null);
-      if (Number.isFinite(known) && countedAt && !copyDue(countedAt, Date.now(), 15 * 60 * 1000)) {
-        const localCount = await countCatalogueProducts();
-        if (localCount >= known) return { refused: false, short: false, shopCount: known, localCount, skippedProbe: true };
+  async function stockedIds() {
+    const stock = await SR.store.all('stock_batches').catch(() => []);
+    const ids = new Set();
+    for (const row of stock || []) {
+      if (!row || row.product_id == null || Number(row.is_deleted) === 1) continue;
+      if (!(Number(row.quantity) > 0)) continue;
+      ids.add(String(row.product_id));
+    }
+    return ids;
+  }
+
+  async function dropCatalogueNotOnStock() {
+    if (!SR.store || !SR.store.remove) return 0;
+    const ids = await stockedIds();
+    let removed = 0;
+    const products = await SR.store.all('products').catch(() => []);
+    for (const row of products || []) {
+      if (!row || row.id == null || ids.has(String(row.id))) continue;
+      await SR.store.remove('products', row.id);
+      removed += 1;
+    }
+    for (const table of ['product_units', 'product_variants', 'product_barcodes', 'product_measures', 'price_list_items']) {
+      const rows = await SR.store.all(table).catch(() => []);
+      for (const row of rows || []) {
+        if (!row || row.id == null || ids.has(String(row.product_id))) continue;
+        await SR.store.remove(table, row.id);
+        removed += 1;
       }
     }
-    // The unfiltered product total counts other businesses. A miss on that
-    // probe is not proof this shop failed to answer, and it must not leave
-    // Saving on Not saved after the catalogue groups already landed.
-    const shopCount = await ownedProductCount();
-    if (shopCount == null) return { refused: false, unchecked: true };
-    await SR.store.metaSet('shop_product_count', shopCount);
-    await SR.store.metaSet('shop_count_at', new Date().toISOString());
-    if (shopCount === 0) await SR.store.metaSet('catalogue_empty', true);
-    let localCount = await countCatalogueProducts();
-    if (localCount < shopCount) {
+    return removed;
+  }
+
+  async function ensureCatalogue() {
+    if (!SR.api.isOnline() || !SR.api.hasToken()) return null;
+    // Saved means the stock on hand has its name and price. It does not mean
+    // the Greenbook or the shop catalogue was copied. Counting those rows is
+    // what kept Saving up and spent the free-plan reads.
+    const stock = await SR.store.all('stock_batches').catch(() => []);
+    const held = (stock || []).filter((row) => row && !Number(row.is_deleted) && Number(row.quantity) > 0);
+    const bare = held.filter((row) => !row.product_name);
+    if (bare.length) {
       const refill = await pullRequest({
         full: true,
-        tables: ['products', 'product_categories', 'product_units', 'product_variants', 'product_barcodes', 'product_measures'],
+        tables: ['stock_batches', 'products', 'product_units', 'product_variants', 'product_barcodes', 'product_measures'],
         saveCursor: false,
         stamp: false,
       });
-      if (!refill || !refill.ok) return { refused: true, short: true, shopCount, localCount };
-      localCount = await countCatalogueProducts();
+      if (!refill || !refill.ok) return { refused: true, short: true };
     }
-    if (localCount < shopCount) {
-      await rememberPullError('The shop has ' + shopCount + ' products. This till stored ' + localCount + ', so the catalogue was not copied in full.');
-      return { refused: false, short: true, shopCount, localCount };
-    }
-    return { refused: false, short: false, shopCount, localCount };
+    await dropCatalogueNotOnStock();
+    return { refused: false, short: false, stockCount: held.length };
   }
 
   async function pull({ full = false, tables = null } = {}) {
@@ -947,12 +961,6 @@
     // every business for those routes is what kept Saving on the screen after
     // the catalogue had already answered. The market list is not "goods on
     // this shop".
-    const owned = await ownedProductCount();
-    if (owned === 0) {
-      await SR.store.metaSet('catalogue_empty', true);
-      await SR.store.metaSet('shop_product_count', 0);
-      return 0;
-    }
     const first = !last;
     const listPages = first ? 4 : 1;
     const from = first ? '2020-01-01' : dayBefore(last);

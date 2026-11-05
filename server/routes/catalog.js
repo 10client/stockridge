@@ -36,7 +36,7 @@ const { newId } = require('../../domain/crypto');
 const { canEditPrices } = require('../../domain/planLimits');
 const { watToday } = require('../../domain/time');
 const market = require('../../domain/nigeriaMarket');
-const { fileGreenbook, syntheticBarcode } = require('../services/provisioningService');
+const { syntheticBarcode } = require('../services/provisioningService');
 const { ensureMajors, isMajorCode, normalizeSide, sideLabel } = require('../services/categorySides');
 
 async function saveProductMeasure(db, productId, axisCode) {
@@ -394,7 +394,9 @@ function mount(app, base = '/api') {
         [String(businessId)],
       );
       if (focused && modulesOfBusiness(focused).nafdac) {
-        await fileGreenbook(db, String(businessId));
+        // The Greenbook stays in nafdac_catalog. Copying all 6,801 rows into
+        // products on a list read is what filled the till and the free-plan
+        // read bill. A pick still copies the one row.
         ownCatalogue = true;
       }
     }
@@ -1007,13 +1009,6 @@ function mount(app, base = '/api') {
           AND own.business_id IS NOT NULL
       ))`);
     }
-    if (businessId) {
-      const focused = await db.first(
-        'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
-        [String(businessId)],
-      );
-      if (focused && modulesOfBusiness(focused).nafdac) await fileGreenbook(db, String(businessId));
-    }
     const countBusiness = businessId ? String(businessId) : null;
     const countSql = countBusiness
       ? `(SELECT COUNT(*) FROM products p WHERE p.category_id = c.id AND p.is_deleted = 0 AND (p.business_id = ? OR p.business_id IS NULL))`
@@ -1564,6 +1559,7 @@ function mount(app, base = '/api') {
     if (q.length < 2) throw new HttpError('Type at least two characters of a name, an ingredient, or a NAFDAC number.', { status: 400, code: 'QUERY_TOO_SHORT' });
     const limit = Math.min(50, Math.max(1, Number(ctx.req.queryParam('limit')) || 20));
     const like = `%${q.replace(/[%_]/g, '')}%`;
+    const prefix = `${q.replace(/[%_]/g, '')}%`;
     const rows = await db.all(
       `SELECT n.id, n.nafdac_reg_no, n.product_name, n.ingredient_name, n.strength, n.dosage_form, n.manufacturer,
               n.pack_size, n.category, n.base_unit, n.is_controlled, n.dispensing_type, n.registration_expiry,
@@ -1571,10 +1567,12 @@ function mount(app, base = '/api') {
                 WHERE p.business_id = ? AND p.nafdac_catalog_id = n.id AND p.is_deleted = 0
                 ORDER BY p.id LIMIT 1) AS adopted_id
          FROM nafdac_catalog n
-        WHERE n.search_blob LIKE ? OR lower(n.nafdac_reg_no) LIKE ? OR lower(n.product_name) LIKE ?
+        WHERE n.product_name LIKE ? COLLATE NOCASE
+           OR n.nafdac_reg_no LIKE ? COLLATE NOCASE
+           OR n.ingredient_key LIKE ?
         ORDER BY n.product_name COLLATE NOCASE, n.id
         LIMIT ?`,
-      [String(business.id), like, like, like, limit],
+      [String(business.id), prefix, prefix, prefix, limit],
     );
     ctx.json({ ok: true, data: rows, count: rows.length });
   });

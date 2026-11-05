@@ -113,7 +113,7 @@ async function ensureWhtSchedule(db) {
   return added;
 }
 
-async function provisionBusiness(db, business, { withCatalogue = true, withGreenbook = true, createdBy = null } = {}) {
+async function provisionBusiness(db, business, { withCatalogue = true, withGreenbook = false, createdBy = null } = {}) {
   await ensureWhtSchedule(db);
   const profile = profileForBusiness(business);
   const businessId = String(business.id);

@@ -659,6 +659,9 @@ function mount(app, base = '/api') {
 
     const out = {};
     let totalRows = 0;
+    // One look at the shelf for this request. An empty shelf must not open
+    // the product table, the market list, or the Greenbook.
+    let stockGate = null;
     for (const table of requested) {
       // Only tables that exist and are safe to mirror. A device must not be able
       // to ask for `gl_journal_lines` or `audit_log` and receive them.
@@ -676,6 +679,20 @@ function mount(app, base = '/api') {
         }
       }
       const spec = PULLABLE[table];
+      if (spec.onStock) {
+        if (!stockGate) {
+          const held = stockScope(scope, { includeAllBusinesses, includeAllBranches, biz, branch });
+          const hit = await db.first(
+            `SELECT 1 AS ok FROM stock_batches WHERE ${held.where.join(' AND ')} LIMIT 1`,
+            held.params,
+          );
+          stockGate = { any: Boolean(hit), held };
+        }
+        if (!stockGate.any) {
+          out[table] = { rows: [], count: 0, truncated: false };
+          continue;
+        }
+      }
       const where = []; const params = [];
       const cursorColumn = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
       const useWatermark = Boolean(wantWatermark && since && !fullTables.has(table));
@@ -736,6 +753,11 @@ function mount(app, base = '/api') {
       const shelf = deviceShelfLimit(spec, { includeAllBusinesses, scope, biz });
       for (const piece of shelf.where) where.push(piece);
       params.push(...shelf.params);
+      if (spec.onStock && stockGate && stockGate.any) {
+        const column = table === 'products' ? 'id' : 'product_id';
+        where.push(`${column} IN (SELECT product_id FROM stock_batches WHERE ${stockGate.held.where.join(' AND ')})`);
+        params.push(...stockGate.held.params);
+      }
       const afterRaw = paging ? afterMap[table] : null;
       const afterId = afterRaw == null ? '' : String(afterRaw).trim();
       const afterIdOk = Boolean(paging && afterId && afterId.length <= 80 && /^[A-Za-z0-9_-]+$/.test(afterId));
@@ -992,6 +1014,33 @@ function mount(app, base = '/api') {
  * across branches) and must stay visible, while a row WITH a branch is visible
  * only inside it.
  */
+function stockScope(scope, { includeAllBusinesses, includeAllBranches, biz, branch } = {}) {
+  const where = ['is_deleted = 0', 'quantity > 0'];
+  const params = [];
+  const everyBusiness = Boolean(includeAllBusinesses && scope && scope.allBusinesses);
+  if (!everyBusiness) {
+    const ids = includeAllBusinesses && scope && scope.businessIds && scope.businessIds.size
+      ? [...scope.businessIds].map(String)
+      : null;
+    if (ids && ids.length) {
+      where.push(`business_id IN (${ids.map(() => '?').join(',')})`);
+      params.push(...ids);
+    } else if (biz) {
+      where.push('business_id = ?');
+      params.push(String(biz));
+    }
+  }
+  if (scope && !scope.allBranches && scope.branchIds && scope.branchIds.size) {
+    const ids = [...scope.branchIds].map(String);
+    where.push(`branch_id IN (${ids.map(() => '?').join(',')})`);
+    params.push(...ids);
+  } else if (branch && branch.id && !includeAllBranches) {
+    where.push('branch_id = ?');
+    params.push(String(branch.id));
+  }
+  return { where, params };
+}
+
 function deviceShelfLimit(spec, { includeAllBusinesses, scope, biz } = {}) {
   if (!spec || (!spec.shopShelf && !spec.viaProduct)) return { where: [], params: [] };
   const every = Boolean(includeAllBusinesses && scope && scope.allBusinesses);
@@ -1015,7 +1064,7 @@ function deviceShelfLimit(spec, { includeAllBusinesses, scope, biz } = {}) {
     where.push(scopeSql ? `business_id IS NOT NULL AND ${scopeSql}` : 'business_id IS NOT NULL');
     params.push(...scopeParams);
   }
-  if (spec.viaProduct) {
+  if (spec.viaProduct && !spec.onStock) {
     const inner = ['business_id IS NOT NULL', 'is_deleted = 0'];
     if (scopeSql) inner.push(scopeSql);
     where.push(`product_id IN (SELECT id FROM products WHERE ${inner.join(' AND ')})`);
@@ -1040,13 +1089,15 @@ const PULLABLE = {
   product_categories: { businessScoped: true, branchScoped: false, orderBy: 'sort_order, name' },
   // shopShelf: the shared market list has no business. It stays on the server
   // for a search. It is not the shelf, and a till must not save those 4,828 names.
-  products: { businessScoped: true, branchScoped: false, orderBy: 'name', shopShelf: true },
-  product_units: { businessScoped: false, branchScoped: false, orderBy: 'quantity_in_base', viaProduct: true },
-  product_variants: { businessScoped: false, branchScoped: false, orderBy: 'name', viaProduct: true },
-  product_barcodes: { businessScoped: false, branchScoped: false, orderBy: 'barcode', viaProduct: true },
+  // onStock: the Greenbook and the shop catalogue stay on the server. A till
+  // saves a product only when a batch of it is on hand.
+  products: { businessScoped: true, branchScoped: false, orderBy: 'name', shopShelf: true, onStock: true },
+  product_units: { businessScoped: false, branchScoped: false, orderBy: 'quantity_in_base', viaProduct: true, onStock: true },
+  product_variants: { businessScoped: false, branchScoped: false, orderBy: 'name', viaProduct: true, onStock: true },
+  product_barcodes: { businessScoped: false, branchScoped: false, orderBy: 'barcode', viaProduct: true, onStock: true },
   price_lists: { businessScoped: true, branchScoped: false, orderBy: 'priority, name' },
-  price_list_items: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true },
-  product_price_overrides: { businessScoped: false, branchScoped: true, orderBy: 'product_id' },
+  price_list_items: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true, onStock: true },
+  product_price_overrides: { businessScoped: false, branchScoped: true, orderBy: 'product_id', onStock: true },
   suppliers: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   stock_batches: { businessScoped: true, branchScoped: true, orderBy: 'product_id, batch_no' },
   branch_compliance_records: { businessScoped: false, branchScoped: true, orderBy: 'record_type' },
@@ -1064,7 +1115,7 @@ const PULLABLE = {
   // once the line dropped. These rows are the same tables Turso holds.
   // Child rows have no business column of their own, so they are limited
   // through the parent. Secrets and the ledger stay off the device.
-  product_measures: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true },
+  product_measures: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true, onStock: true },
   purchase_order_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'purchase_orders', column: 'purchase_order_id' } },
   sales: { businessScoped: true, branchScoped: true, orderBy: 'sold_at' },
   sale_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'sales', column: 'sale_id' } },
@@ -1092,11 +1143,15 @@ async function attachStockProductNames(db, rows) {
   for (let i = 0; i < ids.length; i += 80) {
     const chunk = ids.slice(i, i + 80);
     const found = await db.all(
-      `SELECT p.id, p.name, p.sku, p.brand, p.model_no, p.selling_price, p.is_active, p.base_unit_name,
+      `SELECT p.id, p.name, p.sku, p.brand, p.model_no, p.selling_price, p.cost_price, p.is_active, p.base_unit_name,
               p.dispensing_class, p.is_controlled, p.requires_serial, p.registration_no, p.category_id, p.nafdac_catalog_id,
-              c.code AS category_code, c.name AS category_name
+              c.code AS category_code, c.name AS category_name,
+              n.ingredient_name AS nafdac_ingredient, n.strength AS nafdac_strength,
+              n.dosage_form AS nafdac_dosage_form, n.pack_size AS nafdac_pack_size,
+              n.manufacturer AS nafdac_manufacturer, n.dispensing_type AS nafdac_dispensing_type
          FROM products p
          LEFT JOIN product_categories c ON c.id = p.category_id
+         LEFT JOIN nafdac_catalog n ON n.id = p.nafdac_catalog_id
          WHERE p.id IN (${chunk.map(() => '?').join(',')})`,
       chunk,
     );
@@ -1121,6 +1176,12 @@ async function attachStockProductNames(db, rows) {
       product_category_name: p.category_name,
       product_registration_no: p.registration_no,
       product_nafdac_catalog_id: p.nafdac_catalog_id,
+      product_ingredient: p.nafdac_ingredient,
+      product_strength: p.nafdac_strength,
+      product_dosage_form: p.nafdac_dosage_form,
+      product_pack_size: p.nafdac_pack_size,
+      product_manufacturer: p.nafdac_manufacturer,
+      product_cost_price: p.cost_price,
     });
   });
 }
@@ -1169,4 +1230,4 @@ function minutesSince(iso) {
   return Number.isFinite(t) ? Math.round((Date.now() - t) / 60000) : 0;
 }
 
-module.exports = { mount, LWW_TABLES, REPLAYABLE, PULLABLE, deviceShelfLimit };
+module.exports = { mount, LWW_TABLES, REPLAYABLE, PULLABLE, deviceShelfLimit, stockScope };
