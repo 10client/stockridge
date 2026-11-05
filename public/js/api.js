@@ -184,13 +184,22 @@
     return !/UPSTREAM_UNREACHABLE|shop server could not be reached|did not answer from this window/i.test(body);
   }
 
+  function isAbortError(err) {
+    if (!err) return false;
+    if (err.name === 'AbortError') return true;
+    const msg = String((err && err.message) || '') + ' ' + String((err && err.cause && err.cause.message) || '');
+    return /aborted|signal is aborted/i.test(msg);
+  }
+
   async function probe({ force = false } = {}) {
     if (!force && Date.now() - lastProbe < 8000) return online;
     if (probing) return probing;
     probing = (async () => {
       lastProbe = Date.now();
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
+      const timer = setTimeout(() => {
+        try { controller.abort(new DOMException('The server did not answer in time.', 'AbortError')); } catch (e) { controller.abort(); }
+      }, 8000);
       try {
         // /api/health is a real shop answer. The ping route is a 404, which
         // still proves the shop spoke, but health is the clearer check.
@@ -254,7 +263,7 @@
     get isAuth() { return this.status === 401 || this.code === 'NO_TOKEN' || this.code === 'SESSION_SUPERSEDED'; }
     get isOffline() {
       if (this.status === 0 || this.code === 'OFFLINE' || this.code === 'UPSTREAM_UNREACHABLE' || this.code === 'SHOP_UNCONFIRMED') return true;
-      return /shop server could not be reached|did not answer from this window|failed to fetch/i.test(String(this.message || ''));
+      return /shop server could not be reached|did not answer from this window|failed to fetch|did not answer in time|aborted|signal is aborted/i.test(String(this.message || ''));
     }
   }
 
@@ -373,7 +382,9 @@
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => {
+      try { controller.abort(new DOMException('The server did not answer in time.', 'AbortError')); } catch (e) { controller.abort(); }
+    }, timeoutMs);
     let res;
     try {
       res = await fetch(url, {
@@ -385,7 +396,7 @@
       });
     } catch (e) {
       const missed = new ApiError(
-        e && e.name === 'AbortError'
+        isAbortError(e)
           ? 'The server did not answer in time. Check the connection and try again.'
           : 'The shop did not answer from this window. Try again.',
         { status: 0, code: 'OFFLINE', retryable: true },
