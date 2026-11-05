@@ -271,8 +271,16 @@
 
     async function addCategory() {
       const wrapEl = ui.h('div', {});
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A category joins the same list as the others. Provisions, fabrics and drinks count as others. Analgesics, vitamins and injections count as pharmaceuticals.'));
+      const shops = (SR.state.businesses && SR.state.businesses()) || [];
+      const canPickShop = shops.length > 1 && (SR.state.atLeast && SR.state.atLeast('OWNER'));
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'One list. A NAFDAC medicine stays pharmaceutical. Provisions, drinks and the other categories sit on the same list. The category is filed on the business you name.'));
       wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        canPickShop ? ui.field({
+          label: 'Business',
+          name: 'business_id',
+          value: SR.state.activeBusinessId || '',
+          options: shops.map((shop) => ({ value: String(shop.id), label: shop.name || shop.code || 'Business' })),
+        }) : null,
         ui.field({ label: 'Category name', name: 'name', required: true }),
         ui.field({
           label: 'Counts as',
@@ -298,7 +306,7 @@
                 const created = await SR.api.post('/api/categories', {
                   name: v.name.trim(),
                   selling_group: v.selling_group,
-                  business_id: SR.state.activeBusinessId,
+                  business_id: v.business_id || SR.state.activeBusinessId,
                 });
                 m.close();
                 await fillCategories();

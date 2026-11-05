@@ -922,6 +922,13 @@ const PROFILES = Object.freeze({
       { code: 'VACCINES', name: 'Vaccines and biologics' },
       { code: 'VETERINARY', name: 'Veterinary' },
       { code: 'VITAMINS', name: 'Vitamins and supplements' },
+      { code: 'PROVISIONS', name: 'Provisions' },
+      { code: 'DRINKS', name: 'Drinks' },
+      { code: 'SNACKS', name: 'Snacks' },
+      { code: 'PERSONAL_CARE', name: 'Personal care' },
+      { code: 'HOUSEHOLD', name: 'Household' },
+      { code: 'BABY', name: 'Baby care' },
+      { code: 'ACCESSORIES', name: 'Accessories' },
     ]),
     seedProducts: Object.freeze([
       { name: 'Aciguard Antacid Suspension', sku: 'PH-OTC-001', category: 'ALIMENTARY', cost: 900, price: 1600, reorder: 12, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: '04-4753' },
@@ -934,6 +941,9 @@ const PROFILES = Object.freeze({
       { name: 'Amlodipine Tablets', sku: 'PH-POM-002', category: 'CARDIOVASCULAR', cost: 500, price: 1100, reorder: 20, expiry: true, dispensing: 'POM', nafdacReg: 'A11-0275' },
       { name: 'Dolburg 50', sku: 'PH-CTL-001', category: 'CONTROLLED', cost: 1200, price: 2400, reorder: 4, expiry: true, dispensing: 'POM', controlled: true, nafdacReg: 'A4-9351' },
       { name: 'Alpent Injection', sku: 'PH-CTL-002', category: 'CONTROLLED', cost: 2000, price: 3800, reorder: 4, expiry: true, ladder: 'EACH_ONLY', dispensing: 'POM', controlled: true, nafdacReg: 'B4-3655' },
+      { name: 'Eva table water 75cl', sku: 'PH-SM-001', category: 'DRINKS', cost: 150, price: 300, reorder: 48, expiry: true, ladder: 'EACH_ONLY' },
+      { name: 'Mama Gold rice 5kg', sku: 'PH-SM-002', category: 'PROVISIONS', cost: 8500, price: 12000, reorder: 8, expiry: true, ladder: 'EACH_ONLY' },
+      { name: 'Dettol soap bar', sku: 'PH-SM-003', category: 'PERSONAL_CARE', cost: 250, price: 500, reorder: 24, ladder: 'EACH_ONLY' },
     ]),
   },
 

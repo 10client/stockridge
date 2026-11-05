@@ -348,6 +348,17 @@ async function migrate(db, { dir = MIGRATIONS_DIR, reset = false } = {}) {
       applied.set(id, checksum);
     }
     if (applied.has(id)) {
+      const squashed = require('../../domain/migration-squash').SQUASHED_INTO[id];
+      if (applied.get(id) && applied.get(id) !== checksum && squashed && squashed.every((part) => applied.has(part))) {
+        await db.run('UPDATE _migrations SET checksum = ? WHERE id = ?', [checksum, id]);
+        for (const part of squashed) {
+          await db.run('DELETE FROM _migrations WHERE id = ?', [part]);
+          applied.delete(part);
+        }
+        applied.set(id, checksum);
+        result.skipped.push(id);
+        continue;
+      }
       if (applied.get(id) && applied.get(id) !== checksum) {
         throw new Error(
           `Migration "${id}" has CHANGED since it was applied. Never edit an applied migration — add a new one. `

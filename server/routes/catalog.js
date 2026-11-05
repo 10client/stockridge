@@ -303,19 +303,33 @@ function greenbookLiteralsForCode(code) {
 }
 
 /**
- * Drug shelves for one pharmaceutical business. Missing codes only.
- * Supermarket aisles are retired on this business, not on any other.
- * The Greenbook table is not read here.
+ * One flat list for a pharmaceutical business. Drug shelves and the other
+ * aisles are both on it. A NAFDAC row stays pharmaceutical by its catalogue
+ * link, not by hiding the other aisles. The Greenbook table is not read here.
  */
 async function ensurePharmaShelves(db, businessId) {
   const id = String(businessId);
   const majors = await ensureMajors(db, id);
   const parent = majors && majors.byCode ? majors.byCode.PHARMACEUTICALS : null;
+  const otherParent = majors && majors.byCode ? majors.byCode.NON_PHARMACEUTICALS : null;
+  const marks = RETIRED_PHARMA_AISLES.map(() => '?').join(',');
+  await db.run(
+    `UPDATE product_categories SET is_deleted = 0, is_active = 1, updated_at = datetime('now')
+      WHERE business_id = ? AND is_deleted = 1 AND code IN (${marks})`,
+    [id, ...RETIRED_PHARMA_AISLES],
+  );
   const wanted = new Map();
   for (const shelf of Object.values(selling.NAFDAC_SHELVES)) wanted.set(shelf.code, shelf.name);
   wanted.set('ANALGESICS', 'Analgesics');
   wanted.set('CONTROLLED', 'Controlled medicines');
   wanted.set('INJECTIONS', 'Injections');
+  wanted.set('PROVISIONS', 'Provisions');
+  wanted.set('DRINKS', 'Drinks');
+  wanted.set('SNACKS', 'Snacks');
+  wanted.set('PERSONAL_CARE', 'Personal care');
+  wanted.set('HOUSEHOLD', 'Household');
+  wanted.set('BABY', 'Baby care');
+  wanted.set('ACCESSORIES', 'Accessories');
   const existing = await db.all(
     'SELECT id, code FROM product_categories WHERE business_id = ? AND is_deleted = 0',
     [id],
@@ -328,7 +342,7 @@ async function ensurePharmaShelves(db, businessId) {
       await db.run(
         `INSERT INTO product_categories (id, business_id, code, name, parent_id, sort_order, is_active, created_at, updated_at)
          VALUES (?,?,?,?,?, 0, 1, datetime('now'), datetime('now'))`,
-        [categoryId, id, code, name, parent],
+        [categoryId, id, code, name, RETIRED_PHARMA_AISLES.includes(code) ? otherParent : parent],
       );
       byCode.set(code, categoryId);
     } catch (err) {
@@ -339,27 +353,40 @@ async function ensurePharmaShelves(db, businessId) {
       if (again) byCode.set(code, again.id);
     }
   }
-  const marks = RETIRED_PHARMA_AISLES.map(() => '?').join(',');
-  await db.run(
-    `UPDATE product_categories SET is_deleted = 1, is_active = 0, updated_at = datetime('now')
-      WHERE business_id = ? AND is_deleted = 0 AND code IN (${marks})`,
+  const restored = await db.all(
+    `SELECT id, code FROM product_categories WHERE business_id = ? AND is_deleted = 0 AND code IN (${marks})`,
     [id, ...RETIRED_PHARMA_AISLES],
   );
-  await db.run(
-    `UPDATE products SET category_id = NULL, updated_at = datetime('now')
-      WHERE business_id = ? AND is_deleted = 0 AND category_id IN (
-        SELECT id FROM product_categories
-         WHERE business_id = ? AND is_deleted = 1 AND code IN (${marks})
-      )`,
-    [id, id, ...RETIRED_PHARMA_AISLES],
-  );
+  const restoredByCode = new Map(restored.map((row) => [String(row.code), row.id]));
+  const seedBack = [
+    ['PH-SM-001', 'DRINKS'],
+    ['PH-SM-002', 'PROVISIONS'],
+    ['PH-SM-003', 'PERSONAL_CARE'],
+  ];
+  for (const [sku, code] of seedBack) {
+    const categoryId = restoredByCode.get(code);
+    if (!categoryId) continue;
+    await db.run(
+      `UPDATE products SET category_id = ?, updated_at = datetime('now')
+        WHERE business_id = ? AND is_deleted = 0 AND sku = ? AND category_id IS NULL`,
+      [categoryId, id, sku],
+    );
+  }
   if (parent) {
-    const codes = [...wanted.keys()];
+    const drugCodes = [...wanted.keys()].filter((code) => !RETIRED_PHARMA_AISLES.includes(code));
     await db.run(
       `UPDATE product_categories SET parent_id = ?, updated_at = datetime('now')
         WHERE business_id = ? AND is_deleted = 0 AND parent_id IS NULL
-          AND code IN (${codes.map(() => '?').join(',')})`,
-      [parent, id, ...codes],
+          AND code IN (${drugCodes.map(() => '?').join(',')})`,
+      [parent, id, ...drugCodes],
+    );
+  }
+  if (otherParent) {
+    await db.run(
+      `UPDATE product_categories SET parent_id = ?, updated_at = datetime('now')
+        WHERE business_id = ? AND is_deleted = 0 AND code IN (${marks})
+          AND (parent_id IS NULL OR parent_id = ?)`,
+      [otherParent, id, ...RETIRED_PHARMA_AISLES, parent],
     );
   }
   return byCode;
@@ -1292,7 +1319,7 @@ function mount(app, base = '/api') {
       );
       unfiled = { product_count: Number(unfiledCount) || 0, products: unfiledRows };
     }
-    const data = rows.filter((row) => !isMajorCode(row.code) && !(nafdacBusiness && RETIRED_PHARMA_AISLES.includes(String(row.code || '').toUpperCase()))).map((row) => {
+    const data = rows.filter((row) => !isMajorCode(row.code)).map((row) => {
       const parent = rows.find((item) => String(item.id) === String(row.parent_id));
       const side = selling.sellingGroup({
         code: row.code,
@@ -1390,7 +1417,10 @@ function mount(app, base = '/api') {
     if (!canOrganizeCatalogue(user)) throw new HttpError('Only the owner or a general manager can add a category. A branch manager sells from the catalogue; they do not reorganise it.', { status: 403, code: 'ROLE_REQUIRED' });
     const body = await ctx.req.json();
     const branch = await resolveBranch(db, ctx, { required: false });
-    const business = await resolveBusiness(db, ctx, branch || undefined);
+    // The owner names the business this category belongs to. A session branch
+    // must not override that name, or the category lands on the wrong shop.
+    const namedBusiness = body.business_id ? String(body.business_id) : '';
+    const business = await resolveBusiness(db, ctx, namedBusiness ? null : (branch || undefined));
     const name = requireField(body, 'name', 'Category name');
     const side = normalizeSide(body.selling_group || body.sellingGroup);
     if (!side) {

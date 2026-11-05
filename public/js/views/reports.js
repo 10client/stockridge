@@ -45,6 +45,7 @@
       days: ctx.query.days || 90,
       sort: ctx.query.sort || 'revenue',
       branchScope: ctx.query.branch_scope === '1',
+      category: ctx.query.category_id || '',
     };
 
     const wrap = ui.h('div', { class: 'stack' });
@@ -98,6 +99,10 @@
       },
     }, state.branchScope ? SR.state.activeBranchName() : 'All branches');
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Scope'), scopeToggle));
+    const categorySel = ui.h('select', { onchange: (e) => { state.category = e.target.value; load(); } });
+    categorySel.appendChild(ui.h('option', { value: '' }, 'All categories'));
+    toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), categorySel));
+    fillReportCategories(categorySel);
     wrap.appendChild(toolbar);
 
     const host = ui.h('div', {});
@@ -105,10 +110,27 @@
 
     let lastPayload = null;
 
+    async function fillReportCategories(select) {
+      let rows = [];
+      try {
+        const data = await SR.api.get('/api/categories', { query: SR.state.query() });
+        rows = data.data || [];
+      } catch (err) {
+        rows = [];
+      }
+      rows = rows.filter((row) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()))
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+      const current = state.category;
+      select.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
+      for (const row of rows) select.appendChild(ui.h('option', { value: String(row.id) }, row.name));
+      if ([...select.options].some((opt) => opt.value === current)) select.value = current;
+    }
+
     function scoped(extra) {
       return SR.state.query(Object.assign({
         from: state.from, to: state.to,
         branch_scope: state.branchScope ? SR.state.activeBranchId : undefined,
+        category_id: state.category || undefined,
       }, extra || {}));
     }
 

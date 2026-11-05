@@ -148,6 +148,14 @@ function mount(app, base = '/api') {
     if (nbf.sql) { where.push(nbf.sql); params.push(...nbf.params); }
     const sourceType = ctx.req.queryParam('source_type');
     if (sourceType) { where.push('e.source_type = ?'); params.push(String(sourceType).toUpperCase()); }
+    const categoryId = String(ctx.req.queryParam('category_id') || '').trim();
+    if (categoryId) {
+      where.push(`EXISTS (
+        SELECT 1 FROM gl_journal_lines l
+        WHERE l.journal_entry_id = e.id AND l.is_deleted = 0 AND l.category_id = ?
+      )`);
+      params.push(categoryId);
+    }
     const search = searchTerm(ctx);
     if (search) { where.push('(e.entry_no LIKE ? OR e.description LIKE ?)'); params.push(`%${search}%`, `%${search}%`); }
     const whereSql = where.join(' AND ');
@@ -338,9 +346,11 @@ function mount(app, base = '/api') {
       businessId: String(business.id), startDate: from, endDate: to,
       branchId: branch && useBranch ? String(branch.id) : null,
     });
+    const categoryId = String(ctx.req.queryParam('category_id') || '').trim();
     const byCategory = await glService.revenueByCategory(db, {
       businessId: String(business.id), startDate: from, endDate: to,
       branchId: branch && useBranch ? String(branch.id) : null,
+      categoryId: categoryId || null,
     });
     const bySellingGroup = await glService.booksBySellingGroup(db, {
       businessId: String(business.id), startDate: from, endDate: to,

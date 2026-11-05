@@ -1052,9 +1052,10 @@ async function balanceSheet(db, { businessId = null, branchId = null, asAt = nul
 }
 
 /** Revenue by category, from the ledger's category axis. */
-async function revenueByCategory(db, { businessId = null, branchId = null, startDate, endDate } = {}) {
+async function revenueByCategory(db, { businessId = null, branchId = null, startDate, endDate, categoryId = null } = {}) {
   const where = ["l.category_id IS NOT NULL", "e.is_deleted = 0", "l.is_deleted = 0"];
   const params = [];
+  if (categoryId) { where.push('l.category_id = ?'); params.push(String(categoryId)); }
   if (businessId) { where.push('e.business_id = ?'); params.push(String(businessId)); }
   if (branchId) { where.push('l.branch_id = ?'); params.push(String(branchId)); }
   if (startDate) { where.push('e.entry_date >= ?'); params.push(String(startDate)); }

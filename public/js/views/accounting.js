@@ -45,6 +45,7 @@
       branchScope: ctx.query.branch_scope === '1',
       q: '',
       sourceType: '',
+      category: ctx.query.category_id || '',
     };
 
     const wrap = ui.h('div', { class: 'stack' });
@@ -76,6 +77,10 @@
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'From'), fromInput));
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'To'), toInput));
     toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Scope'), scopeToggle));
+    const categorySel = ui.h('select', { onchange: (e) => { state.category = e.target.value; state.page = 0; load(); } });
+    categorySel.appendChild(ui.h('option', { value: '' }, 'All categories'));
+    toolbar.firstElementChild.appendChild(ui.h('div', {}, ui.h('label', { class: 'ctl' }, 'Category'), categorySel));
+    fillBookCategories(categorySel);
     for (const [d, label] of [[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last quarter'], [365, 'Last year']]) {
       toolbar.firstElementChild.appendChild(ui.h('button', {
         class: 'btn btn-sm',
@@ -106,10 +111,27 @@
     const host = ui.h('div', {});
     wrap.appendChild(host);
 
+    async function fillBookCategories(select) {
+      let rows = [];
+      try {
+        const data = await SR.api.get('/api/categories', { query: SR.state.query() });
+        rows = data.data || [];
+      } catch (err) {
+        rows = [];
+      }
+      rows = rows.filter((row) => !['PHARMACEUTICALS', 'NON_PHARMACEUTICALS'].includes(String(row.code || '').toUpperCase()))
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' }));
+      const current = state.category;
+      select.replaceChildren(ui.h('option', { value: '' }, 'All categories'));
+      for (const row of rows) select.appendChild(ui.h('option', { value: String(row.id) }, row.name));
+      if ([...select.options].some((opt) => opt.value === current)) select.value = current;
+    }
+
     function scopeQuery(extra) {
       return SR.state.query(Object.assign({
         from: state.from, to: state.to,
         branch_scope: state.branchScope ? '1' : undefined,
+        category_id: state.category || undefined,
       }, extra || {}));
     }
 

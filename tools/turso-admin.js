@@ -131,6 +131,17 @@ async function applyTursoMigrations(db = tursoDb()) {
       applied.set(id, sum);
     }
     if (applied.has(id)) {
+      const squashed = require('../domain/migration-squash').SQUASHED_INTO[id];
+      if (applied.get(id) && applied.get(id) !== sum && squashed && squashed.every((part) => applied.has(part))) {
+        await db.run('UPDATE _migrations SET checksum = ? WHERE id = ?', [sum, id]);
+        for (const part of squashed) {
+          await db.run('DELETE FROM _migrations WHERE id = ?', [part]);
+          applied.delete(part);
+        }
+        applied.set(id, sum);
+        result.skipped.push(id);
+        continue;
+      }
       if (applied.get(id) && applied.get(id) !== sum) {
         throw new Error(`Migration "${id}" has CHANGED since it was applied. Never edit an applied migration — add a new one.`);
       }

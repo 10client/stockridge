@@ -86,6 +86,7 @@ function mount(app, base = '/api') {
     const branchBelongsToBusiness = branch && (!biz || String(branch.business_id) === biz);
     const useBranch = branchBelongsToBusiness && ctx.req.queryParam('branch_scope') !== 'all' ? String(branch.id) : null;
 
+    const categoryId = String(ctx.req.queryParam('category_id') || '').trim();
     const where = [COUNTS, 'date(s.sold_at) BETWEEN ? AND ?'];
     const params = [from, to];
     if (biz) { where.push('s.business_id = ?'); params.push(biz); }
@@ -94,6 +95,10 @@ function mount(app, base = '/api') {
       const ids = [...scope.branchIds];
       where.push(`s.branch_id IN (${ids.map(() => '?').join(',')})`);
       params.push(...ids);
+    }
+    if (categoryId) {
+      where.push('si.category_id = ?');
+      params.push(categoryId);
     }
     const whereSql = where.join(' AND ');
 
@@ -113,7 +118,7 @@ function mount(app, base = '/api') {
     // Category and product reports must aggregate over LINES, not headers: one
     // sale can contain three categories, and grouping the header by a single
     // category would attribute the whole basket to whichever line came first.
-    const lineLevel = ['CATEGORY', 'PRODUCT'].includes(groupBy);
+    const lineLevel = Boolean(categoryId) || ['CATEGORY', 'PRODUCT'].includes(groupBy);
     const selectValue = lineLevel ? 'si.line_total' : 's.total';
     const vatValue = lineLevel ? 'si.vat_amount' : 's.vat_amount';
     const costValue = lineLevel
@@ -126,9 +131,9 @@ function mount(app, base = '/api') {
              COALESCE(SUM(${selectValue}),0) AS gross_revenue,
              COALESCE(SUM(${vatValue}),0) AS vat,
              COALESCE(SUM(${costValue}),0) AS cogs,
-             COALESCE(SUM(s.discount_amount + COALESCE(s.order_discount_amount,0)),0) AS discounts,
-             COALESCE(SUM(s.delivery_fee),0) AS delivery_fees,
-             COALESCE(SUM(s.balance_due),0) AS outstanding
+             COALESCE(SUM(${lineLevel ? 'si.discount_amount' : '(s.discount_amount + COALESCE(s.order_discount_amount,0))'}),0) AS discounts,
+             COALESCE(SUM(${lineLevel ? '0' : 's.delivery_fee'}),0) AS delivery_fees,
+             COALESCE(SUM(${lineLevel ? '0' : 's.balance_due'}),0) AS outstanding
       ${lineLevel ? 'FROM sales s JOIN sale_items si ON si.sale_id = s.id AND si.is_deleted = 0' : 'FROM sales s'}
       ${lineLevel && groupBy === 'CATEGORY' ? 'LEFT JOIN product_categories pc ON pc.id = si.category_id' : ''}
       ${lineLevel && groupBy === 'PRODUCT' ? 'LEFT JOIN products pp ON pp.id = si.product_id' : ''}
