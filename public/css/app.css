@@ -440,6 +440,7 @@ body:has(#subscription-bar:not([hidden])) .sidenav-foot { margin-bottom: 52px; }
 .page-head h1 { margin: 0; }
 .page-head .sub { color: var(--ink-500); font-size: .86rem; margin: 2px 0 0; }
 .page-head .actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-1); margin-bottom: 16px; }
 .card-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 13px 15px; border-bottom: 1px solid var(--line); }
@@ -844,7 +845,7 @@ legend { font-size: .78rem; font-weight: 700; text-transform: uppercase; letter-
 .cart-line .qty button { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line-strong); background: var(--surface); cursor: pointer; font-weight: 700; }
 .cart-line .qty input { width: 62px; text-align: center; min-height: 30px; padding: 3px 5px; font-family: var(--mono); }
 .totals { display: flex; flex-direction: column; gap: 6px; }
-.totals-row { display: flex; justify-content: space-between; font-size: .88rem; }
+.totals-row { display: flex; justify-content: space-between; gap: 8px; font-size: .88rem; }
 .totals-row.grand { font-size: 1.32rem; font-weight: 750; padding-bottom: 8px; border-bottom: 2px solid var(--line-strong); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
 .pay-btn { display: grid; gap: 2px; padding: 11px 6px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; font-size: .8rem; font-weight: 650; text-align: center; }
 .pay-btn.is-active { border-color: var(--green-700); background: var(--green-50); color: var(--green-800); }

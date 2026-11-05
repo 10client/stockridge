@@ -873,15 +873,17 @@ const PROFILES = Object.freeze({
   // -------------------------------------------------------------------
   // PHARMACEUTICAL — a dispensary. Prescription and controlled rules
   // apply only to products this profile marks. The Greenbook is a
-  // reference catalogue the shop copies from. It is not the shared
-  // Nigerian-market list, and it is not priced.
-  // Starter prices below are placeholders the shop replaces.
+  // reference catalogue listed under these shelves. It is not copied
+  // into every shop product, it is not the shared market list, and it
+  // is not priced. Starter prices below are placeholders the shop replaces.
+  // A shop can still add a category and assign it. Supermarket aisles
+  // are not seeded here.
   // -------------------------------------------------------------------
   PHARMACEUTICAL: {
     code: 'PHARMACEUTICAL',
     tradeModes: Object.freeze(['RETAIL', 'WHOLESALE']),
     label: 'Pharmaceutical',
-    blurb: 'A dispensary that also sells like a small supermarket. Drugs are recorded apart from provisions, drinks and toiletries. OTC sells over the counter. POM needs a prescriber. A controlled medicine needs the buyer’s name and phone, written into a register that a void cannot erase.',
+    blurb: 'A dispensary. The NAFDAC Greenbook is listed under the pharmaceutical categories. Opening a row adds that one product to this shop. OTC sells over the counter. POM needs a prescriber. A controlled medicine needs the buyer’s name and phone, written into a register that a void cannot erase. A category can still be added and assigned.',
     baseUnit: 'tablet',
     defaultLadder: LADDERS.PHARMA,
     features: Object.freeze({
@@ -900,20 +902,26 @@ const PROFILES = Object.freeze({
     categories: Object.freeze([
       { code: 'ALIMENTARY', name: 'Alimentary' },
       { code: 'ANALGESICS', name: 'Analgesics' },
+      { code: 'ANTI_INFECTIVES', name: 'Anti-infectives' },
+      { code: 'ANTINEOPLASTIC', name: 'Antineoplastic' },
       { code: 'ANTIPARASITIC', name: 'Antiparasitic' },
+      { code: 'BLOOD', name: 'Blood and blood forming' },
       { code: 'CARDIOVASCULAR', name: 'Cardiovascular' },
       { code: 'CONTROLLED', name: 'Controlled medicines' },
       { code: 'DERMATOLOGY', name: 'Dermatology' },
+      { code: 'GENITO_URINARY', name: 'Genito-urinary' },
       { code: 'INJECTIONS', name: 'Injections' },
+      { code: 'MEDICAL_DEVICE', name: 'Medical devices' },
+      { code: 'MUSCULOSKELETAL', name: 'Musculoskeletal' },
+      { code: 'NERVOUS_SYSTEM', name: 'Nervous system' },
+      { code: 'PHARMA_OTHER', name: 'Other medicines' },
+      { code: 'PHARMA_VARIOUS', name: 'Various' },
       { code: 'RESPIRATORY', name: 'Respiratory' },
+      { code: 'SENSORY', name: 'Sensory organs' },
+      { code: 'SYSTEMIC_HORMONES', name: 'Systemic hormones' },
+      { code: 'VACCINES', name: 'Vaccines and biologics' },
+      { code: 'VETERINARY', name: 'Veterinary' },
       { code: 'VITAMINS', name: 'Vitamins and supplements' },
-      { code: 'PROVISIONS', name: 'Provisions' },
-      { code: 'DRINKS', name: 'Drinks' },
-      { code: 'SNACKS', name: 'Snacks' },
-      { code: 'PERSONAL_CARE', name: 'Personal care' },
-      { code: 'HOUSEHOLD', name: 'Household' },
-      { code: 'BABY', name: 'Baby care' },
-      { code: 'ACCESSORIES', name: 'Accessories' },
     ]),
     seedProducts: Object.freeze([
       { name: 'Aciguard Antacid Suspension', sku: 'PH-OTC-001', category: 'ALIMENTARY', cost: 900, price: 1600, reorder: 12, expiry: true, ladder: 'EACH_ONLY', dispensing: 'OTC', nafdacReg: '04-4753' },
@@ -926,9 +934,6 @@ const PROFILES = Object.freeze({
       { name: 'Amlodipine Tablets', sku: 'PH-POM-002', category: 'CARDIOVASCULAR', cost: 500, price: 1100, reorder: 20, expiry: true, dispensing: 'POM', nafdacReg: 'A11-0275' },
       { name: 'Dolburg 50', sku: 'PH-CTL-001', category: 'CONTROLLED', cost: 1200, price: 2400, reorder: 4, expiry: true, dispensing: 'POM', controlled: true, nafdacReg: 'A4-9351' },
       { name: 'Alpent Injection', sku: 'PH-CTL-002', category: 'CONTROLLED', cost: 2000, price: 3800, reorder: 4, expiry: true, ladder: 'EACH_ONLY', dispensing: 'POM', controlled: true, nafdacReg: 'B4-3655' },
-      { name: 'Eva table water 75cl', sku: 'PH-SM-001', category: 'DRINKS', cost: 150, price: 300, reorder: 48, expiry: true, ladder: 'EACH_ONLY' },
-      { name: 'Mama Gold rice 5kg', sku: 'PH-SM-002', category: 'PROVISIONS', cost: 8500, price: 12000, reorder: 8, expiry: true, ladder: 'EACH_ONLY' },
-      { name: 'Dettol soap bar', sku: 'PH-SM-003', category: 'PERSONAL_CARE', cost: 250, price: 500, reorder: 24, ladder: 'EACH_ONLY' },
     ]),
   },
 

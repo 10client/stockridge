@@ -76,7 +76,7 @@
       ui.h('div', {},
         ui.h('h1', {}, 'Catalogue'),
         ui.h('p', { class: 'sub' }, SR.state.moduleOn('nafdac')
-          ? 'Every NAFDAC registered product is in this catalogue, the same as any other product. Open it. It is not priced until you set a price, and it is not on the shared market list. Search a name or a NAFDAC number to raise a purchase order.'
+          ? 'The NAFDAC Greenbook is listed under the pharmaceutical categories. Open a row to add that one product to this shop. It is not priced until you set a price, and it is not saved on the till until it has stock. Search from the start of a name, an ingredient, or a NAFDAC number.'
           : 'The catalogue is in alphabetical order, including the Nigerian-market goods already on this list. A new product is filed where its name belongs. Serial stays off until you turn it on for that product.')),
       ui.h('div', { class: 'actions' },
         ui.h('button', { class: 'btn btn-sm btn-primary', onClick: () => openCreate() }, 'Add a product'),
@@ -98,7 +98,7 @@
     const toolbar = ui.h('div', { class: 'card' }, ui.h('div', { class: 'card-body row' }));
     const qInput = ui.h('input', {
       type: 'search',
-      placeholder: SR.state.moduleOn('nafdac') ? 'Name, SKU, ingredient or NAFDAC number…' : 'Name, SKU, brand or model…',
+      placeholder: SR.state.moduleOn('nafdac') ? 'Start of a name, ingredient or NAFDAC number…' : 'Name, SKU, brand or model…',
       style: { minWidth: '210px' },
     });
     qInput.value = state.q;
@@ -224,7 +224,8 @@
         ui.h('span', {},
           ui.h('button', { class: 'btn btn-sm btn-ghost', type: 'button', onClick: () => openProduct(product) }, product.name),
           product.sku ? ui.h('span', { class: 'hint' }, ` · ${product.sku}`) : null),
-        canOrganize() ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => moveProduct(product) }, 'Move') : null);
+        canOrganize() && product.id && !String(product.id).startsWith('nafdac:') && !Number(product.from_greenbook)
+          ? ui.h('button', { class: 'btn btn-sm', type: 'button', onClick: () => moveProduct(product) }, 'Move') : null);
     }
     function shelfCard(category, products, count) {
       const shown = products || [];
@@ -420,7 +421,8 @@
             return ui.h('span', { style: m < floor ? { color: 'var(--red-700)', fontWeight: '700' } : (m < floor + 5 ? { color: 'var(--amber-700)' } : {}) }, U.pct(m));
           } },
           { key: 'x', label: '', render: (p) => ui.h('div', { class: 'actions' },
-            canOrganize() ? ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); moveProduct(p); } }, 'Move') : null,
+            canOrganize() && p.id && !String(p.id).startsWith('nafdac:') && !Number(p.from_greenbook)
+              ? ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); moveProduct(p); } }, 'Move') : null,
             ui.h('button', { class: 'btn btn-sm', onClick: (ev) => { ev.stopPropagation(); openProduct(p); } }, 'Open')) },
         ],
         rows,
@@ -480,6 +482,7 @@
           for_order: true,
           selling_price: 0,
           cost_price: 0,
+          category_id: row.category_id || undefined,
           business_id: SR.state.activeBusinessId,
         });
         if (created && created.id) SR.app.navigate(`/products/${created.id}`);

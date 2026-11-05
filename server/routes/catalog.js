@@ -291,6 +291,219 @@ async function assertSellable(db, productId, branchId, name) {
   return available;
 }
 
+const RETIRED_PHARMA_AISLES = Object.freeze([
+  'PROVISIONS', 'DRINKS', 'SNACKS', 'PERSONAL_CARE', 'HOUSEHOLD', 'BABY', 'ACCESSORIES',
+]);
+
+function greenbookLiteralsForCode(code) {
+  const key = String(code || '').trim().toUpperCase();
+  return Object.values(selling.NAFDAC_SHELVES)
+    .filter((shelf) => shelf.code === key)
+    .map((shelf) => shelf.literal || shelf.name);
+}
+
+/**
+ * Drug shelves for one pharmaceutical business. Missing codes only.
+ * Supermarket aisles are retired on this business, not on any other.
+ * The Greenbook table is not read here.
+ */
+async function ensurePharmaShelves(db, businessId) {
+  const id = String(businessId);
+  const majors = await ensureMajors(db, id);
+  const parent = majors && majors.byCode ? majors.byCode.PHARMACEUTICALS : null;
+  const wanted = new Map();
+  for (const shelf of Object.values(selling.NAFDAC_SHELVES)) wanted.set(shelf.code, shelf.name);
+  wanted.set('ANALGESICS', 'Analgesics');
+  wanted.set('CONTROLLED', 'Controlled medicines');
+  wanted.set('INJECTIONS', 'Injections');
+  const existing = await db.all(
+    'SELECT id, code FROM product_categories WHERE business_id = ? AND is_deleted = 0',
+    [id],
+  );
+  const byCode = new Map(existing.map((row) => [String(row.code), row.id]));
+  for (const [code, name] of wanted) {
+    if (byCode.has(code)) continue;
+    const categoryId = newId();
+    try {
+      await db.run(
+        `INSERT INTO product_categories (id, business_id, code, name, parent_id, sort_order, is_active, created_at, updated_at)
+         VALUES (?,?,?,?,?, 0, 1, datetime('now'), datetime('now'))`,
+        [categoryId, id, code, name, parent],
+      );
+      byCode.set(code, categoryId);
+    } catch (err) {
+      const again = await db.first(
+        'SELECT id FROM product_categories WHERE business_id = ? AND code = ? AND is_deleted = 0',
+        [id, code],
+      );
+      if (again) byCode.set(code, again.id);
+    }
+  }
+  const marks = RETIRED_PHARMA_AISLES.map(() => '?').join(',');
+  await db.run(
+    `UPDATE product_categories SET is_deleted = 1, is_active = 0, updated_at = datetime('now')
+      WHERE business_id = ? AND is_deleted = 0 AND code IN (${marks})`,
+    [id, ...RETIRED_PHARMA_AISLES],
+  );
+  await db.run(
+    `UPDATE products SET category_id = NULL, updated_at = datetime('now')
+      WHERE business_id = ? AND is_deleted = 0 AND category_id IN (
+        SELECT id FROM product_categories
+         WHERE business_id = ? AND is_deleted = 1 AND code IN (${marks})
+      )`,
+    [id, id, ...RETIRED_PHARMA_AISLES],
+  );
+  if (parent) {
+    const codes = [...wanted.keys()];
+    await db.run(
+      `UPDATE product_categories SET parent_id = ?, updated_at = datetime('now')
+        WHERE business_id = ? AND is_deleted = 0 AND parent_id IS NULL
+          AND code IN (${codes.map(() => '?').join(',')})`,
+      [parent, id, ...codes],
+    );
+  }
+  return byCode;
+}
+
+function greenbookRow(row, businessId, cat, copy) {
+  return {
+    id: copy ? copy.id : `nafdac:${row.id}`,
+    business_id: String(businessId),
+    category_id: copy && copy.category_id ? copy.category_id : (cat ? cat.id : null),
+    category_name: cat ? cat.name : (row.shelfName || null),
+    category_code: row.shelfCode || (cat ? cat.code : null),
+    sku: copy && copy.sku ? copy.sku : row.nafdac_reg_no,
+    name: row.product_name,
+    brand: row.manufacturer || null,
+    model_no: row.strength || null,
+    base_unit_name: row.base_unit || 'unit',
+    cost_price: copy ? Number(copy.cost_price) || 0 : 0,
+    selling_price: copy ? Number(copy.selling_price) || 0 : 0,
+    reorder_level: 0,
+    dispensing_class: row.dispensing_type || 'OTC',
+    is_controlled: Number(row.is_controlled) || 0,
+    nafdac_catalog_id: row.id,
+    registration_no: row.nafdac_reg_no,
+    from_greenbook: copy ? 0 : 1,
+    has_expiry: 1,
+    is_active: 1,
+    offers_sale: 1,
+    on_hand: 0,
+  };
+}
+
+/**
+ * One page of the Greenbook, shaped as catalogue rows. Nothing is inserted.
+ * A category that is not a Greenbook shelf returns null so the caller can
+ * list the shop products already filed there.
+ */
+async function listGreenbook(db, businessId, { limit, offset, search, categoryId }) {
+  await ensurePharmaShelves(db, businessId);
+  const categories = await db.all(
+    'SELECT id, code, name FROM product_categories WHERE business_id = ? AND is_deleted = 0',
+    [String(businessId)],
+  );
+  const byCode = new Map(categories.map((row) => [String(row.code), row]));
+  let literals = null;
+  if (categoryId) {
+    const chosen = categories.find((row) => String(row.id) === String(categoryId));
+    if (!chosen) return listResponse([], { limit, offset }, 0);
+    literals = greenbookLiteralsForCode(chosen.code);
+    if (!literals.length) return null;
+  }
+  const where = [];
+  const params = [];
+  if (literals) {
+    where.push(`n.category IN (${literals.map(() => '?').join(',')})`);
+    params.push(...literals);
+  }
+  if (search) {
+    const prefix = `${search}%`;
+    where.push('(n.product_name LIKE ? COLLATE NOCASE OR n.nafdac_reg_no LIKE ? COLLATE NOCASE OR n.ingredient_key LIKE ? COLLATE NOCASE)');
+    params.push(prefix, prefix, prefix);
+  }
+  const sqlWhere = where.length ? where.join(' AND ') : '1 = 1';
+  const rows = await db.all(
+    `SELECT n.id, n.product_name, n.nafdac_reg_no, n.manufacturer, n.strength, n.category,
+            n.base_unit, n.dispensing_type, n.is_controlled
+       FROM nafdac_catalog n
+      WHERE ${sqlWhere}
+      ORDER BY n.product_name COLLATE NOCASE, n.id
+      LIMIT ? OFFSET ?`,
+    [...params, limit, offset],
+  );
+  const total = await db.scalar(`SELECT COUNT(*) FROM nafdac_catalog n WHERE ${sqlWhere}`, params);
+  const ids = rows.map((row) => row.id);
+  const adopted = new Map();
+  if (ids.length) {
+    const copies = await db.all(
+      `SELECT id, nafdac_catalog_id, sku, selling_price, cost_price, category_id
+         FROM products
+        WHERE business_id = ? AND is_deleted = 0
+          AND nafdac_catalog_id IN (${ids.map(() => '?').join(',')})`,
+      [String(businessId), ...ids],
+    );
+    for (const copy of copies) adopted.set(Number(copy.nafdac_catalog_id), copy);
+  }
+  const shaped = rows.map((row) => {
+    const shelf = selling.shelfForNafdacCategory(row.category);
+    const cat = byCode.get(shelf.code);
+    const copy = adopted.get(Number(row.id));
+    return greenbookRow({ ...row, shelfName: shelf.name, shelfCode: shelf.code }, businessId, cat, copy);
+  });
+  return listResponse(shaped.map((row) => ({
+    ...row,
+    on_hand: 0,
+    margin_pct: Number(row.selling_price) > 0
+      ? round2(((Number(row.selling_price) - Number(row.cost_price)) / Number(row.selling_price)) * 100)
+      : null,
+  })), { limit, offset }, Number(total) || 0);
+}
+
+async function attachGreenbookShelves(db, businessId, dataRows) {
+  const grouped = await db.all('SELECT category, COUNT(*) AS n FROM nafdac_catalog GROUP BY category');
+  const byCode = new Map();
+  const literalsByCode = new Map();
+  for (const row of grouped) {
+    const shelf = selling.shelfForNafdacCategory(row.category);
+    byCode.set(shelf.code, (byCode.get(shelf.code) || 0) + (Number(row.n) || 0));
+    const list = literalsByCode.get(shelf.code) || [];
+    if (row.category && !list.includes(row.category)) list.push(row.category);
+    literalsByCode.set(shelf.code, list);
+  }
+  for (const row of dataRows) {
+    const extra = byCode.get(String(row.code)) || 0;
+    if (!extra) continue;
+    const literals = literalsByCode.get(String(row.code)) || greenbookLiteralsForCode(row.code);
+    let listed = [];
+    if (literals.length) {
+      listed = await db.all(
+        `SELECT id, product_name, nafdac_reg_no, manufacturer, strength, category, base_unit, dispensing_type, is_controlled
+           FROM nafdac_catalog
+          WHERE category IN (${literals.map(() => '?').join(',')})
+          ORDER BY product_name COLLATE NOCASE, id
+          LIMIT 8`,
+        literals,
+      );
+    }
+    row.product_count = extra;
+    row.nafdac_count = extra;
+    row.products = listed.map((item) => {
+      const shelf = selling.shelfForNafdacCategory(item.category);
+      return {
+        id: `nafdac:${item.id}`,
+        name: item.product_name,
+        sku: item.nafdac_reg_no,
+        brand: item.manufacturer,
+        nafdac_catalog_id: item.id,
+        from_greenbook: 1,
+        category_id: row.id,
+        category_code: shelf.code,
+      };
+    });
+  }
+}
+
 function mount(app, base = '/api') {
   // -------------------------------------------------------------------
   // PRODUCTS
@@ -318,6 +531,23 @@ function mount(app, base = '/api') {
     // catalogue has thousands of rows".
     const ownedOnly = ctx.req.queryParam('owned') === '1';
     const branch = (lowStock || forSale) ? await resolveBranch(db, ctx) : null;
+    // The catalogue screen asks for the Greenbook. That list is a page of
+    // nafdac_catalog, not a copy into products. The till passes for_sale and
+    // must still see only received stock.
+    const wantCatalogue = String(ctx.req.queryParam('nafdac') || '') === '1' && businessId && !forSale && !lowStock && !ownedOnly;
+    if (wantCatalogue) {
+      const focused = await db.first(
+        'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
+        [String(businessId)],
+      );
+      if (focused && modulesOfBusiness(focused).nafdac) {
+        const listed = await listGreenbook(db, String(businessId), { limit, offset, search, categoryId });
+        if (listed) {
+          ctx.json(listed);
+          return;
+        }
+      }
+    }
 
     const where = ['p.is_deleted = 0'];
     if (ownedOnly) where.push('p.business_id IS NOT NULL');
@@ -988,7 +1218,16 @@ function mount(app, base = '/api') {
     const db = ctx.env.DB || ctx.env.db;
     const scope = ctx.get('scope');
     const businessId = ctx.req.queryParam('business_id');
-    if (businessId) await ensureMajors(db, businessId);
+    let nafdacBusiness = false;
+    if (businessId) {
+      await ensureMajors(db, businessId);
+      const focused = await db.first(
+        'SELECT profile_code, profile_overrides_json FROM businesses WHERE id = ? AND is_deleted = 0',
+        [String(businessId)],
+      );
+      nafdacBusiness = Boolean(focused && modulesOfBusiness(focused).nafdac);
+      if (nafdacBusiness) await ensurePharmaShelves(db, String(businessId));
+    }
     const where = ['c.is_deleted = 0']; const params = [];
     if (businessId) { where.push('(c.business_id = ? OR c.business_id IS NULL)'); params.push(String(businessId)); }
     else if (scope.businessIds) { where.push('(c.business_id IS NULL OR c.business_id IN (' + [...scope.businessIds].map(() => '?').join(',') + '))'); params.push(...scope.businessIds); }
@@ -1053,25 +1292,27 @@ function mount(app, base = '/api') {
       );
       unfiled = { product_count: Number(unfiledCount) || 0, products: unfiledRows };
     }
+    const data = rows.filter((row) => !isMajorCode(row.code) && !(nafdacBusiness && RETIRED_PHARMA_AISLES.includes(String(row.code || '').toUpperCase()))).map((row) => {
+      const parent = rows.find((item) => String(item.id) === String(row.parent_id));
+      const side = selling.sellingGroup({
+        code: row.code,
+        parent_code: parent && parent.code,
+      }).code;
+      return {
+        ...row,
+        product_count: Number(row.product_count) || 0,
+        selling_group: side,
+        is_major: false,
+        products: previews.get(String(row.id)) || [],
+      };
+    });
+    if (nafdacBusiness && businessId) await attachGreenbookShelves(db, String(businessId), data);
     ctx.json({
       ok: true,
       majors: rows.filter((row) => isMajorCode(row.code) && String(row.business_id || '') === String(businessId || '')).map((row) => ({
         id: row.id, code: row.code, name: row.name, business_id: row.business_id,
       })),
-      data: rows.filter((row) => !isMajorCode(row.code)).map((row) => {
-        const parent = rows.find((item) => String(item.id) === String(row.parent_id));
-        const side = selling.sellingGroup({
-          code: row.code,
-          parent_code: parent && parent.code,
-        }).code;
-        return {
-          ...row,
-          product_count: Number(row.product_count) || 0,
-          selling_group: side,
-          is_major: false,
-          products: previews.get(String(row.id)) || [],
-        };
-      }),
+      data,
       unfiled,
     });
   });

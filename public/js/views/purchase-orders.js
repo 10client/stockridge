@@ -718,7 +718,7 @@
       wrapEl.appendChild(linesCard);
       const unitRule = 'The unit comes from the catalogue. If the product already has one, this order uses it and it cannot be changed here. If it has none, choose it on the line — a typed code the catalogue does not know is refused. Quantity and cost are in the unit shown. Stock is stored in the base unit, and the line says what that quantity becomes.';
       wrapEl.appendChild(ui.h('div', { class: 'hint' }, SR.state.moduleOn('nafdac')
-        ? `Every NAFDAC registration is already in this shop’s catalogue, unpriced until you set a price, and it is not on the shared market list. A typed name is not ordered until you pick it. ${unitRule}`
+        ? `The NAFDAC Greenbook is listed here. Picking a row adds that one product to this shop. It is not priced until you set a price, and it is not on the shared market list. A typed name is not ordered until you pick it. ${unitRule}`
         : `Pick the product from the list under its name. A typed name is not ordered until you do. ${unitRule}`));
 
       const totalsBar = ui.h('div', { class: 'alert alert-info' }, 'No lines yet.');
@@ -746,6 +746,7 @@
             for_order: true,
             selling_price: 0,
             cost_price: Number(line.expected_unit_cost) || 0,
+            category_id: product.category_id || undefined,
             business_id: SR.state.activeBusinessId,
           });
           chosen = {

@@ -29,25 +29,27 @@ const PHARMACEUTICAL_CODES = Object.freeze([
 // The Greenbook names its shelves differently from the shop. The shop name is
 // what the catalogue shows. The code is what keeps the side pharmaceutical.
 const NAFDAC_SHELVES = Object.freeze({
-  'nervous system': { code: 'NERVOUS_SYSTEM', name: 'Nervous system' },
-  'anti-infectives (systemic)': { code: 'ANTI_INFECTIVES', name: 'Anti-infectives' },
-  'alimentary & metabolism': { code: 'ALIMENTARY', name: 'Alimentary' },
-  'antiparasitic': { code: 'ANTIPARASITIC', name: 'Antiparasitic' },
-  'cardiovascular': { code: 'CARDIOVASCULAR', name: 'Cardiovascular' },
-  'dermatological': { code: 'DERMATOLOGY', name: 'Dermatology' },
-  'musculoskeletal': { code: 'MUSCULOSKELETAL', name: 'Musculoskeletal' },
-  'other': { code: 'PHARMA_OTHER', name: 'Other medicines' },
-  'respiratory': { code: 'RESPIRATORY', name: 'Respiratory' },
-  'blood & blood forming': { code: 'BLOOD', name: 'Blood and blood forming' },
-  'genito-urinary & sex hormones': { code: 'GENITO_URINARY', name: 'Genito-urinary' },
-  'sensory organs': { code: 'SENSORY', name: 'Sensory organs' },
-  'antineoplastic & immunomodulating': { code: 'ANTINEOPLASTIC', name: 'Antineoplastic' },
-  'veterinary': { code: 'VETERINARY', name: 'Veterinary' },
-  'systemic hormones': { code: 'SYSTEMIC_HORMONES', name: 'Systemic hormones' },
-  'medical device': { code: 'MEDICAL_DEVICE', name: 'Medical devices' },
-  'various': { code: 'PHARMA_VARIOUS', name: 'Various' },
-  'herbal & nutraceutical': { code: 'VITAMINS', name: 'Vitamins and supplements' },
-  'vaccines & biologics': { code: 'VACCINES', name: 'Vaccines and biologics' },
+  // literal is the Greenbook category string, so a shelf filter can use the
+  // category index instead of lower() across every registration.
+  'nervous system': { code: 'NERVOUS_SYSTEM', name: 'Nervous system', literal: 'Nervous System' },
+  'anti-infectives (systemic)': { code: 'ANTI_INFECTIVES', name: 'Anti-infectives', literal: 'Anti-infectives (Systemic)' },
+  'alimentary & metabolism': { code: 'ALIMENTARY', name: 'Alimentary', literal: 'Alimentary & Metabolism' },
+  'antiparasitic': { code: 'ANTIPARASITIC', name: 'Antiparasitic', literal: 'Antiparasitic' },
+  'cardiovascular': { code: 'CARDIOVASCULAR', name: 'Cardiovascular', literal: 'Cardiovascular' },
+  'dermatological': { code: 'DERMATOLOGY', name: 'Dermatology', literal: 'Dermatological' },
+  'musculoskeletal': { code: 'MUSCULOSKELETAL', name: 'Musculoskeletal', literal: 'Musculoskeletal' },
+  'other': { code: 'PHARMA_OTHER', name: 'Other medicines', literal: 'Other' },
+  'respiratory': { code: 'RESPIRATORY', name: 'Respiratory', literal: 'Respiratory' },
+  'blood & blood forming': { code: 'BLOOD', name: 'Blood and blood forming', literal: 'Blood & Blood Forming' },
+  'genito-urinary & sex hormones': { code: 'GENITO_URINARY', name: 'Genito-urinary', literal: 'Genito-urinary & Sex Hormones' },
+  'sensory organs': { code: 'SENSORY', name: 'Sensory organs', literal: 'Sensory Organs' },
+  'antineoplastic & immunomodulating': { code: 'ANTINEOPLASTIC', name: 'Antineoplastic', literal: 'Antineoplastic & Immunomodulating' },
+  'veterinary': { code: 'VETERINARY', name: 'Veterinary', literal: 'Veterinary' },
+  'systemic hormones': { code: 'SYSTEMIC_HORMONES', name: 'Systemic hormones', literal: 'Systemic Hormones' },
+  'medical device': { code: 'MEDICAL_DEVICE', name: 'Medical devices', literal: 'Medical Device' },
+  'various': { code: 'PHARMA_VARIOUS', name: 'Various', literal: 'Various' },
+  'herbal & nutraceutical': { code: 'VITAMINS', name: 'Vitamins and supplements', literal: 'Herbal & Nutraceutical' },
+  'vaccines & biologics': { code: 'VACCINES', name: 'Vaccines and biologics', literal: 'Vaccines & Biologics' },
 });
 
 function shelfForNafdacCategory(name) {
