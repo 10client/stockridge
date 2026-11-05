@@ -48,6 +48,6 @@ CREATE INDEX IF NOT EXISTS idx_stock_batches_gate ON stock_batches(business_id, 
 -- Those paginations still need an index that matches the filter + order, or Turso counts rows scanned.
 CREATE INDEX IF NOT EXISTS idx_asset_agreements_business_updated ON asset_agreements(business_id, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_delivery_jobs_business_updated ON delivery_jobs(business_id, updated_at, id);
-CREATE INDEX IF NOT EXISTS idx_stock_transfers_business_updated ON stock_transfers(business_id, updated_at, id);
+CREATE INDEX IF NOT EXISTS idx_stock_transfers_from_business_updated ON stock_transfers(from_business_id, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_stocktake_sessions_branch_updated ON stocktake_sessions(branch_id, updated_at, id);
 CREATE INDEX IF NOT EXISTS idx_expenses_branch_date ON expenses(branch_id, expense_date, updated_at, id);
