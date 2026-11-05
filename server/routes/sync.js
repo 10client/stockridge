@@ -731,6 +731,11 @@ function mount(app, base = '/api') {
         // had no shelf there. Scope still limits a pinned cashier.
         where.push('(branch_id IS NULL OR branch_id = ?)'); params.push(String(branch.id));
       }
+      // The shared market list has no business_id. A shop search still reads it
+      // on the server. The till saves the shelf, not those 4,828 names and units.
+      const shelf = deviceShelfLimit(spec, { includeAllBusinesses, scope, biz });
+      for (const piece of shelf.where) where.push(piece);
+      params.push(...shelf.params);
       const afterRaw = paging ? afterMap[table] : null;
       const afterId = afterRaw == null ? '' : String(afterRaw).trim();
       const afterIdOk = Boolean(paging && afterId && afterId.length <= 80 && /^[A-Za-z0-9_-]+$/.test(afterId));
@@ -987,6 +992,38 @@ function mount(app, base = '/api') {
  * across branches) and must stay visible, while a row WITH a branch is visible
  * only inside it.
  */
+function deviceShelfLimit(spec, { includeAllBusinesses, scope, biz } = {}) {
+  if (!spec || (!spec.shopShelf && !spec.viaProduct)) return { where: [], params: [] };
+  const every = Boolean(includeAllBusinesses && scope && scope.allBusinesses);
+  let scopeSql = '';
+  const scopeParams = [];
+  if (!every) {
+    const ids = includeAllBusinesses && scope && scope.businessIds && scope.businessIds.size
+      ? [...scope.businessIds].map(String)
+      : null;
+    if (ids && ids.length) {
+      scopeSql = `business_id IN (${ids.map(() => '?').join(',')})`;
+      scopeParams.push(...ids);
+    } else if (biz) {
+      scopeSql = 'business_id = ?';
+      scopeParams.push(String(biz));
+    }
+  }
+  const where = [];
+  const params = [];
+  if (spec.shopShelf) {
+    where.push(scopeSql ? `business_id IS NOT NULL AND ${scopeSql}` : 'business_id IS NOT NULL');
+    params.push(...scopeParams);
+  }
+  if (spec.viaProduct) {
+    const inner = ['business_id IS NOT NULL', 'is_deleted = 0'];
+    if (scopeSql) inner.push(scopeSql);
+    where.push(`product_id IN (SELECT id FROM products WHERE ${inner.join(' AND ')})`);
+    params.push(...scopeParams);
+  }
+  return { where, params };
+}
+
 const PULLABLE = {
   businesses: { businessScoped: false, branchScoped: false, orderBy: 'name' },
   branches: { businessScoped: true, branchScoped: false, orderBy: 'name' },
@@ -1001,12 +1038,14 @@ const PULLABLE = {
   customer_classes: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   customers: { businessScoped: true, branchScoped: true, orderBy: 'name' },
   product_categories: { businessScoped: true, branchScoped: false, orderBy: 'sort_order, name' },
-  products: { businessScoped: true, branchScoped: false, orderBy: 'name' },
-  product_units: { businessScoped: false, branchScoped: false, orderBy: 'quantity_in_base' },
-  product_variants: { businessScoped: false, branchScoped: false, orderBy: 'name' },
-  product_barcodes: { businessScoped: false, branchScoped: false, orderBy: 'barcode' },
+  // shopShelf: the shared market list has no business. It stays on the server
+  // for a search. It is not the shelf, and a till must not save those 4,828 names.
+  products: { businessScoped: true, branchScoped: false, orderBy: 'name', shopShelf: true },
+  product_units: { businessScoped: false, branchScoped: false, orderBy: 'quantity_in_base', viaProduct: true },
+  product_variants: { businessScoped: false, branchScoped: false, orderBy: 'name', viaProduct: true },
+  product_barcodes: { businessScoped: false, branchScoped: false, orderBy: 'barcode', viaProduct: true },
   price_lists: { businessScoped: true, branchScoped: false, orderBy: 'priority, name' },
-  price_list_items: { businessScoped: false, branchScoped: false, orderBy: 'product_id' },
+  price_list_items: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true },
   product_price_overrides: { businessScoped: false, branchScoped: true, orderBy: 'product_id' },
   suppliers: { businessScoped: true, branchScoped: false, orderBy: 'name' },
   stock_batches: { businessScoped: true, branchScoped: true, orderBy: 'product_id, batch_no' },
@@ -1025,7 +1064,7 @@ const PULLABLE = {
   // once the line dropped. These rows are the same tables Turso holds.
   // Child rows have no business column of their own, so they are limited
   // through the parent. Secrets and the ledger stay off the device.
-  product_measures: { businessScoped: false, branchScoped: false, orderBy: 'product_id' },
+  product_measures: { businessScoped: false, branchScoped: false, orderBy: 'product_id', viaProduct: true },
   purchase_order_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'purchase_orders', column: 'purchase_order_id' } },
   sales: { businessScoped: true, branchScoped: true, orderBy: 'sold_at' },
   sale_items: { businessScoped: false, branchScoped: false, orderBy: 'updated_at', parent: { table: 'sales', column: 'sale_id' } },
@@ -1130,4 +1169,4 @@ function minutesSince(iso) {
   return Number.isFinite(t) ? Math.round((Date.now() - t) / 60000) : 0;
 }
 
-module.exports = { mount, LWW_TABLES, REPLAYABLE, PULLABLE };
+module.exports = { mount, LWW_TABLES, REPLAYABLE, PULLABLE, deviceShelfLimit };
