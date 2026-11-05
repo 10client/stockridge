@@ -46,6 +46,11 @@
   const COUNTER_COPY_MS = 10 * 60 * 1000;
   const VERTICAL_COPY_MS = 15 * 60 * 1000;
   const SALES_FULL_MS = 6 * 60 * 60 * 1000;
+  // The shelf is read in full so a hard delete is noticed. Once the shop sends
+  // a soft-deleted row in the delta, that full read is the reconcile, not the
+  // every-cycle copy. Until the shop confirms tombstones, it stays 15 minutes.
+  const SHELF_FULL_MS = 15 * 60 * 1000;
+  const SHELF_RECONCILE_MS = 6 * 60 * 60 * 1000;
   const DETAIL_BATCH = 24;
 
   let running = null;
@@ -308,14 +313,26 @@
   // stored 20 and then said Saved, while that screen has 50, was using an
   // old copy. Ask the shop, and if this till is short, download the names
   // again with no cursor before anyone is told they can disconnect.
-  async function ensureCatalogue() {
+  async function ensureCatalogue(hint) {
     if (!SR.api.isOnline() || !SR.api.hasToken()) return null;
+    // A finished delta that changed no product does not need another count.
+    // The count scans the catalogue. The short-copy refill still runs when
+    // this till is behind, or when a product row actually moved.
+    if (hint && hint.incremental && !hint.productChanges) {
+      const known = Number(await SR.store.metaGet('shop_product_count').catch(() => null));
+      const countedAt = await SR.store.metaGet('shop_count_at').catch(() => null);
+      if (Number.isFinite(known) && countedAt && !copyDue(countedAt, Date.now(), 15 * 60 * 1000)) {
+        const localCount = await countCatalogueProducts();
+        if (localCount >= known) return { refused: false, short: false, shopCount: known, localCount, skippedProbe: true };
+      }
+    }
     // The unfiltered product total counts other businesses. A miss on that
     // probe is not proof this shop failed to answer, and it must not leave
     // Saving on Not saved after the catalogue groups already landed.
     const shopCount = await ownedProductCount();
     if (shopCount == null) return { refused: false, unchecked: true };
     await SR.store.metaSet('shop_product_count', shopCount);
+    await SR.store.metaSet('shop_count_at', new Date().toISOString());
     if (shopCount === 0) await SR.store.metaSet('catalogue_empty', true);
     let localCount = await countCatalogueProducts();
     if (localCount < shopCount) {
@@ -364,10 +381,13 @@
     let truncated = [];
     let softErrors = [];
     let failed = null;
+    let productChanges = 0;
+    const hadCursor = !full && Boolean(await SR.store.metaGet('sync_cursor', null).catch(() => null));
     for (const group of groups) {
       let result = await pullRequest({ full, tables: group, saveCursor: false, stamp: false });
       if (!result.ok && result.fast) result = await pullRequest({ full, tables: group, saveCursor: false, stamp: false });
       rows += result.rows || 0;
+      productChanges += result.productChanges || 0;
       if (result.cursor) cursor = result.cursor;
       if (result.truncated && result.truncated.length) truncated = truncated.concat(result.truncated);
       if (result.softErrors && result.softErrors.length) softErrors = softErrors.concat(result.softErrors);
@@ -378,7 +398,7 @@
       emit('change', status());
       return { ok: false, rows, error: failed.error };
     }
-    const catalogue = await ensureCatalogue();
+    const catalogue = await ensureCatalogue({ incremental: hadCursor, productChanges });
     if (catalogue && (catalogue.refused || catalogue.short)) {
       try { await SR.store.metaSet('sync_incomplete_since', await SR.store.metaGet('sync_cursor', null)); } catch (err) { /* the sentence is already stored */ }
       emit('change', status());
@@ -445,7 +465,8 @@
     const asking = tables || PULL_TABLES;
     const fullTables = [];
     const shelfAt = await SR.store.metaGet('shelf_full_at').catch(() => null);
-    const shelfDue = Boolean(full || copyDue(shelfAt, Date.now(), 15 * 60 * 1000));
+    const tombstones = String(await SR.store.metaGet('pull_tombstones').catch(() => null) || '') === '1';
+    const shelfDue = Boolean(full || copyDue(shelfAt, Date.now(), tombstones ? SHELF_RECONCILE_MS : SHELF_FULL_MS));
     if (shelfDue && asking.includes('stock_batches')) fullTables.push('stock_batches');
     if (shelfDue && asking.includes('purchase_orders')) fullTables.push('purchase_orders');
     const pulledSales = await SR.store.metaGet('pulled_sales_tables').catch(() => null);
@@ -467,7 +488,7 @@
       return Boolean(err && (err.isOffline || err.code === 'OFFLINE' || err.code === 'SHOP_UNCONFIRMED' || err.code === 'SHOP_READ_FAILED'))
         || /did not answer|could not be reached|in time|timed out|timeout|failed to fetch|shop_read_failed/i.test(msg);
     }
-    function pageBody(tables, after) {
+    function pageBody(tables, after, afterAt) {
       return {
         device_id: SR.device.current().id,
         app_version: SR.APP_VERSION,
@@ -478,7 +499,11 @@
         tables,
         full_tables: fullTables.length ? fullTables : undefined,
         page_size: PAGE,
+        // Ask for changed rows only. A shop that does not know the flag
+        // ignores it and keeps the id walk.
+        watermark: since ? 1 : undefined,
         after: after && Object.keys(after).length ? after : undefined,
+        after_at: afterAt && Object.keys(afterAt).length ? afterAt : undefined,
       };
     }
     async function postWithRetry(body) {
@@ -494,32 +519,41 @@
       }
       return { ok: false, error: lastErr };
     }
-    async function fetchPage(tables, after) {
-      const posted = await postWithRetry(pageBody(tables, after));
+    async function fetchPage(tables, after, afterAt) {
+      const posted = await postWithRetry(pageBody(tables, after, afterAt));
       if (posted.ok || tables.length <= 1) return posted;
       const tablesOut = {};
       const next = {};
+      const nextAt = {};
       const truncatedTables = [];
       let cursor = null;
       let fullSyncFlag = false;
+      let watermark = false;
       for (const table of tables) {
         const oneAfter = after && after[table] ? { [table]: after[table] } : undefined;
-        const one = await postWithRetry(pageBody([table], oneAfter));
-        if (!one.ok) return { ok: false, error: one.error, partial: { tables: tablesOut, cursor, next, truncatedTables } };
+        const oneAt = afterAt && afterAt[table] ? { [table]: afterAt[table] } : undefined;
+        const one = await postWithRetry(pageBody([table], oneAfter, oneAt));
+        if (!one.ok) return { ok: false, error: one.error, partial: { tables: tablesOut, cursor, next, next_at: nextAt, truncatedTables, watermark } };
         const got = one.result || {};
         Object.assign(tablesOut, got.tables || {});
         if (got.cursor) cursor = got.cursor;
         if (got.fullSync) fullSyncFlag = true;
+        if (got.watermark) watermark = true;
         const oneNext = got.next && typeof got.next === 'object' ? got.next : {};
+        const oneNextAt = got.next_at && typeof got.next_at === 'object' ? got.next_at : {};
         for (const name of Object.keys(oneNext)) if (oneNext[name]) next[name] = String(oneNext[name]);
+        for (const name of Object.keys(oneNextAt)) if (oneNextAt[name]) nextAt[name] = String(oneNextAt[name]);
         for (const name of got.truncatedTables || []) if (!truncatedTables.includes(name)) truncatedTables.push(name);
       }
-      return { ok: true, result: { tables: tablesOut, cursor, fullSync: fullSyncFlag, next, truncatedTables } };
+      return { ok: true, result: { tables: tablesOut, cursor, fullSync: fullSyncFlag, next, next_at: nextAt, truncatedTables, watermark } };
     }
     const merged = {};
     let cursor = null;
     let fullSyncFlag = !since;
+    let sawWatermark = false;
+    let productChanges = 0;
     let after = {};
+    let afterAt = {};
     let askingNow = asking.slice();
     let ignoredPaging = false;
     let stuck = false;
@@ -527,11 +561,12 @@
     const seenAfter = new Set();
     let result = null;
     for (let page = 0; page < 50 && askingNow.length; page++) {
-      const posted = await fetchPage(askingNow, after);
+      const posted = await fetchPage(askingNow, after, afterAt);
       const pageResult = posted.ok ? posted.result : (posted.partial || null);
       if (pageResult && pageResult.tables) {
         if (pageResult.cursor) cursor = pageResult.cursor;
         if (pageResult.fullSync) fullSyncFlag = true;
+        if (pageResult.watermark) sawWatermark = true;
         if (page === 0) {
           ignoredPaging = Object.values(pageResult.tables).some((item) => item && Array.isArray(item.rows) && item.rows.length > PAGE);
         }
@@ -541,12 +576,33 @@
           if (!merged[table]) merged[table] = { rows: [], error: null, truncated: false, wrote: 0, acknowledged: false };
           if (payload && payload.error) merged[table].error = payload.error;
           if (!payload || !Array.isArray(payload.rows) || !payload.rows.length) continue;
-          merged[table].rows = merged[table].rows.concat(payload.rows);
+          const incoming = payload.rows.filter((row) => row && row.id != null);
+          const live = [];
+          let removed = 0;
+          // A tombstone is a removal, not a second copy of the row. Only a
+          // shop that said watermark sends them. An older shop does not.
+          if (pageResult.watermark) {
+            for (const row of incoming) {
+              if (Number(row.is_deleted) === 1) {
+                if (SR.store.remove) await SR.store.remove(table, row.id);
+                removed += 1;
+              } else live.push(row);
+            }
+          } else {
+            live.push(...incoming);
+          }
+          merged[table].rows = merged[table].rows.concat(live);
           if (payload.truncated) merged[table].truncated = true;
           try {
-            const wrote = await SR.store.putMany(table, payload.rows);
-            merged[table].wrote += Number(wrote) || 0;
-            if (wrote != null) merged[table].acknowledged = true;
+            // A first copy has nothing to compare. A later page skips a row
+            // whose timestamp this till already stored, so the overlap is not
+            // written twice.
+            const fresh = since ? await changedOnly(table, live) : live;
+            let wrote = 0;
+            if (fresh.length) wrote = Number(await SR.store.putMany(table, fresh)) || 0;
+            merged[table].wrote += wrote;
+            merged[table].acknowledged = true;
+            if (table === 'products') productChanges += fresh.length + removed;
           } catch (err) {
             const reason = pullFailureReason(err);
             await rememberPullError(reason);
@@ -582,7 +638,18 @@
         break;
       }
       open = true;
-      const mark = cont.map((name) => name + ':' + next[name]).join('|');
+      const nextAt = result.next_at && typeof result.next_at === 'object' ? result.next_at : {};
+      // A watermark page without the timestamp half would walk by id and
+      // skip a row that changed under an earlier id. Stop and try again.
+      if (result.watermark) {
+        const missing = cont.filter((name) => !fullTables.includes(name) && !nextAt[name]);
+        if (missing.length) {
+          stuck = true;
+          for (const name of missing) if (merged[name]) merged[name].truncated = true;
+          break;
+        }
+      }
+      const mark = cont.map((name) => name + ':' + next[name] + ':' + (nextAt[name] || '')).join('|');
       if (seenAfter.has(mark)) {
         stuck = true;
         for (const name of cont) if (merged[name]) merged[name].truncated = true;
@@ -590,7 +657,11 @@
       }
       seenAfter.add(mark);
       after = {};
-      for (const name of cont) after[name] = String(next[name]);
+      afterAt = {};
+      for (const name of cont) {
+        after[name] = String(next[name]);
+        if (nextAt[name]) afterAt[name] = String(nextAt[name]);
+      }
       askingNow = cont;
     }
     if (open && !stuck && !ignoredPaging) {
@@ -686,6 +757,7 @@
     if (shelfDue && result.tables && result.tables.stock_batches && !result.tables.stock_batches.error && !result.tables.stock_batches.truncated) {
       await SR.store.metaSet('shelf_full_at', new Date().toISOString());
     }
+    if (sawWatermark) await SR.store.metaSet('pull_tombstones', '1');
     if (saveCursor && result && result.cursor && !hardErrors.length) {
       await SR.store.metaSet('sync_cursor', result.cursor);
       if (fullTables.includes('purchase_orders') && result.tables && result.tables.purchase_orders && !result.tables.purchase_orders.error) {
@@ -708,7 +780,7 @@
       message: result && result.fullSync ? `Full sync: ${rows} rows` : `${rows} changed rows`,
     });
     emit('change', status());
-    return { ok: true, rows, perTable, cursor: result && result.cursor, fullSync: Boolean(result && result.fullSync), truncated: (result && result.truncatedTables) || [], softErrors };
+    return { ok: true, rows, perTable, productChanges, cursor: result && result.cursor, fullSync: Boolean(result && result.fullSync), truncated: (result && result.truncatedTables) || [], softErrors };
   }
 
   // The live shop already answers GET /api/sales. Copy that book into the

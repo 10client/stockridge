@@ -42,6 +42,7 @@ const { resolveBranch, resolveBusiness, readBusinessId, pagination, listResponse
 const { round2 } = require('../../domain/money');
 const { newId } = require('../../domain/crypto');
 const { watNow, watToday, utcNow, toUtcSql, utcToWat, claimedWatToUtcSql } = require('../../domain/time');
+const { watermarkPage } = require('../../domain/sync-watermark');
 const { signReplay } = require('../lib/replay');
 const saleIssues = require('../services/saleIssues');
 
@@ -633,6 +634,11 @@ function mount(app, base = '/api') {
     const paging = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0;
     const pageSize = paging ? Math.min(400, Math.max(1, Math.floor(pageSizeRaw))) : 0;
     const afterMap = body.after && typeof body.after === 'object' && !Array.isArray(body.after) ? body.after : {};
+    const afterAtMap = body.after_at && typeof body.after_at === 'object' && !Array.isArray(body.after_at) ? body.after_at : {};
+    // A till that already holds a cursor asks for a watermark. The id walk
+    // stays for a first copy and for a till that has not asked, so a shop
+    // deploy does not skip rows on an older screen.
+    const wantWatermark = body.watermark === true || body.watermark === 1 || body.watermark === '1';
 
     const requested = Array.isArray(body.tables) && body.tables.length
       ? body.tables.map((t) => String(t).toLowerCase())
@@ -644,9 +650,15 @@ function mount(app, base = '/api') {
       // Only tables that exist and are safe to mirror. A device must not be able
       // to ask for `gl_journal_lines` or `audit_log` and receive them.
       if (!PULLABLE[table]) { out[table] = { error: 'not_syncable', rows: [] }; continue; }
+      // Read once, below, and redact it. The loop used to read it as well.
+      if (table === 'client_settings') continue;
       const spec = PULLABLE[table];
       const where = []; const params = [];
-      if (spec.softDelete !== false) where.push('is_deleted = 0');
+      const cursorColumn = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
+      const useWatermark = Boolean(wantWatermark && since && !fullTables.has(table));
+      // A delta includes a soft-deleted row so the till can drop it without
+      // reading the shelf again. A first copy still skips those rows.
+      if (spec.softDelete !== false && !useWatermark) where.push('is_deleted = 0');
       if (spec.parent && /^[a-z_]+$/.test(spec.parent.table) && /^[a-z_]+$/.test(spec.parent.column)) {
         const parentSpec = PULLABLE[spec.parent.table] || {};
         const parentWhere = parentSpec.softDelete === false ? ['1 = 1'] : ['is_deleted = 0'];
@@ -696,21 +708,47 @@ function mount(app, base = '/api') {
         // had no shelf there. Scope still limits a pinned cashier.
         where.push('(branch_id IS NULL OR branch_id = ?)'); params.push(String(branch.id));
       }
-      if (since && !fullTables.has(table)) {
-        const cursorColumn = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
+      const afterRaw = paging ? afterMap[table] : null;
+      const afterId = afterRaw == null ? '' : String(afterRaw).trim();
+      const afterIdOk = Boolean(paging && afterId && afterId.length <= 80 && /^[A-Za-z0-9_-]+$/.test(afterId));
+      const afterAtRaw = paging ? afterAtMap[table] : null;
+      const afterAt = afterAtRaw ? toUtcSql(String(afterAtRaw)) : null;
+      let order = paging ? 'id' : (spec.orderBy || 'updated_at DESC, id');
+      if (useWatermark) {
+        const page = watermarkPage({
+          since,
+          afterAt: afterIdOk ? afterAt : null,
+          afterId: afterIdOk ? afterId : null,
+          column: cursorColumn,
+        });
+        if (page) {
+          where.push(page.sql);
+          params.push(...page.params);
+          order = page.order;
+        } else {
+          where.push(`${cursorColumn} > ?`);
+          params.push(since);
+        }
+      } else if (since && !fullTables.has(table)) {
         where.push(`${cursorColumn} > ?`);
         params.push(since);
       }
-      const afterRaw = paging ? afterMap[table] : null;
-      const afterId = afterRaw == null ? '' : String(afterRaw).trim();
-      if (paging && afterId && afterId.length <= 80 && /^[A-Za-z0-9_-]+$/.test(afterId)) {
+      if (!useWatermark && afterIdOk) {
         where.push('id > ?');
         params.push(afterId);
       }
-      const cols = spec.columns ? spec.columns.join(', ') : '*';
+      let cols = spec.columns ? spec.columns.join(', ') : '*';
+      if (useWatermark && spec.columns && spec.softDelete !== false && !spec.columns.includes('is_deleted')) {
+        cols = spec.columns.concat(['is_deleted']).join(', ');
+      }
+      if (useWatermark && spec.columns && !spec.columns.includes(cursorColumn)) {
+        cols = `${cols}, ${cursorColumn}`;
+      }
       const tableLimit = paging ? pageSize : ((fullSync || fullTables.has(table)) ? fullLimit : deltaLimit);
-      // Pages walk id, not name. Name order plus an id cursor skips and repeats.
-      const order = paging ? 'id' : (spec.orderBy || 'updated_at DESC, id');
+      // A watermark page walks (updated_at, id). An id walk cannot use that
+      // index, so it scans the table and reads rows the till already stored.
+      // Name order plus an id cursor skips and repeats. That stays off.
+      if (!where.length) where.push('1 = 1');
       let rows;
       try {
         rows = await db.all(`SELECT ${cols} FROM ${table} WHERE ${where.join(' AND ')} ORDER BY ${order} LIMIT ?`, [...params, tableLimit]);
@@ -734,11 +772,18 @@ function mount(app, base = '/api') {
     }
 
     const next = {};
+    const nextAt = {};
     if (paging) {
       for (const [name, item] of Object.entries(out)) {
         if (!item || !item.truncated || !Array.isArray(item.rows) || !item.rows.length) continue;
         const last = item.rows[item.rows.length - 1];
         if (last && last.id != null) next[name] = String(last.id);
+        if (wantWatermark && last) {
+          const spec = PULLABLE[name] || {};
+          const stampCol = /^[a-z_]+$/.test(String(spec.cursorColumn || '')) ? spec.cursorColumn : 'updated_at';
+          const stamp = last[stampCol] || last.updated_at || last.created_at;
+          if (stamp) nextAt[name] = String(stamp);
+        }
       }
     }
 
@@ -765,6 +810,10 @@ function mount(app, base = '/api') {
       // mirror is incomplete and pricing against it could be wrong.
       truncatedTables: Object.entries(out).filter(([, v]) => v.truncated).map(([k]) => k),
       next,
+      next_at: wantWatermark ? nextAt : undefined,
+      // Told so the till can drop a tombstone and stop re-reading the shelf.
+      // Absent means this shop did not send them. An older till ignores it.
+      watermark: wantWatermark ? true : undefined,
     });
   });
 
