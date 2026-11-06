@@ -185,6 +185,21 @@ function wrap(raw, meta = {}) {
       return Promise.resolve(values.length ? values[0] : null);
     },
     exec(sql) { raw.exec(sql); return Promise.resolve({ ok: true }); },
+    // Independent reads share one portable ordered interface. On this local
+    // adapter SQLite is already in-process, so batching adds no network cost;
+    // D1 and Turso return the same row arrays with fewer remote round trips.
+    readBatch(statements) {
+      const list = statements || [];
+      for (const statement of list) {
+        if (!/^\s*(?:SELECT|WITH)\b/i.test(String(statement.sql || ''))) throw new Error('readBatch accepts only SELECT/WITH statements.');
+      }
+      const rows = list.map((statement) => guard(
+        statement.sql,
+        statement.params,
+        () => prepare(statement.sql).all(...params(statement.params)),
+      ));
+      return Promise.resolve(rows);
+    },
     batch(statements) {
       const run = raw.transaction((list) => {
         for (let i = 0; i < list.length; i += 1) {

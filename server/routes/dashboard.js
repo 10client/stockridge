@@ -42,6 +42,29 @@ function soldSpan(fromDay, toDay) {
   };
 }
 
+// Independent dashboard SELECTs share one ordered remote pipeline. The small
+// fallback keeps test doubles/older adapters compatible; production adapters
+// implement readBatch directly. No write is accepted by this read-only seam.
+async function readBatch(db, statements) {
+  const list = statements || [];
+  if (!list.length) return [];
+  if (typeof db.readBatch === 'function') return db.readBatch(list);
+  const rows = [];
+  for (const statement of list) rows.push(await db.all(statement.sql, statement.params));
+  return rows;
+}
+
+function firstRow(rows) {
+  return rows && rows.length ? rows[0] : null;
+}
+
+function scalarRow(rows) {
+  const row = firstRow(rows);
+  if (!row) return null;
+  const values = Object.values(row);
+  return values.length ? values[0] : null;
+}
+
 function mount(app, base = '/api') {
   app.get(`${base}/dashboard`, async (ctx) => {
     const db = ctx.env.DB || ctx.env.db;
@@ -108,18 +131,48 @@ function mount(app, base = '/api') {
     const todaySpan = soldSpan(today);
     const yesterday = addDays(today, -1);
     const yesterdaySpan = soldSpan(yesterday);
-    const todaySales = await db.first(`SELECT COUNT(*) AS count,
+    // ---- PERIOD (default 30 days) ------------------------------------
+    const { from, to } = dateRange(ctx, { defaultDays: 30 });
+    const periodSpan = soldSpan(from, to);
+
+    // These sales reads are independent after scope and dates are resolved.
+    // Preserve every predicate/parameter, but pay for one remote pipeline.
+    const salesReads = await readBatch(db, [
+      { sql: `SELECT COUNT(*) AS count,
           COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat,
           COALESCE(SUM(s.balance_due),0) AS outstanding, COALESCE(SUM(s.delivery_fee),0) AS delivery,
           COALESCE(AVG(s.total),0) AS average
-        FROM sales s WHERE ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
-    const yesterdaySales = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross
-        FROM sales s WHERE ${COUNTS} AND ${yesterdaySpan.sql} ${sc.sql}`, [...yesterdaySpan.params, ...sc.params]);
-    const todayCogs = await db.first(`SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
+        FROM sales s WHERE ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, params: [...todaySpan.params, ...sc.params] },
+      { sql: `SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross
+        FROM sales s WHERE ${COUNTS} AND ${yesterdaySpan.sql} ${sc.sql}`, params: [...yesterdaySpan.params, ...sc.params] },
+      { sql: `SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
-    const todayVoids = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS value
-        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' AND ${todaySpan.sql} ${sc.sql}`, [...todaySpan.params, ...sc.params]);
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}`, params: [...todaySpan.params, ...sc.params] },
+      { sql: `SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS value
+        FROM sales s WHERE s.is_deleted = 0 AND s.status = 'VOIDED' AND ${todaySpan.sql} ${sc.sql}`, params: [...todaySpan.params, ...sc.params] },
+      { sql: `SELECT p.method, COALESCE(SUM(p.amount),0) AS amount, COUNT(*) AS count
+        FROM sale_payments p JOIN sales s ON s.id = p.sale_id
+        WHERE p.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}
+        GROUP BY p.method ORDER BY amount DESC`, params: [...todaySpan.params, ...sc.params] },
+      { sql: `SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross,
+          COALESCE(SUM(s.vat_amount),0) AS vat, COALESCE(SUM(s.balance_due),0) AS outstanding
+        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, params: [...periodSpan.params, ...sc.params] },
+      { sql: `SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id
+        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, params: [...periodSpan.params, ...sc.params] },
+      { sql: `SELECT date(s.sold_at) AS day, COUNT(*) AS count,
+          COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
+        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
+        GROUP BY day ORDER BY day ASC`, params: [...periodSpan.params, ...sc.params] },
+    ]);
+    const todaySales = firstRow(salesReads[0]);
+    const yesterdaySales = firstRow(salesReads[1]);
+    const todayCogs = firstRow(salesReads[2]);
+    const todayVoids = firstRow(salesReads[3]);
+    const byMethod = salesReads[4];
+    const period = firstRow(salesReads[5]);
+    const periodCogs = firstRow(salesReads[6]);
+    const series = salesReads[7];
 
     const grossToday = round2(Number(todaySales.gross));
     const vatToday = round2(Number(todaySales.vat));
@@ -127,31 +180,8 @@ function mount(app, base = '/api') {
     const cogsToday = round2(Number(todayCogs.cogs));
     const marginToday = round2(netToday - cogsToday);
     const grossYesterday = round2(Number(yesterdaySales.gross));
-
-    // ---- PAYMENT MIX (today) -----------------------------------------
-    const byMethod = await db.all(`SELECT p.method, COALESCE(SUM(p.amount),0) AS amount, COUNT(*) AS count
-        FROM sale_payments p JOIN sales s ON s.id = p.sale_id
-        WHERE p.is_deleted = 0 AND ${COUNTS} AND ${todaySpan.sql} ${sc.sql}
-        GROUP BY p.method ORDER BY amount DESC`, [...todaySpan.params, ...sc.params]);
-
-    // ---- PERIOD (default 30 days) ------------------------------------
-    const { from, to } = dateRange(ctx, { defaultDays: 30 });
-    const periodSpan = soldSpan(from, to);
-    const period = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross,
-          COALESCE(SUM(s.vat_amount),0) AS vat, COALESCE(SUM(s.balance_due),0) AS outstanding
-        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, [...periodSpan.params, ...sc.params]);
-    const periodCogs = await db.first(`SELECT COALESCE(SUM(si.cost_price_snapshot * si.quantity_in_base),0) AS cogs
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}`, [...periodSpan.params, ...sc.params]);
     const periodNet = round2(Number(period.gross) - Number(period.vat));
     const periodMargin = round2(periodNet - Number(periodCogs.cogs));
-
-    // Daily series for the chart. Derived from the same predicate as the totals,
-    // so the chart and the headline numbers cannot disagree.
-    const series = await db.all(`SELECT date(s.sold_at) AS day, COUNT(*) AS count,
-          COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-        FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
-        GROUP BY day ORDER BY day ASC`, [...periodSpan.params, ...sc.params]);
 
     // ---- STOCK --------------------------------------------------------
     const stockWhere = ['sb.is_deleted = 0', "sb.status NOT IN ('QUARANTINED','EXPIRED')"];
@@ -163,54 +193,60 @@ function mount(app, base = '/api') {
       stockWhere.push(`sb.branch_id IN (${ids.map(() => '?').join(',')})`);
       stockParams.push(...ids);
     }
-    const stock = await db.first(`SELECT COALESCE(SUM(sb.quantity),0) AS units,
+    const lowStockClause = useBranch ? 'AND sb.branch_id = ?' : (business ? 'AND sb.business_id = ?' : '');
+    const lowStockParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
+    const stockReads = await readBatch(db, [
+      { sql: `SELECT COALESCE(SUM(sb.quantity),0) AS units,
           COALESCE(SUM(sb.quantity * sb.cost_price_per_unit),0) AS at_cost,
           COALESCE(SUM(sb.quantity * sb.selling_price_per_unit),0) AS at_retail,
           COUNT(DISTINCT sb.product_id) AS products
-        FROM stock_batches sb WHERE ${stockWhere.join(' AND ')}`, stockParams);
-
-    const lowStockClause = useBranch ? 'AND sb.branch_id = ?' : (business ? 'AND sb.business_id = ?' : '');
-    const lowStockParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
-    const lowStock = await db.all(`SELECT p.id, p.name, p.sku, p.base_unit_name, p.reorder_level, b.name AS branch_name,
+        FROM stock_batches sb WHERE ${stockWhere.join(' AND ')}`, params: stockParams },
+      { sql: `SELECT p.id, p.name, p.sku, p.base_unit_name, p.reorder_level, b.name AS branch_name,
             COALESCE(SUM(sb.quantity - sb.quantity_reserved),0) AS available
           FROM stock_batches sb JOIN products p ON p.id = sb.product_id
           LEFT JOIN branches b ON b.id = sb.branch_id
           WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${lowStockClause}
           GROUP BY sb.product_id, sb.branch_id
           HAVING p.reorder_level > 0 AND available <= p.reorder_level
-          ORDER BY (available * 1.0 / p.reorder_level) ASC LIMIT 12`, lowStockParam);
-    const lowStockCount = await db.scalar(`SELECT COUNT(*) FROM (
+          ORDER BY (available * 1.0 / p.reorder_level) ASC LIMIT 12`, params: lowStockParam },
+      { sql: `SELECT COUNT(*) FROM (
           SELECT sb.product_id, sb.branch_id, COALESCE(SUM(sb.quantity - sb.quantity_reserved),0) AS available, p.reorder_level
           FROM stock_batches sb JOIN products p ON p.id = sb.product_id
           WHERE sb.is_deleted = 0 AND sb.status NOT IN ('QUARANTINED','EXPIRED') ${lowStockClause}
           GROUP BY sb.product_id, sb.branch_id
-          HAVING p.reorder_level > 0 AND available <= p.reorder_level)`, lowStockParam);
-    const expiringSoon = await db.all(`SELECT sb.id, sb.batch_no, sb.expiry_date, sb.quantity, p.name AS product_name, b.name AS branch_name
+          HAVING p.reorder_level > 0 AND available <= p.reorder_level)`, params: lowStockParam },
+      { sql: `SELECT sb.id, sb.batch_no, sb.expiry_date, sb.quantity, p.name AS product_name, b.name AS branch_name
         FROM stock_batches sb JOIN products p ON p.id = sb.product_id LEFT JOIN branches b ON b.id = sb.branch_id
         WHERE sb.is_deleted = 0 AND sb.expiry_date IS NOT NULL AND sb.status <> 'EXPIRED'
           AND sb.expiry_date <= date('now', '+${Number(settings.expiry_alert_days) || 60} days')
           ${lowStockClause.replace('sb.branch_id', 'sb.branch_id')}
-        ORDER BY sb.expiry_date ASC LIMIT 10`, lowStockParam);
-
-    // ---- TOP SELLERS --------------------------------------------------
-    const topProducts = await db.all(`SELECT si.product_id, si.product_name, si.sku,
+        ORDER BY sb.expiry_date ASC LIMIT 10`, params: lowStockParam },
+      { sql: `SELECT si.product_id, si.product_name, si.sku,
           COALESCE(SUM(si.quantity_in_base),0) AS units, COALESCE(SUM(si.line_total),0) AS revenue,
           COALESCE(SUM(si.margin),0) AS margin
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
         WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
-        GROUP BY si.product_id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
-    const categorySales = await db.all(`SELECT COALESCE(c.name, 'Uncategorised') AS category_name,
+        GROUP BY si.product_id ORDER BY revenue DESC LIMIT 8`, params: [...periodSpan.params, ...sc.params] },
+      { sql: `SELECT COALESCE(c.name, 'Uncategorised') AS category_name,
           COALESCE(SUM(si.line_total),0) AS revenue, COALESCE(SUM(si.line_total - si.vat_amount),0) AS net,
           COUNT(DISTINCT s.id) AS sales
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
         LEFT JOIN product_categories c ON c.id = si.category_id
         WHERE si.is_deleted = 0 AND ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
-        GROUP BY si.category_id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
-    const topStaff = await db.all(`SELECT u.id, u.full_name, COUNT(s.id) AS sales, COALESCE(SUM(s.total),0) AS revenue
+        GROUP BY si.category_id ORDER BY revenue DESC LIMIT 8`, params: [...periodSpan.params, ...sc.params] },
+      { sql: `SELECT u.id, u.full_name, COUNT(s.id) AS sales, COALESCE(SUM(s.total),0) AS revenue
         FROM sales s JOIN users u ON u.id = s.salesperson_id
         WHERE ${COUNTS} AND ${periodSpan.sql} ${sc.sql}
-        GROUP BY u.id ORDER BY revenue DESC LIMIT 8`, [...periodSpan.params, ...sc.params]);
+        GROUP BY u.id ORDER BY revenue DESC LIMIT 8`, params: [...periodSpan.params, ...sc.params] },
+    ]);
+    const stock = firstRow(stockReads[0]);
+    const lowStock = stockReads[1];
+    const lowStockCount = scalarRow(stockReads[2]);
+    const expiringSoon = stockReads[3];
+    const topProducts = stockReads[4];
+    const categorySales = stockReads[5];
+    const topStaff = stockReads[6];
 
     // ---- CREDIT / DEBTORS --------------------------------------------
     let debtors = null;
@@ -218,12 +254,19 @@ function mount(app, base = '/api') {
       const dWhere = ['c.is_deleted = 0', 'c.credit_balance > 0']; const dParams = [];
       if (business) { dWhere.push('c.business_id = ?'); dParams.push(String(business.id)); }
       if (useBranch) { dWhere.push('c.branch_id = ?'); dParams.push(useBranch); }
-      const owed = await db.first(`SELECT COUNT(*) AS count, COALESCE(SUM(c.credit_balance),0) AS total
-          FROM customers c WHERE ${dWhere.join(' AND ')}`, dParams);
-      // The over-90 bucket needs the ledger, so it is sampled from the largest
-      // debtors rather than computed for every customer on every dashboard load.
-      const worst = await db.all(`SELECT c.id, c.name, c.credit_balance FROM customers c
-          WHERE ${dWhere.join(' AND ')} ORDER BY c.credit_balance DESC LIMIT 40`, dParams);
+      const debtorReads = await readBatch(db, [
+        { sql: `SELECT COUNT(*) AS count, COALESCE(SUM(c.credit_balance),0) AS total
+          FROM customers c WHERE ${dWhere.join(' AND ')}`, params: dParams },
+        // The over-90 bucket needs the ledger, so it is sampled from the largest
+        // debtors rather than computed for every customer on every dashboard load.
+        { sql: `SELECT c.id, c.name, c.credit_balance FROM customers c
+          WHERE ${dWhere.join(' AND ')} ORDER BY c.credit_balance DESC LIMIT 40`, params: dParams },
+        { sql: `SELECT COUNT(*) FROM sales s
+          WHERE ${COUNTS} AND s.balance_due > 0 AND s.due_date IS NOT NULL AND s.due_date < ? ${sc.sql}`, params: [today, ...sc.params] },
+      ]);
+      const owed = firstRow(debtorReads[0]);
+      const worst = debtorReads[1];
+      const overdueInvoices = scalarRow(debtorReads[2]);
       let over90 = 0;
       if (worst.length) {
         // One read for every sampled debtor. A query per customer is a round
@@ -242,8 +285,6 @@ function mount(app, base = '/api') {
         }
         for (const w of worst) over90 = round2(over90 + ageBalance(byCustomer.get(String(w.id)) || [], { today }).bucket_90_plus);
       }
-      const overdueInvoices = await db.scalar(`SELECT COUNT(*) FROM sales s
-          WHERE ${COUNTS} AND s.balance_due > 0 AND s.due_date IS NOT NULL AND s.due_date < ? ${sc.sql}`, [today, ...sc.params]);
       debtors = {
         count: Number(owed.count) || 0,
         totalOwed: round2(Number(owed.total)),
@@ -255,25 +296,27 @@ function mount(app, base = '/api') {
     // ---- TILL / SAFE --------------------------------------------------
     const tillWhere = useBranch ? 'AND t.branch_id = ?' : (business ? 'AND t.business_id = ?' : '');
     const tillParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
-    const openTills = await db.all(`SELECT t.*, b.name AS branch_name, u.full_name AS cashier_name
+    const safeWhere = useBranch ? 'AND branch_id = ?' : (business ? 'AND business_id = ?' : '');
+    const safeParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
+    const cashReads = await readBatch(db, [
+      { sql: `SELECT t.*, b.name AS branch_name, u.full_name AS cashier_name
         FROM till_sessions t LEFT JOIN branches b ON b.id = t.branch_id LEFT JOIN users u ON u.id = t.user_id
-        WHERE t.is_deleted = 0 AND t.status = 'OPEN' ${tillWhere} ORDER BY t.opened_at DESC LIMIT 20`, tillParam);
-    // Uncounted variances on CLOSED tills: the number that shows whether cash
-    // control is actually working, as distinct from whether today was busy.
-    const variance = await db.first(`SELECT COALESCE(SUM(t.variance),0) AS net,
+        WHERE t.is_deleted = 0 AND t.status = 'OPEN' ${tillWhere} ORDER BY t.opened_at DESC LIMIT 20`, params: tillParam },
+      // Uncounted variances on CLOSED tills: cash control, not daily activity.
+      { sql: `SELECT COALESCE(SUM(t.variance),0) AS net,
           COALESCE(SUM(CASE WHEN t.variance < 0 THEN -t.variance ELSE 0 END),0) AS shortages,
           COALESCE(SUM(CASE WHEN t.variance > 0 THEN t.variance ELSE 0 END),0) AS surpluses,
           COUNT(*) AS closed,
           COALESCE(SUM(CASE WHEN t.variance <> 0 AND t.reviewed_by IS NULL THEN 1 ELSE 0 END),0) AS unreviewed
         FROM till_sessions t WHERE t.is_deleted = 0 AND t.status = 'CLOSED'
-          AND date(t.closed_at, '+1 hours') BETWEEN ? AND ? ${tillWhere}`, [from, to, ...tillParam]);
-    const safeWhere = useBranch ? 'AND branch_id = ?' : (business ? 'AND business_id = ?' : '');
-    const safeParam = useBranch ? [useBranch] : (business ? [String(business.id)] : []);
-    // The amount already carries its sign. OPENING is a positive amount, not a
-    // type named OPENING_FLOAT. Treating every other type as negative hid the
-    // first money and then subtracted it.
-    const safe = await db.first(`SELECT COALESCE(SUM(amount),0) AS balance
-        FROM branch_safe_ledger WHERE is_deleted = 0 ${safeWhere}`, safeParam);
+          AND date(t.closed_at, '+1 hours') BETWEEN ? AND ? ${tillWhere}`, params: [from, to, ...tillParam] },
+      // The amount already carries its sign; every non-opening type is not negative.
+      { sql: `SELECT COALESCE(SUM(amount),0) AS balance
+        FROM branch_safe_ledger WHERE is_deleted = 0 ${safeWhere}`, params: safeParam },
+    ]);
+    const openTills = cashReads[0];
+    const variance = firstRow(cashReads[1]);
+    const safe = firstRow(cashReads[2]);
 
     // ---- CASH POSITION (from the ledger, not the tills) ---------------
     let cash = null;
@@ -304,10 +347,15 @@ function mount(app, base = '/api') {
     let byBranch = null;
     let byBusiness = null;
     if (isGroup) {
-        const businesses = await db.all('SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name');
-        const periodRows = await db.all(`SELECT s.business_id, COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
-            FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} GROUP BY s.business_id`, periodSpan.params);
-        const branchRows = await db.all('SELECT business_id, COUNT(*) AS n FROM branches WHERE is_deleted = 0 AND is_active = 1 GROUP BY business_id');
+        const groupReads = await readBatch(db, [
+          { sql: 'SELECT id, name, legal_name, profile_code, is_active FROM businesses WHERE is_deleted = 0 ORDER BY name', params: [] },
+          { sql: `SELECT s.business_id, COUNT(*) AS count, COALESCE(SUM(s.total),0) AS gross, COALESCE(SUM(s.vat_amount),0) AS vat
+            FROM sales s WHERE ${COUNTS} AND ${periodSpan.sql} GROUP BY s.business_id`, params: periodSpan.params },
+          { sql: 'SELECT business_id, COUNT(*) AS n FROM branches WHERE is_deleted = 0 AND is_active = 1 GROUP BY business_id', params: [] },
+        ]);
+        const businesses = groupReads[0];
+        const periodRows = groupReads[1];
+        const branchRows = groupReads[2];
         const periodById = new Map(periodRows.map((row) => [String(row.business_id), row]));
         const branchesById = new Map(branchRows.map((row) => [String(row.business_id), Number(row.n) || 0]));
         byBusiness = businesses.map((biz) => {
@@ -327,12 +375,6 @@ function mount(app, base = '/api') {
     if (expiringSoon.length) actions.push({ key: 'expiring', severity: 'WARN', count: expiringSoon.length, label: `${expiringSoon.length} batch(es) expiring within ${settings.expiry_alert_days || 60} days`, route: '/stock?filter=expiring' });
     if (debtors && debtors.overdueInvoices > 0) actions.push({ key: 'overdue', severity: debtors.likelyBad > 0 ? 'CRITICAL' : 'WARN', count: debtors.overdueInvoices, label: `${debtors.overdueInvoices} invoice(s) past their due date`, route: '/customers?filter=overdue' });
     if (Number(variance.unreviewed) > 0) actions.push({ key: 'till_review', severity: 'WARN', count: Number(variance.unreviewed), label: `${variance.unreviewed} closed till(s) with an unexplained variance need sign-off`, route: '/till?filter=unreviewed' });
-    const pendingExpenses = atLeast(user.role, 'MANAGER')
-      ? await db.scalar(`SELECT COUNT(*) FROM expenses WHERE is_deleted = 0 AND status = 'PENDING_APPROVAL' ${business ? 'AND business_id = ?' : ''}`, business ? [String(business.id)] : [])
-      : 0;
-    if (Number(pendingExpenses) > 0) actions.push({ key: 'expenses', severity: 'INFO', count: Number(pendingExpenses), label: `${pendingExpenses} expense(s) awaiting approval`, route: '/expenses?status=PENDING_APPROVAL' });
-    const pendingDeliveries = await db.scalar(`SELECT COUNT(*) FROM delivery_jobs d WHERE d.is_deleted = 0 AND d.status IN ('PENDING','SCHEDULED','PICKED','IN_TRANSIT') ${useBranch ? 'AND d.branch_id = ?' : (business ? 'AND d.business_id = ?' : '')}`, useBranch ? [useBranch] : (business ? [String(business.id)] : []));
-    if (Number(pendingDeliveries) > 0) actions.push({ key: 'deliveries', severity: 'INFO', count: Number(pendingDeliveries), label: `${pendingDeliveries} delivery job(s) outstanding`, route: '/sales?tab=deliveries' });
     const deviceWhere = [];
     const deviceParams = [];
     if (useBranch) {
@@ -346,16 +388,27 @@ function mount(app, base = '/api') {
       deviceWhere.push('branch_id IN (SELECT id FROM branches WHERE business_id = ? AND is_deleted = 0)');
       deviceParams.push(String(business.id));
     }
-    const pendingDevices = await db.scalar(
-      `SELECT COUNT(*) FROM branch_devices WHERE is_deleted = 0 AND registered_by IS NULL AND revoked_at IS NULL ${deviceWhere.length ? `AND ${deviceWhere.join(' AND ')}` : ''}`,
-      deviceParams,
-    );
+    const actionReads = await readBatch(db, [
+      atLeast(user.role, 'MANAGER')
+        ? { sql: `SELECT COUNT(*) FROM expenses WHERE is_deleted = 0 AND status = 'PENDING_APPROVAL' ${business ? 'AND business_id = ?' : ''}`, params: business ? [String(business.id)] : [] }
+        : { sql: 'SELECT 0', params: [] },
+      { sql: `SELECT COUNT(*) FROM delivery_jobs d WHERE d.is_deleted = 0 AND d.status IN ('PENDING','SCHEDULED','PICKED','IN_TRANSIT') ${useBranch ? 'AND d.branch_id = ?' : (business ? 'AND d.business_id = ?' : '')}`, params: useBranch ? [useBranch] : (business ? [String(business.id)] : []) },
+      { sql: `SELECT COUNT(*) FROM branch_devices WHERE is_deleted = 0 AND registered_by IS NULL AND revoked_at IS NULL ${deviceWhere.length ? `AND ${deviceWhere.join(' AND ')}` : ''}`, params: deviceParams },
+      { sql: `SELECT COUNT(*) FROM staff_attendance a WHERE a.is_deleted = 0 AND a.flagged = 1 AND a.reviewed_by IS NULL ${useBranch ? 'AND a.branch_id = ?' : (business ? 'AND a.business_id = ?' : '')}`, params: useBranch ? [useBranch] : (business ? [String(business.id)] : []) },
+    ]);
+    const pendingExpenses = scalarRow(actionReads[0]);
+    const pendingDeliveries = scalarRow(actionReads[1]);
+    const pendingDevices = scalarRow(actionReads[2]);
+    const flaggedAttendance = scalarRow(actionReads[3]);
+    if (Number(pendingExpenses) > 0) actions.push({ key: 'expenses', severity: 'INFO', count: Number(pendingExpenses), label: `${pendingExpenses} expense(s) awaiting approval`, route: '/expenses?status=PENDING_APPROVAL' });
+    if (Number(pendingDeliveries) > 0) actions.push({ key: 'deliveries', severity: 'INFO', count: Number(pendingDeliveries), label: `${pendingDeliveries} delivery job(s) outstanding`, route: '/sales?tab=deliveries' });
     if (Number(pendingDevices) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'devices', severity: 'INFO', count: Number(pendingDevices), label: `${pendingDevices} device(s) awaiting approval`, route: '/attendance?tab=devices' });
-    const flaggedAttendance = await db.scalar(`SELECT COUNT(*) FROM staff_attendance a WHERE a.is_deleted = 0 AND a.flagged = 1 AND a.reviewed_by IS NULL ${useBranch ? 'AND a.branch_id = ?' : (business ? 'AND a.business_id = ?' : '')}`, useBranch ? [useBranch] : (business ? [String(business.id)] : []));
     if (Number(flaggedAttendance) > 0 && atLeast(user.role, 'MANAGER')) actions.push({ key: 'attendance', severity: 'WARN', count: Number(flaggedAttendance), label: `${flaggedAttendance} clock-in(s) flagged for review`, route: '/attendance?filter=unreviewed' });
     let openSaleIssues = 0;
     try {
-      await saleIssues.scan(db, ctx);
+      // The flagged-sales review runs the full maintenance scan. Sale/sync
+      // event handlers already record new flags, so this first screen counts
+      // those stored rows without serializing that scan (or its writes) again.
       const issueWhere = ["si.status = 'OPEN'"];
       const issueParams = [];
       const issueScope = scopeFilter(scope, { alias: 'si' });
@@ -367,26 +420,24 @@ function mount(app, base = '/api') {
     }
     if (openSaleIssues > 0) actions.push({ key: 'sale_issues', severity: 'WARN', count: openSaleIssues, label: `${openSaleIssues} flagged sale(s) need the data fixed before they can be cleared`, route: '/sales/issues' });
 
-    const myTill = await db.first("SELECT * FROM till_sessions WHERE branch_id = ? AND user_id = ? AND status = 'OPEN' AND is_deleted = 0 ORDER BY opened_at DESC LIMIT 1",
-      [String(branch ? branch.id : user.branch_id), String(user.id)]);
-
     const commitmentScope = [];
     const commitmentParams = [];
     if (useBranch) { commitmentScope.push('a.branch_id = ?'); commitmentParams.push(useBranch); }
     else if (business) { commitmentScope.push('a.business_id = ?'); commitmentParams.push(String(business.id)); }
     const commitmentWhere = commitmentScope.length ? `AND ${commitmentScope.join(' AND ')}` : '';
-    const outNow = await db.scalar(
-      `SELECT COUNT(*) FROM asset_agreements a WHERE a.is_deleted = 0 AND a.status = 'OUT' ${commitmentWhere}`,
-      commitmentParams,
-    );
-    const dueBack = await db.all(
-      `SELECT a.id, a.kind, a.ends_on, a.deposit_held, c.name AS customer_name
+    const commitmentReads = await readBatch(db, [
+      { sql: "SELECT * FROM till_sessions WHERE branch_id = ? AND user_id = ? AND status = 'OPEN' AND is_deleted = 0 ORDER BY opened_at DESC LIMIT 1",
+        params: [String(branch ? branch.id : user.branch_id), String(user.id)] },
+      { sql: `SELECT COUNT(*) FROM asset_agreements a WHERE a.is_deleted = 0 AND a.status = 'OUT' ${commitmentWhere}`, params: commitmentParams },
+      { sql: `SELECT a.id, a.kind, a.ends_on, a.deposit_held, c.name AS customer_name
          FROM asset_agreements a
          LEFT JOIN customers c ON c.id = a.customer_id
         WHERE a.is_deleted = 0 AND a.status = 'OUT' AND a.ends_on <= ? ${commitmentWhere}
-        ORDER BY a.ends_on ASC LIMIT 8`,
-      [today, ...commitmentParams],
-    );
+        ORDER BY a.ends_on ASC LIMIT 8`, params: [today, ...commitmentParams] },
+    ]);
+    const myTill = firstRow(commitmentReads[0]);
+    const outNow = scalarRow(commitmentReads[1]);
+    const dueBack = commitmentReads[2];
     if (dueBack.length) {
       actions.push({
         key: 'due_back', severity: 'WARN', count: dueBack.length,

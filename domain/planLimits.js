@@ -297,9 +297,23 @@ function remaining(used, max) {
 }
 
 async function planUsage(db, settings) {
-  const [businesses, branches, staff] = await Promise.all([
-    activeBusinessCount(db), activeBranchCount(db), activeStaffCount(db),
-  ]);
+  let businesses; let branches; let staff;
+  if (db && typeof db.readBatch === 'function') {
+    // Turso serializes HTTP requests on its Worker lane, so Promise.all still
+    // meant three round trips. One ordered read pipeline returns the same counts.
+    const rows = await db.readBatch([
+      { sql: 'SELECT COUNT(*) AS c FROM businesses WHERE is_deleted = 0 AND is_active = 1', params: [] },
+      { sql: 'SELECT COUNT(*) AS c FROM branches WHERE is_deleted = 0 AND is_active = 1', params: [] },
+      { sql: "SELECT COUNT(*) AS c FROM users WHERE is_deleted = 0 AND is_active = 1 AND role <> 'ADMIN'", params: [] },
+    ]);
+    businesses = Number((rows[0] && rows[0][0] && rows[0][0].c) || 0);
+    branches = Number((rows[1] && rows[1][0] && rows[1][0].c) || 0);
+    staff = Number((rows[2] && rows[2][0] && rows[2][0].c) || 0);
+  } else {
+    [businesses, branches, staff] = await Promise.all([
+      activeBusinessCount(db), activeBranchCount(db), activeStaffCount(db),
+    ]);
+  }
   return {
     plan: settings.subscription_plan,
     status: settings.subscription_status,

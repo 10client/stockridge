@@ -559,6 +559,17 @@ function createTursoDatabase({ url, authToken, name = null, connect = null } = {
       }
       return { ok: true, count: statements.length };
     },
+    async readBatch(statements, options = {}) {
+      const list = statements || [];
+      if (!list.length) return [];
+      for (const statement of list) {
+        if (!/^\s*(?:SELECT|WITH)\b/i.test(String(statement.sql || ''))) throw new Error('readBatch accepts only SELECT/WITH statements.');
+      }
+      // One ordered pipeline on the existing lane. Unlike Promise.all this
+      // does not queue another HTTP request per SELECT inside the Worker.
+      const results = await pipeline(list, { timeoutMs: 30000, ...options });
+      return results.map(decodeRows);
+    },
     async batch(statements, options = {}) {
       const list = statements || [];
       if (!list.length) return { ok: true, count: 0 };

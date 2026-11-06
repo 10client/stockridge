@@ -170,6 +170,28 @@ function createD1Database(raw, { name = null } = {}) {
       await raw.exec(String(sql));
       return { ok: true };
     },
+    async readBatch(statements) {
+      const list = statements || [];
+      if (!list.length) return [];
+      for (const statement of list) {
+        if (!/^\s*(?:SELECT|WITH)\b/i.test(String(statement.sql || ''))) throw new Error('readBatch accepts only SELECT/WITH statements.');
+      }
+      const prepared = list.map((s) => {
+        const stmt = raw.prepare(s.sql);
+        const bound = normaliseParams(s.params);
+        return bound.length ? stmt.bind(...bound) : stmt;
+      });
+      try {
+        const answers = await raw.batch(prepared);
+        return (answers || []).map((answer) => (answer && answer.results) || []);
+      } catch (e) {
+        const index = Number((String(e.message).match(/statement\s+(\d+)/i) || [])[1]);
+        const failing = Number.isFinite(index) && list[index - 1] ? list[index - 1] : null;
+        throw Object.assign(new Error(failing
+          ? `${e.message} (read batch statement ${index} of ${list.length}: ${String(failing.sql).replace(/\s+/g, ' ').slice(0, 140)})`
+          : e.message, { cause: e }), { code: e.code, batchIndex: Number.isFinite(index) ? index : null, batchLength: list.length });
+      }
+    },
     async batch(statements) {
       const list = statements || [];
       if (!list.length) return { ok: true, count: 0 };
