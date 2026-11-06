@@ -22,6 +22,28 @@
   const ui = SR.ui;
   const U = SR.util;
 
+  // Both the list's Add form and the detail page's Edit form use this field.
+  // Keeping it inside render() made the detail edit throw before it opened.
+  async function classField(selected) {
+    try {
+      const res = await SR.api.get('/api/customer-classes', { query: SR.state.query({}) });
+      const rows = res.data || [];
+      if (!rows.length) return null;
+      return ui.field({
+        label: 'Class',
+        name: 'customer_class_id',
+        value: selected || '',
+        options: [{ value: '', label: 'No class' }].concat(rows.map((row) => ({
+          value: row.id,
+          label: [row.name, Number(row.discount_pct) ? `${row.discount_pct}%` : null, Number(row.credit_allowed) ? 'credit' : 'cash'].filter(Boolean).join(' · '),
+        }))),
+        hint: 'The class sets the discount, and whether this customer can buy on credit.',
+      });
+    } catch (err) {
+      return null;
+    }
+  }
+
   async function render(ctx) {
     if (ctx.params.id) return renderDetail(ctx);
     ctx.setTitle('Customers');
@@ -215,26 +237,6 @@
         rows,
         foot: ['TOTAL OWED', '', U.amount(U.sum(rows, (r) => r.credit_balance)), '', ''],
       });
-    }
-
-    async function classField(selected) {
-      try {
-        const res = await SR.api.get('/api/customer-classes', { query: SR.state.query({}) });
-        const rows = res.data || [];
-        if (!rows.length) return null;
-        return ui.field({
-          label: 'Class',
-          name: 'customer_class_id',
-          value: selected || '',
-          options: [{ value: '', label: 'No class' }].concat(rows.map((row) => ({
-            value: row.id,
-            label: [row.name, Number(row.discount_pct) ? `${row.discount_pct}%` : null, Number(row.credit_allowed) ? 'credit' : 'cash'].filter(Boolean).join(' · '),
-          }))),
-          hint: 'The class sets the discount, and whether this customer can buy on credit.',
-        });
-      } catch (err) {
-        return null;
-      }
     }
 
     function openClass() {

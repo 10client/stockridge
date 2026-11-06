@@ -1738,7 +1738,11 @@
                 ? 'Received in full. The order is complete and the batches are on the shelf.'
                 : 'Delivery recorded. The order remains open for the balance.'}${registered ? ` ${registered} serial number(s) are on file against the units.` : ''}${(result.prices || []).some((p) => p.catalogue || p.override_id) ? ' The selling price is what the till will charge.' : ''}${warned}`);
               m.close();
-              if (done) done(); else load();
+              // Detail supplies its own loader. An external caller of the exported
+              // wizard has no such closure, so rerender the current route instead
+              // of throwing on an undefined list-only load().
+              if (done) done();
+              else if (SR.app && SR.app.render) SR.app.render();
             } catch (err) {
               // A SERIALS REFUSAL FROM THE SERVER STILL LEAVES SOMEWHERE TO TYPE. The route is
               // the authority on what a delivery needs; if it wants numbers, the boxes are opened

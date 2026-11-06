@@ -1210,6 +1210,117 @@
   }
 
   // -------------------------------------------------------------------
+  // The board and the detail page both attach a load. Keep one implementation
+  // in their common scope so the board button cannot reference a detail-only function.
+  function loadClosed(job) {
+    return ['DELIVERED', 'CANCELLED', 'RETURNED'].includes(String(job.status || '').toUpperCase());
+  }
+
+  async function attachLoad(job, after) {
+    if (!SR.state.atLeast('MANAGER')) {
+      ui.warn('Only a manager or above can attach the staff, the vehicle and the product amounts.');
+      return;
+    }
+    if (loadClosed(job)) {
+      ui.warn('This drop is already closed. The load stays as it was when it left.');
+      return;
+    }
+    let items = job.items || null;
+    let current = job;
+    try {
+      const detail = await SR.api.get(`/api/deliveries/${encodeURIComponent(job.id)}`);
+      current = Object.assign({}, job, detail.job || {});
+      items = detail.items || [];
+    } catch (err) {
+      ui.apiError(err);
+      return;
+    }
+    let setup = null;
+    let people = [];
+    try {
+      const [fleet, users] = await Promise.all([
+        loadDispatch(),
+        SR.api.get('/api/users?active=1&limit=200'),
+      ]);
+      setup = fleet;
+      people = (users && users.data) || [];
+    } catch (err) {
+      ui.apiError(err);
+      return;
+    }
+    const staff = people.filter((row) => row && Number(row.is_active) !== 0 && row.role !== 'ADMIN');
+    const staffOpts = [{ value: '', label: staff.length ? 'Choose the staff member' : 'No active staff on this business' }]
+      .concat(staff.map((row) => ({
+        value: row.id,
+        label: `${row.full_name}${row.job_title ? ` · ${row.job_title}` : ''} · ${U.humanise(String(row.role || '').toLowerCase())}`,
+      })));
+    const wrapEl = ui.h('div', {});
+    wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A manager or above attaches who is carrying this, which vehicle, and how much of each product. The phone, the plate and whether they are on a wage or a share follow those records. A driver cannot change them while marking the drop.'));
+    const fleetField = setup && setup.enabled
+      ? ui.field({
+        label: 'Vehicle',
+        name: 'vehicle_id',
+        value: current.vehicle_id || '',
+        options: vehicleChoices(setup),
+        required: Boolean(setup.confirmed),
+        hint: setup.confirmed ? 'Has to be one of the mix the owner confirmed.' : 'No mix is confirmed, so a vehicle is optional.',
+      })
+      : null;
+    wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+      fleetField,
+      ui.field({
+        label: 'Staff on this dispatch',
+        name: 'driver_user_id',
+        value: current.driver_user_id || '',
+        options: staffOpts,
+        hint: 'Required when the vehicle is owned. A partner vehicle already names the person the share is paid to.',
+      })));
+    if (items.length) {
+      wrapEl.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '12px' } }, 'Amount on this vehicle. It cannot be more than the sale. A smaller amount does not put the rest back on the shelf.'));
+      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
+        items.map((item) => ui.field({
+          label: item.product_name || 'Product',
+          name: `qty_${item.id}`,
+          type: 'number',
+          step: '0.001',
+          min: '0.001',
+          value: String(item.quantity),
+          hint: item.unit_code ? `Unit: ${item.unit_code}` : 'How many go on this load',
+        }))));
+    } else {
+      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This dispatch has no products on it yet.'));
+    }
+    const m = ui.openModal({
+      title: `Attach the load · ${current.job_no || ''}`.trim(),
+      body: wrapEl,
+      size: 'wide',
+      footer: [
+        ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
+        ui.h('button', {
+          class: 'btn btn-primary',
+          onClick: async (ev) => {
+            const v = ui.readFormStrings(wrapEl);
+            ev.currentTarget.disabled = true;
+            try {
+              const result = await SR.api.post(`/api/deliveries/${encodeURIComponent(current.id)}/assignment`, {
+                vehicle_id: v.vehicle_id || null,
+                driver_user_id: v.driver_user_id || null,
+                items: items.map((item) => ({ id: item.id, quantity: Number(v[`qty_${item.id}`]) })),
+              });
+              ui.ok(result.message || 'Load attached.');
+              m.close();
+              if (after) after();
+            } catch (err) {
+              ui.apiError(err);
+              ev.currentTarget.disabled = false;
+            }
+          },
+        }, 'Attach the load'),
+      ],
+    });
+  }
+
+
   async function renderJob(ctx) {
     ctx.setTitle('Delivery');
     const wrap = ui.h('div', { class: 'stack' });
@@ -1434,114 +1545,6 @@
           footer: (SR.state.settings || {}).receipt_footer_text || '',
         });
       } catch (err) { ui.apiError(err); }
-    }
-
-    function loadClosed(job) {
-      return ['DELIVERED', 'CANCELLED', 'RETURNED'].includes(String(job.status || '').toUpperCase());
-    }
-
-    async function attachLoad(job, after) {
-      if (!SR.state.atLeast('MANAGER')) {
-        ui.warn('Only a manager or above can attach the staff, the vehicle and the product amounts.');
-        return;
-      }
-      if (loadClosed(job)) {
-        ui.warn('This drop is already closed. The load stays as it was when it left.');
-        return;
-      }
-      let items = job.items || null;
-      let current = job;
-      try {
-        const detail = await SR.api.get(`/api/deliveries/${encodeURIComponent(job.id)}`);
-        current = Object.assign({}, job, detail.job || {});
-        items = detail.items || [];
-      } catch (err) {
-        ui.apiError(err);
-        return;
-      }
-      let setup = null;
-      let people = [];
-      try {
-        const [fleet, users] = await Promise.all([
-          loadDispatch(),
-          SR.api.get('/api/users?active=1&limit=200'),
-        ]);
-        setup = fleet;
-        people = (users && users.data) || [];
-      } catch (err) {
-        ui.apiError(err);
-        return;
-      }
-      const staff = people.filter((row) => row && Number(row.is_active) !== 0 && row.role !== 'ADMIN');
-      const staffOpts = [{ value: '', label: staff.length ? 'Choose the staff member' : 'No active staff on this business' }]
-        .concat(staff.map((row) => ({
-          value: row.id,
-          label: `${row.full_name}${row.job_title ? ` · ${row.job_title}` : ''} · ${U.humanise(String(row.role || '').toLowerCase())}`,
-        })));
-      const wrapEl = ui.h('div', {});
-      wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'A manager or above attaches who is carrying this, which vehicle, and how much of each product. The phone, the plate and whether they are on a wage or a share follow those records. A driver cannot change them while marking the drop.'));
-      const fleetField = setup && setup.enabled
-        ? ui.field({
-          label: 'Vehicle',
-          name: 'vehicle_id',
-          value: current.vehicle_id || '',
-          options: vehicleChoices(setup),
-          required: Boolean(setup.confirmed),
-          hint: setup.confirmed ? 'Has to be one of the mix the owner confirmed.' : 'No mix is confirmed, so a vehicle is optional.',
-        })
-        : null;
-      wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
-        fleetField,
-        ui.field({
-          label: 'Staff on this dispatch',
-          name: 'driver_user_id',
-          value: current.driver_user_id || '',
-          options: staffOpts,
-          hint: 'Required when the vehicle is owned. A partner vehicle already names the person the share is paid to.',
-        })));
-      if (items.length) {
-        wrapEl.appendChild(ui.h('p', { class: 'hint', style: { marginTop: '12px' } }, 'Amount on this vehicle. It cannot be more than the sale. A smaller amount does not put the rest back on the shelf.'));
-        wrapEl.appendChild(ui.h('div', { class: 'form-grid' },
-          items.map((item) => ui.field({
-            label: item.product_name || 'Product',
-            name: `qty_${item.id}`,
-            type: 'number',
-            step: '0.001',
-            min: '0.001',
-            value: String(item.quantity),
-            hint: item.unit_code ? `Unit: ${item.unit_code}` : 'How many go on this load',
-          }))));
-      } else {
-        wrapEl.appendChild(ui.h('p', { class: 'hint' }, 'This dispatch has no products on it yet.'));
-      }
-      const m = ui.openModal({
-        title: `Attach the load · ${current.job_no || ''}`.trim(),
-        body: wrapEl,
-        size: 'wide',
-        footer: [
-          ui.h('button', { class: 'btn', onClick: () => m.close() }, 'Cancel'),
-          ui.h('button', {
-            class: 'btn btn-primary',
-            onClick: async (ev) => {
-              const v = ui.readFormStrings(wrapEl);
-              ev.currentTarget.disabled = true;
-              try {
-                const result = await SR.api.post(`/api/deliveries/${encodeURIComponent(current.id)}/assignment`, {
-                  vehicle_id: v.vehicle_id || null,
-                  driver_user_id: v.driver_user_id || null,
-                  items: items.map((item) => ({ id: item.id, quantity: Number(v[`qty_${item.id}`]) })),
-                });
-                ui.ok(result.message || 'Load attached.');
-                m.close();
-                if (after) after();
-              } catch (err) {
-                ui.apiError(err);
-                ev.currentTarget.disabled = false;
-              }
-            },
-          }, 'Attach the load'),
-        ],
-      });
     }
 
     function move(job, preset, after) {

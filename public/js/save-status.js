@@ -3,6 +3,9 @@
   const SR = global.SR = global.SR || {};
   const api = requireSaveStatus();
   SR.saveStatus = api;
+  // The Electron Node tests load the exact same decision, rather than keeping
+  // a second library whose whole-catalogue rules can drift from the till.
+  if (typeof module !== 'undefined' && module.exports) module.exports = { decideSaveStatus: api.decide };
 
   function requireSaveStatus() {
     function decideSaveStatus(facts) {

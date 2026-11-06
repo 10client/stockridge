@@ -27,6 +27,10 @@
   // the shop on this computer's proxy is answering. The probe is the authority.
   let online = true;
   let lineReturnedAt = 0;
+  // Set by the browser's online event and consumed only after the shop itself
+  // answers. The historical catch-up patch read this without declaring it, so
+  // a successful probe threw and was counted as a miss in strict mode.
+  let lineCatchUp = false;
   let lastProbe = 0;
   let probing = null;
   let probeMisses = 0;
@@ -163,10 +167,14 @@
   // A browser offline event is not the shop. Ask the shop before changing the chip.
   // The online event is the catch-up, even when the flag was already true.
   global.addEventListener('online', () => {
+    lineCatchUp = true;
     holdCatchUp(180000);
     probe({ force: true }).catch(() => {});
   });
-  global.addEventListener('offline', () => { probe({ force: true }).catch(() => {}); });
+  global.addEventListener('offline', () => {
+    lineCatchUp = false;
+    probe({ force: true }).catch(() => {});
+  });
 
   /**
    * Confirm the server is actually reachable.
@@ -310,6 +318,26 @@
     return url;
   }
 
+  // Keep this contract aligned with electron/server.js. A missed response is
+  // ambiguous: the shop may already have applied a write. Reads and sync (whose
+  // operations carry durable idempotency keys) may retry; an ordinary write may
+  // not be sent again by this outer layer.
+  function isOneShotWrite(method, path) {
+    const verb = String(method || 'GET').toUpperCase();
+    if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') return false;
+    const value = String(path || '');
+    if (value.indexOf('/api/sync/pull') !== -1 || value.indexOf('/api/sync/push') !== -1) return false;
+    if (value.split('?')[0] === '/api/auth/login') return false; // the desktop login branch has its own serialized policy
+    return true;
+  }
+
+  function mayRetryRequest(method, path) {
+    const verb = String(method || 'GET').toUpperCase();
+    if (verb === 'GET' || verb === 'HEAD' || verb === 'OPTIONS') return true;
+    const value = String(path || '');
+    return value.indexOf('/api/sync/pull') !== -1 || value.indexOf('/api/sync/push') !== -1;
+  }
+
   /**
    * Perform a request. `queue` is where the offline behaviour is decided:
    *
@@ -326,7 +354,7 @@
   async function settleMiss(err, method, path, opts) {
     const options = opts || {};
     const up = await probe({ force: true }).catch(() => false);
-    if (up && !options.retried) {
+    if (up && !options.retried && mayRetryRequest(method, path)) {
       setOnline(true);
       return request(method, path, Object.assign({}, options, { retried: true }));
     }
@@ -367,17 +395,26 @@
   async function request(method, path, { body, query, headers = {}, queue = false, idempotencyKey = null, timeoutMs = 20000, raw = false, retried = false, quiet = false } = {}) {
     const url = buildUrl(path, query);
     const auth = loadToken();
+    const verb = String(method || 'GET').toUpperCase();
+    // One key identifies one logical action from the first attempt through a
+    // possible outbox replay. POS passes its existing outbox client_id; other
+    // mutations get one here, and a queued operation retains it in its `ref`.
+    const actionKey = idempotencyKey || (
+      verb !== 'GET' && verb !== 'HEAD' && verb !== 'OPTIONS' && SR.util && SR.util.localId
+        ? SR.util.localId('request')
+        : null
+    );
 
     const h = Object.assign({ Accept: 'application/json' }, headers);
     if (body !== undefined && body !== null) h['Content-Type'] = 'application/json';
     if (auth) h.Authorization = `Bearer ${auth}`;
     const deviceId = SR.device && SR.device.current ? SR.device.current().id : '';
     if (deviceId && deviceId !== 'SR-UNKNOWN') h['X-Device-Id'] = deviceId;
-    if (idempotencyKey) h['Idempotency-Key'] = idempotencyKey;
+    if (actionKey) h['Idempotency-Key'] = actionKey;
 
     // Queued straight away, without a network attempt.
     if (queue === true) {
-      ejectToOutbox(method, path, body, { idempotencyKey, label: headers['X-Queue-Label'] });
+      ejectToOutbox(method, path, body, { idempotencyKey: actionKey, label: headers['X-Queue-Label'] });
       return { queued: true, ok: true, offline: true, path };
     }
 
@@ -401,7 +438,7 @@
           : 'The shop did not answer from this window. Try again.',
         { status: 0, code: 'OFFLINE', retryable: true },
       );
-      return settleMiss(missed, method, path, { body, query, headers, queue, idempotencyKey, timeoutMs, raw, retried });
+      return settleMiss(missed, method, path, { body, query, headers, queue, idempotencyKey: actionKey, timeoutMs, raw, retried });
     } finally {
       clearTimeout(timer);
     }
@@ -411,7 +448,7 @@
     const text = await res.text();
     if (!res.ok) {
       const err = await parseError(res, text);
-      if (err.isOffline) return settleMiss(err, method, path, { body, query, headers, queue, idempotencyKey, timeoutMs, raw, retried });
+      if (err.isOffline) return settleMiss(err, method, path, { body, query, headers, queue, idempotencyKey: actionKey, timeoutMs, raw, retried });
       probeMisses = 0;
       setOnline(true);
       // A page refusal is not a sign-out. Only a dead session ends the till,
@@ -536,6 +573,7 @@
     login, me, logout,
     setToken, hasToken, loadToken,
     isOnline, noteReachable, shopConfirmed, reconnecting, catchingUp, holdCatchUp, probe, on, emit, canQueue, classify,
+    isOneShotWrite, mayRetryRequest,
     TOKEN_KEY,
   };
 }(window));

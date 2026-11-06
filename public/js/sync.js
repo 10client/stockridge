@@ -146,7 +146,10 @@
       operations: queued.map((item) => ({
         type: item.type,
         client_id: item.client_id,
-        idempotency_key: item.client_id,
+        // A direct queue:auto attempt stores its logical-action key in ref.
+        // Reuse it here so a lost direct response replays that same result;
+        // legacy rows and POS write-ahead rows continue to use client_id.
+        idempotency_key: item.ref || item.client_id,
         occurred_at: item.occurred_at,
         params: item.path_params || undefined,
         payload: stripInternal(item.payload || {}),

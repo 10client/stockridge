@@ -40,7 +40,7 @@ function tursoDb() {
   if (!url || !authToken) {
     throw new Error('TURSO_DATABASE_URL and TURSO_AUTH_TOKEN are required. Put them in .env.deploy. Do not commit the token.');
   }
-  return createTursoDatabase({ url, authToken, name: 'stockridge-10client' });
+  return createTursoDatabase({ url, authToken, name: 'stock2' });
 }
 
 function checksum(sql) {

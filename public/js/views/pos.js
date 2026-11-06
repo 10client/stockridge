@@ -2618,7 +2618,10 @@
       let result = queued;
       if (online) {
         try {
-          const live = await SR.api.post('/api/sales', payload, { timeoutMs: 25000 });
+          // The write-ahead row and this direct attempt are one logical sale.
+          // If the response is lost, sync replays the same key and the Worker
+          // returns the original sale instead of ringing it a second time.
+          const live = await SR.api.post('/api/sales', payload, { timeoutMs: 25000, idempotencyKey: queued.clientId });
           if (live && !live.offline && !live.queued && SR.store.markSynced) {
             await SR.store.markSynced(queued.clientId, (live.sale && live.sale.id) || live.saleId || live.receiptNo || null).catch(() => {});
           }
